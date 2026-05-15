@@ -85,7 +85,10 @@ impl From<&crate::config::WebFetchConfigFile> for WebFetchConfig {
 pub struct WebSearchConfig {
     pub enabled: bool,
     pub provider: String,
+    pub mode: WebSearchMode,
+    pub providers: Vec<String>,
     pub max_results: usize,
+    pub max_provider_attempts: usize,
 }
 
 impl Default for WebSearchConfig {
@@ -93,7 +96,10 @@ impl Default for WebSearchConfig {
         Self {
             enabled: true,
             provider: "auto".into(),
+            mode: WebSearchMode::Fallback,
+            providers: Vec::new(),
             max_results: 5,
+            max_provider_attempts: 3,
         }
     }
 }
@@ -108,7 +114,36 @@ impl From<&crate::config::WebSearchConfigFile> for WebSearchConfig {
                 .clone()
                 .filter(|provider| !provider.trim().is_empty())
                 .unwrap_or(fallback.provider),
+            mode: value.mode.unwrap_or(fallback.mode),
+            providers: value
+                .providers
+                .iter()
+                .map(|provider| provider.trim().to_string())
+                .filter(|provider| !provider.is_empty())
+                .collect(),
             max_results: value.max_results.unwrap_or(fallback.max_results),
+            max_provider_attempts: value
+                .max_provider_attempts
+                .unwrap_or(fallback.max_provider_attempts)
+                .max(1),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearchMode {
+    Single,
+    Fallback,
+    Aggregate,
+}
+
+impl WebSearchMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::Fallback => "fallback",
+            Self::Aggregate => "aggregate",
         }
     }
 }

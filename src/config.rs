@@ -15,7 +15,7 @@ use crate::{
     model_catalog::{
         BuiltInModelCatalog, BuiltInModelMetadata, ModelRuntimeOverride, ResolvedRuntimeModelPolicy,
     },
-    web::WebProviderKind,
+    web::{WebProviderKind, WebSearchMode},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,12 +376,23 @@ pub struct WebSearchConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<WebSearchMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_results: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_provider_attempts: Option<usize>,
 }
 
 impl WebSearchConfigFile {
     pub fn is_empty(&self) -> bool {
-        self.enabled.is_none() && self.provider.is_none() && self.max_results.is_none()
+        self.enabled.is_none()
+            && self.provider.is_none()
+            && self.mode.is_none()
+            && self.providers.is_empty()
+            && self.max_results.is_none()
+            && self.max_provider_attempts.is_none()
     }
 }
 
@@ -1427,8 +1438,22 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "web.search.provider",
             kind: "string",
-            description: "Default WebSearch provider id, or auto for SearXNG then DuckDuckGo fallback.",
+            description: "Default WebSearch provider id, or auto for configured routing policy.",
             default: json!("auto"),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.search.mode",
+            kind: "enum",
+            description: "WebSearch routing mode: single, fallback, or aggregate.",
+            default: json!("fallback"),
+            allowed_values: vec!["single", "fallback", "aggregate"],
+        },
+        ConfigSchemaEntry {
+            key: "web.search.providers",
+            kind: "string_list",
+            description: "Explicit WebSearch provider attempt order for auto fallback or aggregate mode.",
+            default: json!([]),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -1436,6 +1461,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             kind: "positive_integer",
             description: "Maximum number of WebSearch results returned to the model.",
             default: json!(crate::web::WebSearchConfig::default().max_results),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.search.max_provider_attempts",
+            kind: "positive_integer",
+            description: "Maximum WebSearch providers attempted for fallback or aggregate routing.",
+            default: json!(crate::web::WebSearchConfig::default().max_provider_attempts),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -1599,10 +1631,23 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .as_ref()
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null)),
+        "web.search.mode" => Ok(config
+            .web
+            .search
+            .mode
+            .map(|value| Value::String(value.as_str().to_string()))
+            .unwrap_or(Value::Null)),
+        "web.search.providers" => Ok(json!(config.web.search.providers)),
         "web.search.max_results" => Ok(config
             .web
             .search
             .max_results
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "web.search.max_provider_attempts" => Ok(config
+            .web
+            .search
+            .max_provider_attempts
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
         "web.providers" => Ok(serde_json::to_value(&config.web.providers)?),
@@ -1749,8 +1794,21 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             }
             config.web.search.provider = Some(provider.to_string());
         }
+        "web.search.mode" => {
+            config.web.search.mode = Some(
+                serde_json::from_value(serde_json::Value::String(raw_value.trim().to_string()))
+                    .with_context(|| format!("invalid web search mode: {}", raw_value))?,
+            );
+        }
+        "web.search.providers" => {
+            config.web.search.providers = parse_string_list(raw_value)?;
+        }
         "web.search.max_results" => {
             config.web.search.max_results = Some(parse_positive_usize_key(key, raw_value)?);
+        }
+        "web.search.max_provider_attempts" => {
+            config.web.search.max_provider_attempts =
+                Some(parse_positive_usize_key(key, raw_value)?);
         }
         key if key.starts_with("web.providers.") && key.ends_with(".kind") => {
             let rest = key.strip_prefix("web.providers.").unwrap();
@@ -1863,7 +1921,10 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "web.fetch.denied_hosts" => config.web.fetch.denied_hosts.clear(),
         "web.search.enabled" => config.web.search.enabled = None,
         "web.search.provider" => config.web.search.provider = None,
+        "web.search.mode" => config.web.search.mode = None,
+        "web.search.providers" => config.web.search.providers.clear(),
         "web.search.max_results" => config.web.search.max_results = None,
+        "web.search.max_provider_attempts" => config.web.search.max_provider_attempts = None,
         key if key.starts_with("web.providers.") && key.ends_with(".kind") => {
             let rest = key.strip_prefix("web.providers.").unwrap();
             let name = rest.strip_suffix(".kind").unwrap();
@@ -3674,6 +3735,9 @@ mod tests {
         .unwrap();
         set_config_key(&mut config, "web.search.provider", "duckduckgo").unwrap();
         set_config_key(&mut config, "web.search.max_results", "3").unwrap();
+        set_config_key(&mut config, "web.search.mode", "aggregate").unwrap();
+        set_config_key(&mut config, "web.search.providers", "searx,brave").unwrap();
+        set_config_key(&mut config, "web.search.max_provider_attempts", "2").unwrap();
         set_config_key(&mut config, "web.fetch.max_response_bytes", "12345").unwrap();
         set_config_key(&mut config, "web.fetch.timeout_seconds", "7").unwrap();
         set_config_key(&mut config, "web.fetch.max_redirects", "2").unwrap();
@@ -3695,6 +3759,18 @@ mod tests {
             json!(3)
         );
         assert_eq!(
+            get_config_key(&config, "web.search.mode").unwrap(),
+            json!("aggregate")
+        );
+        assert_eq!(
+            get_config_key(&config, "web.search.providers").unwrap(),
+            json!(["searx", "brave"])
+        );
+        assert_eq!(
+            get_config_key(&config, "web.search.max_provider_attempts").unwrap(),
+            json!(2)
+        );
+        assert_eq!(
             get_config_key(&config, "web.fetch.max_response_bytes").unwrap(),
             json!(12_345)
         );
@@ -3709,6 +3785,9 @@ mod tests {
 
         unset_config_key(&mut config, "web.fetch.allowed_hosts").unwrap();
         unset_config_key(&mut config, "web.search.provider").unwrap();
+        unset_config_key(&mut config, "web.search.mode").unwrap();
+        unset_config_key(&mut config, "web.search.providers").unwrap();
+        unset_config_key(&mut config, "web.search.max_provider_attempts").unwrap();
         unset_config_key(&mut config, "web.fetch.max_response_bytes").unwrap();
         unset_config_key(&mut config, "web.fetch.timeout_seconds").unwrap();
         unset_config_key(&mut config, "web.fetch.max_redirects").unwrap();
@@ -3718,6 +3797,18 @@ mod tests {
         );
         assert_eq!(
             get_config_key(&config, "web.search.provider").unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            get_config_key(&config, "web.search.mode").unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            get_config_key(&config, "web.search.providers").unwrap(),
+            json!([])
+        );
+        assert_eq!(
+            get_config_key(&config, "web.search.max_provider_attempts").unwrap(),
             Value::Null
         );
         assert_eq!(
