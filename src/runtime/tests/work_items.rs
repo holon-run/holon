@@ -2623,6 +2623,91 @@ async fn replacing_work_item_trigger_revokes_previous_waiting_condition() {
 }
 
 #[tokio::test]
+async fn replacing_agent_scoped_duplicate_trigger_revokes_previous_waiting_condition() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let old_capability = runtime
+        .create_external_trigger(
+            "watch durable inbox".into(),
+            "agentinbox".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            Some("unread_entries".into()),
+            Some("inbox:default".into()),
+        )
+        .await
+        .unwrap();
+    let new_capability = runtime
+        .create_external_trigger(
+            "watch durable inbox".into(),
+            "agentinbox".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            Some("unread_entries".into()),
+            Some("inbox:default".into()),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(
+        old_capability.waiting_intent_id,
+        new_capability.waiting_intent_id
+    );
+    assert_ne!(
+        old_capability.external_trigger_id,
+        new_capability.external_trigger_id
+    );
+
+    let waiting = runtime.latest_waiting_intents().await.unwrap();
+    let descriptors = runtime.latest_external_triggers().await.unwrap();
+    assert_eq!(
+        waiting
+            .iter()
+            .filter(|record| record.status == WaitingIntentStatus::Active)
+            .count(),
+        1
+    );
+    assert!(waiting.iter().any(|record| {
+        record.id == old_capability.waiting_intent_id
+            && record.scope == ExternalTriggerScope::Agent
+            && record.status == WaitingIntentStatus::Cancelled
+    }));
+    assert!(waiting.iter().any(|record| {
+        record.id == new_capability.waiting_intent_id
+            && record.scope == ExternalTriggerScope::Agent
+            && record.status == WaitingIntentStatus::Active
+    }));
+    assert!(descriptors.iter().any(|record| {
+        record.external_trigger_id == old_capability.external_trigger_id
+            && record.status == ExternalTriggerStatus::Revoked
+    }));
+    assert!(descriptors.iter().any(|record| {
+        record.external_trigger_id == new_capability.external_trigger_id
+            && record.status == ExternalTriggerStatus::Active
+    }));
+
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "agent_waiting_intents_cancelled"
+            && event.data["reason"] == "waiting_condition_replaced"
+            && event.data["source"].as_str() == Some("agentinbox")
+            && event.data["resource"].as_str() == Some("inbox:default")
+            && event.data["condition"].as_str() == Some("unread_entries")
+    }));
+}
+
+#[tokio::test]
 async fn picking_new_work_item_cancels_previous_work_item_scoped_trigger_only() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

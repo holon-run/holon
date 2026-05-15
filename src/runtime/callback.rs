@@ -50,7 +50,18 @@ impl RuntimeHandle {
         if let Some(work_item_id) = work_item_id.as_deref() {
             self.cancel_work_item_waiting_intents(work_item_id, "waiting_condition_replaced")
                 .await?;
+        } else if scope == ExternalTriggerScope::Agent {
+            self.cancel_agent_waiting_intents_for_dependency(
+                &description,
+                &source,
+                resource.as_deref(),
+                condition.as_deref(),
+                &delivery_mode,
+                "waiting_condition_replaced",
+            )
+            .await?;
         }
+
         let waiting = WaitingIntentRecord {
             id: waiting_intent_id.clone(),
             agent_id: agent_id.clone(),
