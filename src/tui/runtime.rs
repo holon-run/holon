@@ -1,4 +1,4 @@
-use super::projection::ProjectionSlice;
+use super::projection::{ProjectionSlice, EVENT_LOG_LIMIT};
 use super::state::TuiClientState;
 use super::*;
 use crate::client::{
@@ -385,7 +385,7 @@ impl TuiApp {
                         .agent_events_page(
                             &agent_id,
                             EventPageRequest {
-                                limit: Some(256),
+                                limit: Some(EVENT_LOG_LIMIT),
                                 order: Some("desc".into()),
                                 ..Default::default()
                             },
@@ -442,9 +442,24 @@ impl TuiApp {
                 return;
             }
         };
-        let mut projection = TuiProjection::from_snapshot(snapshot);
-        projection.replace_event_window(events_tail, newest_cursor);
-        projection.set_event_history_state(oldest_cursor, has_older);
+        let same_agent = self
+            .projection
+            .as_ref()
+            .is_some_and(|current| current.agent.identity.agent_id == agent_id);
+        let mut projection = if same_agent {
+            self.chat_scroll
+                .preserve_across_refresh(self.chat_max_scroll);
+            if let Some(mut projection) = self.projection.take() {
+                projection.reset_from_snapshot_preserving_event_history(snapshot);
+                projection
+            } else {
+                TuiProjection::from_snapshot(snapshot)
+            }
+        } else {
+            TuiProjection::from_snapshot(snapshot)
+        };
+        projection.merge_event_tail(events_tail, newest_cursor);
+        projection.set_event_history_state_from_tail(oldest_cursor, has_older);
         let cursor = projection.cursor.clone();
 
         self.stop_stream_task();

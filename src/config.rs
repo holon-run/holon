@@ -558,11 +558,12 @@ impl AppConfig {
             resolve_provider_registry(&stored_config, &settings_env, &credential_store)?;
         let explicit_default = resolve_default_model(&stored_config)?;
         let explicit_fallbacks = resolve_fallback_models(&stored_config)?;
-        let (default_model, fallback_models) = match resolve_model_selection_from_explicit(
+        let (default_model, fallback_models) = match resolve_model_selection_for_load_mode(
             explicit_default,
             explicit_fallbacks,
             &providers,
             &validated_model_overrides,
+            mode,
         ) {
             Ok(selection) => selection,
             Err(error) if mode.allow_unresolved_model() => {
@@ -669,6 +670,10 @@ enum ConfigLoadMode {
 
 impl ConfigLoadMode {
     fn allow_unresolved_model(self) -> bool {
+        matches!(self, Self::ConfigInspection)
+    }
+
+    fn skip_authenticated_model_resolution(self) -> bool {
         matches!(self, Self::ConfigInspection)
     }
 }
@@ -2774,6 +2779,31 @@ pub fn provider_registry_for_tests(
     registry
 }
 
+fn resolve_model_selection_for_load_mode(
+    explicit_default: Option<ModelRef>,
+    explicit_fallbacks: Option<Vec<ModelRef>>,
+    providers: &ProviderRegistry,
+    model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+    mode: ConfigLoadMode,
+) -> Result<(ModelRef, Vec<ModelRef>)> {
+    if mode.skip_authenticated_model_resolution() {
+        let default_model =
+            explicit_default.unwrap_or_else(|| ModelRef::new(ProviderId::openai(), "unknown"));
+        let fallback_models = explicit_fallbacks.unwrap_or_default();
+        return Ok((
+            default_model.clone(),
+            dedupe_fallback_models(fallback_models, &default_model),
+        ));
+    }
+
+    resolve_model_selection_from_explicit(
+        explicit_default,
+        explicit_fallbacks,
+        providers,
+        model_overrides,
+    )
+}
+
 fn resolve_model_selection_from_explicit(
     explicit_default: Option<ModelRef>,
     explicit_fallbacks: Option<Vec<ModelRef>>,
@@ -4553,13 +4583,53 @@ mod tests {
     #[test]
     fn config_inspection_loads_provider_state_without_resolved_model() {
         let home = tempdir().unwrap();
+        let codex_home = home.path().join("codex-home");
         let _env_guard = EnvVarGuard::set_and_unset(
-            &[("HOME", home.path().as_os_str())],
+            &[
+                ("HOME", home.path().as_os_str()),
+                ("CODEX_HOME", codex_home.as_os_str()),
+            ],
             &[
                 "HOLON_MODEL",
                 "HOLON_MODEL_FALLBACKS",
                 "OPENAI_API_KEY",
                 "ANTHROPIC_AUTH_TOKEN",
+                "ARCEE_API_KEY",
+                "BYTEPLUS_API_KEY",
+                "BYTEPLUS_CODING_API_KEY",
+                "CHUTES_API_KEY",
+                "DEEPSEEK_API_KEY",
+                "FIREWORKS_API_KEY",
+                "HUGGINGFACE_API_KEY",
+                "HF_TOKEN",
+                "KILOCODE_API_KEY",
+                "LITELLM_API_KEY",
+                "MISTRAL_API_KEY",
+                "MOONSHOT_API_KEY",
+                "NVIDIA_API_KEY",
+                "OPENCODE_GO_API_KEY",
+                "OPENROUTER_API_KEY",
+                "QIANFAN_API_KEY",
+                "QWEN_API_KEY",
+                "DASHSCOPE_API_KEY",
+                "STEPFUN_API_KEY",
+                "STEPFUN_PLAN_API_KEY",
+                "SYNTHETIC_API_KEY",
+                "TOKENHUB_API_KEY",
+                "TOGETHER_API_KEY",
+                "VENICE_API_KEY",
+                "VOLCENGINE_API_KEY",
+                "VOLCENGINE_CODING_API_KEY",
+                "ARK_API_KEY",
+                "XIAOMI_API_KEY",
+                "XIAOMI_TOKEN_PLAN_API_KEY",
+                "XAI_API_KEY",
+                "ZAI_API_KEY",
+                "BIGMODEL_API_KEY",
+                "MINIMAX_API_KEY",
+                "AI_GATEWAY_API_KEY",
+                "VERCEL_AI_GATEWAY_API_KEY",
+                "HOLON_TEST_MISSING_CUSTOM_OPENAI_API_KEY",
             ],
         );
         let provider_id = ProviderId::parse("custom-openai").unwrap();
