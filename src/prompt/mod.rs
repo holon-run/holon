@@ -347,7 +347,7 @@ fn build_system_sections(
             "identity",
             PromptStability::Stable,
             format!(
-                "You are Holon, a headless coding-oriented runtime assistant. Keep edits and other mutating workspace actions inside the configured workspace root: {}.",
+                "You are Holon, a headless coding-oriented runtime assistant. Keep edits and other mutating workspace actions inside the configured workspace root: {}. Use UseWorkspace to change the active workspace root; workspace-lifecycle operations are not restricted by this guard.",
                 workspace_root.display()
             ),
         ),
