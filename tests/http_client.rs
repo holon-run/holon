@@ -13,6 +13,7 @@ macro_rules! http_async_tests {
 
 http_async_tests!(
     agent_list_entries_are_slim_for_tui_bootstrap,
+    agent_list_entries_do_not_require_decoding_work_queue,
     local_client_over_http_can_read_agent_state_snapshot,
     local_client_over_http_can_stream_events_with_cursor_query,
     local_client_over_http_stream_without_cursor_starts_at_tail,

@@ -414,8 +414,14 @@ impl RuntimeHandle {
     pub async fn agent_list_entry(&self) -> Result<AgentListEntry> {
         let agent = self.agent_state().await?;
         let model = self.model_state_for(&agent);
-        let closure = self.current_closure_decision().await?;
         let identity = self.agent_identity_view().await?;
+        let waiting_reason = if agent.current_run_id.is_some() {
+            Some(WaitingReason::AwaitingExternalChange)
+        } else if agent.status == AgentStatus::Asleep {
+            Some(WaitingReason::AwaitingOperatorInput)
+        } else {
+            None
+        };
         Ok(AgentListEntry {
             identity,
             lifecycle: crate::types::AgentLifecycleHint::from_status(
@@ -425,7 +431,7 @@ impl RuntimeHandle {
             status: agent.status,
             pending: agent.pending,
             current_run_id: agent.current_run_id,
-            waiting_reason: closure.waiting_reason,
+            waiting_reason,
             model: (&model).into(),
             active_workspace_entry: agent
                 .active_workspace_entry

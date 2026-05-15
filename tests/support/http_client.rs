@@ -3,6 +3,8 @@
 #![allow(dead_code, unused_imports)]
 
 use std::{
+    fs::OpenOptions,
+    io::Write,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Command,
@@ -178,6 +180,50 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
         .active_workspace_entry
         .as_ref()
         .is_some_and(|entry| entry.projection_metadata.is_none()));
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn agent_list_entries_do_not_require_decoding_work_queue() -> Result<()> {
+    let data_dir = tempdir()?.keep();
+    let workspace_dir = tempdir()?.keep();
+    let mut config = test_config_with_paths(
+        data_dir.clone(),
+        workspace_dir,
+        "127.0.0.1:0".to_string(),
+        ControlAuthMode::Auto,
+    );
+    let (_host, base, server) = spawn_server_with_config(config.clone()).await?;
+
+    let work_items_path = data_dir
+        .join(".holon")
+        .join("ledger")
+        .join("work_items.jsonl");
+    if let Some(parent) = work_items_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&work_items_path)?;
+    writeln!(file, "{{not valid json")?;
+
+    let response = reqwest::Client::new()
+        .get(format!("{base}/agents/list"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await?;
+    let entry = payload
+        .as_array()
+        .and_then(|entries| entries.first())
+        .expect("agent list should contain default agent");
+    assert_eq!(entry["identity"]["agent_id"], "default");
+
+    config.http_addr = base.trim_start_matches("http://").to_string();
+    let entries = LocalClient::new(config)?.list_agent_entries().await?;
+    assert_eq!(entries.len(), 1);
 
     server.abort();
     Ok(())
