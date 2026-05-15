@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use reqwest::{Client, Response, StatusCode};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use url::{form_urlencoded, Url};
 
 use crate::{
@@ -139,20 +139,40 @@ struct RoutedSearchOutcome {
 
 fn provider_order(provider: &str, config: &WebConfig) -> Vec<String> {
     if provider != "auto" {
-        return vec![provider.to_string()];
+        return vec![provider.trim().to_string()];
     }
-    let mut providers = config
-        .search
-        .providers
-        .iter()
-        .map(|provider| provider.trim().to_string())
-        .filter(|provider| !provider.is_empty())
-        .collect::<Vec<_>>();
+    let configured = dedupe_provider_order(&config.search.providers);
+    let mut providers = if configured.is_empty() {
+        dedupe_provider_order(
+            config
+                .providers
+                .keys()
+                .cloned()
+                .chain(std::iter::once("duckduckgo".to_string())),
+        )
+    } else {
+        configured
+    };
     if providers.is_empty() {
         providers.push("duckduckgo".to_string());
     }
     providers.truncate(config.search.max_provider_attempts.max(1));
     providers
+}
+
+fn dedupe_provider_order<I, S>(providers: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut seen = BTreeSet::new();
+    providers
+        .into_iter()
+        .filter_map(|provider| {
+            let provider = provider.as_ref().trim().to_string();
+            (!provider.is_empty() && seen.insert(provider.clone())).then_some(provider)
+        })
+        .collect()
 }
 
 fn routed_single(
@@ -165,10 +185,7 @@ fn routed_single(
             winning_provider: Some(provider_id),
             results,
         }),
-        Err(error) => {
-            let attempt = failed_attempt(&provider_id, &error);
-            Err(routing_error(vec![attempt], None))
-        }
+        Err(error) => Err(single_provider_error(&provider_id, error)),
     }
 }
 
@@ -254,6 +271,48 @@ fn failed_attempt(provider: &str, error: &anyhow::Error) -> WebSearchProviderAtt
         result_count: 0,
         error_kind: Some(tool_error.kind),
         error_message: Some(tool_error.message),
+    }
+}
+
+fn single_provider_error(provider: &str, error: anyhow::Error) -> anyhow::Error {
+    let attempt = failed_attempt(provider, &error);
+    let original = ToolError::from_anyhow(&error);
+    let mut tool_error = ToolError::new(original.kind, original.message)
+        .with_details(single_provider_error_details(original.details, attempt))
+        .with_retryable(original.retryable);
+    if let Some(recovery_hint) = original.recovery_hint {
+        tool_error = tool_error.with_recovery_hint(recovery_hint);
+    }
+    anyhow::Error::from(tool_error)
+}
+
+fn single_provider_error_details(
+    details: Option<Value>,
+    attempt: WebSearchProviderAttempt,
+) -> Value {
+    let attempted_providers = vec![attempt.provider.clone()];
+    let provider_attempts = vec![attempt];
+    match details {
+        Some(Value::Object(mut object)) => {
+            object.insert(
+                "attempted_providers".to_string(),
+                json!(attempted_providers),
+            );
+            object.insert("winning_provider".to_string(), Value::Null);
+            object.insert("provider_attempts".to_string(), json!(provider_attempts));
+            Value::Object(object)
+        }
+        Some(details) => json!({
+            "provider_error_details": details,
+            "attempted_providers": attempted_providers,
+            "winning_provider": null,
+            "provider_attempts": provider_attempts,
+        }),
+        None => json!({
+            "attempted_providers": attempted_providers,
+            "winning_provider": null,
+            "provider_attempts": provider_attempts,
+        }),
     }
 }
 
@@ -1060,6 +1119,43 @@ mod tests {
         assert_eq!(response.results[0].source, "good");
     }
 
+    #[test]
+    fn provider_order_deduplicates_explicit_auto_order() {
+        let config = test_search_config(
+            vec![(
+                "good",
+                test_provider(WebProviderKind::Searxng, "https://good.example"),
+            )],
+            vec![" good ", "bad", "good", "", " bad "],
+            WebSearchMode::Fallback,
+        );
+
+        assert_eq!(provider_order("auto", &config), vec!["good", "bad"]);
+    }
+
+    #[test]
+    fn provider_order_defaults_to_configured_providers() {
+        let config = test_search_config(
+            vec![
+                (
+                    "zeta",
+                    test_provider(WebProviderKind::Searxng, "https://zeta.example"),
+                ),
+                (
+                    "alpha",
+                    test_provider(WebProviderKind::Searxng, "https://alpha.example"),
+                ),
+            ],
+            vec![],
+            WebSearchMode::Fallback,
+        );
+
+        assert_eq!(
+            provider_order("auto", &config),
+            vec!["alpha", "zeta", "duckduckgo"]
+        );
+    }
+
     #[tokio::test]
     async fn single_provider_request_does_not_fallback() {
         let good_url = searxng_mock_base_url(searxng_results_json(&[(
@@ -1095,7 +1191,10 @@ mod tests {
         .await
         .unwrap_err();
         let tool_error = ToolError::from_anyhow(&err);
+        assert_eq!(tool_error.kind, "provider_unavailable");
+        assert_eq!(tool_error.message, "SearXNG provider requires base_url");
         let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["provider"], json!("bad"));
         assert_eq!(details["attempted_providers"], json!(["bad"]));
         assert_eq!(details["winning_provider"], serde_json::Value::Null);
         assert_eq!(details["provider_attempts"].as_array().unwrap().len(), 1);
