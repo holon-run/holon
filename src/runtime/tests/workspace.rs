@@ -90,6 +90,89 @@ async fn use_workspace_agent_home_returns_to_fallback_without_deleting_project()
     assert!(retained_file.is_file());
 }
 
+#[tokio::test]
+async fn use_workspace_rejects_nonexistent_path() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let nonexistent = runtime.agent_home().join("__holon_test_nonexistent_dir__");
+    // Ensure the path truly does not exist.
+    if nonexistent.try_exists().unwrap_or(false) {
+        std::fs::remove_dir_all(&nonexistent).unwrap();
+    }
+
+    let result = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &TrustLevel::TrustedOperator,
+        &crate::tool::ToolCall {
+            id: "use-workspace".into(),
+            name: "UseWorkspace".into(),
+            input: serde_json::json!({
+                "path": nonexistent.display().to_string(),
+            }),
+        },
+    )
+    .await;
+
+    // Must fail with an appropriate error.
+    let err = result.unwrap_err();
+    let err_msg = format!("{err:#}");
+    assert!(
+        err_msg.contains("path does not exist"),
+        "expected 'path does not exist' error, got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains(&nonexistent.display().to_string()),
+        "error should mention the missing path, got: {err_msg}"
+    );
+}
+
+#[tokio::test]
+async fn use_workspace_nonexistent_path_preserves_existing_workspace() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+
+    // Establish an initial valid workspace.
+    let workspace = tempdir().unwrap();
+    crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &TrustLevel::TrustedOperator,
+        &crate::tool::ToolCall {
+            id: "use-valid".into(),
+            name: "UseWorkspace".into(),
+            input: serde_json::json!({
+                "path": workspace.path().display().to_string(),
+            }),
+        },
+    )
+    .await
+    .unwrap();
+
+    // Now attempt to switch to a nonexistent path.
+    let nonexistent = runtime.agent_home().join("__holon_test_nonexistent_dir2__");
+    if nonexistent.try_exists().unwrap_or(false) {
+        std::fs::remove_dir_all(&nonexistent).unwrap();
+    }
+
+    let result = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &TrustLevel::TrustedOperator,
+        &crate::tool::ToolCall {
+            id: "use-bad".into(),
+            name: "UseWorkspace".into(),
+            input: serde_json::json!({
+                "path": nonexistent.display().to_string(),
+            }),
+        },
+    )
+    .await;
+    assert!(result.is_err(), "expected failure for nonexistent path");
+
+    // The existing valid workspace must still be active.
+    let snapshot = runtime.execution_snapshot().await.unwrap();
+    assert_eq!(snapshot.workspace_anchor, workspace.path());
+    assert_eq!(snapshot.execution_root, workspace.path());
+}
 #[test]
 fn execution_snapshot_includes_attached_workspaces() {
     let dir = tempdir().unwrap();

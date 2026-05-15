@@ -130,6 +130,20 @@ pub(crate) async fn execute(
     } else if let Some(path) = path {
         let path = validate_non_empty(path, NAME, "path")?;
         let path = PathBuf::from(&path);
+        // Normalize and reject nonexistent paths before any state mutation.
+        let normalized = crate::tool::helpers::normalize_path(&path)?;
+        if !normalized.try_exists()? {
+            return Err(invalid_tool_input(
+                NAME,
+                format!("path does not exist: {}", normalized.display()),
+                json!({
+                    "field": "path",
+                    "path": normalized.display().to_string(),
+                    "validation_error": "path does not exist",
+                }),
+                "call UseWorkspace with an existing directory path",
+            ));
+        }
         if projection_kind == WorkspaceProjectionKind::CanonicalRoot {
             if let Some(existing_worktree) = runtime
                 .attached_workspace_for_existing_git_worktree(&path)
