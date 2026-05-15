@@ -49,6 +49,9 @@ out, and the state disappears. Holon is different because:
 
 ## Deeper reading
 
+The **memory system** page explains how Holon preserves continuity across
+turns through working memory, episode archives, and indexed search.
+
 The **runtime model** page expands the four-object mental model into precise
 lifecycle vocabulary: agent profiles, work-item states, task kinds, queue
 semantics, triggers, and workspace isolation.
@@ -67,6 +70,10 @@ decisions](https://github.com/holon-run/holon/tree/main/docs/implementation-deci
 These are maintainer-facing documents; you do not need them to use Holon.
 
 <!-- INDEX:START -->
+
+- [Memory system](./memory.md)
+  How Holon's memory layers preserve continuity — working memory, episodes, durable ledger, and indexed search.
+  <!-- mdorigin:index kind=article -->
 
 - [Runtime model](./runtime-model.md)
   Agents, tasks, work items, workspaces, and the execution loop that make up Holon's runtime.
