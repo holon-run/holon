@@ -77,12 +77,9 @@ reduced to a short pointer.
 | Document | Recommendation | Canonical Destination |
 | --- | --- | --- |
 | `docs/agent-types-and-default-agent.md` | Archive after checking for any missing wording around default/named/child agents. | `docs/rfcs/agent-profile-model.md`, `docs/rfcs/agent-control-plane-model.md`, `docs/rfcs/agent-delegation-tool-plane.md` |
-| `docs/callback-capability-and-providerless-ingress.md` | Reduce to a compatibility note or archive after external-trigger implementation lands. | `docs/rfcs/external-trigger-capability.md` |
-| `docs/agentinbox-callback-integration.md` | Keep only if needed as AgentInbox-specific operational note; otherwise archive. | `docs/rfcs/external-trigger-capability.md` |
-| `docs/command-execution-and-task-model.md` | Archive after confirming command-task details are covered. | `docs/rfcs/command-tool-family.md`, `docs/rfcs/interactive-command-continuation.md`, `docs/rfcs/task-surface-narrowing.md` |
-| `docs/single-agent-context-compression.md` | Archive after merging any remaining prompt-budget details. | `docs/rfcs/long-lived-context-memory.md` |
 | `docs/callback-capability-and-providerless-ingress.md` | **Updated**: External trigger implementation landed (v0.13.0). Can now archive. | `docs/rfcs/external-trigger-capability.md` |
 | `docs/agentinbox-callback-integration.md` | **Updated**: Wake hint / external trigger system now in place. Archive or keep as operational note. | `docs/rfcs/external-trigger-capability.md` |
+| `docs/command-execution-and-task-model.md` | Archive after confirming command-task details are covered. | `docs/rfcs/command-tool-family.md`, `docs/rfcs/interactive-command-continuation.md`, `docs/rfcs/task-surface-narrowing.md` |
 | `docs/single-agent-context-compression.md` | **Updated**: Long-lived context memory RFC now partially implemented (working memory, episodes, MemorySearch). Keep until full compaction lands. | `docs/rfcs/long-lived-context-memory.md` |
 | `docs/worktree-design-roadmap.md` | Archive after extracting any remaining worktree workflow decisions. | `docs/rfcs/workspace-binding-and-execution-roots.md`, `docs/rfcs/workspace-entry-and-projection.md`, `docs/implementation-decisions/042-child-agent-task-workspace-mode.md`, `docs/implementation-decisions/043-task-owned-worktree-cleanup.md` |
 
