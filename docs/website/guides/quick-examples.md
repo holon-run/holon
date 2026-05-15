@@ -96,7 +96,7 @@ holon daemon start --access tunnel
 
 ## 5. Use the Terminal UI (TUI)
 
-Launch the interactive terminal UI:
+Launch the interactive terminal UI locally:
 
 ```bash
 holon tui
@@ -105,8 +105,30 @@ holon tui
 Connect to a remote daemon via TUI:
 
 ```bash
+holon tui --connect http://your-server:8787 --token "your-token"
+```
+
+Or read the token from a file:
+
+```bash
 holon tui --connect http://your-server:8787 --token-file ~/.holon/remote.token
 ```
+
+Use a stored token profile:
+
+```bash
+holon tui --connect http://your-server:8787 --token-profile my-profile
+```
+
+If the terminal renders incorrectly, disable the alternate screen:
+
+```bash
+holon tui --no-alt-screen
+```
+
+In the TUI, type `/` to open the slash command menu. Use `/model` to
+switch models, `/agent` to manage agents, and `/help` to see all commands.
+See the [TUI guide](/guides/tui/) for the full slash command reference.
 
 ## 6. Start the HTTP Server
 
