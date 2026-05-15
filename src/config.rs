@@ -1845,6 +1845,9 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 })
                 .kind = kind;
         }
+        key if key.starts_with("web.providers.") && key.ends_with(".capabilities") => {
+            return Err(read_only_web_provider_capabilities_key_error(key));
+        }
         key if key.starts_with("web.providers.") && key.ends_with(".base_url") => {
             let rest = key.strip_prefix("web.providers.").unwrap();
             let name = rest.strip_suffix(".base_url").unwrap();
@@ -1946,6 +1949,9 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
             } else {
                 return Err(anyhow!("web provider {name} not found"));
             }
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".capabilities") => {
+            return Err(read_only_web_provider_capabilities_key_error(key));
         }
         key if key.starts_with("web.providers.") && key.ends_with(".base_url") => {
             let rest = key.strip_prefix("web.providers.").unwrap();
@@ -3312,7 +3318,7 @@ fn unknown_config_key(key: &str) -> anyhow::Error {
         return startup_only_config_key_error(key);
     }
     if key.starts_with("web.providers.") {
-        return anyhow!("unknown web providers config key {key}; supported fields: .kind, .base_url, .capabilities, .credential_profile; use web.providers.<name>.kind to create a provider first");
+        return anyhow!("unknown web providers config key {key}; mutable fields: .kind, .base_url, .credential_profile; .capabilities is derived read-only metadata; use web.providers.<name>.kind to create a provider first");
     }
     let supported = config_schema()
         .into_iter()
@@ -3334,6 +3340,12 @@ fn unknown_config_key(key: &str) -> anyhow::Error {
             suggestions.join(", ")
         )
     }
+}
+
+fn read_only_web_provider_capabilities_key_error(key: &str) -> anyhow::Error {
+    anyhow!(
+        "{key} is derived read-only capability metadata; configure web.providers.<name>.kind instead"
+    )
 }
 
 #[cfg(test)]
@@ -3792,6 +3804,24 @@ mod tests {
         assert_eq!(capabilities["auth"], json!("api_key"));
         assert_eq!(capabilities["status"], json!("supported"));
         assert_eq!(capabilities["default_priority"], json!(80));
+        let read_only_capabilities_error =
+            "web.providers.brave.capabilities is derived read-only capability metadata; configure web.providers.<name>.kind instead";
+        assert_eq!(
+            set_config_key(
+                &mut config,
+                "web.providers.brave.capabilities",
+                r#"{"status":"supported"}"#
+            )
+            .unwrap_err()
+            .to_string(),
+            read_only_capabilities_error
+        );
+        assert_eq!(
+            unset_config_key(&mut config, "web.providers.brave.capabilities")
+                .unwrap_err()
+                .to_string(),
+            read_only_capabilities_error
+        );
         assert_eq!(
             get_config_key(&config, "web.providers.brave.kind").unwrap(),
             json!("brave")

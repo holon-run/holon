@@ -11,10 +11,11 @@ use crate::{
     tool::ToolError,
     web::{
         policy::timeout, WebConfig, WebFetchConfig, WebProviderCapabilityMetadata,
-        WebProviderConfig, WebProviderKind, WebSearchMode,
+        WebProviderConfig, WebProviderKind, WebProviderSupportStatus, WebSearchMode,
     },
 };
 
+const DUCKDUCKGO_PROVIDER_ID: &str = "duckduckgo";
 const SEARCH_RESPONSE_BYTES: usize = 1_000_000;
 
 #[derive(Debug, Clone)]
@@ -151,7 +152,7 @@ fn provider_order(provider: &str, config: &WebConfig) -> Vec<String> {
         configured
     };
     if providers.is_empty() {
-        providers.push("duckduckgo".to_string());
+        providers.push(DUCKDUCKGO_PROVIDER_ID.to_string());
     }
     providers.truncate(config.search.max_provider_attempts.max(1));
     providers
@@ -161,15 +162,18 @@ fn default_provider_order(config: &WebConfig) -> Vec<String> {
     let mut providers = config
         .providers
         .iter()
-        .map(|(id, provider)| {
-            (
-                id.clone(),
-                provider.kind.capabilities().default_priority,
-                provider.kind.as_str().to_string(),
-            )
+        .filter_map(|(id, provider)| {
+            let capabilities = provider.kind.capabilities();
+            (capabilities.status == WebProviderSupportStatus::Supported).then(|| {
+                (
+                    id.clone(),
+                    capabilities.default_priority,
+                    provider.kind.as_str().to_string(),
+                )
+            })
         })
         .chain(std::iter::once((
-            "duckduckgo".to_string(),
+            DUCKDUCKGO_PROVIDER_ID.to_string(),
             WebProviderKind::DuckDuckGo.capabilities().default_priority,
             WebProviderKind::DuckDuckGo.as_str().to_string(),
         )))
@@ -185,7 +189,7 @@ fn default_provider_order(config: &WebConfig) -> Vec<String> {
 }
 
 fn provider_kind(provider: &str, config: &WebConfig) -> Option<WebProviderKind> {
-    (provider == "duckduckgo")
+    (provider == DUCKDUCKGO_PROVIDER_ID)
         .then_some(WebProviderKind::DuckDuckGo)
         .or_else(|| config.providers.get(provider).map(|provider| provider.kind))
 }
@@ -407,7 +411,7 @@ async fn search_one_provider(
     config: &WebConfig,
 ) -> Result<Vec<WebSearchResult>> {
     match provider_id {
-        "duckduckgo" => duckduckgo_search(query, max_results, &config.fetch).await,
+        DUCKDUCKGO_PROVIDER_ID => duckduckgo_search(query, max_results, &config.fetch).await,
         provider_id => {
             let provider_config = config.providers.get(provider_id).ok_or_else(|| {
                 search_error(
@@ -467,13 +471,13 @@ async fn duckduckgo_search(
     let encoded = form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>();
     let url = format!("https://lite.duckduckgo.com/lite/?q={encoded}");
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
-    let html = send_search_text(client.get(&url), "duckduckgo").await?;
+    let html = send_search_text(client.get(&url), DUCKDUCKGO_PROVIDER_ID).await?;
     let results = parse_duckduckgo_lite_results(&html, max_results);
     if results.is_empty() {
         return Err(search_error(
             "parse_failed",
             "DuckDuckGo returned no parseable search results",
-            "duckduckgo",
+            DUCKDUCKGO_PROVIDER_ID,
             "configure SearXNG or an API-backed provider if DuckDuckGo HTML is unavailable",
         ));
     }
@@ -1006,7 +1010,7 @@ fn parse_duckduckgo_lite_results(html: &str, max_results: usize) -> Vec<WebSearc
                     title: title.trim().to_string(),
                     url,
                     snippet: None,
-                    source: "duckduckgo".into(),
+                    source: DUCKDUCKGO_PROVIDER_ID.into(),
                     published_at: None,
                 });
             }
@@ -1213,7 +1217,34 @@ mod tests {
 
         assert_eq!(
             provider_order("auto", &config),
-            vec!["alpha", "zeta", "duckduckgo"]
+            vec!["alpha", "zeta", DUCKDUCKGO_PROVIDER_ID]
+        );
+    }
+
+    #[test]
+    fn provider_order_defaults_skip_unsupported_configured_providers() {
+        let config = test_search_config(
+            vec![
+                (
+                    "future",
+                    test_provider(WebProviderKind::Perplexity, "https://future.example"),
+                ),
+                (
+                    "native",
+                    test_provider(WebProviderKind::OpenAiNative, "https://native.example"),
+                ),
+                (
+                    "searx",
+                    test_provider(WebProviderKind::Searxng, "https://searx.example"),
+                ),
+            ],
+            vec![],
+            WebSearchMode::Fallback,
+        );
+
+        assert_eq!(
+            provider_order("auto", &config),
+            vec!["searx", DUCKDUCKGO_PROVIDER_ID]
         );
     }
 
