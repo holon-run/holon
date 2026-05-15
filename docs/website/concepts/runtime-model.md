@@ -86,17 +86,55 @@ Task lifecycle is independent of the agent's user-facing answer. You can:
 
 ### Queues and Wakeups
 
-Holon's scheduling primitives:
+Holon's scheduling primitives manage when an agent acts and when it rests:
 
 - **Enqueue** — Schedule a follow-up message for this agent. Priorities:
   `interject`, `next`, `normal`, `background`.
 - **Sleep** — Agent goes idle when no immediate work remains.
 - **Wake** — External trigger or queued message reactivates the agent.
-- **External triggers** — Callbacks from CI, webhooks, timers, or external
-  services.
 
 These state transitions are visible — integrations don't need to infer hidden
 background behavior.
+
+### External Triggers
+
+External triggers let an agent wait for events from outside the runtime:
+
+```text
+Agent waits ──► External trigger created ──► Event arrives ──► Agent wakes
+```
+
+Use `CreateExternalTrigger` to register a waiting intent and
+`CancelExternalTrigger` to revoke it when no longer needed.
+
+**Delivery modes:**
+
+| Mode | Behavior |
+|------|----------|
+| `wake_hint` | Wakes the agent so it can inspect external state (e.g., check a CI run). The trigger payload is not enqueued as a message. |
+| `enqueue_message` | Wakes the agent **and** delivers the trigger payload as a message in the agent's queue. |
+
+Choose `wake_hint` when the external system already has a query API (GitHub
+API, CI status endpoints). Choose `enqueue_message` when the callback payload
+itself contains the actionable information.
+
+**Scope:**
+
+| Scope | Lifetime |
+|-------|----------|
+| `work_item` | Tied to the current work item. Automatically cancelled when the work item completes. |
+| `agent` | Survives across work items. Use for long-running integration entry points. |
+
+Common integration patterns:
+
+- **Waiting for CI** — `CreateExternalTrigger` with `source="github"`,
+  `scope=work_item`, `delivery_mode=wake_hint`. Agent wakes when CI completes
+  and checks the run status.
+- **Webhook callbacks** — `delivery_mode=enqueue_message` so the webhook body
+  enters the agent queue with provenance preserved.
+
+Stale triggers waste resources. Cancel work-item-scoped triggers when the
+current task, tracked target, or waiting condition changes.
 
 ### Delivery
 
