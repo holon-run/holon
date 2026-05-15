@@ -218,6 +218,13 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 |--------|-------------|
 | `--template <TEMPLATE>` | Built-in or path template |
 
+### `holon solve` options
+
+| Option | Description |
+|--------|-------------|
+| `--repo <REPO>` | Target repository |
+| `--workspace <PATH>` | Workspace directory |
+
 ## See Also
 
 - [Configuration Reference](/reference/configuration.md) — Config keys and credential management
