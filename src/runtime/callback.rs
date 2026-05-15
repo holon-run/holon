@@ -70,12 +70,14 @@ impl RuntimeHandle {
             correlation_id: None,
             causation_id: None,
         };
+        let trigger_url = build_callback_url(&self.inner.callback_base_url, &delivery_mode, &token);
         let descriptor = ExternalTriggerRecord {
             external_trigger_id: external_trigger_id.clone(),
             target_agent_id: agent_id.clone(),
             waiting_intent_id: waiting_intent_id.clone(),
             scope: scope.clone(),
             delivery_mode: delivery_mode.clone(),
+            trigger_url: Some(trigger_url.clone()),
             token_hash: crate::callbacks::hash_callback_token(&token),
             status: ExternalTriggerStatus::Active,
             created_at: now,
@@ -98,7 +100,6 @@ impl RuntimeHandle {
             }),
         ))?;
 
-        let trigger_url = build_callback_url(&self.inner.callback_base_url, &delivery_mode, &token);
         Ok(ExternalTriggerCapability {
             waiting_intent_id,
             external_trigger_id,

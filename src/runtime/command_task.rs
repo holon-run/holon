@@ -23,8 +23,9 @@ use crate::{
     tool::ToolError,
     types::{
         CommandCostDiagnostics, CommandTaskSpec, ExecCommandOutcome, ExecCommandResult,
-        MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, TaskHandle, TaskKind,
-        TaskRecord, TaskRecoverySpec, TaskStatus, ToolArtifactRef, TrustLevel,
+        ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind,
+        MessageOrigin, Priority, TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus,
+        ToolArtifactRef, TrustLevel,
     },
 };
 
@@ -58,6 +59,7 @@ pub(super) struct ResolvedCommandTask {
     workdir: PathBuf,
     output_path: PathBuf,
     execution: ExecutionSnapshot,
+    env: Vec<(String, String)>,
 }
 
 pub(super) struct RunningCommand {
@@ -444,12 +446,40 @@ impl RuntimeHandle {
             .transpose()?
             .unwrap_or_else(|| view.cwd().to_path_buf());
 
+        let agent_id = self.agent_id().await?;
+        let mut env = vec![
+            ("HOLON_RUNTIME".to_string(), "1".to_string()),
+            ("HOLON_AGENT_ID".to_string(), agent_id.clone()),
+            (
+                "HOLON_AGENT_HOME".to_string(),
+                self.agent_home().to_string_lossy().into_owned(),
+            ),
+        ];
+        if let Some(trigger_url) = self.command_external_trigger_url(&agent_id).await? {
+            env.push(("HOLON_EXTERNAL_TRIGGER_URL".to_string(), trigger_url));
+        }
+
         Ok(ResolvedCommandTask {
             spec: spec.clone(),
             workdir,
             output_path: PathBuf::new(),
             execution: execution_snapshot,
+            env,
         })
+    }
+
+    async fn command_external_trigger_url(&self, agent_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .latest_external_triggers()
+            .await?
+            .into_iter()
+            .find_map(|trigger| {
+                (trigger.target_agent_id == agent_id
+                    && trigger.scope == ExternalTriggerScope::Agent
+                    && trigger.status == ExternalTriggerStatus::Active)
+                    .then_some(trigger.trigger_url)
+                    .flatten()
+            }))
     }
 
     async fn register_command_task(
@@ -1027,7 +1057,7 @@ impl RuntimeHandle {
                         login: resolved.spec.login,
                     },
                     cwd: Some(resolved.workdir.clone()),
-                    env: vec![],
+                    env: resolved.env.clone(),
                     stdin: if resolved.spec.accepts_input {
                         StdioSpec::Piped
                     } else {
@@ -1243,7 +1273,7 @@ fn trim_to_tail(buffer: &mut String, max_chars: usize) {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Arc};
+    use std::{collections::BTreeMap, path::Path, sync::Arc};
 
     use anyhow::Result;
     use async_trait::async_trait;
@@ -1255,6 +1285,7 @@ mod tests {
         context::ContextConfig,
         provider::StubProvider,
         system::{process::ProcessOutput, RunningProcess, RunningProcessExitStatus, StopSignal},
+        types::{CallbackDeliveryMode, ExternalTriggerScope},
     };
 
     use super::*;
@@ -1456,6 +1487,83 @@ mod tests {
             content.contains(expected),
             "output file did not contain {expected:?}: {content:?}"
         );
+    }
+
+    fn resolved_env(resolved: &ResolvedCommandTask) -> BTreeMap<String, String> {
+        resolved.env.iter().cloned().collect()
+    }
+
+    #[tokio::test]
+    async fn command_resolution_exposes_holon_agent_environment() {
+        let (home, _workspace, runtime) = test_runtime();
+        let spec = command_spec(false, false);
+        let resolved = resolved_command(&runtime, &spec).await;
+        let env = resolved_env(&resolved);
+        let expected_home = home.path().to_string_lossy().into_owned();
+
+        assert_eq!(env.get("HOLON_RUNTIME").map(String::as_str), Some("1"));
+        assert_eq!(
+            env.get("HOLON_AGENT_ID").map(String::as_str),
+            Some("default")
+        );
+        assert_eq!(env.get("HOLON_AGENT_HOME"), Some(&expected_home));
+        assert!(!env.contains_key("HOLON_EXTERNAL_TRIGGER_URL"));
+        assert!(!env.contains_key("HOLON_EXTERNAL_TRIGGER_SCOPE"));
+        assert!(!env.contains_key("HOLON_EXTERNAL_TRIGGER_DELIVERY_MODE"));
+    }
+
+    #[tokio::test]
+    async fn command_resolution_exposes_external_trigger_url_when_available() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let capability = runtime
+            .create_external_trigger(
+                "AgentInbox integration".into(),
+                "agentinbox".into(),
+                ExternalTriggerScope::Agent,
+                CallbackDeliveryMode::EnqueueMessage,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let spec = command_spec(false, false);
+        let resolved = resolved_command(&runtime, &spec).await;
+        let env = resolved_env(&resolved);
+
+        assert_eq!(
+            env.get("HOLON_EXTERNAL_TRIGGER_URL"),
+            Some(&capability.trigger_url)
+        );
+        assert!(!env.contains_key("HOLON_EXTERNAL_TRIGGER_SCOPE"));
+        assert!(!env.contains_key("HOLON_EXTERNAL_TRIGGER_DELIVERY_MODE"));
+    }
+
+    #[tokio::test]
+    async fn command_resolution_ignores_work_item_external_trigger_url() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let work = runtime
+            .create_work_item("wait for scoped callback".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        runtime.pick_work_item(work.id.clone()).await.unwrap();
+        runtime
+            .create_external_trigger(
+                "work-item callback".into(),
+                "github".into(),
+                ExternalTriggerScope::WorkItem,
+                CallbackDeliveryMode::WakeHint,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let spec = command_spec(false, false);
+        let resolved = resolved_command(&runtime, &spec).await;
+        let env = resolved_env(&resolved);
+
+        assert!(!env.contains_key("HOLON_EXTERNAL_TRIGGER_URL"));
     }
 
     #[tokio::test]
