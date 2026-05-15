@@ -37,6 +37,9 @@ holon config get model.default
 
 # See all current config
 holon config list
+
+# Remove a config key (reverts to default)
+holon config unset model.fallbacks
 ```
 
 ### Per-Model Policy
