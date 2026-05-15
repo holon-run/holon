@@ -50,7 +50,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::LocalEnvironment,
         spec: crate::tool::spec::typed_spec::<ExecCommandBatchArgs>(
             NAME,
-            "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Do not use tty, accepts_input, continue_on_result, or non-command tools inside the batch.",
+            "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Per-item yield_time_ms defaults to 10_000 ms when omitted; set it only when intentionally changing that item's foreground wait window. Do not use tty, accepts_input, continue_on_result, or non-command tools inside the batch.",
         )?,
     })
 }
