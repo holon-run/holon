@@ -411,6 +411,7 @@ impl RuntimeHandle {
                 scope: record.scope,
                 delivery_mode: record.delivery_mode,
                 status: record.status,
+                trigger_url: record.trigger_url,
                 delivery_count: record.delivery_count,
                 created_at: record.created_at,
                 revoked_at: record.revoked_at,

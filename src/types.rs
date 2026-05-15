@@ -1655,6 +1655,8 @@ pub struct ExternalTriggerRecord {
     #[serde(default = "default_external_trigger_scope")]
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_url: Option<String>,
     pub token_hash: String,
     pub status: ExternalTriggerStatus,
     pub created_at: DateTime<Utc>,
@@ -1671,6 +1673,8 @@ pub struct ExternalTriggerStateSnapshot {
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
     pub status: ExternalTriggerStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_url: Option<String>,
     pub delivery_count: u64,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
@@ -1686,6 +1690,7 @@ impl From<ExternalTriggerRecord> for ExternalTriggerStateSnapshot {
             scope: record.scope,
             delivery_mode: record.delivery_mode,
             status: record.status,
+            trigger_url: record.trigger_url,
             delivery_count: record.delivery_count,
             created_at: record.created_at,
             revoked_at: record.revoked_at,
@@ -1720,6 +1725,8 @@ pub struct ExternalTriggerSummary {
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
     pub status: ExternalTriggerStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_url: Option<String>,
     pub delivery_count: u64,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,

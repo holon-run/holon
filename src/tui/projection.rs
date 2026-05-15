@@ -2649,6 +2649,7 @@ mod tests {
                 waiting_intent_id: "wait-1".into(),
                 scope: ExternalTriggerScope::WorkItem,
                 delivery_mode: CallbackDeliveryMode::EnqueueMessage,
+                trigger_url: None,
                 status: ExternalTriggerStatus::Active,
                 created_at: Utc::now(),
                 revoked_at: None,
