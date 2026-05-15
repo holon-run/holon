@@ -99,6 +99,11 @@ holon agent stop reviewer
 holon agent abort reviewer
 ```
 
+> **Deprecated:** The `holon control` command has been replaced by
+> `holon agent start`, `holon agent stop`, and `holon agent abort`.
+> The old `control` command is kept for backward compatibility only and
+> may be removed in a future release.
+
 ### Model selection
 
 ```bash
