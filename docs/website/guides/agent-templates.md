@@ -23,7 +23,10 @@ Common scenarios:
 
 ## Built-in Templates
 
-Holon ships with these built-in templates under `builtin_templates/`:
+Holon ships with these built-in templates. The repository source lives under
+`builtin_templates/`, and at runtime templates resolve from
+`~/.agents/templates/<template_id>/` (built-in templates are seeded there
+during initialization).
 
 | Template ID | Purpose | Includes Skills |
 |-------------|---------|----------------|
@@ -113,7 +116,7 @@ my-template/
 ### `AGENTS.md`
 
 The agent's role contract. This is the same format as any agent's `AGENTS.md`.
-The runtime appends the standard [Agent Home](#agent-home-section) guidance
+The runtime appends the standard Agent Home guidance
 automatically, so your template only needs to define the role-specific content.
 
 ### `skills.json`
@@ -125,17 +128,15 @@ An optional manifest that lists skills to pre-install when the agent is created:
   "skill_refs": [
     { "kind": "builtin", "name": "github-issue-solve" },
     { "kind": "builtin", "name": "github-pr-fix" },
-    { "kind": "local", "path": "/path/to/custom-skill" },
-    { "kind": "github", "package": "owner/repo/skill-name" }
+    { "kind": "local", "path": "/path/to/custom-skill" }
   ]
 }
 ```
 
-Three skill reference kinds are supported:
+Two skill reference kinds are supported:
 
 - **`builtin`** — A skill shipped with Holon (e.g. `ghx`, `github-issue-solve`)
 - **`local`** — An absolute path to a skill directory on disk
-- **`github`** — A GitHub package reference
 
 ## Creating Custom Templates
 
