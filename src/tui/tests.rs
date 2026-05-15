@@ -6,7 +6,7 @@ use super::{
     },
     composer::ComposerState,
     determine_alt_screen_mode_for_terminal,
-    overlay::{centered_rect_rows, OverlayState},
+    overlay::{centered_rect_rows, conversation_events_overlay_lines, OverlayState},
     projection::{OperatorDisplayMode, TuiProjection},
     render::draw,
     runtime::{is_cursor_not_found_error, AgentListChange, TuiConnectionState, TuiRuntimeMessage},
@@ -2222,7 +2222,34 @@ fn chat_includes_pending_operator_message_from_snapshot() {
 }
 
 #[test]
-fn chat_dedupes_pending_operator_message_when_transcript_contains_it() {
+fn conversation_events_overlay_uses_event_projection() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    let snapshot = sample_snapshot("default", "evt-0");
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.replace_event_window(
+        vec![operator_message_event_envelope(
+            "evt-message-1",
+            0,
+            "default",
+            "event sourced transcript",
+        )],
+        Some("evt-message-1".into()),
+    );
+    app.projection = Some(projection);
+
+    let lines = conversation_events_overlay_lines(&app);
+
+    assert!(lines
+        .iter()
+        .any(|line| line.contains("event sourced transcript")));
+}
+
+#[test]
+fn chat_dedupes_pending_operator_message_when_event_log_contains_it() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,

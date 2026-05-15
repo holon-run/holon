@@ -137,7 +137,7 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
     },
     SlashCommandSpec {
         name: "/transcript",
-        description: "open transcript overlay",
+        description: "open conversation events overlay",
         usage: "/transcript",
         arg_hint: SlashArgHint::None,
         category: SlashCommandCategory::Navigation,
@@ -656,7 +656,7 @@ impl TuiApp {
             }
             SlashCommand::Transcript => {
                 self.overlay = OverlayState::Transcript { scroll: 0 };
-                self.status_line = "Opened transcript overlay".into();
+                self.status_line = "Opened conversation events overlay".into();
             }
             SlashCommand::State => {
                 self.overlay = OverlayState::AgentState { scroll: 0 };

@@ -599,6 +599,14 @@ pub async fn state_snapshot_bounds_large_projection_fields() -> Result<()> {
         .json()
         .await?;
 
+    assert!(snapshot.get("transcript_tail").is_none());
+    assert!(snapshot.get("operator_messages").is_none());
+    assert!(snapshot.get("events_tail").is_none());
+    assert!(snapshot.get("brief_tail").is_none());
+    assert!(snapshot.get("transcript").is_none());
+    assert!(snapshot.get("events").is_none());
+    assert!(snapshot.get("briefs").is_none());
+
     let task = snapshot["tasks"]
         .as_array()
         .and_then(|tasks| tasks.iter().find(|task| task["id"] == "large-task"))

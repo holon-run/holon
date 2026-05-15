@@ -920,7 +920,6 @@ impl TuiApp {
                 ProjectionSlice::Agent => "agent",
                 ProjectionSlice::Session => "session",
                 ProjectionSlice::Tasks => "tasks",
-                ProjectionSlice::TranscriptTail => "transcript",
                 ProjectionSlice::Timers => "timers",
                 ProjectionSlice::WorkItems => "work-items",
                 ProjectionSlice::WaitingIntents => "waiting",
