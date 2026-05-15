@@ -863,10 +863,12 @@ fn is_unsupported_git_feature(line: &str) -> bool {
 }
 
 fn strip_diff_prefix(path: &str) -> String {
-    path.strip_prefix("a/")
-        .or_else(|| path.strip_prefix("b/"))
-        .unwrap_or(path)
-        .to_string()
+    if let Some(rest) = path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")) {
+        if !Path::new(rest).is_absolute() {
+            return rest.to_string();
+        }
+    }
+    path.to_string()
 }
 
 fn validate_rename_paths(
@@ -993,8 +995,13 @@ fn context_not_found(
     hint: usize,
 ) -> anyhow::Error {
     let hint_index = hint.saturating_sub(1).min(lines.len().saturating_sub(1));
-    let window_start = hint_index.saturating_sub(5);
-    let window_end = (hint_index + needle.len().max(1) + 5).min(lines.len());
+    let (window_start, window_end) = if lines.is_empty() {
+        (0, 0)
+    } else {
+        let window_start = hint_index.saturating_sub(5);
+        let window_end = (hint_index + 6).min(lines.len());
+        (window_start, window_end)
+    };
     let nearby_lines = lines
         .get(window_start..window_end)
         .unwrap_or(&[])
@@ -1028,7 +1035,7 @@ fn context_not_found(
             "path": path,
             "expected_lines": needle.iter().take(3).cloned().collect::<Vec<_>>().join("\\n"),
             "nearby_range": {
-                "start": window_start + 1,
+                "start": if lines.is_empty() { 0 } else { window_start + 1 },
                 "end": window_end,
             },
             "nearby_lines": nearby_lines,
@@ -1476,6 +1483,30 @@ rename to new.txt
     }
 
     #[tokio::test]
+    async fn apply_patch_keeps_prefixed_absolute_like_paths_workspace_relative() {
+        let dir = tempdir().unwrap();
+        let patch = r#"--- /dev/null
++++ b//tmp/target.txt
+@@ -0,0 +1,1 @@
++safe
+"#;
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("b/tmp/target.txt"))
+                .await
+                .unwrap(),
+            "safe\n"
+        );
+        assert_eq!(outcome.changed_files[0].path, "b//tmp/target.txt");
+        assert_eq!(
+            outcome.changed_paths,
+            vec![dir.path().join("b/tmp/target.txt").display().to_string()]
+        );
+    }
+
+    #[tokio::test]
     async fn apply_patch_preserves_relative_path_semantics() {
         let dir = tempdir().unwrap();
         tokio::fs::write(dir.path().join("relative.txt"), "old\n")
@@ -1502,6 +1533,63 @@ rename to new.txt
             outcome.changed_paths,
             vec![dir.path().join("relative.txt").display().to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_context_not_found_diagnostic_is_bounded() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        let content = (1..=30)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        tokio::fs::write(&file, content).await.unwrap();
+
+        let stale_context = (1..=30)
+            .map(|line| format!("-stale {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let patch = format!(
+            r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1,30 +1,1 @@
+{stale_context}
++replacement
+"#
+        );
+
+        let error = apply_patch(dir.path(), &patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "context_not_found");
+        let details = tool_error.details.as_ref().unwrap();
+        let nearby_lines = details["nearby_lines"].as_array().unwrap();
+        assert!(nearby_lines.len() <= 11);
+        assert_eq!(details["nearby_range"]["start"], 1);
+        assert_eq!(details["nearby_range"]["end"], nearby_lines.len());
+        assert!(tool_error.recovery_hint.unwrap().len() < 1000);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_context_not_found_empty_file_has_non_inverted_range() {
+        let dir = tempdir().unwrap();
+        tokio::fs::write(dir.path().join("empty.txt"), "")
+            .await
+            .unwrap();
+
+        let patch = r#"--- a/empty.txt
++++ b/empty.txt
+@@ -1,1 +1,1 @@
+-missing
++present
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["nearby_range"]["start"], 0);
+        assert_eq!(details["nearby_range"]["end"], 0);
+        assert!(details["nearby_lines"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
