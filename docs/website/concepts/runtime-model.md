@@ -117,6 +117,7 @@ Each agent turn follows this pattern:
 
 ## See Also
 
+- [Memory System](/concepts/memory.md) — How Holon preserves continuity across turns
 - [Trust Boundaries](/concepts/trust-boundaries.md) — How Holon classifies and
   enforces trust
 - [CLI Reference](/reference/cli.md) — All CLI commands
