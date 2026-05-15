@@ -172,6 +172,16 @@ async fn use_workspace_nonexistent_path_preserves_existing_workspace() {
     let snapshot = runtime.execution_snapshot().await.unwrap();
     assert_eq!(snapshot.workspace_anchor, workspace.path());
     assert_eq!(snapshot.execution_root, workspace.path());
+
+    // Verify the nonexistent path was never registered as an attached workspace.
+    let nonexistent_display = nonexistent.display().to_string();
+    assert!(
+        !snapshot
+            .attached_workspaces
+            .iter()
+            .any(|(_, p)| p.display().to_string() == nonexistent_display),
+        "nonexistent path must not appear in attached_workspaces"
+    );
 }
 #[test]
 fn execution_snapshot_includes_attached_workspaces() {

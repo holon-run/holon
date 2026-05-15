@@ -144,6 +144,18 @@ pub(crate) async fn execute(
                 "call UseWorkspace with an existing directory path",
             ));
         }
+        if !normalized.is_dir() {
+            return Err(invalid_tool_input(
+                NAME,
+                format!("path is not a directory: {}", normalized.display()),
+                json!({
+                    "field": "path",
+                    "path": normalized.display().to_string(),
+                    "validation_error": "path is not a directory",
+                }),
+                "call UseWorkspace with an existing directory path",
+            ));
+        }
         if projection_kind == WorkspaceProjectionKind::CanonicalRoot {
             if let Some(existing_worktree) = runtime
                 .attached_workspace_for_existing_git_worktree(&path)
