@@ -10,8 +10,8 @@ use url::{form_urlencoded, Url};
 use crate::{
     tool::ToolError,
     web::{
-        policy::timeout, WebConfig, WebFetchConfig, WebProviderConfig, WebProviderKind,
-        WebSearchMode,
+        policy::timeout, WebConfig, WebFetchConfig, WebProviderCapabilityMetadata,
+        WebProviderConfig, WebProviderKind, WebSearchMode,
     },
 };
 
@@ -44,6 +44,8 @@ pub struct WebSearchProviderAttempt {
     pub result_count: usize,
     pub error_kind: Option<String>,
     pub error_message: Option<String>,
+    pub provider_kind: Option<WebProviderKind>,
+    pub capabilities: Option<WebProviderCapabilityMetadata>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -97,7 +99,8 @@ pub async fn search(request: WebSearchRequest, config: &WebConfig) -> Result<Web
                 .unwrap_or_else(|| provider.to_string());
             let outcome =
                 search_one_provider(&request.query, max_results, &provider_id, config).await;
-            routed_single(provider_id, outcome)?
+            let kind = provider_kind(&provider_id, config);
+            routed_single(provider_id, kind, outcome)?
         }
         WebSearchMode::Fallback => {
             search_fallback(&request.query, max_results, provider_order, config).await?
@@ -143,13 +146,7 @@ fn provider_order(provider: &str, config: &WebConfig) -> Vec<String> {
     }
     let configured = dedupe_provider_order(&config.search.providers);
     let mut providers = if configured.is_empty() {
-        dedupe_provider_order(
-            config
-                .providers
-                .keys()
-                .cloned()
-                .chain(std::iter::once("duckduckgo".to_string())),
-        )
+        default_provider_order(config)
     } else {
         configured
     };
@@ -158,6 +155,39 @@ fn provider_order(provider: &str, config: &WebConfig) -> Vec<String> {
     }
     providers.truncate(config.search.max_provider_attempts.max(1));
     providers
+}
+
+fn default_provider_order(config: &WebConfig) -> Vec<String> {
+    let mut providers = config
+        .providers
+        .iter()
+        .map(|(id, provider)| {
+            (
+                id.clone(),
+                provider.kind.capabilities().default_priority,
+                provider.kind.as_str().to_string(),
+            )
+        })
+        .chain(std::iter::once((
+            "duckduckgo".to_string(),
+            WebProviderKind::DuckDuckGo.capabilities().default_priority,
+            WebProviderKind::DuckDuckGo.as_str().to_string(),
+        )))
+        .collect::<Vec<_>>();
+    providers.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    dedupe_provider_order(providers.into_iter().map(|(id, _, _)| id))
+}
+
+fn provider_kind(provider: &str, config: &WebConfig) -> Option<WebProviderKind> {
+    (provider == "duckduckgo")
+        .then_some(WebProviderKind::DuckDuckGo)
+        .or_else(|| config.providers.get(provider).map(|provider| provider.kind))
 }
 
 fn dedupe_provider_order<I, S>(providers: I) -> Vec<String>
@@ -177,15 +207,16 @@ where
 
 fn routed_single(
     provider_id: String,
+    kind: Option<WebProviderKind>,
     outcome: Result<Vec<WebSearchResult>>,
 ) -> Result<RoutedSearchOutcome> {
     match outcome {
         Ok(results) => Ok(RoutedSearchOutcome {
-            provider_attempts: vec![successful_attempt(&provider_id, results.len())],
+            provider_attempts: vec![successful_attempt(&provider_id, kind, results.len())],
             winning_provider: Some(provider_id),
             results,
         }),
-        Err(error) => Err(single_provider_error(&provider_id, error)),
+        Err(error) => Err(single_provider_error(&provider_id, kind, error)),
     }
 }
 
@@ -197,16 +228,17 @@ async fn search_fallback(
 ) -> Result<RoutedSearchOutcome> {
     let mut attempts = Vec::new();
     for provider_id in provider_order {
+        let kind = provider_kind(&provider_id, config);
         match search_one_provider(query, max_results, &provider_id, config).await {
             Ok(results) => {
-                attempts.push(successful_attempt(&provider_id, results.len()));
+                attempts.push(successful_attempt(&provider_id, kind, results.len()));
                 return Ok(RoutedSearchOutcome {
                     results,
                     provider_attempts: attempts,
                     winning_provider: Some(provider_id),
                 });
             }
-            Err(error) => attempts.push(failed_attempt(&provider_id, &error)),
+            Err(error) => attempts.push(failed_attempt(&provider_id, kind, &error)),
         }
     }
     Err(routing_error(attempts, None))
@@ -223,9 +255,14 @@ async fn search_aggregate(
     let mut results = Vec::new();
 
     for provider_id in provider_order {
+        let kind = provider_kind(&provider_id, config);
         match search_one_provider(query, max_results, &provider_id, config).await {
             Ok(provider_results) => {
-                attempts.push(successful_attempt(&provider_id, provider_results.len()));
+                attempts.push(successful_attempt(
+                    &provider_id,
+                    kind,
+                    provider_results.len(),
+                ));
                 for result in provider_results {
                     if seen_urls.insert(result.url.clone()) {
                         results.push(result);
@@ -235,7 +272,7 @@ async fn search_aggregate(
                     }
                 }
             }
-            Err(error) => attempts.push(failed_attempt(&provider_id, &error)),
+            Err(error) => attempts.push(failed_attempt(&provider_id, kind, &error)),
         }
         if results.len() >= max_results {
             break;
@@ -253,17 +290,27 @@ async fn search_aggregate(
     })
 }
 
-fn successful_attempt(provider: &str, result_count: usize) -> WebSearchProviderAttempt {
+fn successful_attempt(
+    provider: &str,
+    kind: Option<WebProviderKind>,
+    result_count: usize,
+) -> WebSearchProviderAttempt {
     WebSearchProviderAttempt {
         provider: provider.to_string(),
         status: WebSearchProviderAttemptStatus::Success,
         result_count,
         error_kind: None,
         error_message: None,
+        provider_kind: kind,
+        capabilities: kind.map(|kind| kind.capabilities()),
     }
 }
 
-fn failed_attempt(provider: &str, error: &anyhow::Error) -> WebSearchProviderAttempt {
+fn failed_attempt(
+    provider: &str,
+    kind: Option<WebProviderKind>,
+    error: &anyhow::Error,
+) -> WebSearchProviderAttempt {
     let tool_error = ToolError::from_anyhow(error);
     WebSearchProviderAttempt {
         provider: provider.to_string(),
@@ -271,11 +318,17 @@ fn failed_attempt(provider: &str, error: &anyhow::Error) -> WebSearchProviderAtt
         result_count: 0,
         error_kind: Some(tool_error.kind),
         error_message: Some(tool_error.message),
+        provider_kind: kind,
+        capabilities: kind.map(|kind| kind.capabilities()),
     }
 }
 
-fn single_provider_error(provider: &str, error: anyhow::Error) -> anyhow::Error {
-    let attempt = failed_attempt(provider, &error);
+fn single_provider_error(
+    provider: &str,
+    kind: Option<WebProviderKind>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    let attempt = failed_attempt(provider, kind, &error);
     let original = ToolError::from_anyhow(&error);
     let mut tool_error = ToolError::new(original.kind, original.message)
         .with_details(single_provider_error_details(original.details, attempt))
@@ -1116,6 +1169,14 @@ mod tests {
             response.provider_attempts[1].status,
             WebSearchProviderAttemptStatus::Success
         );
+        assert_eq!(
+            response.provider_attempts[1].provider_kind,
+            Some(WebProviderKind::Searxng)
+        );
+        assert_eq!(
+            response.provider_attempts[1].capabilities.unwrap().status,
+            crate::web::WebProviderSupportStatus::Supported
+        );
         assert_eq!(response.results[0].source, "good");
     }
 
@@ -1153,6 +1214,37 @@ mod tests {
         assert_eq!(
             provider_order("auto", &config),
             vec!["alpha", "zeta", "duckduckgo"]
+        );
+    }
+
+    #[test]
+    fn provider_order_defaults_to_capability_priority() {
+        let config = test_search_config(
+            vec![
+                (
+                    "searx",
+                    test_provider(WebProviderKind::Searxng, "https://searx.example"),
+                ),
+                (
+                    "exa",
+                    test_provider(WebProviderKind::Exa, "https://exa.example"),
+                ),
+                (
+                    "brave",
+                    test_provider(WebProviderKind::Brave, "https://brave.example"),
+                ),
+                (
+                    "tavily",
+                    test_provider(WebProviderKind::Tavily, "https://tavily.example"),
+                ),
+            ],
+            vec![],
+            WebSearchMode::Fallback,
+        );
+
+        assert_eq!(
+            provider_order("auto", &config),
+            vec!["brave", "tavily", "exa"]
         );
     }
 
@@ -1198,6 +1290,14 @@ mod tests {
         assert_eq!(details["attempted_providers"], json!(["bad"]));
         assert_eq!(details["winning_provider"], serde_json::Value::Null);
         assert_eq!(details["provider_attempts"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            details["provider_attempts"][0]["provider_kind"],
+            json!("searxng")
+        );
+        assert_eq!(
+            details["provider_attempts"][0]["capabilities"]["status"],
+            json!("supported")
+        );
     }
 
     #[tokio::test]

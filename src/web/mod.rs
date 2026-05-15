@@ -148,6 +148,56 @@ impl WebSearchMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebProviderAuthClass {
+    None,
+    ApiKey,
+    NativeProvider,
+    SelfHosted,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebProviderCostClass {
+    Free,
+    SelfHosted,
+    Paid,
+    ProviderMetered,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebProviderQualityHint {
+    HtmlFallback,
+    Keyword,
+    Semantic,
+    Research,
+    Native,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebProviderSupportStatus {
+    Supported,
+    Unsupported,
+    NativeOnly,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebProviderCapabilityMetadata {
+    pub auth: WebProviderAuthClass,
+    pub cost_class: WebProviderCostClass,
+    pub quality_hint: WebProviderQualityHint,
+    pub supports_domain_filter: bool,
+    pub supports_freshness: bool,
+    pub supports_region_or_language: bool,
+    pub supports_full_content: bool,
+    pub supports_native_citations: bool,
+    pub default_priority: u16,
+    pub status: WebProviderSupportStatus,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WebProviderConfig {
     pub kind: WebProviderKind,
@@ -232,6 +282,109 @@ impl WebProviderKind {
             WebProviderKind::OpenAiNative => "open_ai_native",
             WebProviderKind::AnthropicNative => "anthropic_native",
             WebProviderKind::GeminiNative => "gemini_native",
+        }
+    }
+
+    pub fn capabilities(&self) -> WebProviderCapabilityMetadata {
+        match self {
+            WebProviderKind::DuckDuckGo => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::None,
+                cost_class: WebProviderCostClass::Free,
+                quality_hint: WebProviderQualityHint::HtmlFallback,
+                supports_domain_filter: false,
+                supports_freshness: false,
+                supports_region_or_language: false,
+                supports_full_content: false,
+                supports_native_citations: false,
+                default_priority: 10,
+                status: WebProviderSupportStatus::Supported,
+            },
+            WebProviderKind::Searxng => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::SelfHosted,
+                cost_class: WebProviderCostClass::SelfHosted,
+                quality_hint: WebProviderQualityHint::Keyword,
+                supports_domain_filter: false,
+                supports_freshness: false,
+                supports_region_or_language: true,
+                supports_full_content: false,
+                supports_native_citations: false,
+                default_priority: 50,
+                status: WebProviderSupportStatus::Supported,
+            },
+            WebProviderKind::Brave => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::ApiKey,
+                cost_class: WebProviderCostClass::Paid,
+                quality_hint: WebProviderQualityHint::Keyword,
+                supports_domain_filter: false,
+                supports_freshness: false,
+                supports_region_or_language: true,
+                supports_full_content: false,
+                supports_native_citations: false,
+                default_priority: 80,
+                status: WebProviderSupportStatus::Supported,
+            },
+            WebProviderKind::Tavily => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::ApiKey,
+                cost_class: WebProviderCostClass::Paid,
+                quality_hint: WebProviderQualityHint::Research,
+                supports_domain_filter: true,
+                supports_freshness: false,
+                supports_region_or_language: false,
+                supports_full_content: true,
+                supports_native_citations: false,
+                default_priority: 75,
+                status: WebProviderSupportStatus::Supported,
+            },
+            WebProviderKind::Exa => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::ApiKey,
+                cost_class: WebProviderCostClass::Paid,
+                quality_hint: WebProviderQualityHint::Semantic,
+                supports_domain_filter: true,
+                supports_freshness: false,
+                supports_region_or_language: false,
+                supports_full_content: true,
+                supports_native_citations: false,
+                default_priority: 70,
+                status: WebProviderSupportStatus::Supported,
+            },
+            WebProviderKind::Perplexity => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::ApiKey,
+                cost_class: WebProviderCostClass::Paid,
+                quality_hint: WebProviderQualityHint::Research,
+                supports_domain_filter: false,
+                supports_freshness: true,
+                supports_region_or_language: false,
+                supports_full_content: false,
+                supports_native_citations: true,
+                default_priority: 60,
+                status: WebProviderSupportStatus::Unsupported,
+            },
+            WebProviderKind::Firecrawl => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::ApiKey,
+                cost_class: WebProviderCostClass::Paid,
+                quality_hint: WebProviderQualityHint::Research,
+                supports_domain_filter: true,
+                supports_freshness: false,
+                supports_region_or_language: false,
+                supports_full_content: true,
+                supports_native_citations: false,
+                default_priority: 55,
+                status: WebProviderSupportStatus::Unsupported,
+            },
+            WebProviderKind::OpenAiNative
+            | WebProviderKind::AnthropicNative
+            | WebProviderKind::GeminiNative => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::NativeProvider,
+                cost_class: WebProviderCostClass::ProviderMetered,
+                quality_hint: WebProviderQualityHint::Native,
+                supports_domain_filter: false,
+                supports_freshness: true,
+                supports_region_or_language: false,
+                supports_full_content: false,
+                supports_native_citations: true,
+                default_priority: 65,
+                status: WebProviderSupportStatus::NativeOnly,
+            },
         }
     }
 }
@@ -350,5 +503,14 @@ mod tests {
         let config = materialize_web_config(&file, &store);
         let provider = config.providers.get("my_brave").unwrap();
         assert!(provider.api_key.is_empty());
+    }
+
+    #[test]
+    fn provider_capabilities_mark_reserved_kinds() {
+        assert_eq!(
+            WebProviderKind::OpenAiNative.capabilities().status,
+            WebProviderSupportStatus::NativeOnly
+        );
+        assert_eq!(WebProviderKind::Brave.capabilities().default_priority, 80);
     }
 }
