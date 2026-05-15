@@ -114,16 +114,29 @@ async fn use_workspace_rejects_nonexistent_path() {
     .await;
 
     // Must fail with an appropriate error.
-    let err = result.unwrap_err();
-    let err_msg = format!("{err:#}");
-    assert!(
-        err_msg.contains("path does not exist"),
-        "expected 'path does not exist' error, got: {err_msg}"
+    assert_invalid_workspace_path_error(&result.unwrap_err(), "path does not exist", &nonexistent);
+}
+
+fn assert_invalid_workspace_path_error(
+    error: &anyhow::Error,
+    expected_validation_error: &str,
+    expected_path: &std::path::Path,
+) {
+    let tool_error = crate::tool::ToolError::from_anyhow(error);
+    assert_eq!(tool_error.kind, "invalid_tool_input");
+    let details = tool_error.details.as_ref().unwrap().as_object().unwrap();
+    assert_eq!(details["field"].as_str(), Some("path"));
+    assert_eq!(
+        details["validation_error"].as_str(),
+        Some(expected_validation_error)
     );
-    assert!(
-        err_msg.contains(&nonexistent.display().to_string()),
-        "error should mention the missing path, got: {err_msg}"
-    );
+    let expected_path = expected_path.display().to_string();
+    assert_eq!(details["path"].as_str(), Some(expected_path.as_str()));
+    assert!(tool_error
+        .recovery_hint
+        .as_deref()
+        .unwrap_or_default()
+        .contains("existing directory"));
 }
 
 #[tokio::test]
@@ -166,7 +179,7 @@ async fn use_workspace_nonexistent_path_preserves_existing_workspace() {
         },
     )
     .await;
-    assert!(result.is_err(), "expected failure for nonexistent path");
+    assert_invalid_workspace_path_error(&result.unwrap_err(), "path does not exist", &nonexistent);
 
     // The existing valid workspace must still be active.
     let snapshot = runtime.execution_snapshot().await.unwrap();
@@ -183,6 +196,67 @@ async fn use_workspace_nonexistent_path_preserves_existing_workspace() {
         "nonexistent path must not appear in attached_workspaces"
     );
 }
+
+#[tokio::test]
+async fn use_workspace_regular_file_preserves_existing_workspace() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+
+    // Establish an initial valid workspace.
+    let workspace = tempdir().unwrap();
+    crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &TrustLevel::TrustedOperator,
+        &crate::tool::ToolCall {
+            id: "use-valid".into(),
+            name: "UseWorkspace".into(),
+            input: serde_json::json!({
+                "path": workspace.path().display().to_string(),
+            }),
+        },
+    )
+    .await
+    .unwrap();
+
+    let file_dir = tempdir().unwrap();
+    let file_path = file_dir.path().join("regular.txt");
+    std::fs::write(&file_path, "not a directory").unwrap();
+
+    let result = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &TrustLevel::TrustedOperator,
+        &crate::tool::ToolCall {
+            id: "use-file".into(),
+            name: "UseWorkspace".into(),
+            input: serde_json::json!({
+                "path": file_path.display().to_string(),
+            }),
+        },
+    )
+    .await;
+    assert_invalid_workspace_path_error(
+        &result.unwrap_err(),
+        "path is not a directory",
+        &file_path,
+    );
+
+    // The existing valid workspace must still be active.
+    let snapshot = runtime.execution_snapshot().await.unwrap();
+    assert_eq!(snapshot.workspace_anchor, workspace.path());
+    assert_eq!(snapshot.execution_root, workspace.path());
+
+    // Verify the regular file path was never registered as an attached workspace.
+    let file_display = file_path.display().to_string();
+    assert!(
+        !snapshot
+            .attached_workspaces
+            .iter()
+            .any(|(_, p)| p.display().to_string() == file_display),
+        "regular file path must not appear in attached_workspaces"
+    );
+}
+
 #[test]
 fn execution_snapshot_includes_attached_workspaces() {
     let dir = tempdir().unwrap();
