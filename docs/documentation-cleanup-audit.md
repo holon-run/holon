@@ -1,10 +1,12 @@
 # Documentation Cleanup Audit
 
-Date: 2026-04-23
+Date: 2026-05-15
+
+**Last reconciled**: 2026-05-15 (v0.13.0, commit range up to origin/main)
 
 ## Completion Status
 
-**Reconciled with documentation layers (#1012)**: 2026-05-09
+**Reconciled with documentation layers (#1012)**: 2026-05-09 ✅
 
 The three-layer documentation model from #1006/#1012 is now documented at
 `docs/website/concepts/documentation-layers.md`. This audit remains the
@@ -19,6 +21,31 @@ audit have been executed. Superseded documents have been moved to
 etc.).
 
 See `docs/archive/README.md` for details on the archive structure.
+
+**Docs issues #1153–#1168**: In progress (2026-05-15)
+
+Documentation issues from the #1006 umbrella are being resolved in individual
+PRs. Completed so far:
+
+| Issue | Document | Status |
+|-------|----------|--------|
+| #1154 | `docs/website/guides/solve.md` | ✅ PR #1172 |
+| #1155 | `docs/website/reference/cli.md` (debug scheduler-fixture) | ✅ PR #1181 |
+| #1156 | `docs/website/guides/tui.md` (new) | ✅ PR #1182 |
+| #1157 | `docs/website/guides/agent-templates.md` (new) | ✅ PR #1183 |
+| #1158 | `docs/website/concepts/memory.md` (new) | ✅ PR #1184 |
+| #1159 | `docs/website/concepts/runtime-model.md` (external triggers) | ✅ PR #1185 |
+| #1160 | `docs/website/concepts/runtime-model.md` (completion reports) | ✅ PR #1186 |
+| #1161 | `docs/website/guides/remote-access.md` (new) | ✅ PR #1187 |
+| #1162 | `docs/website/guides/workspaces.md` (new) | ✅ PR #1188 |
+| #1163 | `docs/website/reference/cli.md` (deprecated control) | ✅ PR #1189 |
+| #1164 | `docs/website/guides/quick-examples.md` (TUI examples) | ✅ PR #1190 |
+| #1165 | `docs/website/reference/cli.md` (run --workspace-root verified) | ✅ PR #1191 |
+| #1166 | `docs/website/reference/cli.md` (solve --workspace) | ✅ PR #1192 |
+| #1167 | `docs/website/reference/configuration.md` (config unset) | ✅ PR #1193 |
+
+New documentation pages created in this batch: `tui.md`, `agent-templates.md`,
+`memory.md`, `remote-access.md`, `workspaces.md`.
 
 ## Summary
 
@@ -50,10 +77,10 @@ reduced to a short pointer.
 | Document | Recommendation | Canonical Destination |
 | --- | --- | --- |
 | `docs/agent-types-and-default-agent.md` | Archive after checking for any missing wording around default/named/child agents. | `docs/rfcs/agent-profile-model.md`, `docs/rfcs/agent-control-plane-model.md`, `docs/rfcs/agent-delegation-tool-plane.md` |
-| `docs/callback-capability-and-providerless-ingress.md` | Reduce to a compatibility note or archive after external-trigger implementation lands. | `docs/rfcs/external-trigger-capability.md` |
-| `docs/agentinbox-callback-integration.md` | Keep only if needed as AgentInbox-specific operational note; otherwise archive. | `docs/rfcs/external-trigger-capability.md` |
+| `docs/callback-capability-and-providerless-ingress.md` | **Updated**: External trigger implementation landed (v0.13.0). Can now archive. | `docs/rfcs/external-trigger-capability.md` |
+| `docs/agentinbox-callback-integration.md` | **Updated**: Wake hint / external trigger system now in place. Archive or keep as operational note. | `docs/rfcs/external-trigger-capability.md` |
 | `docs/command-execution-and-task-model.md` | Archive after confirming command-task details are covered. | `docs/rfcs/command-tool-family.md`, `docs/rfcs/interactive-command-continuation.md`, `docs/rfcs/task-surface-narrowing.md` |
-| `docs/single-agent-context-compression.md` | Archive after merging any remaining prompt-budget details. | `docs/rfcs/long-lived-context-memory.md` |
+| `docs/single-agent-context-compression.md` | **Updated**: Long-lived context memory RFC now partially implemented (working memory, episodes, MemorySearch). Keep until full compaction lands. | `docs/rfcs/long-lived-context-memory.md` |
 | `docs/worktree-design-roadmap.md` | Archive after extracting any remaining worktree workflow decisions. | `docs/rfcs/workspace-binding-and-execution-roots.md`, `docs/rfcs/workspace-entry-and-projection.md`, `docs/implementation-decisions/042-child-agent-task-workspace-mode.md`, `docs/implementation-decisions/043-task-owned-worktree-cleanup.md` |
 
 ## Needs Consolidation Before Archive
@@ -182,6 +209,16 @@ should be normalized as those docs are touched:
 - `CreateReactivationChannel` / `CancelReactivationChannel` as preferred names
 - `RequestOperatorInput` as phase-1 primitive
 - `channel_event` as the default framing for ordinary IM/channel content
+- `callback capability` → External Trigger / wake hint (✅ migrated in v0.13.0)
+
+### Vocabulary Status Update (2026-05-15)
+
+| Old Term | New Term | Status |
+|----------|----------|--------|
+| `CreateReactivationChannel` | `CreateExternalTrigger` | ✅ Renamed |
+| `CancelReactivationChannel` | `CancelExternalTrigger` | ✅ Renamed |
+| `callback capability` | External Trigger | ✅ Migrated |
+| `trusted_*` / `untrusted_external` | Still active | Keep; runtime contract |
 
 Do not mechanically rewrite archived historical docs unless they are being
 unarchived or cited as current behavior.
@@ -195,6 +232,8 @@ unarchived or cited as current behavior.
 5. Reduce roadmap sprawl by keeping `docs/next-phase-direction.md` as the
    active planning note and archiving older roadmaps.
 6. Re-run link checks or at least `rg` for moved filenames before committing.
+
+**Progress (2026-05-15):** External trigger naming is complete. Context memory implementation is partial (working memory + episodes landed; full compaction pending). Documentation for TUI, memory, external triggers, workspaces, remote access, and agent templates now exists in `docs/website/`.
 
 ## Do Not Archive Yet
 
