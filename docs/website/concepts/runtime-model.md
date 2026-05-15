@@ -117,8 +117,6 @@ Common integration patterns:
   and checks the run status.
 - **Webhook callbacks** — `delivery_mode=enqueue_message` so the webhook body
   enters the agent queue with provenance preserved.
-- **External triggers** — Callbacks from CI, webhooks, timers, or external
-  services.
 
 Stale triggers waste resources. Cancel work-item-scoped triggers when the
 current task, tracked target, or waiting condition changes.
