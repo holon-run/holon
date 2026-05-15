@@ -2123,7 +2123,7 @@ mod tests {
             &test_log_writer(),
         );
 
-        for index in 0..300 {
+        for index in 0..1100 {
             projection.apply_event(
                 AgentStreamEvent {
                     id: format!("evt-debug-{index}"),
