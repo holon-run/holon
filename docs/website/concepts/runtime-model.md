@@ -53,6 +53,21 @@ Work item lifecycle:
 [Created] -> [Draft plan] -> [Ready] -> [In progress] -> [Completed]
                 ^                            |
                 +--- [Needs input] <-- [Blocked]
+
+When a work item is completed, the runtime promotes the agent's completion
+text as a **completion report**. The pattern is:
+
+1. Agent writes the operator-facing summary as assistant text
+2. Agent calls `CompleteWorkItem` in the same turn
+3. Runtime promotes the preceding text as the canonical completion report
+
+Completion reports are stored as part of the work item record. They are
+visible through `GetWorkItem` and `ListWorkItems`, and indexed by
+`MemorySearch` for future recall. This makes it possible to ask "what did we
+conclude on that issue?" without re-reading the full transcript.
+
+Completion reports replace free-form manual summaries. They are tied to the
+work item lifecycle, not to individual model turns.
 ```
 
 ### Tasks
