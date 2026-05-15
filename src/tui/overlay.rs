@@ -219,29 +219,33 @@ fn event_reverse_index(
 fn draw_transcript_overlay(frame: &mut Frame<'_>, app: &TuiApp, scroll: u16) {
     let popup = centered_rect(92, 82, frame.area());
     frame.render_widget(Clear, popup);
-    let lines = app
-        .projection
-        .as_ref()
-        .map(|projection| projection.transcript_tail.as_slice())
-        .unwrap_or_default()
-        .iter()
-        .rev()
-        .map(render::render_transcript_entry)
-        .collect::<Vec<_>>();
+    let lines = conversation_events_overlay_lines(app);
     let body = if lines.is_empty() {
-        "No transcript entries yet.".to_string()
+        "No conversation events observed yet.".to_string()
     } else {
         lines.join("\n\n")
     };
     let widget = Paragraph::new(body)
         .block(
             Block::default()
-                .title("Transcript (Esc closes)")
+                .title("Conversation Events (Esc closes)")
                 .borders(Borders::ALL),
         )
         .scroll((scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(widget, popup);
+}
+
+pub(super) fn conversation_events_overlay_lines(app: &TuiApp) -> Vec<String> {
+    let Some(projection) = app.projection.as_ref() else {
+        return Vec::new();
+    };
+    let mut lines = projection
+        .durable_conversation_events()
+        .map(render::render_projection_event_summary)
+        .collect::<Vec<_>>();
+    lines.reverse();
+    lines
 }
 
 fn draw_agent_state_overlay(frame: &mut Frame<'_>, app: &TuiApp, scroll: u16) {

@@ -8,7 +8,7 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::logging::TuiLogWriter;
 
@@ -25,17 +25,15 @@ use crate::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         ActiveWorkspaceEntry, AgentState, AgentSummary, BriefRecord, ClosureDecision,
-        ExternalTriggerStateSnapshot, MessageEnvelope, MessageOrigin, OperatorMessageRecord,
-        OperatorMessageStatus, TaskRecord, TimerRecord, TimerStatus, TranscriptEntry,
-        TranscriptEntryKind, WaitingIntentRecord, WorkItemRecord, WorkItemState, WorktreeSession,
+        ExternalTriggerStateSnapshot, MessageEnvelope, MessageOrigin, TaskRecord, TimerRecord,
+        TimerStatus, WaitingIntentRecord, WorkItemRecord, WorkItemState, WorktreeSession,
     },
 };
 
-const TRANSCRIPT_TAIL_LIMIT: usize = 100;
 const TASK_TAIL_LIMIT: usize = 50;
 const TIMER_TAIL_LIMIT: usize = 50;
 const EVENT_LOG_LIMIT: usize = 256;
-const EVENT_HISTORY_LOG_LIMIT: usize = 4096;
+const EVENT_HISTORY_LOG_LIMIT: usize = 16_384;
 const DURABLE_CONVERSATION_LOG_LIMIT: usize = 256;
 static TUI_EVENT_LOG_WRITE_WARNED: AtomicBool = AtomicBool::new(false);
 static TUI_PRESENTATION_LOG_WRITE_WARNED: AtomicBool = AtomicBool::new(false);
@@ -45,7 +43,6 @@ pub(crate) enum ProjectionSlice {
     Agent,
     Session,
     Tasks,
-    TranscriptTail,
     Timers,
     WorkItems,
     WaitingIntents,
@@ -79,8 +76,6 @@ pub(crate) struct TuiProjection {
     pub(crate) session: StateSessionSnapshot,
     pub(crate) presentation_reducer: crate::presentation::PresentationReducer,
     pub(crate) tasks: Vec<TaskRecord>,
-    pub(crate) transcript_tail: Vec<TranscriptEntry>,
-    pub(crate) operator_messages: Vec<OperatorMessageRecord>,
     pub(crate) timers: Vec<TimerRecord>,
     pub(crate) work_items: Vec<WorkItemRecord>,
     pub(crate) waiting_intents: Vec<WaitingIntentRecord>,
@@ -108,8 +103,6 @@ impl TuiProjection {
             session: snapshot.session,
             presentation_reducer,
             tasks,
-            transcript_tail: Vec::new(),
-            operator_messages: Vec::new(),
             timers: snapshot.timers,
             work_items: snapshot.work_items,
             waiting_intents: snapshot.waiting_intents,
@@ -267,17 +260,7 @@ impl TuiProjection {
                     self.mark_stale([ProjectionSlice::Agent]);
                 }
             }
-            "message_enqueued" => {
-                if let Some(message) = decode_payload::<MessageEnvelope>(&event.data.payload) {
-                    if matches!(message.origin, MessageOrigin::Operator { .. }) {
-                        self.upsert_operator_message(operator_message_from_enqueued(&message));
-                    }
-                    self.append_transcript_message(message);
-                    self.stale_slices.remove(&ProjectionSlice::TranscriptTail);
-                } else {
-                    self.mark_stale([ProjectionSlice::TranscriptTail]);
-                }
-            }
+            "message_enqueued" => {}
             "task_created" | "task_status_updated" | "task_result_received" => {
                 if let Some(task) = decode_payload::<TaskRecord>(&event.data.payload) {
                     upsert_active_task(&mut self.tasks, task);
@@ -435,38 +418,6 @@ impl TuiProjection {
                     self.operator_notifications.push(record);
                 } else {
                     self.mark_stale([ProjectionSlice::OperatorNotifications]);
-                }
-            }
-            "message_processing_started" => {
-                if let Some(message) = decode_payload::<MessageEnvelope>(&event.data.payload) {
-                    self.update_operator_message_status(
-                        &message.id,
-                        OperatorMessageStatus::Processing,
-                        event.data.ts,
-                        None,
-                    );
-                } else {
-                    self.mark_stale([
-                        ProjectionSlice::Agent,
-                        ProjectionSlice::Session,
-                        ProjectionSlice::TranscriptTail,
-                    ]);
-                }
-            }
-            "operator_interjection_admitted" => {
-                if let Some(message_id) = read_string(&event.data.payload, "message_id") {
-                    self.update_operator_message_status(
-                        &message_id,
-                        OperatorMessageStatus::Processing,
-                        event.data.ts,
-                        None,
-                    );
-                } else {
-                    self.mark_stale([
-                        ProjectionSlice::Agent,
-                        ProjectionSlice::Session,
-                        ProjectionSlice::TranscriptTail,
-                    ]);
                 }
             }
             "message_admitted" | "control_applied" => {}
@@ -701,69 +652,6 @@ impl TuiProjection {
         self.stale_slices.remove(&ProjectionSlice::Agent);
         self.stale_slices.remove(&ProjectionSlice::Session);
         self.stale_slices.insert(ProjectionSlice::Workspace);
-    }
-
-    fn append_transcript_message(&mut self, message: MessageEnvelope) {
-        let entry = TranscriptEntry {
-            id: format!("stream-message-{}", message.id),
-            agent_id: message.agent_id.clone(),
-            created_at: message.created_at,
-            kind: TranscriptEntryKind::IncomingMessage,
-            round: None,
-            related_message_id: Some(message.id.clone()),
-            stop_reason: None,
-            input_tokens: None,
-            output_tokens: None,
-            data: json!({
-                "kind": message.kind,
-                "origin": message.origin,
-                "trust": message.trust,
-                "authority_class": message.authority_class,
-                "delivery_surface": message.delivery_surface,
-                "admission_context": message.admission_context,
-                "priority": message.priority,
-                "body": message.body,
-                "metadata": message.metadata,
-                "correlation_id": message.correlation_id,
-                "causation_id": message.causation_id,
-            }),
-        };
-        push_limited_sorted(
-            &mut self.transcript_tail,
-            entry,
-            TRANSCRIPT_TAIL_LIMIT,
-            |left, right| left.created_at.cmp(&right.created_at),
-        );
-    }
-
-    fn upsert_operator_message(&mut self, record: OperatorMessageRecord) {
-        if let Some(existing) = self
-            .operator_messages
-            .iter_mut()
-            .find(|existing| existing.message_id == record.message_id)
-        {
-            *existing = record;
-        } else {
-            self.operator_messages.push(record);
-        }
-    }
-
-    fn update_operator_message_status(
-        &mut self,
-        message_id: &str,
-        status: OperatorMessageStatus,
-        updated_at: DateTime<Utc>,
-        error: Option<String>,
-    ) {
-        if let Some(existing) = self
-            .operator_messages
-            .iter_mut()
-            .find(|existing| existing.message_id == message_id)
-        {
-            existing.status = status;
-            existing.updated_at = updated_at;
-            existing.error = error;
-        }
     }
 
     fn apply_timer_fired(&mut self, payload: &Value, fired_at: DateTime<Utc>) -> bool {
@@ -1187,18 +1075,6 @@ fn task_status_is_terminal(event: &ProjectionEventRecord) -> bool {
         })
 }
 
-fn operator_message_from_enqueued(message: &MessageEnvelope) -> OperatorMessageRecord {
-    OperatorMessageRecord {
-        message_id: message.id.clone(),
-        agent_id: message.agent_id.clone(),
-        status: OperatorMessageStatus::Queued,
-        created_at: message.created_at,
-        updated_at: message.created_at,
-        body: message.body.clone(),
-        error: None,
-    }
-}
-
 pub(crate) fn is_presentation_reducer_event(event: &ProjectionEventRecord) -> bool {
     !matches!(
         event.presentation.category,
@@ -1517,7 +1393,6 @@ mod tests {
         let projection = TuiProjection::from_snapshot(snapshot.clone());
 
         assert_eq!(projection.agent.identity.agent_id, "default");
-        assert!(projection.transcript_tail.is_empty());
         assert_eq!(
             projection.external_triggers.len(),
             snapshot.external_triggers.len()
@@ -1688,38 +1563,38 @@ mod tests {
         let mut projection = TuiProjection::from_snapshot(snapshot);
         projection.replace_event_window(events_tail, Some("evt-live".into()));
 
-        let first_page = (0..4090)
+        let first_page = (0..16_378)
             .rev()
             .map(|seq| sample_event_envelope(&format!("evt-page-a-{seq}"), seq))
             .collect::<Vec<_>>();
         let first_added =
             projection.prepend_event_history_page(first_page, Some("evt-page-a-0".into()), true);
-        assert_eq!(first_added, 4090);
-        assert_eq!(projection.event_log().len(), 4091);
+        assert_eq!(first_added, 16_378);
+        assert_eq!(projection.event_log().len(), 16_379);
         assert!(projection.history_has_older);
 
-        let second_page = (4090..4110)
+        let second_page = (16_378..16_398)
             .rev()
             .map(|seq| sample_event_envelope(&format!("evt-page-b-{seq}"), seq))
             .collect::<Vec<_>>();
         let second_added = projection.prepend_event_history_page(
             second_page,
-            Some("evt-page-b-4090".into()),
+            Some("evt-page-b-16378".into()),
             true,
         );
 
         assert_eq!(second_added, 5);
-        assert_eq!(projection.event_log().len(), 4096);
+        assert_eq!(projection.event_log().len(), 16_384);
         assert_eq!(
             projection
                 .event_log()
                 .first()
                 .map(|event| event.id.as_str()),
-            Some("evt-page-b-4105")
+            Some("evt-page-b-16393")
         );
         assert_eq!(
             projection.history_oldest_cursor.as_deref(),
-            Some("evt-page-b-4105")
+            Some("evt-page-b-16393")
         );
         assert!(!projection.history_has_older);
         assert!(projection.event_history_at_local_cap());
@@ -1762,13 +1637,9 @@ mod tests {
             .event_log()
             .iter()
             .any(|event| event.kind == "brief_created"));
-        assert_eq!(
-            projection
-                .transcript_tail
-                .last()
-                .and_then(|entry| entry.related_message_id.as_deref()),
-            Some(message.id.as_str())
-        );
+        assert!(projection
+            .durable_operator_message_ids()
+            .contains(&message.id));
         let lanes = projection
             .timeline_events()
             .map(|event| event.lane)
@@ -1776,34 +1647,6 @@ mod tests {
         assert_eq!(
             lanes,
             vec![ProjectionEventLane::Timeline, ProjectionEventLane::Timeline]
-        );
-    }
-
-    #[test]
-    fn projection_does_not_show_task_rejoin_as_pending_operator_message() {
-        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
-        let mut message = sample_message();
-        message.kind = MessageKind::TaskResult;
-        message.origin = MessageOrigin::Task {
-            task_id: "task-1".into(),
-        };
-        message.priority = Priority::Next;
-        message.body = MessageBody::Text {
-            text: "command task completed".into(),
-        };
-
-        projection.apply_event(
-            sample_event("message_enqueued", serde_json::to_value(&message).unwrap()),
-            &test_log_writer(),
-        );
-
-        assert!(projection.operator_messages.is_empty());
-        assert_eq!(
-            projection
-                .transcript_tail
-                .last()
-                .and_then(|entry| entry.related_message_id.as_deref()),
-            Some(message.id.as_str())
         );
     }
 
@@ -2062,34 +1905,6 @@ mod tests {
         }
 
         assert!(projection.stale_slices.is_empty());
-    }
-
-    #[test]
-    fn message_processing_event_only_marks_stale_when_payload_is_incomplete() {
-        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
-        let message = sample_message();
-
-        projection.apply_event(
-            sample_event(
-                "message_processing_started",
-                serde_json::to_value(&message).unwrap(),
-            ),
-            &test_log_writer(),
-        );
-
-        assert!(projection.stale_slices.is_empty());
-
-        projection.apply_event(
-            sample_event(
-                "message_processing_started",
-                json!({ "message_id": message.id }),
-            ),
-            &test_log_writer(),
-        );
-
-        assert!(projection
-            .stale_slices
-            .contains(&ProjectionSlice::TranscriptTail));
     }
 
     #[test]

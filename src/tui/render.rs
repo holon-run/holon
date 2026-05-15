@@ -4,7 +4,7 @@ use super::view_model::render_header_line;
 use super::view_model::{render_model_detail, HeaderViewModel, StatusbarViewModel};
 use super::*;
 use crate::tui::input::{slash_menu_specs, SlashArgHint, SlashCommandSpec};
-use crate::types::{TaskKind, TaskStatus, TranscriptEntry};
+use crate::types::{TaskKind, TaskStatus};
 use ratatui::style::Color;
 use unicode_width::UnicodeWidthChar;
 
@@ -704,15 +704,6 @@ pub(super) fn render_projection_event_summary(
         event.ts.with_timezone(&Local).format("%H:%M:%S"),
         event.lane,
         trim(&description, 120)
-    )
-}
-
-pub(super) fn render_transcript_entry(entry: &TranscriptEntry) -> String {
-    format!(
-        "{} {:?} {}",
-        entry.created_at.with_timezone(&Local).format("%H:%M:%S"),
-        entry.kind,
-        trim(&compact_json(&entry.data), 220)
     )
 }
 
