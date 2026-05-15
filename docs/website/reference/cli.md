@@ -69,7 +69,8 @@ holon (v0.13.0)
 ├── workspace    Workspace management (attach, exit, detach)
 ├── debug        Debug utilities
 │   ├── prompt   Debug-mode prompt
-│   └── latency  Show latency metrics
+│   ├── latency  Show latency metrics
+│   └── scheduler-fixture Generate scheduler fixture data (--agent, --output)
 └── help         Print help
 ```
 
