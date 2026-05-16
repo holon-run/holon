@@ -414,8 +414,8 @@ impl RuntimeHandle {
     pub async fn agent_list_entry(&self) -> Result<AgentListEntry> {
         let agent = self.agent_state().await?;
         let model = self.model_state_for(&agent);
-        let closure = self.current_closure_decision().await?;
         let identity = self.agent_identity_view().await?;
+        let waiting_reason = lightweight_agent_list_waiting_reason(&agent);
         Ok(AgentListEntry {
             identity,
             lifecycle: crate::types::AgentLifecycleHint::from_status(
@@ -425,7 +425,7 @@ impl RuntimeHandle {
             status: agent.status,
             pending: agent.pending,
             current_run_id: agent.current_run_id,
-            waiting_reason: closure.waiting_reason,
+            waiting_reason,
             model: (&model).into(),
             active_workspace_entry: agent
                 .active_workspace_entry
@@ -1289,6 +1289,13 @@ impl RuntimeHandle {
 
     pub(super) async fn agent_id(&self) -> Result<String> {
         Ok(self.inner.agent.lock().await.state.id.clone())
+    }
+}
+
+fn lightweight_agent_list_waiting_reason(agent: &AgentState) -> Option<WaitingReason> {
+    match agent.status {
+        AgentStatus::AwaitingTask => Some(WaitingReason::AwaitingTaskResult),
+        _ => None,
     }
 }
 

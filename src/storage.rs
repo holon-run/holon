@@ -3,6 +3,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::UNIX_EPOCH,
 };
 
@@ -116,6 +117,7 @@ pub struct AppStorage {
     occupancies_path: PathBuf,
     agent_identities_path: PathBuf,
     agent_path: PathBuf,
+    append_mutex: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +177,7 @@ impl AppStorage {
             occupancies_path: ledger_dir.join("workspace_occupancies.jsonl"),
             agent_identities_path: ledger_dir.join("agent_identities.jsonl"),
             agent_path: state_dir.join("agent.json"),
+            append_mutex: Arc::new(Mutex::new(())),
             data_dir,
         })
     }
@@ -214,94 +217,107 @@ impl AppStorage {
     }
 
     pub fn append_event(&self, event: &AuditEvent) -> Result<()> {
-        append_jsonl(&self.events_path, event)
+        self.append_jsonl(&self.events_path, event)
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
-        append_jsonl(&self.briefs_path, brief)?;
+        self.append_jsonl(&self.briefs_path, brief)?;
         self.mark_memory_index_dirty()
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
-        append_jsonl(&self.messages_path, message)
+        self.append_jsonl(&self.messages_path, message)
     }
 
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
-        append_jsonl(&self.tasks_path, task)
+        self.append_jsonl(&self.tasks_path, task)
     }
 
     pub fn append_work_item(&self, record: &WorkItemRecord) -> Result<()> {
-        append_jsonl(&self.work_items_path, record)?;
+        self.append_jsonl(&self.work_items_path, record)?;
         self.mark_memory_index_dirty()
     }
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
-        append_jsonl(&self.delivery_summaries_path, record)
+        self.append_jsonl(&self.delivery_summaries_path, record)
     }
 
     pub fn append_work_item_delegation(&self, record: &WorkItemDelegationRecord) -> Result<()> {
-        append_jsonl(&self.work_item_delegations_path, record)
+        self.append_jsonl(&self.work_item_delegations_path, record)
     }
 
     pub fn append_timer(&self, timer: &TimerRecord) -> Result<()> {
-        append_jsonl(&self.timers_path, timer)
+        self.append_jsonl(&self.timers_path, timer)
     }
 
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
-        append_jsonl(&self.tools_path, record)
+        self.append_jsonl(&self.tools_path, record)
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
-        append_jsonl(&self.transcript_path, entry)
+        self.append_jsonl(&self.transcript_path, entry)
     }
 
     pub fn append_queue_entry(&self, record: &QueueEntryRecord) -> Result<()> {
-        append_jsonl(&self.queue_entries_path, record)
+        self.append_jsonl(&self.queue_entries_path, record)
     }
 
     pub fn append_waiting_intent(&self, record: &WaitingIntentRecord) -> Result<()> {
-        append_jsonl(&self.waiting_intents_path, record)
+        self.append_jsonl(&self.waiting_intents_path, record)
     }
 
     pub fn append_external_trigger(&self, record: &ExternalTriggerRecord) -> Result<()> {
-        append_jsonl(&self.external_triggers_path, record)
+        self.append_jsonl(&self.external_triggers_path, record)
     }
 
     pub fn append_operator_notification(&self, record: &OperatorNotificationRecord) -> Result<()> {
-        append_jsonl(&self.operator_notifications_path, record)
+        self.append_jsonl(&self.operator_notifications_path, record)
     }
 
     pub fn append_operator_transport_binding(
         &self,
         record: &OperatorTransportBinding,
     ) -> Result<()> {
-        append_jsonl(&self.operator_transport_bindings_path, record)
+        self.append_jsonl(&self.operator_transport_bindings_path, record)
     }
 
     pub fn append_operator_delivery_record(&self, record: &OperatorDeliveryRecord) -> Result<()> {
-        append_jsonl(&self.operator_delivery_records_path, record)
+        self.append_jsonl(&self.operator_delivery_records_path, record)
     }
 
     pub fn append_working_memory_delta(&self, record: &WorkingMemoryDelta) -> Result<()> {
-        append_jsonl(&self.working_memory_deltas_path, record)
+        self.append_jsonl(&self.working_memory_deltas_path, record)
     }
 
     pub fn append_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
-        append_jsonl(&self.context_episodes_path, record)?;
+        self.append_jsonl(&self.context_episodes_path, record)?;
         self.mark_memory_index_dirty()
     }
 
     pub fn append_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
-        append_jsonl(&self.workspaces_path, entry)?;
+        self.append_jsonl(&self.workspaces_path, entry)?;
         self.mark_memory_index_dirty()
     }
 
     pub fn append_workspace_occupancy(&self, entry: &WorkspaceOccupancyRecord) -> Result<()> {
-        append_jsonl(&self.occupancies_path, entry)
+        self.append_jsonl(&self.occupancies_path, entry)
     }
 
     pub fn append_agent_identity(&self, entry: &AgentIdentityRecord) -> Result<()> {
-        append_jsonl(&self.agent_identities_path, entry)
+        self.append_jsonl(&self.agent_identities_path, entry)
+    }
+
+    fn append_jsonl<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
+        let line = serde_json::to_string(value)?;
+        let mut bytes = Vec::with_capacity(line.len() + 1);
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+
+        let _guard = self
+            .append_mutex
+            .lock()
+            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+        append_jsonl_bytes(path, &bytes)
     }
 
     pub fn mark_memory_index_dirty(&self) -> Result<()> {
@@ -1029,7 +1045,7 @@ impl AppStorage {
     }
 }
 
-fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+fn append_jsonl_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -1039,8 +1055,7 @@ fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         .append(true)
         .open(path)
         .with_context(|| format!("failed to open {}", path.display()))?;
-    let line = serde_json::to_string(value)?;
-    writeln!(file, "{line}")?;
+    file.write_all(bytes)?;
     Ok(())
 }
 
@@ -1524,6 +1539,58 @@ mod tests {
             active[0].recovery,
             Some(TaskRecoverySpec::ChildAgentTask { .. })
         ));
+    }
+
+    #[test]
+    fn cloned_storage_serializes_concurrent_large_task_appends() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+        let thread_count = 8;
+        let records_per_thread = 40;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(thread_count));
+        let mut handles = Vec::new();
+
+        for thread_index in 0..thread_count {
+            let storage = storage.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for record_index in 0..records_per_thread {
+                    storage
+                        .append_task(&TaskRecord {
+                            id: format!("task-{thread_index}-{record_index}"),
+                            agent_id: "default".into(),
+                            kind: TaskKind::CommandTask,
+                            status: TaskStatus::Completed,
+                            created_at: now,
+                            updated_at: now,
+                            parent_message_id: None,
+                            work_item_id: None,
+                            summary: Some("large concurrent append".into()),
+                            detail: Some(serde_json::json!({
+                                "payload": "x".repeat(16 * 1024),
+                                "thread": thread_index,
+                                "record": record_index,
+                            })),
+                            recovery: None,
+                        })
+                        .unwrap();
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let content = fs::read_to_string(storage.ledger_dir().join("tasks.jsonl")).unwrap();
+        let mut parsed = 0usize;
+        for line in content.lines().filter(|line| !line.trim().is_empty()) {
+            serde_json::from_str::<TaskRecord>(line).unwrap();
+            parsed += 1;
+        }
+        assert_eq!(parsed, thread_count * records_per_thread);
     }
 
     #[test]
