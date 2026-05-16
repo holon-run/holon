@@ -73,6 +73,11 @@ impl TuiTimeouts {
     }
 }
 
+#[cfg(unix)]
+fn unix_response_timeout(kind: TuiTimeoutKind) -> Duration {
+    TUI_TIMEOUTS.request_timeout(kind)
+}
+
 #[derive(Clone)]
 pub struct LocalClient {
     config: AppConfig,
@@ -359,7 +364,11 @@ impl LocalClient {
     #[cfg(unix)]
     pub async fn runtime_status_unix_only(&self) -> Result<RuntimeStatusResponse> {
         let body = self
-            .send_unix(RequestSpec::get("/control/runtime/status"), true)
+            .send_unix(
+                RequestSpec::get("/control/runtime/status"),
+                true,
+                TuiTimeoutKind::Request,
+            )
             .await?;
         serde_json::from_slice(&body).with_context(|| {
             "failed to decode response body for GET /control/runtime/status over unix socket"
@@ -669,7 +678,10 @@ impl LocalClient {
     ) -> Result<Vec<u8>> {
         #[cfg(unix)]
         if self.remote.is_none() && self.config.socket_path.exists() {
-            let socket_error = match self.send_unix(request.clone(), include_control_auth).await {
+            let socket_error = match self
+                .send_unix(request.clone(), include_control_auth, timeout_kind)
+                .await
+            {
                 Ok(body) => return Ok(body),
                 Err(err) => err,
             };
@@ -766,7 +778,12 @@ impl LocalClient {
     }
 
     #[cfg(unix)]
-    async fn send_unix(&self, request: RequestSpec, include_control_auth: bool) -> Result<Vec<u8>> {
+    async fn send_unix(
+        &self,
+        request: RequestSpec,
+        include_control_auth: bool,
+        timeout_kind: TuiTimeoutKind,
+    ) -> Result<Vec<u8>> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::UnixStream;
 
@@ -802,7 +819,7 @@ impl LocalClient {
         }
         raw.push_str("\r\n");
 
-        let response = tokio::time::timeout(TUI_TIMEOUTS.get(TuiTimeoutKind::Request), async {
+        let response = tokio::time::timeout(unix_response_timeout(timeout_kind), async {
             stream.write_all(raw.as_bytes()).await?;
             if let Some(body) = request.body.as_ref() {
                 stream.write_all(body).await?;
@@ -1403,7 +1420,8 @@ mod tests {
         authorization_header_value, decode_chunked_body, decode_or_error, event_stream_path,
         normalize_remote_base_url, parse_http_response, parse_sse_frame, take_next_sse_frame,
         validate_header_value, validate_unix_request_target, EventStreamRequest,
-        EventStreamTransport, LocalEventStream, LocalHttpError, StreamEventEnvelope, TUI_TIMEOUTS,
+        EventStreamTransport, LocalEventStream, LocalHttpError, StreamEventEnvelope,
+        TuiTimeoutKind, TUI_TIMEOUTS,
     };
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1428,6 +1446,19 @@ mod tests {
     fn bootstrap_uses_longer_timeout_than_lightweight_calls() {
         assert!(TUI_TIMEOUTS.bootstrap > TUI_TIMEOUTS.request);
         assert!(TUI_TIMEOUTS.stream_open <= TUI_TIMEOUTS.request);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_send_path_uses_timeout_kind_for_response_wait() {
+        assert_eq!(
+            super::unix_response_timeout(TuiTimeoutKind::Request),
+            TUI_TIMEOUTS.request
+        );
+        assert_eq!(
+            super::unix_response_timeout(TuiTimeoutKind::Bootstrap),
+            TUI_TIMEOUTS.bootstrap
+        );
     }
 
     #[test]
