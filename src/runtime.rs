@@ -70,20 +70,21 @@ use crate::{
     },
     tool::{ToolRegistry, ToolResult},
     types::{
-        ActiveWorkspaceEntry, AdmissionContext, AgentIdentityView, AgentKind, AgentState,
-        AgentStatus, AgentSummary, AuditEvent, BriefRecord, CallbackDeliveryMode,
-        CallbackDeliveryPayload, CallbackDeliveryResult, CallbackIngressDisposition,
-        CancelWaitingResult, ClosureDecision, ContinuationResolution, ControlAction,
-        ExecCommandBatchItemStatus, ExecCommandBatchResult, ExternalTriggerCapability,
-        ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus, ExternalTriggerSummary,
-        LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
-        MessageOrigin, PendingWakeHint, Priority, QueueEntryRecord, QueueEntryStatus,
-        ResolvedModelAvailability, RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture,
-        SkillActivationSource, SkillActivationState, SkillCatalogEntry, SkillLoadReason,
-        SkillsRuntimeView, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord,
-        TimerStatus, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
-        WaitingIntentRecord, WaitingIntentStatus, WaitingIntentSummary, WorkItemState,
-        WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
+        ActiveWorkspaceEntry, AdmissionContext, AgentIdentityView, AgentKind, AgentModelSource,
+        AgentModelState, AgentState, AgentStatus, AgentSummary, AuditEvent, BriefRecord,
+        CallbackDeliveryMode, CallbackDeliveryPayload, CallbackDeliveryResult,
+        CallbackIngressDisposition, CancelWaitingResult, ClosureDecision, ContinuationResolution,
+        ControlAction, ExecCommandBatchItemStatus, ExecCommandBatchResult,
+        ExternalTriggerCapability, ExternalTriggerRecord, ExternalTriggerScope,
+        ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd, MessageBody,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
+        Priority, QueueEntryRecord, QueueEntryStatus, ResolvedModelAvailability,
+        RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture, SkillActivationSource,
+        SkillActivationState, SkillCatalogEntry, SkillLoadReason, SkillsRuntimeView, TaskKind,
+        TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord,
+        TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentRecord, WaitingIntentStatus,
+        WaitingIntentSummary, WaitingReason, WorkItemState, WorkspaceEntry,
+        AGENT_HOME_WORKSPACE_ID,
     },
     web::WebConfig,
 };
@@ -135,6 +136,47 @@ impl From<Option<WorkspaceEntry>> for InitialWorkspaceBinding {
             Some(value) => Self::Entry(value),
             None => Self::Detached,
         }
+    }
+}
+
+pub(crate) fn agent_model_state_for_catalog(
+    model_catalog: &RuntimeModelCatalog,
+    base_context_config: &ContextConfig,
+    state: &AgentState,
+) -> AgentModelState {
+    let effective_model = model_catalog.effective_model(state.model_override.as_ref());
+    let active_model = state
+        .last_requested_model
+        .as_ref()
+        .filter(|requested| *requested == &effective_model)
+        .and_then(|_| state.last_active_model.clone())
+        .unwrap_or_else(|| effective_model.clone());
+    let fallback_active = active_model != effective_model;
+    let effective_chain = model_catalog.provider_chain(state.model_override.as_ref());
+    let resolved_policy =
+        model_catalog.resolved_model_policy(base_context_config, state.model_override.as_ref());
+    AgentModelState {
+        source: if state.model_override.is_some() {
+            AgentModelSource::AgentOverride
+        } else {
+            AgentModelSource::RuntimeDefault
+        },
+        runtime_default_model: model_catalog.default_model.clone(),
+        effective_model: effective_model.clone(),
+        requested_model: Some(effective_model),
+        active_model: Some(active_model),
+        fallback_active,
+        effective_fallback_models: effective_chain.into_iter().skip(1).collect(),
+        override_model: state.model_override.clone(),
+        override_reasoning_effort: state.model_override_reasoning_effort.clone(),
+        resolved_policy,
+    }
+}
+
+pub(crate) fn lightweight_agent_list_waiting_reason(agent: &AgentState) -> Option<WaitingReason> {
+    match agent.status {
+        AgentStatus::AwaitingTask => Some(WaitingReason::AwaitingTaskResult),
+        _ => None,
     }
 }
 

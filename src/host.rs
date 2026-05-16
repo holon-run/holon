@@ -14,6 +14,7 @@ use tokio::{
     sync::RwLock,
     task::{spawn_blocking, JoinHandle},
 };
+use tracing::warn;
 
 use crate::{
     agent_template::{
@@ -31,11 +32,11 @@ use crate::{
     system::WorkspaceAccessMode,
     types::{
         AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
-        AgentListModelSummary, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState,
-        AgentStatus, AgentSummary, AgentVisibility, ChildAgentSummary, ClosureOutcome,
-        ExternalTriggerRecord, ExternalTriggerStatus, OperatorNotificationRecord,
-        RuntimeFailureSummary, TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind,
-        TrustLevel, WorkspaceEntry, WorkspaceOccupancyRecord,
+        AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus,
+        AgentSummary, AgentVisibility, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord,
+        ExternalTriggerStatus, OperatorNotificationRecord, RuntimeFailureSummary, TaskRecord,
+        TaskStatus, TranscriptEntry, TranscriptEntryKind, TrustLevel, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -95,6 +96,12 @@ struct HostInner {
 struct AgentEntry {
     runtime: RuntimeHandle,
     task: JoinHandle<()>,
+}
+
+fn stopped_unloaded_agent(agent_id: &str) -> AgentState {
+    let mut agent = AgentState::new(agent_id.to_string());
+    agent.status = AgentStatus::Stopped;
+    agent
 }
 
 #[derive(Clone)]
@@ -577,17 +584,24 @@ impl RuntimeHost {
         identity: &AgentIdentityRecord,
     ) -> Result<AgentListEntry> {
         let storage = AppStorage::new(self.agent_data_dir(&identity.agent_id))?;
-        let agent = storage.read_agent().unwrap_or_else(|_| {
-            let mut agent = AgentState::new(identity.agent_id.clone());
-            agent.status = AgentStatus::Stopped;
-            Some(agent)
-        });
-        let agent = agent.unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
-        let model = self.agent_list_model_summary_for(&agent);
-        let waiting_reason = match agent.status {
-            AgentStatus::AwaitingTask => Some(crate::types::WaitingReason::AwaitingTaskResult),
-            _ => None,
+        let agent = match storage.read_agent() {
+            Ok(Some(agent)) => agent,
+            Ok(None) => stopped_unloaded_agent(&identity.agent_id),
+            Err(error) => {
+                warn!(
+                    agent_id = %identity.agent_id,
+                    error = %error,
+                    "failed to read agent state for /agents/list; using stopped placeholder"
+                );
+                stopped_unloaded_agent(&identity.agent_id)
+            }
         };
+        let model = crate::runtime::agent_model_state_for_catalog(
+            &RuntimeModelCatalog::from_config(self.config()),
+            &self.runtime_context_config(),
+            &agent,
+        );
+        let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
         Ok(AgentListEntry {
             identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),
             lifecycle: AgentLifecycleHint::from_status(&agent.id, agent.status.clone()),
@@ -595,39 +609,11 @@ impl RuntimeHost {
             pending: agent.pending,
             current_run_id: agent.current_run_id,
             waiting_reason,
-            model,
+            model: (&model).into(),
             active_workspace_entry: agent
                 .active_workspace_entry
                 .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
         })
-    }
-
-    fn agent_list_model_summary_for(&self, state: &AgentState) -> AgentListModelSummary {
-        let catalog = RuntimeModelCatalog::from_config(self.config());
-        let effective_model = catalog.effective_model(state.model_override.as_ref());
-        let active_model = state
-            .last_requested_model
-            .as_ref()
-            .filter(|requested| *requested == &effective_model)
-            .and_then(|_| state.last_active_model.clone())
-            .unwrap_or_else(|| effective_model.clone());
-        let fallback_active = active_model != effective_model;
-        let effective_chain = catalog.provider_chain(state.model_override.as_ref());
-        AgentListModelSummary {
-            source: if state.model_override.is_some() {
-                crate::types::AgentModelSource::AgentOverride
-            } else {
-                crate::types::AgentModelSource::RuntimeDefault
-            },
-            runtime_default_model: catalog.default_model.clone(),
-            effective_model: effective_model.clone(),
-            requested_model: Some(effective_model),
-            active_model: Some(active_model),
-            fallback_active,
-            effective_fallback_models: effective_chain.into_iter().skip(1).collect(),
-            override_model: state.model_override.clone(),
-            override_reasoning_effort: state.model_override_reasoning_effort.clone(),
-        }
     }
 
     pub fn public_agent_activity_snapshots(&self) -> Result<Vec<PublicAgentActivitySnapshot>> {

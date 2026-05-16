@@ -335,41 +335,11 @@ impl RuntimeHandle {
     }
 
     pub(crate) fn model_state_for(&self, state: &AgentState) -> crate::types::AgentModelState {
-        let effective_model = self
-            .inner
-            .model_catalog
-            .effective_model(state.model_override.as_ref());
-        let active_model = state
-            .last_requested_model
-            .as_ref()
-            .filter(|requested| *requested == &effective_model)
-            .and_then(|_| state.last_active_model.clone())
-            .unwrap_or_else(|| effective_model.clone());
-        let fallback_active = active_model != effective_model;
-        let effective_chain = self
-            .inner
-            .model_catalog
-            .provider_chain(state.model_override.as_ref());
-        let resolved_policy = self.inner.model_catalog.resolved_model_policy(
+        super::agent_model_state_for_catalog(
+            &self.inner.model_catalog,
             &self.inner.base_context_config,
-            state.model_override.as_ref(),
-        );
-        crate::types::AgentModelState {
-            source: if state.model_override.is_some() {
-                crate::types::AgentModelSource::AgentOverride
-            } else {
-                crate::types::AgentModelSource::RuntimeDefault
-            },
-            runtime_default_model: self.inner.model_catalog.default_model.clone(),
-            effective_model: effective_model.clone(),
-            requested_model: Some(effective_model),
-            active_model: Some(active_model),
-            fallback_active,
-            effective_fallback_models: effective_chain.into_iter().skip(1).collect(),
-            override_model: state.model_override.clone(),
-            override_reasoning_effort: state.model_override_reasoning_effort.clone(),
-            resolved_policy,
-        }
+            state,
+        )
     }
 
     pub(crate) async fn reconfigure_provider_for_state(&self, state: &AgentState) -> Result<()> {

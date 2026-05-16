@@ -212,6 +212,15 @@ pub async fn agent_list_entries_tolerate_unloaded_agent_with_corrupt_work_queue(
         .append(true)
         .open(&work_items_path)?;
     writeln!(file, "{{not valid json")?;
+    let agent_state_path = data_dir
+        .join("agents")
+        .join("corrupt-list")
+        .join(".holon")
+        .join("state")
+        .join("agent.json");
+    if agent_state_path.exists() {
+        std::fs::remove_file(&agent_state_path)?;
+    }
 
     config.workspace_dir = tempdir()?.keep();
     let (_host, base, server) = spawn_server_with_config(config.clone()).await?;
@@ -229,6 +238,14 @@ pub async fn agent_list_entries_tolerate_unloaded_agent_with_corrupt_work_queue(
             .iter()
             .any(|entry| entry["identity"]["agent_id"] == "corrupt-list"),
         "agent list should include the unloaded public agent"
+    );
+    let corrupt_entry = entries
+        .iter()
+        .find(|entry| entry["identity"]["agent_id"] == "corrupt-list")
+        .expect("corrupt-list entry should be present");
+    assert_eq!(
+        corrupt_entry["status"], "stopped",
+        "unloaded agent without agent.json should not be shown as booting"
     );
 
     let mut client_config = config;
