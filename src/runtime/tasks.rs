@@ -1998,12 +1998,6 @@ impl RuntimeHandle {
             "inspection"
         }
         .to_string();
-        if switching {
-            if let Some(previous_id) = current_id.as_deref() {
-                self.cancel_work_item_waiting_intents(previous_id, "active_work_item_switched")
-                    .await?;
-            }
-        }
         {
             let mut guard = self.inner.agent.lock().await;
             guard.state.current_work_item_id = Some(record.id.clone());
@@ -2158,8 +2152,6 @@ impl RuntimeHandle {
                 }),
             ))?;
         }
-        self.cancel_work_item_waiting_intents(&record.id, "work_item_completed")
-            .await?;
         {
             self.release_current_work_item_if_matches(&agent_id, &record, "work_item_completed")
                 .await?;

@@ -431,12 +431,12 @@ Invariants:
 - completed work items cannot become current;
 - queued work items must not replace current work implicitly;
 - a work-queue `queued_available` tick must not mutate current work;
-- completing a work item clears it from current focus;
-- completing a work item cancels work-item-scoped waiting intents;
+- completing a work item clears it from current focus and clears `blocked_by`;
+- completing a work item does not revoke agent-scoped external triggers;
 - work-item completion is an explicit agent assertion and should not be blocked
-  by generic task wait policy; durable waits live in `blocked_by` or
-  work-item-scoped waiting intents until the agent updates or completes the
-  work item.
+  by generic task wait policy; durable WorkItem waiting state lives in
+  `blocked_by`, `plan_status`, and todo state until the agent updates or
+  completes the work item.
 
 `current_work_item_id` and `current_turn_work_item_id` should remain distinct:
 
@@ -487,8 +487,8 @@ Invariants:
 - `awaiting_external_change` is satisfied by a contentful external event or a
   wake hint tied to an active waiting condition;
 - mismatched triggers are liveness-only unless explicitly allowed to override;
-- switching the active work item cancels stale work-item-scoped waits;
-- agent-scoped waits are not cancelled merely because active work switches.
+- switching the active work item preserves agent-scoped external triggers;
+- agent-scoped waits are cancelled only by explicit revoke or rotation.
 
 ## Queue And Restart Contract
 

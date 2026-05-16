@@ -118,23 +118,19 @@ Choose `wake_hint` when the external system already has a query API (GitHub
 API, CI status endpoints). Choose `enqueue_message` when the callback payload
 itself contains the actionable information.
 
-**Scope:**
-
-| Scope | Lifetime |
-|-------|----------|
-| `work_item` | Tied to the current work item. Automatically cancelled when the work item completes. |
-| `agent` | Survives across work items. Use for long-running integration entry points. |
+External trigger capabilities are agent-scoped. The same agent ingress can be
+reused across PRs, CI runs, issues, and WorkItems; WorkItems record their
+waiting state separately through `blocked_by`, `plan_status`, and todo state.
 
 Common integration patterns:
 
 - **Waiting for CI** — `CreateExternalTrigger` with `source="github"`,
-  `scope=work_item`, `delivery_mode=wake_hint`. Agent wakes when CI completes
-  and checks the run status.
+  `delivery_mode=wake_hint`. Agent wakes when CI completes and checks the run
+  status for the currently relevant WorkItem or queue entry.
 - **Webhook callbacks** — `delivery_mode=enqueue_message` so the webhook body
   enters the agent queue with provenance preserved.
 
-Stale triggers waste resources. Cancel work-item-scoped triggers when the
-current task, tracked target, or waiting condition changes.
+Cancel external triggers only when explicitly revoking or rotating a capability.
 
 ### Delivery
 
