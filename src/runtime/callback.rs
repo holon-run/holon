@@ -57,6 +57,18 @@ impl RuntimeHandle {
                     })
                     .map(|descriptor| (waiting, descriptor))
             }) {
+                if waiting.description != description
+                    || waiting.condition != condition
+                    || waiting.resource != resource
+                {
+                    let mut refreshed = waiting.clone();
+                    refreshed.description = description;
+                    refreshed.condition = condition;
+                    refreshed.resource = resource;
+                    self.inner.storage.append_waiting_intent(&refreshed)?;
+                    return capability_from_records(&refreshed, descriptor);
+                }
+
                 return capability_from_records(waiting, descriptor);
             }
         }

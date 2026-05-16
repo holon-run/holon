@@ -2570,8 +2570,8 @@ async fn creating_agent_trigger_is_idempotent_for_source_and_delivery_mode() {
             "github".into(),
             ExternalTriggerScope::Agent,
             CallbackDeliveryMode::WakeHint,
-            None,
-            None,
+            Some("ci pending".into()),
+            Some("pull/1217".into()),
         )
         .await
         .unwrap();
@@ -2581,8 +2581,8 @@ async fn creating_agent_trigger_is_idempotent_for_source_and_delivery_mode() {
             "github".into(),
             ExternalTriggerScope::Agent,
             CallbackDeliveryMode::WakeHint,
-            None,
-            None,
+            Some("review approved".into()),
+            Some("pull/1217#review".into()),
         )
         .await
         .unwrap();
@@ -2606,11 +2606,18 @@ async fn creating_agent_trigger_is_idempotent_for_source_and_delivery_mode() {
             .count(),
         1
     );
-    assert!(waiting.iter().any(|record| {
-        record.id == new_capability.waiting_intent_id
-            && record.status == WaitingIntentStatus::Active
-            && record.scope == ExternalTriggerScope::Agent
-    }));
+    let active_waiting = waiting
+        .iter()
+        .find(|record| {
+            record.id == new_capability.waiting_intent_id
+                && record.status == WaitingIntentStatus::Active
+        })
+        .expect("active waiting intent should be retained");
+    assert_eq!(active_waiting.scope, ExternalTriggerScope::Agent);
+    assert_eq!(active_waiting.description, "wait for review approval");
+    assert_eq!(active_waiting.condition.as_deref(), Some("review approved"));
+    assert_eq!(active_waiting.resource.as_deref(), Some("pull/1217#review"));
+    assert_eq!(active_waiting.trigger_count, 0);
     assert!(descriptors.iter().any(|record| {
         record.external_trigger_id == new_capability.external_trigger_id
             && record.status == ExternalTriggerStatus::Active
