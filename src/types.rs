@@ -1604,7 +1604,7 @@ pub enum ExternalTriggerScope {
 }
 
 fn default_external_trigger_scope() -> ExternalTriggerScope {
-    ExternalTriggerScope::WorkItem
+    ExternalTriggerScope::Agent
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

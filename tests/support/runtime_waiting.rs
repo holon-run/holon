@@ -916,7 +916,6 @@ pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
                 input: json!({
                     "description": "wait for CI callback",
                     "source": "github",
-                    "scope": "work_item",
                     "delivery_mode": "enqueue_message"
                 }),
             },

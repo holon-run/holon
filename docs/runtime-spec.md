@@ -1853,22 +1853,24 @@ item owned by the agent.
   same assistant round as the successful `CompleteWorkItem` call
 - completion is an explicit agent assertion; it is not blocked by generic
   active task `wait_policy`
-- completion clears `blocked_by` and cancels work-item-scoped waiting intents
-  for that work item
+- completion clears `blocked_by` and finishes the item; it does not revoke
+  agent-scoped external trigger capabilities
 
 There is no separate agent-facing `UpdateWorkPlan` tool and no separate
 work-plan storage stream. Plan body state lives in the AgentHome plan artifact;
 `WorkItemRecord.plan` is legacy compatibility state and is not the current
 agent-facing read/write contract. `plan_status` and `todo_list` remain explicit
-WorkItem state.
+WorkItem state. Agent-scoped external trigger capabilities are cancelled only
+by explicit revoke or rotation.
 
 These tools are part of the explicit adoption path for work items. They do not
 require runtime-side semantic resolution of arbitrary ingress into a work item.
-Use `blocked_by` for simple durable human-readable blockers. Use work-item
-scoped waiting intents for external conditions such as PR review, CI, merge, or
-durable inbox changes. `TaskOutput(block=true)` is only a turn-local explicit
-wait for a bounded task output check; it does not create or clear durable
-work-item dependency state.
+Use `blocked_by`, `plan_status`, todo state, and references for durable
+WorkItem waiting posture. Use agent-scoped external trigger capabilities for
+reusable ingress from systems such as PR review, CI, merge, or durable inbox
+changes. `TaskOutput(block=true)` is only a turn-local explicit wait for a
+bounded task output check; it does not create or clear durable work-item
+dependency state.
 
 Work-item updates are coordination state, not the artifact progress ledger.
 Prompt guidance should frame plan_status, todo_list, and blocker updates as

@@ -15,7 +15,7 @@ impl RuntimeHandle {
         self.create_external_trigger(
             summary,
             source,
-            ExternalTriggerScope::WorkItem,
+            ExternalTriggerScope::Agent,
             delivery_mode,
             Some(condition),
             resource,
@@ -34,6 +34,45 @@ impl RuntimeHandle {
     ) -> Result<ExternalTriggerCapability> {
         let agent_id = self.agent_id().await?;
         let now = Utc::now();
+        if scope == ExternalTriggerScope::Agent {
+            let waiting = self.latest_waiting_intents().await?;
+            let descriptors = self.latest_external_triggers().await?;
+            if let Some((waiting, descriptor)) = waiting.iter().find_map(|waiting| {
+                if waiting.status != WaitingIntentStatus::Active
+                    || waiting.scope != ExternalTriggerScope::Agent
+                    || waiting.agent_id != agent_id
+                    || waiting.source != source
+                    || waiting.delivery_mode != delivery_mode
+                {
+                    return None;
+                }
+                descriptors
+                    .iter()
+                    .find(|descriptor| {
+                        descriptor.status == ExternalTriggerStatus::Active
+                            && descriptor.scope == ExternalTriggerScope::Agent
+                            && descriptor.target_agent_id == agent_id
+                            && descriptor.waiting_intent_id == waiting.id
+                            && descriptor.delivery_mode == delivery_mode
+                    })
+                    .map(|descriptor| (waiting, descriptor))
+            }) {
+                if waiting.description != description
+                    || waiting.condition != condition
+                    || waiting.resource != resource
+                {
+                    let mut refreshed = waiting.clone();
+                    refreshed.description = description;
+                    refreshed.condition = condition;
+                    refreshed.resource = resource;
+                    self.inner.storage.append_waiting_intent(&refreshed)?;
+                    return capability_from_records(&refreshed, descriptor);
+                }
+
+                return capability_from_records(waiting, descriptor);
+            }
+        }
+
         let waiting_intent_id = Uuid::new_v4().to_string();
         let external_trigger_id = Uuid::new_v4().to_string();
         let token = generate_callback_token();
@@ -47,20 +86,6 @@ impl RuntimeHandle {
             ),
             ExternalTriggerScope::Agent => None,
         };
-        if let Some(work_item_id) = work_item_id.as_deref() {
-            self.cancel_work_item_waiting_intents(work_item_id, "waiting_condition_replaced")
-                .await?;
-        } else if scope == ExternalTriggerScope::Agent {
-            self.cancel_agent_waiting_intents_for_dependency(
-                &description,
-                &source,
-                resource.as_deref(),
-                condition.as_deref(),
-                &delivery_mode,
-                "waiting_condition_replaced",
-            )
-            .await?;
-        }
 
         let waiting = WaitingIntentRecord {
             id: waiting_intent_id.clone(),
@@ -276,6 +301,26 @@ impl RuntimeHandle {
             disposition,
         })
     }
+}
+
+fn capability_from_records(
+    waiting: &WaitingIntentRecord,
+    descriptor: &ExternalTriggerRecord,
+) -> Result<ExternalTriggerCapability> {
+    let trigger_url = descriptor.trigger_url.clone().ok_or_else(|| {
+        anyhow!(
+            "external trigger {} has no trigger_url",
+            descriptor.external_trigger_id
+        )
+    })?;
+    Ok(ExternalTriggerCapability {
+        waiting_intent_id: waiting.id.clone(),
+        external_trigger_id: descriptor.external_trigger_id.clone(),
+        trigger_url,
+        target_agent_id: descriptor.target_agent_id.clone(),
+        scope: descriptor.scope.clone(),
+        delivery_mode: descriptor.delivery_mode.clone(),
+    })
 }
 
 fn callback_wake_reason(waiting: &WaitingIntentRecord, body: Option<&MessageBody>) -> String {

@@ -21,18 +21,17 @@ runtime state transitions.
 
 ## v0.14 lifecycle contract
 
-Work-item-scoped external triggers are owned by the current work item. The
-runtime rejects creation when there is no current work item, binds the waiting
-intent to that work item, and revokes the trigger when the work item completes,
-when focus switches to a different work item, or when a new work-item-scoped
-trigger replaces the old waiting condition for the same work item.
+External triggers are owned by the agent lifecycle. They survive ordinary
+work-item switching, completed-work cleanup, and the absence of a current work
+item. They are appropriate for durable integration entry points such as
+AgentInbox wake hints, GitHub CI callbacks, and webhook ingress reused across
+many objectives.
 
-Agent-scoped external triggers are owned by the agent lifecycle. They survive
-ordinary work-item switching, completed-work cleanup, and the absence of a
-current work item. They are appropriate for durable integration entry points
-such as AgentInbox wake hints.
+WorkItems record their own waiting posture through `blocked_by`, `plan_status`,
+todo state, and references to external systems; WorkItem completion or focus
+switching does not revoke external trigger capabilities.
 
-Both scopes preserve external-trigger provenance. A callback capability may
+External triggers preserve external-trigger provenance. A callback capability may
 reactivate or enqueue integration input, but its payload remains external
 integration input rather than operator authority. `wake_hint` records activation
 context and may wake the agent; `enqueue_message` appends a callback-origin
