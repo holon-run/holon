@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use super::helpers::{normalize_path, resolve_workspace_path};
+use super::helpers::normalize_path;
 use crate::{
     tool::ToolError,
     types::{
@@ -267,7 +267,7 @@ fn parse_patch(input: &str) -> Result<Vec<FilePatch>> {
             let hunk_path = new_path
                 .as_workspace_path()
                 .or_else(|| old_path.as_workspace_path());
-            let (hunk, consumed, hunk_diagnostics) = parse_hunk(&lines[index..], hunk_path)?;
+            let (hunk, consumed, hunk_diagnostics) = parse_hunk(&lines[index..], index, hunk_path)?;
             hunks.push(hunk);
             diagnostics.extend(hunk_diagnostics);
             index += consumed;
@@ -349,6 +349,7 @@ fn parse_file_header(line: &str, prefix: &str) -> Result<PatchPath> {
 
 fn parse_hunk(
     lines: &[String],
+    start_index: usize,
     path: Option<&str>,
 ) -> Result<(PatchHunk, usize, Vec<ApplyPatchDiagnostic>)> {
     let (old_start, old_count, new_start, new_count) = parse_hunk_header(&lines[0], path)?;
@@ -394,12 +395,13 @@ fn parse_hunk(
                 }
             }
 
-            return Err(syntax_error(
+            return Err(syntax_error_at(
                 "invalid_hunk_empty_line",
                 format!(
                     "hunk line {hunk_line_num} is empty; all hunk lines must have a prefix (space for context, + for added, - for removed). Context:\n{context_lines}\n---\nFix: add a space character to this blank line.",
                 ),
                 path,
+                Some(start_index + consumed + 1),
                 "ensure all blank lines within hunk sections have a space prefix",
             ));
         };
@@ -408,10 +410,11 @@ fn parse_hunk(
             '+' => HunkLineKind::Add,
             '-' => HunkLineKind::Remove,
             _ => {
-                return Err(syntax_error(
+                return Err(syntax_error_at(
                     "invalid_hunk_line",
                     format!("hunk line must start with space, +, or -, got: {line}"),
                     path,
+                    Some(start_index + consumed + 1),
                     "use only context, added, and removed lines inside hunks",
                 ))
             }
@@ -558,8 +561,7 @@ async fn apply_file_patches(
         .into_iter()
         .flatten()
         {
-            let resolved =
-                map_workspace_path_error(path, resolve_workspace_path(workspace_root, path))?;
+            let resolved = resolve_patch_path(workspace_root, path)?;
             let normalized = normalize_path(&resolved)?;
             patch_paths.insert((normalized.display().to_string(), path.to_string()));
         }
@@ -581,8 +583,7 @@ async fn apply_file_patches(
         diagnostics.extend(patch.diagnostics.clone());
         match patch_operation_kind(patch)? {
             PatchOperationKind::Add { path } => {
-                let target =
-                    map_workspace_path_error(path, resolve_workspace_path(workspace_root, path))?;
+                let target = resolve_patch_path(workspace_root, path)?;
                 let existing = load_state(&target, &mut state, &mut originals).await?;
                 if existing.is_some() {
                     return Err(existing_file(path));
@@ -603,11 +604,10 @@ async fn apply_file_patches(
                 });
             }
             PatchOperationKind::Delete { path } => {
-                let target =
-                    map_workspace_path_error(path, resolve_workspace_path(workspace_root, path))?;
+                let target = resolve_patch_path(workspace_root, path)?;
                 let existing = load_state(&target, &mut state, &mut originals)
                     .await?
-                    .ok_or_else(|| missing_file("delete", path))?;
+                    .ok_or_else(|| missing_file("delete", path, &target, workspace_root))?;
                 if !patch.hunks.is_empty() {
                     let _ = apply_hunks(path, existing, &patch.hunks)?;
                 }
@@ -619,11 +619,10 @@ async fn apply_file_patches(
                 });
             }
             PatchOperationKind::Modify { path } => {
-                let target =
-                    map_workspace_path_error(path, resolve_workspace_path(workspace_root, path))?;
+                let target = resolve_patch_path(workspace_root, path)?;
                 let existing = load_state(&target, &mut state, &mut originals)
                     .await?
-                    .ok_or_else(|| missing_file("update", path))?;
+                    .ok_or_else(|| missing_file("update", path, &target, workspace_root))?;
                 let updated = apply_hunks(path, existing, &patch.hunks)?;
                 state.insert(target, Some(updated));
                 changed_files.push(ApplyPatchChangedFile {
@@ -637,13 +636,11 @@ async fn apply_file_patches(
                 to,
                 with_edit,
             } => {
-                let source =
-                    map_workspace_path_error(from, resolve_workspace_path(workspace_root, from))?;
-                let target =
-                    map_workspace_path_error(to, resolve_workspace_path(workspace_root, to))?;
+                let source = resolve_patch_path(workspace_root, from)?;
+                let target = resolve_patch_path(workspace_root, to)?;
                 let existing = load_state(&source, &mut state, &mut originals)
                     .await?
-                    .ok_or_else(|| missing_file("rename", from))?;
+                    .ok_or_else(|| missing_file("rename", from, &source, workspace_root))?;
                 let target_existing = load_state(&target, &mut state, &mut originals).await?;
                 if target_existing.is_some() {
                     return Err(existing_file(to));
@@ -820,7 +817,7 @@ fn find_unique_match(
     hint: usize,
 ) -> Result<usize> {
     if needle.len() > lines.len() {
-        return Err(context_not_found(path, needle));
+        return Err(context_not_found(path, needle, lines, hint));
     }
 
     let mut matches = Vec::new();
@@ -830,7 +827,7 @@ fn find_unique_match(
         }
     }
     match matches.len() {
-        0 => Err(context_not_found(path, needle)),
+        0 => Err(context_not_found(path, needle, lines, hint)),
         1 => Ok(matches[0]),
         _ => Err(ambiguous_context(path, needle, lines, &matches, hint)),
     }
@@ -866,10 +863,12 @@ fn is_unsupported_git_feature(line: &str) -> bool {
 }
 
 fn strip_diff_prefix(path: &str) -> String {
-    path.strip_prefix("a/")
-        .or_else(|| path.strip_prefix("b/"))
-        .unwrap_or(path)
-        .to_string()
+    if let Some(rest) = path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")) {
+        if !Path::new(rest).is_absolute() {
+            return rest.to_string();
+        }
+    }
+    path.to_string()
 }
 
 fn validate_rename_paths(
@@ -931,9 +930,22 @@ fn syntax_error(
     path: Option<&str>,
     recovery_hint: impl Into<String>,
 ) -> anyhow::Error {
+    syntax_error_at(kind, message, path, None, recovery_hint)
+}
+
+fn syntax_error_at(
+    kind: &'static str,
+    message: impl Into<String>,
+    path: Option<&str>,
+    line: Option<usize>,
+    recovery_hint: impl Into<String>,
+) -> anyhow::Error {
     let mut details = serde_json::json!({ "rule": kind });
     if let Some(path) = path {
         details["path"] = serde_json::Value::String(path.to_string());
+    }
+    if let Some(line) = line {
+        details["line"] = serde_json::Value::from(line);
     }
     anyhow::Error::from(
         ToolError::new("invalid_patch_syntax", message)
@@ -976,7 +988,44 @@ fn duplicate_file_patch(path: &str) -> anyhow::Error {
     )
 }
 
-fn context_not_found(path: &str, needle: &[String]) -> anyhow::Error {
+fn context_not_found(
+    path: &str,
+    needle: &[String],
+    lines: &[String],
+    hint: usize,
+) -> anyhow::Error {
+    let hint_index = hint.saturating_sub(1).min(lines.len().saturating_sub(1));
+    let (window_start, window_end) = if lines.is_empty() {
+        (0, 0)
+    } else {
+        let window_start = hint_index.saturating_sub(5);
+        let window_end = (hint_index + 6).min(lines.len());
+        (window_start, window_end)
+    };
+    let nearby_lines = lines
+        .get(window_start..window_end)
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+        .map(|(offset, line)| {
+            serde_json::json!({
+                "line_number": window_start + offset + 1,
+                "text": line,
+            })
+        })
+        .collect::<Vec<_>>();
+    let nearby_preview = nearby_lines
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}: {}",
+                entry["line_number"].as_u64().unwrap_or_default(),
+                entry["text"].as_str().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     anyhow::Error::from(
         ToolError::new(
             "context_not_found",
@@ -985,9 +1034,14 @@ fn context_not_found(path: &str, needle: &[String]) -> anyhow::Error {
         .with_details(serde_json::json!({
             "path": path,
             "expected_lines": needle.iter().take(3).cloned().collect::<Vec<_>>().join("\\n"),
+            "nearby_range": {
+                "start": if lines.is_empty() { 0 } else { window_start + 1 },
+                "end": window_end,
+            },
+            "nearby_lines": nearby_lines,
         }))
         .with_recovery_hint(format!(
-            "read the exact target region in {path} and submit a hunk with matching context"
+            "read the exact target region in {path} and submit a hunk with matching context. Nearby current content:\n{nearby_preview}"
         )),
     )
 }
@@ -1104,20 +1158,28 @@ fn rename_requires_git_header(rename_from: &str, rename_to: &str) -> anyhow::Err
     )
 }
 
-fn path_escape(path: &str) -> anyhow::Error {
+fn path_escape(path: &str, resolved: &Path, workspace_root: &Path) -> anyhow::Error {
     anyhow::Error::from(
         ToolError::new(
             "path_escape",
             format!("patch path escapes workspace root: {path}"),
         )
         .with_details(serde_json::json!({
+            "requested_path": path,
             "path": path,
+            "resolved_path": resolved.display().to_string(),
+            "active_workspace_root": workspace_root.display().to_string(),
+            "cwd": std::env::current_dir()
+                .map(|cwd| cwd.display().to_string())
+                .unwrap_or_else(|_| "<unavailable>".to_string()),
         }))
-        .with_recovery_hint("use only workspace-relative paths inside the current execution root"),
+        .with_recovery_hint(
+            "use a normalized relative path inside the current workspace, or use an absolute path only when that exact filesystem target is intended",
+        ),
     )
 }
 
-fn missing_file(action: &str, path: &str) -> anyhow::Error {
+fn missing_file(action: &str, path: &str, resolved: &Path, workspace_root: &Path) -> anyhow::Error {
     anyhow::Error::from(
         ToolError::new(
             "missing_file",
@@ -1125,10 +1187,16 @@ fn missing_file(action: &str, path: &str) -> anyhow::Error {
         )
         .with_details(serde_json::json!({
             "action": action,
+            "requested_path": path,
             "path": path,
+            "resolved_path": resolved.display().to_string(),
+            "active_workspace_root": workspace_root.display().to_string(),
+            "cwd": std::env::current_dir()
+                .map(|cwd| cwd.display().to_string())
+                .unwrap_or_else(|_| "<unavailable>".to_string()),
         }))
         .with_recovery_hint(format!(
-            "read {path} first or adjust the patch so it targets an existing file"
+            "read {path} first or adjust the patch so it targets an existing file. If {path} was meant for another workspace, switch workspace first or provide the intended absolute path."
         )),
     )
 }
@@ -1148,14 +1216,19 @@ fn existing_file(path: &str) -> anyhow::Error {
     )
 }
 
-fn map_workspace_path_error<T>(path: &str, result: Result<T>) -> Result<T> {
-    result.map_err(|error| {
-        if error.to_string().contains("path escapes workspace root") {
-            path_escape(path)
-        } else {
-            error
-        }
-    })
+fn resolve_patch_path(workspace_root: &Path, path: &str) -> Result<PathBuf> {
+    let requested = Path::new(path);
+    if requested.is_absolute() {
+        return normalize_path(requested);
+    }
+
+    let normalized_root = normalize_path(workspace_root)?;
+    let candidate = normalized_root.join(requested);
+    let normalized_candidate = normalize_path(&candidate)?;
+    if !normalized_candidate.starts_with(&normalized_root) {
+        return Err(path_escape(path, &normalized_candidate, &normalized_root));
+    }
+    Ok(normalized_candidate)
 }
 
 #[cfg(test)]
@@ -1332,6 +1405,12 @@ rename to new.txt
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
         let tool_error = ToolError::from_anyhow(&error);
         assert_eq!(tool_error.kind, "context_not_found");
+        let details = tool_error.details.as_ref().unwrap();
+        assert!(details["nearby_lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["text"] == "hello"));
         assert_eq!(
             tokio::fs::read_to_string(&file).await.unwrap(),
             "hello\nworld\n"
@@ -1368,6 +1447,174 @@ rename to new.txt
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
         let tool_error = ToolError::from_anyhow(&error);
         assert_eq!(tool_error.kind, "path_escape");
+        let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["requested_path"], "../escape.txt");
+        assert!(details["resolved_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("escape.txt"));
+        assert_eq!(
+            details["active_workspace_root"],
+            normalize_path(dir.path()).unwrap().display().to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_supports_absolute_path_headers() {
+        let workspace = tempdir().unwrap();
+        let external = tempdir().unwrap();
+        let file = external.path().join("absolute.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+        let path = file.display();
+        let patch = format!(
+            r#"--- {path}
++++ {path}
+@@ -1,1 +1,1 @@
+-old
++new
+"#
+        );
+
+        let outcome = apply_patch(workspace.path(), &patch).await.unwrap();
+
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "new\n");
+        assert_eq!(outcome.changed_files[0].path, file.display().to_string());
+        assert_eq!(outcome.changed_paths, vec![file.display().to_string()]);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_keeps_prefixed_absolute_like_paths_workspace_relative() {
+        let dir = tempdir().unwrap();
+        let patch = r#"--- /dev/null
++++ b//tmp/target.txt
+@@ -0,0 +1,1 @@
++safe
+"#;
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("b/tmp/target.txt"))
+                .await
+                .unwrap(),
+            "safe\n"
+        );
+        assert_eq!(outcome.changed_files[0].path, "b//tmp/target.txt");
+        assert_eq!(
+            outcome.changed_paths,
+            vec![dir.path().join("b/tmp/target.txt").display().to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_preserves_relative_path_semantics() {
+        let dir = tempdir().unwrap();
+        tokio::fs::write(dir.path().join("relative.txt"), "old\n")
+            .await
+            .unwrap();
+
+        let patch = r#"--- a/relative.txt
++++ b/relative.txt
+@@ -1,1 +1,1 @@
+-old
++new
+"#;
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("relative.txt"))
+                .await
+                .unwrap(),
+            "new\n"
+        );
+        assert_eq!(outcome.changed_files[0].path, "relative.txt");
+        assert_eq!(
+            outcome.changed_paths,
+            vec![dir.path().join("relative.txt").display().to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_context_not_found_diagnostic_is_bounded() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        let content = (1..=30)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        tokio::fs::write(&file, content).await.unwrap();
+
+        let stale_context = (1..=30)
+            .map(|line| format!("-stale {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let patch = format!(
+            r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1,30 +1,1 @@
+{stale_context}
++replacement
+"#
+        );
+
+        let error = apply_patch(dir.path(), &patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "context_not_found");
+        let details = tool_error.details.as_ref().unwrap();
+        let nearby_lines = details["nearby_lines"].as_array().unwrap();
+        assert!(nearby_lines.len() <= 11);
+        assert_eq!(details["nearby_range"]["start"], 1);
+        assert_eq!(details["nearby_range"]["end"], nearby_lines.len());
+        assert!(tool_error.recovery_hint.unwrap().len() < 1000);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_context_not_found_empty_file_has_non_inverted_range() {
+        let dir = tempdir().unwrap();
+        tokio::fs::write(dir.path().join("empty.txt"), "")
+            .await
+            .unwrap();
+
+        let patch = r#"--- a/empty.txt
++++ b/empty.txt
+@@ -1,1 +1,1 @@
+-missing
++present
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["nearby_range"]["start"], 0);
+        assert_eq!(details["nearby_range"]["end"], 0);
+        assert!(details["nearby_lines"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_patch_missing_file_reports_resolution_context() {
+        let dir = tempdir().unwrap();
+        let patch = r#"--- a/missing.txt
++++ b/missing.txt
+@@ -1,1 +1,1 @@
+-old
++new
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "missing_file");
+        let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["requested_path"], "missing.txt");
+        assert!(details["resolved_path"]
+            .as_str()
+            .unwrap()
+            .ends_with("missing.txt"));
+        assert_eq!(
+            details["active_workspace_root"],
+            normalize_path(dir.path()).unwrap().display().to_string()
+        );
     }
 
     #[tokio::test]
@@ -1403,6 +1650,16 @@ rename to new.txt
             tool_error.details.as_ref().unwrap()["rule"],
             "legacy_patch_format"
         );
+    }
+
+    #[test]
+    fn parse_patch_rejects_invalid_hunk_empty_line_with_position() {
+        let error = parse_patch("--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +1,1 @@\n\n").unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_patch_syntax");
+        let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["line"], 4);
+        assert_eq!(details["rule"], "invalid_hunk_empty_line");
     }
 
     #[test]

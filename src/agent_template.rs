@@ -945,31 +945,25 @@ mod tests {
 
     #[test]
     fn seed_builtin_templates_is_idempotent() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = tempdir().unwrap();
-        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+        let templates = templates_root_for_home(home.path());
 
-        seed_builtin_templates().unwrap();
-        let developer_agents = templates_root().unwrap().join("holon-developer/AGENTS.md");
+        seed_builtin_templates_for_home(home.path()).unwrap();
+        let developer_agents = templates.join("holon-developer/AGENTS.md");
         assert!(developer_agents.is_file());
 
         fs::write(&developer_agents, "custom").unwrap();
-        seed_builtin_templates().unwrap();
+        seed_builtin_templates_for_home(home.path()).unwrap();
         assert_eq!(fs::read_to_string(&developer_agents).unwrap(), "custom");
     }
 
     #[test]
     fn seed_builtin_templates_writes_prefixed_default_template() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = tempdir().unwrap();
-        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+        let templates = templates_root_for_home(home.path());
 
-        seed_builtin_templates().unwrap();
-        let agents_md = templates_root().unwrap().join("holon-default/AGENTS.md");
+        seed_builtin_templates_for_home(home.path()).unwrap();
+        let agents_md = templates.join("holon-default/AGENTS.md");
         assert!(agents_md.is_file());
         assert!(fs::read_to_string(agents_md)
             .unwrap()
@@ -978,14 +972,11 @@ mod tests {
 
     #[test]
     fn seed_builtin_templates_upgrades_managed_builtin_content() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = tempdir().unwrap();
-        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+        let templates = templates_root_for_home(home.path());
 
-        seed_builtin_templates().unwrap();
-        let template_dir = templates_root().unwrap().join("holon-reviewer");
+        seed_builtin_templates_for_home(home.path()).unwrap();
+        let template_dir = templates.join("holon-reviewer");
         let agents_md = template_dir.join("AGENTS.md");
         let state_path = builtin_template_state_path(&template_dir);
         let original = fs::read_to_string(&agents_md).unwrap();
@@ -994,7 +985,7 @@ mod tests {
         state.version = 0;
         fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
 
-        seed_builtin_templates().unwrap();
+        seed_builtin_templates_for_home(home.path()).unwrap();
 
         assert_eq!(fs::read_to_string(&agents_md).unwrap(), original);
         let upgraded: BuiltinTemplateState =
@@ -1004,17 +995,14 @@ mod tests {
 
     #[test]
     fn seed_builtin_templates_tolerates_empty_builtin_state_file() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = tempdir().unwrap();
-        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+        let templates = templates_root_for_home(home.path());
 
-        seed_builtin_templates().unwrap();
-        let template_dir = templates_root().unwrap().join("holon-default");
+        seed_builtin_templates_for_home(home.path()).unwrap();
+        let template_dir = templates.join("holon-default");
         fs::write(builtin_template_state_path(&template_dir), "").unwrap();
 
-        seed_builtin_templates().unwrap();
+        seed_builtin_templates_for_home(home.path()).unwrap();
 
         assert!(template_dir.join("AGENTS.md").is_file());
     }

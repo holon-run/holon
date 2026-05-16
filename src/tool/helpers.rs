@@ -2,7 +2,7 @@
 //!
 //! This module contains shared utility functions used by tool implementations.
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use serde_json::Value;
@@ -90,21 +90,6 @@ pub(crate) fn normalize_optional_non_empty(value: Option<String>) -> Option<Stri
     value
         .map(|entry| entry.trim().to_string())
         .filter(|entry| !entry.is_empty())
-}
-
-/// Resolve a path relative to the workspace root, ensuring it doesn't escape.
-pub(crate) fn resolve_workspace_path(root: &Path, relative: &str) -> Result<PathBuf> {
-    let candidate = if Path::new(relative).is_absolute() {
-        PathBuf::from(relative)
-    } else {
-        root.join(relative)
-    };
-    let normalized_root = normalize_path(root)?;
-    let normalized_candidate = normalize_path(&candidate)?;
-    if !normalized_candidate.starts_with(&normalized_root) {
-        return Err(anyhow!("path escapes workspace root"));
-    }
-    Ok(candidate)
 }
 
 /// Normalize a path by resolving . and .. components.
