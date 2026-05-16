@@ -14,6 +14,7 @@ use tokio::{
     sync::RwLock,
     task::{spawn_blocking, JoinHandle},
 };
+use tracing::warn;
 
 use crate::{
     agent_template::{
@@ -30,9 +31,9 @@ use crate::{
     storage::AppStorage,
     system::WorkspaceAccessMode,
     types::{
-        AgentIdentityRecord, AgentIdentityView, AgentKind, AgentListEntry, AgentOwnership,
-        AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus, AgentSummary,
-        AgentVisibility, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord,
+        AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
+        AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus,
+        AgentSummary, AgentVisibility, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord,
         ExternalTriggerStatus, OperatorNotificationRecord, RuntimeFailureSummary, TaskRecord,
         TaskStatus, TranscriptEntry, TranscriptEntryKind, TrustLevel, WorkspaceEntry,
         WorkspaceOccupancyRecord,
@@ -95,6 +96,12 @@ struct HostInner {
 struct AgentEntry {
     runtime: RuntimeHandle,
     task: JoinHandle<()>,
+}
+
+fn stopped_unloaded_agent(agent_id: &str) -> AgentState {
+    let mut agent = AgentState::new(agent_id.to_string());
+    agent.status = AgentStatus::Stopped;
+    agent
 }
 
 #[derive(Clone)]
@@ -554,11 +561,59 @@ impl RuntimeHost {
             record.status == AgentRegistryStatus::Active
                 && record.visibility == AgentVisibility::Public
         }) {
-            let runtime = self.get_or_create_agent(&identity.agent_id).await?;
-            entries.push(runtime.agent_list_entry().await?);
+            let runtime = {
+                let agents = self.inner.agents.read().await;
+                agents
+                    .get(&identity.agent_id)
+                    .filter(|entry| !entry.task.is_finished())
+                    .map(|entry| entry.runtime.clone())
+            };
+            let entry = if let Some(runtime) = runtime {
+                runtime.agent_list_entry().await?
+            } else {
+                self.agent_list_entry_from_storage(&identity)?
+            };
+            entries.push(entry);
         }
         entries.sort_by(|left, right| left.identity.agent_id.cmp(&right.identity.agent_id));
         Ok(entries)
+    }
+
+    fn agent_list_entry_from_storage(
+        &self,
+        identity: &AgentIdentityRecord,
+    ) -> Result<AgentListEntry> {
+        let storage = AppStorage::new(self.agent_data_dir(&identity.agent_id))?;
+        let agent = match storage.read_agent() {
+            Ok(Some(agent)) => agent,
+            Ok(None) => stopped_unloaded_agent(&identity.agent_id),
+            Err(error) => {
+                warn!(
+                    agent_id = %identity.agent_id,
+                    error = %error,
+                    "failed to read agent state for /agents/list; using stopped placeholder"
+                );
+                stopped_unloaded_agent(&identity.agent_id)
+            }
+        };
+        let model = crate::runtime::agent_model_state_for_catalog(
+            &RuntimeModelCatalog::from_config(self.config()),
+            &self.runtime_context_config(),
+            &agent,
+        );
+        let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
+        Ok(AgentListEntry {
+            identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),
+            lifecycle: AgentLifecycleHint::from_status(&agent.id, agent.status.clone()),
+            status: agent.status,
+            pending: agent.pending,
+            current_run_id: agent.current_run_id,
+            waiting_reason,
+            model: (&model).into(),
+            active_workspace_entry: agent
+                .active_workspace_entry
+                .map(crate::types::ActiveWorkspaceEntry::without_projection_metadata),
+        })
     }
 
     pub fn public_agent_activity_snapshots(&self) -> Result<Vec<PublicAgentActivitySnapshot>> {

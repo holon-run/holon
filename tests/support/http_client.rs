@@ -3,6 +3,8 @@
 #![allow(dead_code, unused_imports)]
 
 use std::{
+    fs::OpenOptions,
+    io::Write,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Command,
@@ -178,6 +180,82 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
         .active_workspace_entry
         .as_ref()
         .is_some_and(|entry| entry.projection_metadata.is_none()));
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn agent_list_entries_tolerate_unloaded_agent_with_corrupt_work_queue() -> Result<()> {
+    let data_dir = tempdir()?.keep();
+    let workspace_dir = tempdir()?.keep();
+    let mut config = test_config_with_paths(
+        data_dir.clone(),
+        workspace_dir,
+        "127.0.0.1:0".to_string(),
+        ControlAuthMode::Auto,
+    );
+    let (host, _base, server) = spawn_server_with_config(config.clone()).await?;
+    host.create_named_agent("corrupt-list", None).await?;
+    server.abort();
+
+    let work_items_path = data_dir
+        .join("agents")
+        .join("corrupt-list")
+        .join(".holon")
+        .join("ledger")
+        .join("work_items.jsonl");
+    if let Some(parent) = work_items_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&work_items_path)?;
+    writeln!(file, "{{not valid json")?;
+    let agent_state_path = data_dir
+        .join("agents")
+        .join("corrupt-list")
+        .join(".holon")
+        .join("state")
+        .join("agent.json");
+    if agent_state_path.exists() {
+        std::fs::remove_file(&agent_state_path)?;
+    }
+
+    config.workspace_dir = tempdir()?.keep();
+    let (_host, base, server) = spawn_server_with_config(config.clone()).await?;
+    let response = reqwest::Client::new()
+        .get(format!("{base}/agents/list"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = response.json().await?;
+    let entries = payload
+        .as_array()
+        .expect("agent list response should be an array");
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["identity"]["agent_id"] == "corrupt-list"),
+        "agent list should include the unloaded public agent"
+    );
+    let corrupt_entry = entries
+        .iter()
+        .find(|entry| entry["identity"]["agent_id"] == "corrupt-list")
+        .expect("corrupt-list entry should be present");
+    assert_eq!(
+        corrupt_entry["status"], "stopped",
+        "unloaded agent without agent.json should not be shown as booting"
+    );
+
+    let mut client_config = config;
+    client_config.http_addr = base.trim_start_matches("http://").to_string();
+    let entries = LocalClient::new(client_config)?
+        .list_agent_entries()
+        .await?;
+    assert!(entries
+        .iter()
+        .any(|entry| entry.identity.agent_id == "corrupt-list"));
 
     server.abort();
     Ok(())
