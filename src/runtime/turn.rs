@@ -396,6 +396,7 @@ fn normalize_provider_attempt_timing(
     if timeline.attempts.len() != 1 {
         return Some(timeline);
     }
+
     for attempt in &mut timeline.attempts {
         if attempt.started_at.is_none() {
             attempt.started_at = Some(started_at);
@@ -3267,7 +3268,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_provider_attempt_timing_only_backfills_single_attempt_timeline() {
+    fn normalize_provider_attempt_timing_backfills_missing_attempt_timing() {
         fn attempt(attempt: usize) -> crate::provider::ProviderAttemptRecord {
             crate::provider::ProviderAttemptRecord {
                 provider: "test".into(),
@@ -3314,10 +3315,11 @@ mod tests {
             normalize_provider_attempt_timing(multiple.into(), started_at, completed_at, 42)
                 .expect("multi-attempt timeline");
 
-        assert!(multiple
-            .attempts
-            .iter()
-            .all(|attempt| attempt.duration_ms.is_none()));
+        for attempt in &multiple.attempts {
+            assert_eq!(attempt.started_at, None);
+            assert_eq!(attempt.completed_at, None);
+            assert_eq!(attempt.duration_ms, None);
+        }
     }
 
     #[test]
