@@ -454,11 +454,17 @@ async fn search_configured_provider(
         WebProviderKind::Exa => {
             exa_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
+        WebProviderKind::Perplexity => {
+            perplexity_search(query, max_results, provider_id, provider_config, fetch_config).await
+        }
+        WebProviderKind::Firecrawl => {
+            firecrawl_search(query, max_results, provider_id, provider_config, fetch_config).await
+        }
         kind => Err(search_error(
             "provider_unavailable",
             format!("WebSearch provider kind `{kind:?}` is reserved for future provider support"),
             provider_id,
-            "configure a duckduckgo, searxng, brave, tavily, or exa provider for this Holon version",
+            "configure a duckduckgo, searxng, brave, tavily, exa, perplexity, or firecrawl provider for this Holon version",
         )),
     }
 }
@@ -869,6 +875,237 @@ async fn exa_search(
     Ok(results)
 }
 
+async fn perplexity_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
+) -> Result<Vec<WebSearchResult>> {
+    let api_key = &provider.api_key;
+    if api_key.is_empty() {
+        return Err(search_error(
+            "provider_unavailable",
+            "Perplexity requires an API key (set credential_profile on the provider)",
+            provider_id,
+            "add a credential_profile with an api_key in the credential store",
+        ));
+    }
+    let client = Client::builder().timeout(timeout(fetch_config)).build()?;
+    let body = serde_json::json!({
+        "model": "sonar",
+        "messages": [
+            {
+                "role": "user",
+                "content": query,
+            }
+        ],
+        "max_tokens": 1024,
+    });
+    let base_url = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.perplexity.ai");
+    let response = client
+        .post(format!(
+            "{}/chat/completions",
+            base_url.trim_end_matches('/')
+        ))
+        .header("Content-Type", "application/json")
+        .bearer_auth(api_key.as_str())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| {
+            search_error(
+                "network_failed",
+                format!("Perplexity request failed: {error}"),
+                provider_id,
+                "retry later or check the API key",
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let kind = if status == reqwest::StatusCode::UNAUTHORIZED {
+            "provider_unavailable"
+        } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            "rate_limited"
+        } else {
+            "network_failed"
+        };
+        return Err(search_error(
+            kind,
+            format!("Perplexity returned HTTP {status}"),
+            provider_id,
+            "check the API key or retry later",
+        ));
+    }
+    let body = read_search_response(response, provider_id).await?;
+    let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("Perplexity returned invalid JSON: {error}"),
+            provider_id,
+            "check the API key or retry later",
+        )
+    })?;
+    let summary = payload
+        .get("choices")
+        .and_then(|choices| choices.as_array())
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_str())
+        .map(str::trim)
+        .filter(|content| !content.is_empty());
+    let results = payload
+        .get("search_results")
+        .and_then(|results| results.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let title = entry
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let url = entry
+                .get("url")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if title.is_empty() || url.is_empty() {
+                return None;
+            }
+            Some(WebSearchResult {
+                title,
+                url,
+                snippet: summary.map(str::to_string),
+                source: provider_id.to_string(),
+                published_at: entry
+                    .get("date")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+            })
+        })
+        .take(max_results)
+        .collect::<Vec<_>>();
+    if results.is_empty() {
+        return Err(search_error(
+            "parse_failed",
+            "Perplexity returned no parseable search results",
+            provider_id,
+            "try a different query or check the API subscription",
+        ));
+    }
+    Ok(results)
+}
+
+async fn firecrawl_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
+) -> Result<Vec<WebSearchResult>> {
+    let api_key = &provider.api_key;
+    if api_key.is_empty() {
+        return Err(search_error(
+            "provider_unavailable",
+            "Firecrawl requires an API key (set credential_profile on the provider)",
+            provider_id,
+            "add a credential_profile with an api_key in the credential store",
+        ));
+    }
+    let client = Client::builder().timeout(timeout(fetch_config)).build()?;
+    let body = serde_json::json!({
+        "query": query,
+        "limit": max_results.min(20),
+    });
+    let base_url = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.firecrawl.dev");
+    let response = client
+        .post(format!("{}/v1/search", base_url.trim_end_matches('/')))
+        .header("Content-Type", "application/json")
+        .bearer_auth(api_key.as_str())
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| {
+            search_error(
+                "network_failed",
+                format!("Firecrawl request failed: {error}"),
+                provider_id,
+                "retry later or check the API key",
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let kind = if status == reqwest::StatusCode::UNAUTHORIZED {
+            "provider_unavailable"
+        } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            "rate_limited"
+        } else {
+            "network_failed"
+        };
+        return Err(search_error(
+            kind,
+            format!("Firecrawl returned HTTP {status}"),
+            provider_id,
+            "check the API key or retry later",
+        ));
+    }
+    let body = read_search_response(response, provider_id).await?;
+    let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("Firecrawl returned invalid JSON: {error}"),
+            provider_id,
+            "check the API key or retry later",
+        )
+    })?;
+    let results = payload
+        .get("data")
+        .and_then(|results| results.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let title = entry.get("title")?.as_str()?.trim().to_string();
+            let url = entry.get("url")?.as_str()?.trim().to_string();
+            if title.is_empty() || url.is_empty() {
+                return None;
+            }
+            Some(WebSearchResult {
+                title,
+                url,
+                snippet: entry
+                    .get("description")
+                    .or_else(|| entry.get("markdown"))
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                source: provider_id.to_string(),
+                published_at: None,
+            })
+        })
+        .take(max_results)
+        .collect::<Vec<_>>();
+    if results.is_empty() {
+        return Err(search_error(
+            "parse_failed",
+            "Firecrawl returned no parseable search results",
+            provider_id,
+            "try a different query or check the API subscription",
+        ));
+    }
+    Ok(results)
+}
+
 fn normalize_max_results(requested: Option<usize>, configured: usize) -> Result<usize> {
     if requested == Some(0) {
         return Err(search_error(
@@ -1227,7 +1464,7 @@ mod tests {
             vec![
                 (
                     "future",
-                    test_provider(WebProviderKind::Perplexity, "https://future.example"),
+                    test_provider(WebProviderKind::GeminiNative, "https://future.example"),
                 ),
                 (
                     "native",
@@ -1507,6 +1744,46 @@ mod tests {
         })
     }
 
+    fn perplexity_results_json() -> serde_json::Value {
+        serde_json::json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "Perplexity summarized these search results."
+                    }
+                }
+            ],
+            "search_results": [
+                {
+                    "title": "Perplexity Search",
+                    "url": "https://www.perplexity.ai",
+                    "date": "2026-05-16"
+                },
+                {
+                    "title": "Perplexity Docs",
+                    "url": "https://docs.perplexity.ai"
+                }
+            ]
+        })
+    }
+
+    fn firecrawl_results_json() -> serde_json::Value {
+        serde_json::json!({
+            "data": [
+                {
+                    "title": "Firecrawl Search",
+                    "url": "https://www.firecrawl.dev",
+                    "description": "Search and scrape API"
+                },
+                {
+                    "title": "Firecrawl Docs",
+                    "url": "https://docs.firecrawl.dev",
+                    "markdown": "Firecrawl API documentation"
+                }
+            ]
+        })
+    }
+
     fn empty_results_json() -> serde_json::Value {
         serde_json::json!({ "results": [] })
     }
@@ -1643,6 +1920,65 @@ mod tests {
             Some("Semantic search engine")
         );
         assert_eq!(results[1].snippet.as_deref(), Some("Exa API documentation"));
+    }
+
+    #[tokio::test]
+    async fn perplexity_search_integration_success() {
+        let router = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(|| async { axum::Json(perplexity_results_json()) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Perplexity, &base_url);
+        let results = perplexity_search(
+            "test",
+            5,
+            "perplexity_test",
+            &provider,
+            &test_fetch_config(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Perplexity Search");
+        assert_eq!(results[0].url, "https://www.perplexity.ai");
+        assert_eq!(
+            results[0].snippet.as_deref(),
+            Some("Perplexity summarized these search results.")
+        );
+        assert_eq!(results[0].published_at.as_deref(), Some("2026-05-16"));
+    }
+
+    #[tokio::test]
+    async fn firecrawl_search_integration_success() {
+        let router = axum::Router::new().route(
+            "/v1/search",
+            axum::routing::post(|| async { axum::Json(firecrawl_results_json()) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Firecrawl, &base_url);
+        let results =
+            firecrawl_search("test", 5, "firecrawl_test", &provider, &test_fetch_config())
+                .await
+                .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Firecrawl Search");
+        assert_eq!(
+            results[1].snippet.as_deref(),
+            Some("Firecrawl API documentation")
+        );
     }
 
     #[tokio::test]
