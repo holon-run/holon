@@ -166,6 +166,12 @@ Phase-1 visibility rules:
   winning provider
 - provider-attempt timing fields measure the provider request attempt itself;
   retry backoff remains represented separately as `backoff_ms`
+- `duration_ms`, when present, records provider-call wall-clock time for each
+  individual attempt from provider request dispatch through complete response
+  or error
+- providers should emit per-attempt `duration_ms` when they construct
+  multi-attempt timelines; runtime normalization may backfill timing from the
+  outer provider round only for single-attempt timelines
 - each provider-attempt record may carry its own `token_usage` when that
   attempt reported usage
 - failed provider rounds preserve the attempt timeline alongside the final

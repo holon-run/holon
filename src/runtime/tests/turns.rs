@@ -866,7 +866,7 @@ async fn runtime_persists_provider_attempt_timeline_on_successful_round() {
     for attempt in timeline["attempts"].as_array().unwrap() {
         assert!(attempt.get("started_at").is_none());
         assert!(attempt.get("completed_at").is_none());
-        assert!(attempt.get("duration_ms").is_none());
+        assert!(attempt["duration_ms"].as_u64().is_some());
     }
     assert_eq!(
         timeline["aggregated_token_usage"]["total_tokens"].as_u64(),
@@ -889,6 +889,11 @@ async fn runtime_persists_provider_attempt_timeline_on_successful_round() {
             .len(),
         2
     );
+    assert!(provider_event.data["provider_attempt_timeline"]["attempts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|attempt| attempt["duration_ms"].as_u64().is_some()));
     assert!(provider_event.data["context_build_ms"].as_u64().is_some());
     assert!(provider_event.data["provider_round_ms"].as_u64().is_some());
     assert!(provider_event.data["provider_started_at"]
@@ -1015,6 +1020,11 @@ async fn runtime_failure_artifacts_preserve_provider_attempt_timeline() {
             .unwrap()
             .len(),
         1
+    );
+    assert!(
+        failure.data["provider_attempt_timeline"]["attempts"][0]["duration_ms"]
+            .as_u64()
+            .is_some()
     );
     assert_eq!(
         failure.data["provider_attempt_timeline"]["attempts"][0]["transport_diagnostics"]
