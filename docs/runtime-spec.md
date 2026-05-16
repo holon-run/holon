@@ -1153,7 +1153,7 @@ type MessageOrigin =
   operator by default.
 - `webhook` is machine-originated and should remain structured as long as
   possible.
-- `callback` is from an external system responding to a `CreateExternalTrigger`
+- `callback` is from an external system using an external ingress
   capability.
 - `system` exists so runtime-generated work remains inspectable.
 - `task` is how background work rejoins the main queue without losing identity.
@@ -2128,8 +2128,9 @@ The external system only signals that something changed.
 - When the agent becomes eligible, the runtime emits a `SystemTick`
 - The runtime may stop there as `liveness_only`, or may continue into a new
   model-visible turn if the wake hint includes contentful body metadata
-- The wake hint preserves trigger id, waiting intent id, description, source,
-  scope, content type, payload body when present, and correlation/causation ids
+- The wake hint preserves trigger id, target agent id, delivery mode, optional or
+  correlated source, content type, payload body when present,
+  correlation/causation ids, and any correlated waiting intent ids
 
 ### Runtime Behavior
 
@@ -2150,83 +2151,102 @@ external trigger.
 
 ### Purpose
 
-- Agents can express "wake me when this condition becomes true"
-- External systems register watches using provider-specific logic
-- When conditions fire, external systems use a scoped trigger URL
+- The runtime provisions a stable ingress capability for each agent and
+  delivery mode
+- External systems register watches using provider-specific logic and the
+  capability URL
+- When conditions fire, external systems use the trigger URL
 - Holon normalizes external trigger deliveries into standard queued messages or
   wake hints
+- WorkItems and waiting records describe what the agent should inspect after
+  delivery and may reference the capability, but they do not own it
 
 This keeps Holon provider-agnostic while supporting rich external triggers.
+Source labels belong to delivery provenance, provider subscription metadata, or
+waiting-state metadata; they do not partition capability identity.
 
 ### External Trigger Descriptor
 
-When an agent creates an external trigger capability, the runtime returns:
+When the runtime exposes an external trigger capability, it returns:
 
 ```ts
 type ExternalTriggerCapability = {
-  waitingIntentId: string
   externalTriggerId: string
   triggerUrl: string
   targetAgentId: string
-  scope: 'work_item' | 'agent'
   delivery_mode: 'wake_hint' | 'enqueue_message'
+  status: 'active'
 }
 ```
 
-### CreateExternalTrigger Flow
+The descriptor is keyed by target agent and delivery mode. The runtime should
+provision or return an existing active descriptor for that pair instead of
+minting duplicate callback URLs. Provisioning may happen at agent creation, on
+first descriptor access, or when a provider adapter needs the descriptor.
 
-1. Agent calls `CreateExternalTrigger` with:
-   - `description`: human-readable description and follow-up instruction
-   - `source`: integration identifier (e.g., "github", "slack")
-   - `scope`: `work_item` for a wait tied to the current work item, or `agent`
-     for a long-running integration entry point
-   - `delivery_mode`: whether to enqueue content or just wake
+### Default External Ingress Flow
 
-2. Runtime creates:
-   - A `WaitingIntentRecord` with description, source, scope, and optional
-     bound work item id for `work_item` scope
-   - A `ExternalTriggerRecord` with a secure token
-   - A signed callback URL for external delivery
+The normal flow does not require the model to call a trigger-creation tool:
 
-   `work_item` scope requires a current work item. Creation fails if there is no
-   current work item to anchor the waiting intent.
+1. Runtime provisions, or lazily ensures, the default
+   `ExternalTriggerRecord` for the target agent and delivery mode:
+   - an `ExternalTriggerRecord` with a secure token
+   - a signed callback URL for external delivery
 
-3. Agent passes the callback capability to an external tool/service
+2. Runtime exposes descriptor status or the callback capability through agent
+   context, status, provider configuration, or another trusted integration
+   surface.
 
-4. External system registers the watch and calls back on completion
+3. Provider adapters, skills, MCP servers, or external services register their
+   watches using the callback capability.
+
+4. External system calls back when the condition changes.
+
+`CreateExternalTrigger`, if retained, is a compatibility or diagnostic alias for
+returning this default ingress capability for a `delivery_mode`. `source`,
+`description`, and `scope` are not capability creation fields.
+
+This flow does not create a `WaitingIntentRecord`.
+
+Waiting state is represented separately. Current WorkItems can use `blocked_by`
+to describe what is pending. A future `RecordExternalWait` tool may store
+`description`, `source`, `external_ref`, optional `external_trigger_id`, and an
+optional bound work item id.
 
 ### External Trigger Ingress
 
 When an external system delivers to the trigger URL:
 
 1. Runtime validates the token against stored descriptors
-2. Checks that the waiting intent is still active
+2. Checks that the descriptor is active and targets an agent that can receive
+   the delivery
 3. Based on `delivery_mode`:
    - `enqueue_message`: enqueues structured content as a message
    - `wake_hint`: submits a wake hint (may become `SystemTick`)
 4. Updates delivery tracking (trigger count, last triggered at)
-5. Records callback provenance including waiting intent id, external trigger
-   id, scope, source, resource, and the bound work item id when present
+5. Records callback provenance including external trigger id, target agent id,
+   delivery mode, optional source/resource metadata supplied by the delivery or
+   correlated wait, and correlated waiting/work-item ids when present
 
-External trigger delivery does not automatically clear `blocked_by`, cancel the
-waiting intent, or complete the work item. The delivery wakes or re-enters the
+External trigger delivery does not require an active waiting intent. It also
+does not automatically clear `blocked_by`, cancel waiting state, complete the
+work item, or revoke the ingress capability. The delivery wakes or re-enters the
 agent with provenance; the agent must inspect the evidence and explicitly call
-`UpdateWorkItem`, `CompleteWorkItem`, or `CancelExternalTrigger` as appropriate.
+`UpdateWorkItem`, `CompleteWorkItem`, or a wait-cancellation tool as appropriate.
+Normal wait cleanup should not call `CancelExternalTrigger` unless the agent
+intentionally wants to revoke or rotate the ingress capability.
 
 ### CancelExternalTrigger
 
-Agents should cancel waiting intents when:
+`CancelExternalTrigger`, if retained, is a legacy/admin surface for explicit
+capability revocation during cleanup, rotation, administrative cleanup, or agent
+removal. It revokes the
+agent-level external trigger descriptor so future use of the trigger URL fails
+and preserves audit records.
 
-- The condition is no longer relevant
-- The agent completes work regardless of the external condition
-- Cleanup is needed to avoid accumulating abandoned callbacks
-
-Cancellation revokes the external trigger and marks the waiting intent as
-cancelled. Runtime cleanup also cancels work-item-scoped waiting intents when
-the bound work item completes, when active work switches away from that item, or
-when a new work-item-scoped trigger replaces the previous waiting condition for
-the same work item. Agent-scoped triggers are not removed by ordinary work-item
-cleanup.
+WorkItem cleanup cancels or marks inactive WorkItem-bound waiting state only. It
+must not revoke an agent-level external trigger capability. The absence of an
+active WorkItem is not a reason to remove the capability.
 
 ## Background Task Recovery
 
