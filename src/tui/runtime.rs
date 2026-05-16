@@ -3,11 +3,11 @@ use super::state::TuiClientState;
 use super::*;
 use crate::client::{
     AgentStateSnapshot, AgentStreamEvent, EventPageRequest, EventPageResponse, EventStreamRequest,
-    LocalEventStream, LocalHttpError, StreamEventEnvelope,
+    LocalEventStream, LocalHttpError, StreamEventEnvelope, TUI_TIMEOUTS,
 };
 use tokio::sync::mpsc;
 
-const STREAM_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+const STREAM_RECONNECT_DELAY: Duration = TUI_TIMEOUTS.reconnect;
 const REFRESH_RETRY_DELAY: Duration = Duration::from_secs(1);
 const AGENT_LIST_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const TASK_LIMIT: usize = 40;

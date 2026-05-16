@@ -83,6 +83,7 @@ const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
 const DEFAULT_EVENT_STREAM_WINDOW: usize = 128;
 const MAX_EVENT_STREAM_WINDOW: usize = 512;
 const EVENT_STREAM_POLL_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) const EVENT_STREAM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
 impl AppState {
     pub fn for_tcp(host: RuntimeHost) -> Self {
@@ -1411,7 +1412,7 @@ pub async fn events_stream(
     });
     let stream = ReceiverStream::new(rx);
     let keep_alive = KeepAlive::new()
-        .interval(Duration::from_secs(15))
+        .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
         .text("heartbeat");
     Ok(Sse::new(stream).keep_alive(keep_alive))
 }

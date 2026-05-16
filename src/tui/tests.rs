@@ -2573,6 +2573,41 @@ fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
 }
 
 #[test]
+fn heartbeat_interval_is_less_than_client_stream_idle_timeout() {
+    assert!(
+        crate::http::EVENT_STREAM_HEARTBEAT_INTERVAL
+            < crate::client::TUI_TIMEOUTS.get(crate::client::TuiTimeoutKind::StreamIdle)
+    );
+}
+
+#[test]
+fn reader_idle_timeout_message_schedules_reconnect() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.connection_state = TuiConnectionState::Streaming;
+    let tx = app.runtime_tx.clone();
+
+    tx.send(TuiRuntimeMessage::Disconnected {
+        error: "event stream idle timeout after 45s".into(),
+    })
+    .unwrap();
+    assert!(app.process_runtime_messages());
+
+    assert!(matches!(
+        app.connection_state,
+        TuiConnectionState::Reconnecting { attempt: 1, .. }
+    ));
+    assert_eq!(
+        app.connection_detail(),
+        Some("event stream idle timeout after 45s")
+    );
+    assert!(app.reconnect_deadline.is_some());
+}
+
+#[test]
 fn disconnect_message_schedules_reconnect() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
