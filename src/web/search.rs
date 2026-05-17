@@ -1379,6 +1379,9 @@ mod tests {
                         kind: WebProviderKind::Searxng,
                         base_url: None,
                         api_key: String::new(),
+                        command: None,
+                        output: None,
+                        limits: Default::default(),
                     },
                 ),
                 ("good", test_provider(WebProviderKind::Searxng, &good_url)),
@@ -1533,6 +1536,9 @@ mod tests {
                         kind: WebProviderKind::Searxng,
                         base_url: None,
                         api_key: String::new(),
+                        command: None,
+                        output: None,
+                        limits: Default::default(),
                     },
                 ),
                 ("good", test_provider(WebProviderKind::Searxng, &good_url)),
@@ -1635,6 +1641,9 @@ mod tests {
             kind,
             base_url: Some(base_url.to_string()),
             api_key: "test-key-123".to_string(),
+            command: None,
+            output: None,
+            limits: Default::default(),
         }
     }
 
@@ -2093,6 +2102,9 @@ mod tests {
             kind: WebProviderKind::Perplexity,
             base_url: Some("http://localhost:1".to_string()),
             api_key: String::new(),
+            command: None,
+            output: None,
+            limits: Default::default(),
         };
 
         let err = perplexity_search(
@@ -2194,6 +2206,9 @@ mod tests {
             kind: WebProviderKind::Firecrawl,
             base_url: Some("http://localhost:1".to_string()),
             api_key: String::new(),
+            command: None,
+            output: None,
+            limits: Default::default(),
         };
 
         let err = firecrawl_search("test", 5, "firecrawl_test", &provider, &test_fetch_config())
@@ -2277,6 +2292,9 @@ mod tests {
             kind: WebProviderKind::Brave,
             base_url: Some("http://localhost:1".to_string()),
             api_key: String::new(),
+            command: None,
+            output: None,
+            limits: Default::default(),
         };
         let err = brave_search("test", 5, "brave_test", &provider, &test_fetch_config())
             .await
@@ -2354,6 +2372,9 @@ mod tests {
             kind: WebProviderKind::Brave,
             base_url: None, // use default https://api.search.brave.com
             api_key,
+            command: None,
+            output: None,
+            limits: Default::default(),
         };
         let fetch_config = test_fetch_config();
 
