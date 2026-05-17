@@ -1645,7 +1645,8 @@ impl TurnExecution<'_> {
 
             let context_build_started = Instant::now();
             let identity = runtime.agent_identity_view().await?;
-            let available_tools = runtime.filtered_tool_specs(&identity)?;
+            let (provider, available_tools, native_web_search) =
+                runtime.provider_tool_selection(&identity).await?;
             let allowed_tool_names = available_tools
                 .iter()
                 .map(|tool| tool.name.clone())
@@ -1660,8 +1661,11 @@ impl TurnExecution<'_> {
                 provider_completed_at,
                 provider_round_ms,
             ) = if round == 1 {
-                let request = build_provider_turn_request(&effective_prompt, available_tools);
-                let provider = runtime.current_provider().await;
+                let request = build_provider_turn_request(
+                    &effective_prompt,
+                    available_tools,
+                    native_web_search,
+                );
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
@@ -1891,8 +1895,8 @@ impl TurnExecution<'_> {
                     prompt_frame,
                     projection.conversation,
                     available_tools,
+                    native_web_search,
                 );
-                let provider = runtime.current_provider().await;
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =

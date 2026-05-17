@@ -27,8 +27,8 @@
 use crate::{
     prompt::{render_section, EffectivePrompt, PromptSection, PromptStability},
     provider::{
-        ConversationMessage, PromptContentBlock, ProviderPromptCache, ProviderPromptFrame,
-        ProviderTurnRequest,
+        ConversationMessage, PromptContentBlock, ProviderNativeWebSearchRequest,
+        ProviderPromptCache, ProviderPromptFrame, ProviderTurnRequest,
     },
     tool::ToolSpec,
 };
@@ -50,6 +50,7 @@ pub fn build_provider_prompt_frame(effective_prompt: &EffectivePrompt) -> Provid
 pub fn build_provider_turn_request(
     effective_prompt: &EffectivePrompt,
     available_tools: Vec<ToolSpec>,
+    native_web_search: Option<ProviderNativeWebSearchRequest>,
 ) -> ProviderTurnRequest {
     let (system_blocks, context_blocks) = build_prompt_content_blocks(
         &effective_prompt.system_sections,
@@ -64,6 +65,7 @@ pub fn build_provider_turn_request(
         ),
         conversation: vec![ConversationMessage::UserBlocks(context_blocks)],
         tools: available_tools,
+        native_web_search,
     }
 }
 
@@ -75,11 +77,13 @@ pub fn build_continuation_request(
     prompt_frame: ProviderPromptFrame,
     conversation: Vec<ConversationMessage>,
     available_tools: Vec<ToolSpec>,
+    native_web_search: Option<ProviderNativeWebSearchRequest>,
 ) -> ProviderTurnRequest {
     ProviderTurnRequest {
         prompt_frame,
         conversation,
         tools: available_tools,
+        native_web_search,
     }
 }
 
@@ -198,7 +202,7 @@ mod tests {
             },
         ];
 
-        let request = build_provider_turn_request(&fixture_prompt(), tools.clone());
+        let request = build_provider_turn_request(&fixture_prompt(), tools.clone(), None);
         assert_eq!(
             request
                 .tools
@@ -222,7 +226,7 @@ mod tests {
             freeform_grammar: None,
         }];
 
-        let request = build_provider_turn_request(&effective_prompt, tools);
+        let request = build_provider_turn_request(&effective_prompt, tools, None);
 
         assert_eq!(request.prompt_frame.system_prompt, "system prompt");
         assert_eq!(request.prompt_frame.system_blocks.len(), 0);
@@ -385,7 +389,7 @@ mod tests {
             rendered_context_attachment: "context attachment".to_string(),
         };
 
-        let request = build_provider_turn_request(&effective_prompt, Vec::new());
+        let request = build_provider_turn_request(&effective_prompt, Vec::new(), None);
 
         let system_blocks = request.prompt_frame.system_blocks;
         assert_eq!(system_blocks[0].text, "## identity\nstable system\n\n");
@@ -453,7 +457,7 @@ mod tests {
             }),
         );
 
-        let request = build_continuation_request(prompt_frame, conversation, tools);
+        let request = build_continuation_request(prompt_frame, conversation, tools, None);
 
         assert_eq!(request.prompt_frame.system_prompt, "system");
         assert_eq!(request.prompt_frame.system_blocks.len(), 1);

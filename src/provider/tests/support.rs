@@ -174,6 +174,7 @@ pub fn provider_turn_request_with_prompt_frame() -> ProviderTurnRequest {
             cache_breakpoint: true,
         }])],
         tools: Vec::new(),
+        native_web_search: None,
     }
 }
 

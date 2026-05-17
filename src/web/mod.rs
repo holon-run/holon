@@ -16,6 +16,22 @@ pub struct WebConfig {
     pub providers: BTreeMap<String, WebProviderConfig>,
 }
 
+impl WebConfig {
+    pub fn native_search_provider(&self) -> Option<(String, WebProviderKind)> {
+        if !self.search.enabled || self.search.provider == "auto" {
+            return None;
+        }
+        self.providers
+            .get(&self.search.provider)
+            .and_then(|provider| {
+                provider
+                    .kind
+                    .is_native_search()
+                    .then(|| (self.search.provider.clone(), provider.kind))
+            })
+    }
+}
+
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
@@ -401,6 +417,15 @@ pub enum WebProviderKind {
 }
 
 impl WebProviderKind {
+    pub fn is_native_search(self) -> bool {
+        matches!(
+            self,
+            WebProviderKind::OpenAiNative
+                | WebProviderKind::AnthropicNative
+                | WebProviderKind::GeminiNative
+        )
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             WebProviderKind::DuckDuckGo => "duck_duck_go",
