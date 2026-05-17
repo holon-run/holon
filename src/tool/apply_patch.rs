@@ -227,7 +227,9 @@ fn parse_patch_for_format(input: &str, format: PatchFormat) -> Result<Vec<FilePa
 fn detect_patch_format(input: &str) -> PatchFormat {
     let trimmed = input.trim_start();
     if trimmed.starts_with("*** Begin Patch")
-        || trimmed.lines().any(|line| line == "*** Begin Patch")
+        || codex_dsl_lines(input)
+            .first()
+            .is_some_and(|line| line == "*** Begin Patch")
     {
         return PatchFormat::CodexDsl;
     }
@@ -1639,6 +1641,31 @@ mod tests {
             "keep\nnew\n"
         );
         assert_eq!(outcome.changed_files.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_unified_diff_allows_codex_marker_as_file_content() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "before\n*** Begin Patch\nafter\n")
+            .await
+            .unwrap();
+
+        let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1,3 +1,3 @@
+ before
+ *** Begin Patch
+-after
++AFTER
+"#;
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "before\n*** Begin Patch\nAFTER\n"
+        );
+        assert_eq!(outcome.changed_files[0].action, ApplyPatchAction::Modify);
     }
 
     #[tokio::test]

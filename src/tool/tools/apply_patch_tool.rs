@@ -214,7 +214,14 @@ fn sanitize_model_visible_error_text(text: &str) -> String {
 
 fn extract_patch_input(input: &Value, surface: ApplyPatchSurface) -> Result<String> {
     match input {
-        Value::String(patch) => validate_non_empty(patch.clone(), NAME, "patch"),
+        Value::String(patch) => validate_non_empty(
+            patch.clone(),
+            NAME,
+            match surface {
+                ApplyPatchSurface::CodexDslFreeform => "input",
+                ApplyPatchSurface::UnifiedDiffJson => "patch",
+            },
+        ),
         Value::Object(map) if map.contains_key("input") && !map.contains_key("patch") => {
             if matches!(surface, ApplyPatchSurface::CodexDslFreeform) {
                 return map
@@ -477,6 +484,19 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("Do not use \"input\""));
+    }
+
+    #[test]
+    fn apply_patch_codex_freeform_empty_string_uses_input_label() {
+        let error = extract_patch_input(
+            &serde_json::json!("   "),
+            ApplyPatchSurface::CodexDslFreeform,
+        )
+        .unwrap_err();
+        let tool_error = crate::tool::ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        assert_eq!(tool_error.details.as_ref().unwrap()["field"], "input");
+        assert!(!tool_error.message.contains("`patch`"));
     }
 
     #[test]
