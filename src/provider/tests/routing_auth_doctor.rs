@@ -913,7 +913,7 @@ async fn openai_provider_retries_response_body_read_interruptions() {
 }
 
 #[tokio::test]
-async fn provider_fallback_continues_after_retry_exhaustion() {
+async fn provider_fallback_defers_after_retry_exhaustion() {
     let openai_attempts = Arc::new(AtomicUsize::new(0));
     let openai_server_attempts = openai_attempts.clone();
     let openai_base_url = spawn_test_server(Router::new().route(
@@ -972,19 +972,20 @@ async fn provider_fallback_continues_after_retry_exhaustion() {
         .base_url = anthropic_base_url;
 
     let provider = build_provider_from_config(&fixture.config).unwrap();
-    let (response, diagnostics) = provider
+    let error = provider
         .complete_turn_with_diagnostics(provider_turn_request())
         .await
-        .unwrap();
+        .expect_err("cross-lineage fallback should defer to the next turn");
 
     assert_eq!(
         openai_attempts.load(Ordering::SeqCst),
         provider_max_attempts()
     );
-    assert_eq!(anthropic_attempts.load(Ordering::SeqCst), 1);
-    let timeline = diagnostics.expect("missing attempt timeline");
+    assert_eq!(anthropic_attempts.load(Ordering::SeqCst), 0);
+    let timeline = provider_attempt_timeline(&error).expect("missing attempt timeline");
+    assert_eq!(timeline.winning_model_ref.as_deref(), None);
     assert_eq!(
-        timeline.winning_model_ref.as_deref(),
+        timeline.pending_fallback_model_ref.as_deref(),
         Some("anthropic/claude-sonnet-4-6")
     );
     assert_eq!(
@@ -992,9 +993,9 @@ async fn provider_fallback_continues_after_retry_exhaustion() {
             .aggregated_token_usage
             .as_ref()
             .map(|usage| usage.total_tokens),
-        Some(6)
+        None
     );
-    assert_eq!(timeline.attempts.len(), provider_max_attempts() + 1);
+    assert_eq!(timeline.attempts.len(), provider_max_attempts());
     assert_eq!(
         timeline.attempts[0].outcome,
         ProviderAttemptOutcome::Retrying
@@ -1008,18 +1009,10 @@ async fn provider_fallback_continues_after_retry_exhaustion() {
         ProviderAttemptOutcome::RetriesExhausted
     );
     assert!(timeline.attempts[provider_max_attempts() - 1].advanced_to_fallback);
-    assert_eq!(
-        timeline.attempts.last().unwrap().outcome,
-        ProviderAttemptOutcome::Succeeded
-    );
-    match &response.blocks[0] {
-        ModelBlock::Text { text } => assert_eq!(text, "anthropic fallback"),
-        _ => panic!("expected text block"),
-    }
 }
 
 #[tokio::test]
-async fn provider_fallback_continues_immediately_after_fail_fast_error() {
+async fn provider_fallback_defers_after_fail_fast_error() {
     let openai_attempts = Arc::new(AtomicUsize::new(0));
     let openai_server_attempts = openai_attempts.clone();
     let openai_base_url = spawn_test_server(Router::new().route(
@@ -1074,22 +1067,20 @@ async fn provider_fallback_continues_immediately_after_fail_fast_error() {
         .base_url = anthropic_base_url;
 
     let provider = build_provider_from_config(&fixture.config).unwrap();
-    let (response, diagnostics) = provider
+    let error = provider
         .complete_turn_with_diagnostics(provider_turn_request())
         .await
-        .unwrap();
+        .expect_err("cross-lineage fallback should defer to the next turn");
 
     assert_eq!(openai_attempts.load(Ordering::SeqCst), 1);
-    assert_eq!(anthropic_attempts.load(Ordering::SeqCst), 1);
-    let timeline = diagnostics.expect("missing attempt timeline");
-    assert_eq!(timeline.attempts.len(), 2);
+    assert_eq!(anthropic_attempts.load(Ordering::SeqCst), 0);
+    let timeline = provider_attempt_timeline(&error).expect("missing attempt timeline");
+    assert_eq!(timeline.attempts.len(), 1);
     assert_eq!(timeline.requested_model_ref, "openai/gpt-5.4");
+    assert_eq!(timeline.active_model_ref.as_deref(), None);
+    assert_eq!(timeline.winning_model_ref.as_deref(), None);
     assert_eq!(
-        timeline.active_model_ref.as_deref(),
-        Some("anthropic/claude-sonnet-4-6")
-    );
-    assert_eq!(
-        timeline.winning_model_ref.as_deref(),
+        timeline.pending_fallback_model_ref.as_deref(),
         Some("anthropic/claude-sonnet-4-6")
     );
     assert_eq!(
@@ -1106,13 +1097,6 @@ async fn provider_fallback_continues_immediately_after_fail_fast_error() {
     );
     assert!(timeline.attempts[0].advanced_to_fallback);
     assert_eq!(timeline.attempts[0].attempt, 1);
-    assert_eq!(
-        timeline.attempts[1].outcome,
-        ProviderAttemptOutcome::Succeeded
-    );
-    assert!(
-        matches!(&response.blocks[0], ModelBlock::Text { text } if text == "anthropic fallback")
-    );
 }
 
 #[tokio::test]

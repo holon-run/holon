@@ -456,6 +456,8 @@ pub struct ProviderAttemptTimeline {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub winning_model_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_fallback_model_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregated_token_usage: Option<TokenUsage>,
 }
 

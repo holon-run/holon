@@ -109,6 +109,10 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
             let marker = match kind {
                 TurnTerminalKind::Aborted => "turn_terminal_aborted",
                 TurnTerminalKind::BaselineOverBudget => "turn_terminal_baseline_over_budget",
+                TurnTerminalKind::DeferredToFallback => "turn_terminal_deferred_to_fallback",
+                TurnTerminalKind::ProviderFailedNeedsRecovery => {
+                    "turn_terminal_provider_failed_needs_recovery"
+                }
                 TurnTerminalKind::Completed => unreachable!("completed is not a failure"),
             };
             evidence.push(marker.to_string());

@@ -757,6 +757,23 @@ impl RuntimeModelCatalog {
         }
         chain
     }
+
+    pub fn provider_chain_for_turn(
+        &self,
+        model_override: Option<&ModelRef>,
+        pending_fallback_model: Option<&ModelRef>,
+    ) -> Vec<ModelRef> {
+        let chain = self.provider_chain(model_override);
+        let Some(pending_fallback_model) = pending_fallback_model else {
+            return chain;
+        };
+        chain
+            .iter()
+            .position(|model| model == pending_fallback_model)
+            .map(|index| chain[index..].to_vec())
+            .unwrap_or_else(|| vec![pending_fallback_model.clone()])
+    }
+
     pub fn effective_model(&self, model_override: Option<&ModelRef>) -> ModelRef {
         model_override
             .cloned()
@@ -4874,6 +4891,33 @@ mod tests {
                 "openai/gpt-5.4-mini",
                 "anthropic/claude-sonnet-4-6",
                 "openai/gpt-5.4",
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_chain_for_turn_starts_at_pending_fallback_model() {
+        let fixture = test_app_config(
+            "openai/gpt-5.4",
+            &[
+                "anthropic/claude-sonnet-4-6",
+                "openai-codex/gpt-5.3-codex-spark",
+            ],
+        );
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+        let pending = ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap();
+
+        let chain = catalog
+            .provider_chain_for_turn(None, Some(&pending))
+            .into_iter()
+            .map(|model| model.as_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            chain,
+            vec![
+                "anthropic/claude-sonnet-4-6",
+                "openai-codex/gpt-5.3-codex-spark",
             ]
         );
     }
