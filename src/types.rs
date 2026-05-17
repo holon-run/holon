@@ -486,6 +486,47 @@ pub struct SkillRootView {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTemplateSourceKind {
+    Builtin,
+    UserGlobal,
+    AgentHome,
+}
+
+impl AgentTemplateSourceKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Builtin => "builtin",
+            Self::UserGlobal => "user_global",
+            Self::AgentHome => "agent_home",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentTemplateCatalogEntry {
+    /// Stable source-scoped catalog identifier, such as `builtin:holon-default`.
+    pub catalog_id: String,
+    /// Selector accepted by SpawnAgent.template.
+    ///
+    /// Builtin and user-global templates use the bare template id; agent-home
+    /// templates use an absolute local path.
+    pub template: String,
+    /// Human-readable local id after precedence is applied.
+    pub template_id: String,
+    pub source: AgentTemplateSourceKind,
+    /// Filesystem location for local templates; builtins have no path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    /// Short display summary derived from the template AGENTS.md.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Skill names declared by the template manifest, if any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub included_skills: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillActivationSource {
@@ -688,6 +729,8 @@ pub struct ActiveSkillRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct SkillsRuntimeView {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_templates_catalog: Vec<AgentTemplateCatalogEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub discovered_roots: Vec<SkillRootView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -79,6 +79,7 @@ pub fn load_skills_runtime_view(
         .collect::<Vec<_>>();
 
     Ok(SkillsRuntimeView {
+        agent_templates_catalog: Vec::new(),
         discovered_roots,
         discoverable_skills,
         attached_skills,

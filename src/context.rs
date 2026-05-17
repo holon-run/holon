@@ -155,6 +155,42 @@ pub fn build_context(
         );
     }
 
+    if !skills.agent_templates_catalog.is_empty() {
+        let rendered = skills
+            .agent_templates_catalog
+            .iter()
+            .map(|entry| {
+                let skills = if entry.included_skills.is_empty() {
+                    "skills=none".to_string()
+                } else {
+                    format!("skills={}", entry.included_skills.join(","))
+                };
+                let path = entry
+                    .path
+                    .as_ref()
+                    .map(|path| format!(" path={}", path.display()))
+                    .unwrap_or_default();
+                format!(
+                    "- [{}] {} template={} :: {}{} ({skills})",
+                    entry.source.label(),
+                    entry.catalog_id,
+                    entry.template,
+                    entry.description,
+                    path
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        push_budgeted_section(
+            &mut sections,
+            &mut remaining_budget,
+            section(
+                "agent_templates_catalog",
+                format!("Discovered agent templates catalog:\n{rendered}"),
+            ),
+        );
+    }
+
     if !skills.discoverable_skills.is_empty() {
         let rendered = skills
             .discoverable_skills
@@ -2416,6 +2452,7 @@ mod tests {
 
         let session = AgentState::new("default");
         let skills = SkillsRuntimeView {
+            agent_templates_catalog: Vec::new(),
             discovered_roots: Vec::new(),
             discoverable_skills: vec![crate::types::SkillCatalogEntry {
                 skill_id: "workspace:demo".into(),
@@ -2472,6 +2509,64 @@ mod tests {
             .expect("active_skills section should be present");
         assert!(active.content.contains("workspace:demo"));
         assert!(active.content.contains("session_active"));
+    }
+
+    #[test]
+    fn build_context_lists_agent_template_catalog_without_template_body() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Use a helper template".to_string(),
+            },
+        );
+
+        let session = AgentState::new("default");
+        let skills = SkillsRuntimeView {
+            agent_templates_catalog: vec![crate::types::AgentTemplateCatalogEntry {
+                catalog_id: "builtin:demo".into(),
+                template: "demo".into(),
+                template_id: "demo".into(),
+                source: crate::types::AgentTemplateSourceKind::Builtin,
+                path: None,
+                description: "demo template summary".into(),
+                included_skills: vec!["ghx".into()],
+            }],
+            ..SkillsRuntimeView::default()
+        };
+
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &skills,
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 4,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 4,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let catalog = built
+            .sections
+            .iter()
+            .find(|section| section.name == "agent_templates_catalog")
+            .expect("agent_templates_catalog section should be present");
+        assert!(catalog.content.contains("builtin:demo"));
+        assert!(catalog.content.contains("template=demo"));
+        assert!(catalog.content.contains("demo template summary"));
+        assert!(catalog.content.contains("skills=ghx"));
     }
 
     #[test]
@@ -3663,6 +3758,7 @@ mod tests {
             .current_work_item_id = Some(current_work_item.id.clone());
 
         let skills = crate::types::SkillsRuntimeView {
+            agent_templates_catalog: Vec::new(),
             discoverable_skills: vec![crate::types::SkillCatalogEntry {
                 skill_id: "skill/large-catalog-entry".into(),
                 name: "Large Catalog Entry".into(),
