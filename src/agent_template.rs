@@ -384,32 +384,40 @@ pub(crate) fn discover_agent_templates_catalog(
     agent_home: &Path,
 ) -> Vec<AgentTemplateCatalogEntry> {
     let user_templates_root = user_home.map(templates_root_for_home);
-    let mut entries = Vec::new();
+    let user_entries = if let Some(root) = user_templates_root.as_deref() {
+        discover_local_templates(root, AgentTemplateSourceKind::UserGlobal, false)
+    } else {
+        Vec::new()
+    };
+    let agent_home_entries = discover_local_templates(
+        &agent_home.join("templates"),
+        AgentTemplateSourceKind::AgentHome,
+        true,
+    );
+    let agent_home_template_ids = agent_home_entries
+        .iter()
+        .map(|entry| entry.template_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
 
-    if let Some(root) = user_templates_root.as_deref() {
-        entries.extend(discover_local_templates(
-            root,
-            AgentTemplateSourceKind::UserGlobal,
-            false,
-        ));
-    }
-
+    let mut entries = user_entries
+        .into_iter()
+        .filter(|entry| !agent_home_template_ids.contains(&entry.template_id))
+        .collect::<Vec<_>>();
     let user_template_ids = entries
         .iter()
         .map(|entry| entry.template_id.clone())
         .collect::<std::collections::BTreeSet<_>>();
+
     for builtin in BUILTIN_TEMPLATES {
-        if user_template_ids.contains(builtin.template_id) {
+        if user_template_ids.contains(builtin.template_id)
+            || agent_home_template_ids.contains(builtin.template_id)
+        {
             continue;
         }
         entries.push(builtin_template_catalog_entry(builtin));
     }
 
-    entries.extend(discover_local_templates(
-        &agent_home.join("templates"),
-        AgentTemplateSourceKind::AgentHome,
-        true,
-    ));
+    entries.extend(agent_home_entries);
     entries.sort_by(|left, right| {
         (
             left.source,
@@ -457,6 +465,11 @@ fn discover_local_templates(
         if validate_template_id(template_id).is_err() {
             continue;
         }
+        if source == AgentTemplateSourceKind::UserGlobal
+            && is_managed_seeded_builtin_template(&path, template_id)
+        {
+            continue;
+        }
         let agents_md_path = path.join(TEMPLATE_AGENTS_FILENAME);
         let Ok(agents_md) = fs::read_to_string(&agents_md_path) else {
             continue;
@@ -482,10 +495,42 @@ fn discover_local_templates(
     entries
 }
 
+fn is_managed_seeded_builtin_template(path: &Path, template_id: &str) -> bool {
+    let Some(builtin) = BUILTIN_TEMPLATES
+        .iter()
+        .find(|builtin| builtin.template_id == template_id)
+    else {
+        return false;
+    };
+    let state = match read_builtin_template_state(path) {
+        Ok(Some(state)) => state,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::debug!(
+                template_path = %path.display(),
+                %error,
+                "failed to read seeded builtin template state while building catalog"
+            );
+            return false;
+        }
+    };
+    if state.template_id != builtin.template_id
+        || state.version != builtin.version
+        || state.content_hash != builtin_template_content_hash(builtin)
+    {
+        return false;
+    }
+    builtin_template_is_managed(path, &state).unwrap_or(false)
+}
+
 fn template_description(agents_md: &str) -> String {
+    let mut in_html_comment = false;
     for line in agents_md.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("<!--") || trimmed.starts_with('#') {
+        let Some(trimmed) = trim_leading_html_comments(trimmed, &mut in_html_comment) else {
+            continue;
+        };
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
         return trimmed.to_string();
@@ -499,10 +544,37 @@ fn template_description(agents_md: &str) -> String {
         .unwrap_or_default()
 }
 
+fn trim_leading_html_comments<'a>(mut trimmed: &'a str, in_comment: &mut bool) -> Option<&'a str> {
+    loop {
+        if *in_comment {
+            let end = trimmed.find("-->")?;
+            *in_comment = false;
+            trimmed = trimmed[end + 3..].trim_start();
+            continue;
+        }
+        let Some(after_start) = trimmed.strip_prefix("<!--") else {
+            return Some(trimmed);
+        };
+        let Some(end) = after_start.find("-->") else {
+            *in_comment = true;
+            return None;
+        };
+        trimmed = after_start[end + 3..].trim_start();
+    }
+}
+
 fn local_template_skills(path: &Path) -> Vec<String> {
-    parse_skill_refs(path.join(TEMPLATE_SKILLS_FILENAME))
-        .map(skill_ref_names)
-        .unwrap_or_default()
+    match parse_skill_refs(path.join(TEMPLATE_SKILLS_FILENAME)) {
+        Ok(skill_refs) => skill_ref_names(skill_refs),
+        Err(error) => {
+            tracing::warn!(
+                template_path = %path.display(),
+                %error,
+                "failed to load local agent template skills"
+            );
+            Vec::new()
+        }
+    }
 }
 
 fn builtin_template_skills(builtin: &BuiltinTemplate) -> Vec<String> {
@@ -1229,6 +1301,7 @@ mod tests {
         let user_home = tempdir().unwrap();
         let agent_home = tempdir().unwrap();
         let user_templates = templates_root_for_home(user_home.path());
+        seed_builtin_templates_for_home(user_home.path()).unwrap();
         let worker = user_templates.join("worker");
         fs::create_dir_all(&worker).unwrap();
         fs::write(
@@ -1269,6 +1342,9 @@ mod tests {
         assert!(catalog
             .iter()
             .any(|entry| entry.catalog_id == "builtin:holon-developer"));
+        assert!(!catalog
+            .iter()
+            .any(|entry| entry.catalog_id == "user_global:holon-developer"));
 
         let worker_entry = catalog
             .iter()
@@ -1286,6 +1362,65 @@ mod tests {
             .unwrap();
         assert_eq!(local_entry.template, local.display().to_string());
         assert_eq!(local_entry.path.as_deref(), Some(local.as_path()));
+    }
+
+    #[test]
+    fn discover_agent_templates_catalog_prefers_agent_home_over_other_sources() {
+        let user_home = tempdir().unwrap();
+        let agent_home = tempdir().unwrap();
+        let user_templates = templates_root_for_home(user_home.path());
+        seed_builtin_templates_for_home(user_home.path()).unwrap();
+
+        let user_worker = user_templates.join("worker");
+        fs::create_dir_all(&user_worker).unwrap();
+        fs::write(
+            user_worker.join(TEMPLATE_AGENTS_FILENAME),
+            "# User worker\n\nUser-global worker\n",
+        )
+        .unwrap();
+
+        let agent_templates = agent_home.path().join("templates");
+        let agent_worker = agent_templates.join("worker");
+        fs::create_dir_all(&agent_worker).unwrap();
+        fs::write(
+            agent_worker.join(TEMPLATE_AGENTS_FILENAME),
+            "# Agent worker\n\nAgent-home worker\n",
+        )
+        .unwrap();
+        let agent_default = agent_templates.join("holon-default");
+        fs::create_dir_all(&agent_default).unwrap();
+        fs::write(
+            agent_default.join(TEMPLATE_AGENTS_FILENAME),
+            "# Agent default\n\nAgent-home default\n",
+        )
+        .unwrap();
+
+        let catalog = discover_agent_templates_catalog(Some(user_home.path()), agent_home.path());
+
+        assert!(catalog
+            .iter()
+            .any(|entry| entry.catalog_id == "agent_home:worker"));
+        assert!(!catalog
+            .iter()
+            .any(|entry| entry.catalog_id == "user_global:worker"));
+        assert!(catalog
+            .iter()
+            .any(|entry| entry.catalog_id == "agent_home:holon-default"));
+        assert!(!catalog
+            .iter()
+            .any(|entry| entry.catalog_id == "builtin:holon-default"));
+        assert!(!catalog
+            .iter()
+            .any(|entry| entry.catalog_id == "user_global:holon-default"));
+    }
+
+    #[test]
+    fn template_description_skips_multiline_html_comments() {
+        assert_eq!(
+            template_description("<!--\nmetadata\n-->\n# Heading\n\nVisible description\n"),
+            "Visible description"
+        );
+        assert_eq!(template_description("<!-- hidden --> Visible\n"), "Visible");
     }
 
     #[test]
