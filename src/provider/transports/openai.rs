@@ -15,6 +15,7 @@ use crate::{
     provider::{
         emitted_tool_json_schema, AgentProvider, ConversationMessage, ModelBlock,
         ProviderCacheUsage, ProviderIncrementalContinuationDiagnostics,
+        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
         ProviderOpenAiRemoteCompactionDiagnostics, ProviderOpenAiRequestControlsDiagnostics,
         ProviderPromptFrame, ProviderRequestDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
         ToolSchemaContract,
@@ -371,6 +372,10 @@ impl AgentProvider for OpenAiProvider {
 
     fn supports_freeform_grammar_tools(&self) -> bool {
         true
+    }
+
+    fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
+        Some(ProviderNativeWebSearchKind::OpenAi)
     }
 }
 
@@ -860,7 +865,7 @@ pub(crate) fn build_openai_responses_request(
     tool_schema_contract: ToolSchemaContract,
     reasoning_effort: Option<&str>,
 ) -> Result<Value> {
-    let tools = request
+    let mut tools = request
         .tools
         .iter()
         .map(|tool| {
@@ -886,6 +891,9 @@ pub(crate) fn build_openai_responses_request(
             }
         })
         .collect::<Result<Vec<_>>>()?;
+    if let Some(tool) = openai_native_web_search_tool(request) {
+        tools.push(tool);
+    }
 
     let mut body = json!({
         "model": model,
@@ -915,6 +923,14 @@ pub(crate) fn build_openai_responses_request(
         }
     }
     Ok(body)
+}
+
+fn openai_native_web_search_tool(request: &ProviderTurnRequest) -> Option<Value> {
+    let native = request.native_web_search.as_ref()?;
+    if native.kind != ProviderNativeWebSearchKind::OpenAi {
+        return None;
+    }
+    Some(json!({ "type": "web_search_preview" }))
 }
 
 fn openai_request_controls_diagnostics(body: &Value) -> ProviderOpenAiRequestControlsDiagnostics {
@@ -1100,6 +1116,7 @@ fn plan_openai_responses_request(
                 first_mismatch_path: None,
                 mismatch_kind: None,
             }),
+            native_web_search: native_web_search_diagnostics(request),
         },
     })
 }
@@ -1381,7 +1398,22 @@ fn incremental_diagnostics(
             first_mismatch_path: mismatch.first_mismatch_path,
             mismatch_kind: mismatch.mismatch_kind,
         }),
+        native_web_search: None,
     }
+}
+
+fn native_web_search_diagnostics(
+    request: &ProviderTurnRequest,
+) -> Option<ProviderNativeWebSearchDiagnostics> {
+    let native = request.native_web_search.as_ref()?;
+    let lowered = native.kind == ProviderNativeWebSearchKind::OpenAi;
+    Some(ProviderNativeWebSearchDiagnostics {
+        kind: native.kind,
+        provider_id: native.provider_id.clone(),
+        lowered,
+        fallback_reason: (!lowered)
+            .then(|| "openai responses transport only supports OpenAI-native web search".into()),
+    })
 }
 
 fn update_openai_continuation(
@@ -3725,7 +3757,14 @@ fn unsupported_streaming_transport_error(provider_name: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{chat_completions_url, latest_openai_compaction_index};
+    use super::{
+        build_openai_responses_request, chat_completions_url, latest_openai_compaction_index,
+        OpenAiResponsesTransportContract, ToolSchemaContract,
+    };
+    use crate::provider::{
+        ConversationMessage, ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
+        ProviderTurnRequest,
+    };
     use serde_json::json;
 
     #[test]
@@ -3754,6 +3793,36 @@ mod tests {
             chat_completions_url("https://proxy.example/chat/completions"),
             "https://proxy.example/chat/completions"
         );
+    }
+
+    #[test]
+    fn openai_responses_request_lowers_native_web_search_tool() {
+        let mut request = ProviderTurnRequest::plain(
+            "system",
+            vec![ConversationMessage::UserText("search the web".into())],
+            vec![],
+        );
+        request.native_web_search = Some(ProviderNativeWebSearchRequest {
+            kind: ProviderNativeWebSearchKind::OpenAi,
+            provider_id: "openai_native".into(),
+            max_results: Some(5),
+        });
+
+        let body = build_openai_responses_request(
+            "gpt-test",
+            1024,
+            &request,
+            OpenAiResponsesTransportContract::StandardJson,
+            ToolSchemaContract::Strict,
+            None,
+        )
+        .expect("openai responses request should build");
+
+        assert!(body["tools"]
+            .as_array()
+            .expect("tools should be an array")
+            .iter()
+            .any(|tool| tool == &json!({ "type": "web_search_preview" })));
     }
 
     #[test]

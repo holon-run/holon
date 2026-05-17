@@ -95,6 +95,7 @@ async fn live_provider_accepts_tool_result_continuation_with_runtime_tools() -> 
                 }]),
             ],
             tools,
+            native_web_search: None,
         })
         .await?;
     assert!(!output.blocks.is_empty());

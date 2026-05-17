@@ -17,7 +17,8 @@ use crate::{
     provider::{
         AgentProvider, AnthropicPromptCacheDiagnostics, CacheBreakpointInfo, ConversationMessage,
         ModelBlock, PromptContentBlock, ProviderCacheUsage, ProviderContextManagementPolicy,
-        ProviderPromptCapability, ProviderTurnRequest, ProviderTurnResponse,
+        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind, ProviderPromptCapability,
+        ProviderTurnRequest, ProviderTurnResponse,
     },
 };
 
@@ -42,7 +43,7 @@ struct MessagesRequest<'a> {
     max_tokens: u32,
     system: Value,
     messages: Vec<ApiMessage>,
-    tools: Vec<ApiTool>,
+    tools: Vec<Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     betas: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,13 +81,6 @@ struct ContextManagementThreshold {
 struct ApiMessage {
     role: &'static str,
     content: Value,
-}
-
-#[derive(Debug, Serialize)]
-struct ApiTool {
-    name: String,
-    description: String,
-    input_schema: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,15 +169,7 @@ impl AgentProvider for AnthropicProvider {
             max_tokens: self.max_output_tokens,
             system: build_anthropic_system(&request, cache_strategy),
             messages,
-            tools: request
-                .tools
-                .iter()
-                .map(|tool| ApiTool {
-                    name: tool.name.clone(),
-                    description: tool.description.clone(),
-                    input_schema: tool.input_schema.clone(),
-                })
-                .collect(),
+            tools: build_anthropic_tools(&request),
             betas: self.context_management.betas.clone(),
             metadata: build_anthropic_metadata(&request, cache_strategy),
             temperature: (cache_strategy == AnthropicCacheStrategy::ClaudeCodePromptCache)
@@ -292,6 +278,7 @@ impl AgentProvider for AnthropicProvider {
                 openai_request_controls: None,
                 incremental_continuation: None,
                 openai_remote_compaction: None,
+                native_web_search: native_web_search_diagnostics(&request),
             }),
         })
     }
@@ -310,6 +297,10 @@ impl AgentProvider for AnthropicProvider {
             capabilities.push(ProviderPromptCapability::ContextManagement);
         }
         capabilities
+    }
+
+    fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
+        Some(ProviderNativeWebSearchKind::Anthropic)
     }
 
     fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {
@@ -519,6 +510,44 @@ fn anthropic_request_lowering_mode(
         }
         AnthropicCacheStrategy::MessagesNative => "plain_system",
     }
+}
+
+fn build_anthropic_tools(request: &ProviderTurnRequest) -> Vec<Value> {
+    let mut tools = request
+        .tools
+        .iter()
+        .map(|tool| {
+            json!({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+            })
+        })
+        .collect::<Vec<_>>();
+    if matches!(
+        request.native_web_search.as_ref().map(|native| native.kind),
+        Some(ProviderNativeWebSearchKind::Anthropic)
+    ) {
+        tools.push(json!({
+            "type": "web_search_20250305",
+            "name": "web_search"
+        }));
+    }
+    tools
+}
+
+fn native_web_search_diagnostics(
+    request: &ProviderTurnRequest,
+) -> Option<ProviderNativeWebSearchDiagnostics> {
+    let native = request.native_web_search.as_ref()?;
+    let lowered = native.kind == ProviderNativeWebSearchKind::Anthropic;
+    Some(ProviderNativeWebSearchDiagnostics {
+        kind: native.kind,
+        provider_id: native.provider_id.clone(),
+        lowered,
+        fallback_reason: (!lowered)
+            .then(|| "anthropic transport only supports Anthropic-native web search".into()),
+    })
 }
 
 fn build_context_management_request(
@@ -1297,7 +1326,10 @@ fn count_payload_cache_controls(request_payload: &Value) -> (usize, usize) {
 mod tests {
     use super::*;
     use crate::prompt::PromptStability;
-    use crate::provider::{PromptContentBlock, ProviderPromptFrame, ToolResultBlock};
+    use crate::provider::{
+        PromptContentBlock, ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
+        ProviderPromptFrame, ToolResultBlock,
+    };
     use serde_json::json;
 
     #[test]
@@ -1397,6 +1429,7 @@ mod tests {
             },
             conversation: vec![ConversationMessage::UserText("Hello".to_string())],
             tools: vec![],
+            native_web_search: None,
         };
 
         let request_payload = anthropic_request_payload_for_test(&request);
@@ -1444,6 +1477,7 @@ mod tests {
                 "Hello, how are you?".to_string(),
             )],
             tools: vec![],
+            native_web_search: None,
         };
 
         let request_payload = anthropic_request_payload_for_test(&request);
@@ -1526,6 +1560,7 @@ mod tests {
                 }]),
             ],
             tools: vec![],
+            native_web_search: None,
         };
 
         let request_payload = anthropic_request_payload_for_test(&request);
@@ -1580,13 +1615,35 @@ mod tests {
                 Value::String(request.prompt_frame.system_prompt.clone())
             },
             messages: build_anthropic_messages(&request.conversation, rolling_cache_marker),
-            tools: Vec::new(),
+            tools: build_anthropic_tools(request),
             betas: Vec::new(),
             metadata: None,
             temperature: None,
             context_management: None,
         };
         serde_json::to_value(body).expect("test request payload should serialize")
+    }
+
+    #[test]
+    fn anthropic_request_payload_lowers_native_web_search_tool() {
+        let mut request = ProviderTurnRequest::plain(
+            "system",
+            vec![ConversationMessage::UserText("search the web".into())],
+            vec![],
+        );
+        request.native_web_search = Some(ProviderNativeWebSearchRequest {
+            kind: ProviderNativeWebSearchKind::Anthropic,
+            provider_id: "anthropic_native".into(),
+            max_results: None,
+        });
+
+        let payload = anthropic_request_payload_for_test(&request);
+
+        assert!(payload["tools"]
+            .as_array()
+            .expect("tools should be an array")
+            .iter()
+            .any(|tool| tool == &json!({ "type": "web_search_20250305", "name": "web_search" })));
     }
 
     #[test]
@@ -1771,6 +1828,7 @@ mod tests {
             },
             conversation: vec![ConversationMessage::UserText("User message".to_string())],
             tools: vec![],
+            native_web_search: None,
         };
 
         let request_payload = anthropic_request_payload_for_test(&request);
@@ -1815,6 +1873,7 @@ mod tests {
             },
             conversation: vec![],
             tools: vec![],
+            native_web_search: None,
         };
 
         let request_payload = anthropic_request_payload_for_test(&request);

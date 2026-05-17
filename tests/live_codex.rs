@@ -110,6 +110,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
                 "Reply with exactly READY.".into(),
             )],
             tools: vec![],
+            native_web_search: None,
         })
         .await?;
     let first_text = response_text(&first.blocks);
@@ -127,6 +128,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
                 ConversationMessage::UserText("Reply with exactly DONE.".into()),
             ],
             tools: vec![],
+            native_web_search: None,
         })
         .await?;
 

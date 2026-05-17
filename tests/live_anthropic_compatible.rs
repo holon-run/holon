@@ -89,6 +89,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
                 ConversationMessage::UserText(initial_user_text.clone()),
             ],
             tools: vec![tool.clone()],
+            native_web_search: None,
         })
         .await?;
     let tool_use_id = first_output
@@ -120,6 +121,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
                 }]),
             ],
             tools: vec![tool],
+            native_web_search: None,
         })
         .await?;
 

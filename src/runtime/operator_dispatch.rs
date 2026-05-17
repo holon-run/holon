@@ -1,4 +1,5 @@
 use super::*;
+use crate::tool::ToolSpec;
 
 impl RuntimeHandle {
     pub(super) async fn process_interactive_message(
@@ -31,8 +32,7 @@ impl RuntimeHandle {
             }
             let state = guard.state.clone();
             drop(guard);
-            let available_tools = self.filtered_tool_specs(&identity)?;
-            let provider = self.current_provider().await;
+            let (provider, available_tools, _) = self.provider_tool_selection(&identity).await?;
             let prompt_tools = provider.prompt_tool_specs(&available_tools);
             let workspace = self.workspace_view_from_state(&state)?;
             let execution = self.execution_snapshot_for_view(
@@ -152,8 +152,7 @@ impl RuntimeHandle {
         let continuation = ContinuationTrigger::from_message(&message, None)
             .map(|trigger| resolve_continuation(&prior_closure, &trigger));
         let identity = self.agent_identity_view().await?;
-        let available_tools = self.filtered_tool_specs(&identity)?;
-        let provider = self.current_provider().await;
+        let (provider, available_tools, _) = self.provider_tool_selection(&identity).await?;
         let prompt_tools = provider.prompt_tool_specs(&available_tools);
         let execution = self.execution_snapshot().await?;
         let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
@@ -249,5 +248,100 @@ impl RuntimeHandle {
             &[],
             continuation.as_ref(),
         )
+    }
+
+    pub(super) async fn provider_tool_selection(
+        &self,
+        identity: &AgentIdentityView,
+    ) -> Result<(
+        Arc<dyn AgentProvider>,
+        Vec<ToolSpec>,
+        Option<ProviderNativeWebSearchRequest>,
+    )> {
+        let provider = self.current_provider().await;
+        let native_search_provider = self.web_config().native_search_provider();
+        let native_web_search = self.native_web_search_request_for_provider(
+            provider.as_ref(),
+            native_search_provider.as_ref(),
+        );
+        let available_tools = self.filter_native_web_search_tools(
+            self.filtered_tool_specs(identity)?,
+            native_search_provider.is_some(),
+        );
+        Ok((provider, available_tools, native_web_search))
+    }
+
+    fn native_web_search_request_for_provider(
+        &self,
+        provider: &dyn AgentProvider,
+        native_search_provider: Option<&(String, WebProviderKind)>,
+    ) -> Option<ProviderNativeWebSearchRequest> {
+        native_web_search_request_for_config(
+            provider.native_web_search_kind(),
+            native_search_provider,
+            self.web_config().search.max_results,
+        )
+    }
+
+    fn filter_native_web_search_tools(
+        &self,
+        mut tools: Vec<ToolSpec>,
+        native_search_configured: bool,
+    ) -> Vec<ToolSpec> {
+        if native_search_configured {
+            tools.retain(|tool| tool.name != crate::tool::tools::web_search::NAME);
+        }
+        tools
+    }
+}
+
+fn native_web_search_request_for_config(
+    provider_native_kind: Option<ProviderNativeWebSearchKind>,
+    native_search_provider: Option<&(String, WebProviderKind)>,
+    max_results: usize,
+) -> Option<ProviderNativeWebSearchRequest> {
+    let (provider_id, provider_kind) = native_search_provider?;
+    let kind = match *provider_kind {
+        WebProviderKind::OpenAiNative => ProviderNativeWebSearchKind::OpenAi,
+        WebProviderKind::AnthropicNative => ProviderNativeWebSearchKind::Anthropic,
+        WebProviderKind::GeminiNative => ProviderNativeWebSearchKind::Gemini,
+        _ => return None,
+    };
+
+    (provider_native_kind == Some(kind)).then_some(ProviderNativeWebSearchRequest {
+        kind,
+        provider_id: provider_id.clone(),
+        max_results: Some(max_results.max(1)),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_web_search_request_requires_matching_model_provider() {
+        let native_provider = ("openai-native".to_string(), WebProviderKind::OpenAiNative);
+
+        assert!(native_web_search_request_for_config(
+            Some(ProviderNativeWebSearchKind::Anthropic),
+            Some(&native_provider),
+            5,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn native_web_search_request_clamps_max_results() {
+        let native_provider = ("openai-native".to_string(), WebProviderKind::OpenAiNative);
+
+        let request = native_web_search_request_for_config(
+            Some(ProviderNativeWebSearchKind::OpenAi),
+            Some(&native_provider),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(request.max_results, Some(1));
     }
 }

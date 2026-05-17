@@ -13,8 +13,8 @@ use super::{
         provider_retry_backoff, RetryDisposition,
     },
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
-    ProviderAttemptTimeline, ProviderContextManagementPolicy, ProviderTurnRequest,
-    ProviderTurnResponse,
+    ProviderAttemptTimeline, ProviderContextManagementPolicy, ProviderNativeWebSearchKind,
+    ProviderTurnRequest, ProviderTurnResponse,
 };
 use crate::prompt::PromptStability;
 
@@ -270,6 +270,7 @@ mod tests {
             ),
             conversation: Vec::new(),
             tools: Vec::new(),
+            native_web_search: None,
         };
 
         provider
@@ -475,6 +476,19 @@ impl AgentProvider for FallbackProvider {
                 .candidates
                 .iter()
                 .all(|candidate| candidate.provider.supports_freeform_grammar_tools())
+    }
+
+    fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
+        let mut kinds = self
+            .candidates
+            .iter()
+            .map(|candidate| candidate.provider.native_web_search_kind());
+        let first = kinds.next().flatten()?;
+        if kinds.all(|kind| kind == Some(first)) {
+            Some(first)
+        } else {
+            None
+        }
     }
 
     fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {

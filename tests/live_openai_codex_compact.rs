@@ -70,6 +70,7 @@ async fn live_openai_codex_remote_compact_route_probe() -> Result<()> {
                 .map(|index| ConversationMessage::UserText(format!("compact probe item {index}")))
                 .collect(),
             tools: vec![],
+            native_web_search: None,
         })
         .await?;
 

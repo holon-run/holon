@@ -57,7 +57,10 @@ use crate::{
     ingress::WakeDisposition,
     memory::{mark_working_memory_prompted, refresh_episode_memory, refresh_working_memory},
     prompt::{build_effective_prompt, EffectivePrompt},
-    provider::{provider_attempt_timeline, AgentProvider, ModelBlock},
+    provider::{
+        provider_attempt_timeline, AgentProvider, ModelBlock, ProviderNativeWebSearchKind,
+        ProviderNativeWebSearchRequest,
+    },
     queue::RuntimeQueue,
     skills::{
         find_skill_by_entrypoint, find_skill_by_script_path, load_skills_runtime_view,
@@ -85,7 +88,7 @@ use crate::{
         TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentRecord, WaitingIntentStatus,
         WaitingIntentSummary, WaitingReason, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
-    web::WebConfig,
+    web::{WebConfig, WebProviderKind},
 };
 use command_task::ManagedTaskHandle;
 use continuation::{resolve_continuation, ContinuationTrigger};

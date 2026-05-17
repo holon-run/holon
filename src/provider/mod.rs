@@ -25,6 +25,7 @@ pub struct ProviderTurnRequest {
     pub prompt_frame: ProviderPromptFrame,
     pub conversation: Vec<ConversationMessage>,
     pub tools: Vec<ToolSpec>,
+    pub native_web_search: Option<ProviderNativeWebSearchRequest>,
 }
 
 impl ProviderTurnRequest {
@@ -37,6 +38,7 @@ impl ProviderTurnRequest {
             prompt_frame: ProviderPromptFrame::plain(system_prompt),
             conversation,
             tools,
+            native_web_search: None,
         }
     }
 }
@@ -126,6 +128,33 @@ pub struct ProviderRequestDiagnostics {
     pub incremental_continuation: Option<ProviderIncrementalContinuationDiagnostics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_remote_compaction: Option<ProviderOpenAiRemoteCompactionDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_web_search: Option<ProviderNativeWebSearchDiagnostics>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderNativeWebSearchKind {
+    OpenAi,
+    Anthropic,
+    Gemini,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderNativeWebSearchRequest {
+    pub kind: ProviderNativeWebSearchKind,
+    pub provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderNativeWebSearchDiagnostics {
+    pub kind: ProviderNativeWebSearchKind,
+    pub provider_id: String,
+    pub lowered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -323,6 +352,10 @@ pub trait AgentProvider: Send + Sync {
                 tool
             })
             .collect()
+    }
+
+    fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
+        None
     }
 
     fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {
