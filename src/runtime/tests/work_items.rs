@@ -2323,6 +2323,110 @@ async fn agent_scoped_wake_hint_preserves_external_trigger_provenance() {
 }
 
 #[tokio::test]
+async fn legacy_descriptor_preserves_provenance_after_wait_cancel() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let now = Utc::now();
+    let waiting_id = "legacy-waiting".to_string();
+    let trigger_id = "legacy-trigger".to_string();
+    runtime
+        .storage()
+        .append_waiting_intent(&WaitingIntentRecord {
+            id: waiting_id.clone(),
+            agent_id: "default".into(),
+            scope: ExternalTriggerScope::Agent,
+            work_item_id: None,
+            description: "legacy review wait".into(),
+            source: "github".into(),
+            resource: Some("pull_request:1215".into()),
+            condition: Some("review submitted".into()),
+            delivery_mode: CallbackDeliveryMode::EnqueueMessage,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: trigger_id.clone(),
+            created_at: now,
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: Some("legacy-corr".into()),
+            causation_id: Some("legacy-cause".into()),
+        })
+        .unwrap();
+    runtime
+        .storage()
+        .append_external_trigger(&ExternalTriggerRecord {
+            external_trigger_id: trigger_id.clone(),
+            target_agent_id: "default".into(),
+            waiting_intent_id: Some(waiting_id.clone()),
+            scope: ExternalTriggerScope::Agent,
+            delivery_mode: CallbackDeliveryMode::EnqueueMessage,
+            trigger_url: Some("http://127.0.0.1:7878/callbacks/enqueue/legacy".into()),
+            token_hash: "legacy-token-hash".into(),
+            status: ExternalTriggerStatus::Active,
+            created_at: now,
+            revoked_at: None,
+            last_delivered_at: None,
+            delivery_count: 0,
+        })
+        .unwrap();
+
+    runtime.cancel_waiting(&waiting_id).await.unwrap();
+    let result = runtime
+        .deliver_callback(
+            &trigger_id,
+            CallbackDeliveryPayload {
+                body: Some(MessageBody::Text {
+                    text: "legacy payload".into(),
+                }),
+                content_type: Some("text/plain".into()),
+                correlation_id: None,
+                causation_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.waiting_intent_id.as_deref(),
+        Some(waiting_id.as_str())
+    );
+    let messages = runtime.storage().read_recent_messages(10).unwrap();
+    let callback = messages
+        .iter()
+        .find(|message| message.kind == MessageKind::CallbackEvent)
+        .expect("callback event should be enqueued");
+    assert_eq!(callback.correlation_id.as_deref(), Some("legacy-corr"));
+    assert_eq!(callback.causation_id.as_deref(), Some("legacy-cause"));
+    let metadata = callback
+        .metadata
+        .as_ref()
+        .expect("callback event metadata should exist");
+    assert_eq!(
+        metadata["waiting_intent_id"].as_str(),
+        Some(waiting_id.as_str())
+    );
+    assert_eq!(metadata["source"].as_str(), Some("github"));
+    assert_eq!(metadata["description"].as_str(), Some("legacy review wait"));
+    assert_eq!(metadata["resource"].as_str(), Some("pull_request:1215"));
+    let waiting = runtime.latest_waiting_intents().await.unwrap();
+    let cancelled = waiting
+        .iter()
+        .find(|record| record.id == waiting_id)
+        .expect("legacy waiting intent should remain auditable");
+    assert_eq!(cancelled.status, WaitingIntentStatus::Cancelled);
+    assert_eq!(cancelled.trigger_count, 0);
+}
+
+#[tokio::test]
 async fn default_external_ingress_wakes_without_owning_work_item_wait_state() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

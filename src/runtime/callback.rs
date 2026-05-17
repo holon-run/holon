@@ -31,16 +31,14 @@ impl RuntimeHandle {
         &self,
         delivery_mode: CallbackDeliveryMode,
     ) -> Result<ExternalTriggerCapability> {
-        let agent_id = self.agent_id().await?;
-        self.ensure_default_external_ingress(&agent_id, delivery_mode)
-            .await
+        self.ensure_default_external_ingress(delivery_mode).await
     }
 
     pub async fn ensure_default_external_ingress(
         &self,
-        agent_id: &str,
         delivery_mode: CallbackDeliveryMode,
     ) -> Result<ExternalTriggerCapability> {
+        let agent_id = self.agent_id().await?;
         let now = Utc::now();
         if let Some(descriptor) =
             self.latest_external_triggers()
@@ -61,7 +59,7 @@ impl RuntimeHandle {
         let trigger_url = build_callback_url(&self.inner.callback_base_url, &delivery_mode, &token);
         let descriptor = ExternalTriggerRecord {
             external_trigger_id: external_trigger_id.clone(),
-            target_agent_id: agent_id.to_string(),
+            target_agent_id: agent_id.clone(),
             waiting_intent_id: None,
             scope: ExternalTriggerScope::Agent,
             delivery_mode: delivery_mode.clone(),
@@ -88,7 +86,7 @@ impl RuntimeHandle {
         Ok(ExternalTriggerCapability {
             external_trigger_id,
             trigger_url,
-            target_agent_id: agent_id.to_string(),
+            target_agent_id: agent_id,
             delivery_mode,
             status: ExternalTriggerStatus::Active,
         })
@@ -109,7 +107,7 @@ impl RuntimeHandle {
             return Err(anyhow!("external trigger is not active"));
         }
 
-        let waiting = self.linked_active_waiting_intent(&descriptor).await?;
+        let waiting = self.linked_waiting_intent(&descriptor).await?;
 
         let agent_id = self.agent_id().await?;
         let now = Utc::now();
@@ -189,17 +187,21 @@ impl RuntimeHandle {
             }
         };
 
-        let updated_waiting = if let Some(mut waiting) = waiting {
-            if waiting.correlation_id.is_none() {
-                waiting.correlation_id = correlation_id.clone();
+        let updated_waiting = if let Some(mut linked_waiting) = waiting.clone() {
+            if linked_waiting.status == WaitingIntentStatus::Active {
+                if linked_waiting.correlation_id.is_none() {
+                    linked_waiting.correlation_id = correlation_id.clone();
+                }
+                if linked_waiting.causation_id.is_none() {
+                    linked_waiting.causation_id = causation_id.clone();
+                }
+                linked_waiting.last_triggered_at = Some(now);
+                linked_waiting.trigger_count += 1;
+                self.inner.storage.append_waiting_intent(&linked_waiting)?;
+                Some(linked_waiting)
+            } else {
+                None
             }
-            if waiting.causation_id.is_none() {
-                waiting.causation_id = causation_id.clone();
-            }
-            waiting.last_triggered_at = Some(now);
-            waiting.trigger_count += 1;
-            self.inner.storage.append_waiting_intent(&waiting)?;
-            Some(waiting)
         } else {
             None
         };
@@ -224,13 +226,13 @@ impl RuntimeHandle {
             "callback_delivered",
             serde_json::json!({
                 "agent_id": agent_id,
-                "waiting_intent_id": updated_waiting.as_ref().map(|waiting| waiting.id.clone()),
-                "work_item_id": updated_waiting.as_ref().and_then(|waiting| waiting.work_item_id.clone()),
+                "waiting_intent_id": waiting.as_ref().map(|waiting| waiting.id.clone()),
+                "work_item_id": waiting.as_ref().and_then(|waiting| waiting.work_item_id.clone()),
                 "external_trigger_id": updated_descriptor_id,
                 "scope": updated_descriptor.scope,
                 "delivery_mode": updated_descriptor.delivery_mode,
-                "source": updated_waiting.as_ref().map(|waiting| waiting.source.clone()),
-                "resource": updated_waiting.as_ref().and_then(|waiting| waiting.resource.clone()),
+                "source": waiting.as_ref().map(|waiting| waiting.source.clone()),
+                "resource": waiting.as_ref().and_then(|waiting| waiting.resource.clone()),
                 "trigger_count": updated_waiting.as_ref().map(|waiting| waiting.trigger_count),
                 "origin": "callback",
                 "delivery_surface": delivery_surface,
@@ -242,7 +244,7 @@ impl RuntimeHandle {
 
         Ok(CallbackDeliveryResult {
             agent_id,
-            waiting_intent_id: updated_waiting.map(|waiting| waiting.id),
+            waiting_intent_id: waiting.map(|waiting| waiting.id),
             external_trigger_id: updated_descriptor.external_trigger_id,
             scope: updated_descriptor.scope,
             delivery_mode: updated_descriptor.delivery_mode,
@@ -298,7 +300,7 @@ impl RuntimeHandle {
             .await
     }
 
-    async fn linked_active_waiting_intent(
+    async fn linked_waiting_intent(
         &self,
         descriptor: &ExternalTriggerRecord,
     ) -> Result<Option<WaitingIntentRecord>> {
@@ -309,9 +311,7 @@ impl RuntimeHandle {
             .latest_waiting_intents()
             .await?
             .into_iter()
-            .find(|record| {
-                record.id == waiting_intent_id && record.status == WaitingIntentStatus::Active
-            }))
+            .find(|record| record.id == waiting_intent_id))
     }
 }
 
