@@ -329,9 +329,9 @@ Current phase-1 agent initialization behavior:
     `https://github.com/<owner>/<repo>/tree/<ref>/<path-to-template-dir>`
 - a template directory must contain `AGENTS.md` and may include `skills.json`
   with `skill_refs`
-- phase-1 only accepts local skill refs in `skills.json`; GitHub skill refs are
-  rejected for now rather than invoking a remote installer during agent
-  creation
+- `skills.json` accepts builtin skill refs, absolute local skill refs, and GitHub
+  skill refs routed through the same remote installer used by
+  `holon skills install --remote`
 - template application materializes the initial `agent_home/AGENTS.md`,
   required Holon agent-home guidance, fixed `memory/self.md` and
   `memory/operator.md` entries, the visible `notes/`, `work/`, and `skills/`
