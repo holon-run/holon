@@ -17,6 +17,7 @@ import {
   classifyBenchmarkFinalizationDecision,
   classifyHolonBenchmarkCompletion,
   collectChangedFilesFromGitOutputs,
+  copyHolonProviderHttpTraceArtifacts,
   captureHolonProviderRequests,
   codexBenchmarkConfigToml,
   detectScopeViolation,
@@ -373,6 +374,27 @@ test("captureHolonProviderRequests redacts sensitive fields", () => {
   );
   assert.equal(captured.rounds[0].token_usage.input_tokens, 123);
   assert.equal(captured.rounds[0].token_usage.output_tokens, 45);
+});
+
+test("copyHolonProviderHttpTraceArtifacts copies home-scoped traces", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "holon-trace-test-"));
+  try {
+    const homeDir = path.join(root, "home");
+    const taskDir = path.join(root, "task");
+    const traceDir = path.join(homeDir, ".holon", "http-trace", "agent-1");
+    await fs.mkdir(traceDir, { recursive: true });
+    await fs.writeFile(path.join(traceDir, "trace.jsonl"), "{\"type\":\"request\"}\n", "utf8");
+
+    const copied = await copyHolonProviderHttpTraceArtifacts(homeDir, "agent-1", taskDir);
+
+    assert.equal(copied, true);
+    assert.equal(
+      await fs.readFile(path.join(taskDir, "provider-http-trace", "trace.jsonl"), "utf8"),
+      "{\"type\":\"request\"}\n"
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("buildOperatorPrompt preserves legacy push-only PR policy", () => {

@@ -75,12 +75,14 @@ pub(crate) fn build_candidate(
                 provider_config,
                 &model_ref.model,
                 config.runtime_max_output_tokens,
+                &config.home_dir,
             )?)
         }
         ProviderTransportKind::OpenAiResponses => Arc::new(OpenAiProvider::from_runtime_config(
             provider_config,
             &model_ref.model,
             config.runtime_max_output_tokens,
+            &config.home_dir,
         )?),
         ProviderTransportKind::AnthropicMessages => {
             Arc::new(AnthropicProvider::from_runtime_config(
@@ -94,6 +96,7 @@ pub(crate) fn build_candidate(
                 provider_config,
                 &model_ref.model,
                 config.runtime_max_output_tokens,
+                &config.home_dir,
             )?)
         }
     };
