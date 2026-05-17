@@ -1285,7 +1285,10 @@ mod tests {
         context::ContextConfig,
         provider::StubProvider,
         system::{process::ProcessOutput, RunningProcess, RunningProcessExitStatus, StopSignal},
-        types::{CallbackDeliveryMode, ExternalTriggerScope},
+        types::{
+            CallbackDeliveryMode, ExternalTriggerRecord, ExternalTriggerScope,
+            ExternalTriggerStatus,
+        },
     };
 
     use super::*;
@@ -1516,14 +1519,7 @@ mod tests {
     async fn command_resolution_exposes_external_trigger_url_when_available() {
         let (_home, _workspace, runtime) = test_runtime();
         let capability = runtime
-            .create_external_trigger(
-                "AgentInbox integration".into(),
-                "agentinbox".into(),
-                ExternalTriggerScope::Agent,
-                CallbackDeliveryMode::EnqueueMessage,
-                None,
-                None,
-            )
+            .default_external_trigger(CallbackDeliveryMode::EnqueueMessage)
             .await
             .unwrap();
 
@@ -1548,15 +1544,21 @@ mod tests {
             .unwrap();
         runtime.pick_work_item(work.id.clone()).await.unwrap();
         runtime
-            .create_external_trigger(
-                "work-item callback".into(),
-                "github".into(),
-                ExternalTriggerScope::WorkItem,
-                CallbackDeliveryMode::WakeHint,
-                None,
-                None,
-            )
-            .await
+            .storage()
+            .append_external_trigger(&ExternalTriggerRecord {
+                external_trigger_id: "legacy-work-item-trigger".into(),
+                target_agent_id: "default".into(),
+                waiting_intent_id: None,
+                scope: ExternalTriggerScope::WorkItem,
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/token".into()),
+                token_hash: "token-hash".into(),
+                status: ExternalTriggerStatus::Active,
+                created_at: Utc::now(),
+                revoked_at: None,
+                last_delivered_at: None,
+                delivery_count: 0,
+            })
             .unwrap();
 
         let spec = command_spec(false, false);

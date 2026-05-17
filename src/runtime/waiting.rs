@@ -269,36 +269,6 @@ impl RuntimeHandle {
         Ok(records)
     }
 
-    pub(super) async fn current_waiting_work_item_anchor(
-        &self,
-        agent_id: &str,
-    ) -> Result<Option<String>> {
-        let state = self.agent_state().await?;
-        let mut candidates = Vec::new();
-        candidates.extend(state.current_turn_work_item_id);
-        candidates.extend(state.current_work_item_id);
-        candidates.extend(
-            state
-                .working_memory
-                .current_working_memory
-                .current_work_item_id,
-        );
-        if let Some(current) = self.inner.storage.work_queue_prompt_projection()?.current {
-            candidates.push(current.id);
-        }
-
-        for candidate in candidates {
-            let Some(record) = self.inner.storage.latest_work_item(&candidate)? else {
-                continue;
-            };
-            if record.agent_id != agent_id || record.state == WorkItemState::Completed {
-                continue;
-            }
-            return Ok(Some(record.id));
-        }
-        Ok(None)
-    }
-
     pub(super) async fn waiting_intent_work_item_id(
         &self,
         waiting_intent_id: Option<&str>,
@@ -331,20 +301,6 @@ impl RuntimeHandle {
             self.inner.storage.append_waiting_intent(&updated)?;
             updated
         };
-
-        if let Some(descriptor) = self
-            .latest_external_triggers()
-            .await?
-            .into_iter()
-            .find(|record| record.external_trigger_id == waiting.external_trigger_id)
-        {
-            if descriptor.status != ExternalTriggerStatus::Revoked {
-                let mut revoked = descriptor;
-                revoked.status = ExternalTriggerStatus::Revoked;
-                revoked.revoked_at = Some(now);
-                self.inner.storage.append_external_trigger(&revoked)?;
-            }
-        }
 
         self.inner.storage.append_event(&AuditEvent::new(
             "waiting_intent_cancelled",

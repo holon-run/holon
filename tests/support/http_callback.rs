@@ -23,7 +23,7 @@ use holon::{
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
         MessageKind, MessageOrigin, OperatorDeliveryStatus, TodoItem, TodoItemState, TrustLevel,
-        WaitingIntentStatus, WorkItemState,
+        WorkItemState,
     },
 };
 use reqwest::Client;
@@ -89,17 +89,12 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
 
     wait_until(|| {
         let messages = runtime.storage().read_recent_messages(20)?;
-        let waiting = runtime.storage().latest_waiting_intents()?;
         let descriptors = runtime.storage().latest_external_triggers()?;
         Ok(messages
             .iter()
             .filter(|message| message.kind == MessageKind::CallbackEvent)
             .count()
             >= 2
-            && waiting
-                .first()
-                .map(|item| item.trigger_count == 2)
-                .unwrap_or(false)
             && descriptors
                 .first()
                 .map(|item| item.delivery_count == 2)
@@ -151,7 +146,7 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
     );
 
     runtime
-        .cancel_waiting(&capability.waiting_intent_id)
+        .revoke_external_trigger(&capability.external_trigger_id)
         .await?;
     let revoked = client
         .post(format!("{base}{callback_path}"))
@@ -163,7 +158,7 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
 
     let waiting = runtime.latest_waiting_intents().await?;
     let descriptors = runtime.latest_external_triggers().await?;
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Cancelled);
+    assert!(waiting.is_empty());
     assert_eq!(descriptors[0].status, ExternalTriggerStatus::Revoked);
 
     server.abort();
@@ -283,7 +278,7 @@ pub async fn callback_wake_hint_rejects_stopped_public_agent_without_side_effect
 
     let waiting = runtime.latest_waiting_intents().await?;
     let descriptors = runtime.latest_external_triggers().await?;
-    assert_eq!(waiting[0].trigger_count, 0);
+    assert!(waiting.is_empty());
     assert_eq!(descriptors[0].delivery_count, 0);
 
     let events = runtime.storage().read_recent_events(20)?;
@@ -468,16 +463,11 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     assert_eq!(first_payload["disposition"], "enqueued");
 
     wait_until(|| {
-        let waiting = runtime.storage().latest_waiting_intents()?;
         let descriptors = runtime.storage().latest_external_triggers()?;
-        Ok(waiting
+        Ok(descriptors
             .first()
-            .map(|item| item.trigger_count == 1)
-            .unwrap_or(false)
-            && descriptors
-                .first()
-                .map(|item| item.delivery_count == 1)
-                .unwrap_or(false))
+            .map(|item| item.delivery_count == 1)
+            .unwrap_or(false))
     })
     .await?;
 
@@ -501,10 +491,8 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
 
     let waiting = runtime2.latest_waiting_intents().await?;
     let descriptors = runtime2.latest_external_triggers().await?;
-    assert_eq!(waiting.len(), 1);
+    assert!(waiting.is_empty());
     assert_eq!(descriptors.len(), 1);
-    assert_eq!(waiting[0].id, capability.waiting_intent_id);
-    assert_eq!(waiting[0].trigger_count, 1);
     assert_eq!(descriptors[0].delivery_count, 1);
 
     let second = client
@@ -536,7 +524,7 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     .await?;
 
     runtime2
-        .cancel_waiting(&capability.waiting_intent_id)
+        .revoke_external_trigger(&capability.external_trigger_id)
         .await?;
 
     server2.abort();

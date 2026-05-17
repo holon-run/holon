@@ -2592,7 +2592,7 @@ mod tests {
             external_triggers: vec![ExternalTriggerStateSnapshot {
                 external_trigger_id: "cb-1".into(),
                 target_agent_id: "default".into(),
-                waiting_intent_id: "wait-1".into(),
+                waiting_intent_id: Some("wait-1".into()),
                 scope: ExternalTriggerScope::WorkItem,
                 delivery_mode: CallbackDeliveryMode::EnqueueMessage,
                 status: ExternalTriggerStatus::Active,

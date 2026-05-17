@@ -208,12 +208,9 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
             .map(|item| item.id.clone()),
         Some(work_item.id.clone())
     );
-    assert_eq!(snapshot.waiting_intents.len(), 1);
+    assert!(snapshot.waiting_intents.is_empty());
     assert_eq!(snapshot.external_triggers.len(), 1);
-    assert_eq!(
-        snapshot.external_triggers[0].external_trigger_id,
-        snapshot.waiting_intents[0].external_trigger_id
-    );
+    assert!(snapshot.external_triggers[0].waiting_intent_id.is_none());
     assert_eq!(
         snapshot.external_triggers[0].target_agent_id,
         snapshot.agent.identity.agent_id
