@@ -109,21 +109,34 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
     }
     if let Some(apply_patch_tool) = apply_patch_tool {
         let invocation_contract = if apply_patch_tool.freeform_grammar.is_some() {
-            "Current ApplyPatch surface is a freeform grammar tool: send the unified diff body directly. Do not wrap it in JSON, and do not use `patch` or `input` fields."
+            "Current ApplyPatch surface is Codex DSL freeform: send raw `*** Begin Patch` / `*** End Patch` text directly. Do not wrap it in JSON, and do not use `patch` or `input` fields."
         } else {
             "Current ApplyPatch surface is a JSON/function tool: call it with exactly `{\"patch\":\"--- a/path\\n+++ b/path\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n\"}`. Do not use `input`, and do not send a raw freeform diff body."
+        };
+        let patch_language = if apply_patch_tool.freeform_grammar.is_some() {
+            "express ordinary file mutation as Codex DSL with `*** Add File`, `*** Delete File`, or `*** Update File` hunks"
+        } else {
+            "express ordinary file mutation as unified diff text"
         };
         sections.push(section(
             "tool_apply_patch",
             PromptStability::Stable,
-            format!("Use ApplyPatch as the primary precise file-mutation tool. Use it for focused new files, small local edits, multi-hunk single-file changes, structural edits, and bounded refactors. For very large new files, generated files, whole-file rewrites, bulk deletes, or broad mechanical refactors, choose the lower-context path: split the change into smaller ApplyPatch calls, or use a carefully bounded ExecCommand/scripted rewrite when that avoids emitting a huge diff and is easier to verify. Do not expect separate Write or Edit tools; express ordinary file mutation as unified diff text. {invocation_contract} The model-visible ApplyPatch receipt is concise text with action markers like `A`, `M`, `D`, or `R`; if it says success with diagnostics, treat the target file as potentially different from your intended mental model. The canonical result still records structured changed-file metadata, `changed_paths`, `changed_file_count`, ignored metadata, diagnostics, and `summary_text`."),
+            format!("Use ApplyPatch as the primary precise file-mutation tool. Use it for focused new files, small local edits, multi-hunk single-file changes, structural edits, and bounded refactors. For very large new files, generated files, whole-file rewrites, bulk deletes, or broad mechanical refactors, choose the lower-context path: split the change into smaller ApplyPatch calls, or use a carefully bounded ExecCommand/scripted rewrite when that avoids emitting a huge diff and is easier to verify. Do not expect separate Write or Edit tools; {patch_language}. {invocation_contract} The model-visible ApplyPatch receipt is concise text with action markers like `A`, `M`, `D`, or `R`; if it says success with diagnostics, treat the target file as potentially different from your intended mental model. The canonical result still records structured changed-file metadata, `changed_paths`, `changed_file_count`, ignored metadata, diagnostics, and `summary_text`."),
         ));
     }
     if names.contains(&"ApplyPatch") {
+        let format_guidance = if apply_patch_tool
+            .and_then(|tool| tool.freeform_grammar.as_ref())
+            .is_some()
+        {
+            "Use Codex DSL file hunks: `*** Add File`, `*** Delete File`, `*** Update File`, optional `*** Move to`, and `@@` chunk separators when useful. Prefer focused chunks with enough surrounding context to stay unambiguous. Blank context lines within update chunks must have a space prefix."
+        } else {
+            "Use unified diff `---`/`+++` file headers and `@@` hunks for deletes, precise edits, and renames. Prefer focused hunks with enough surrounding context to stay unambiguous. Include at least 3 context lines before and after each changed line, and expand to 5-10 lines when the file contains repeated structures or similar patterns. Blank lines within hunks must have a space prefix to be valid context lines."
+        };
         sections.push(section(
             "tool_file_mutation",
             PromptStability::Stable,
-            "File mutation is workspace-scoped and centered on ApplyPatch. Use unified diff `---`/`+++` file headers and `@@` hunks for deletes, precise edits, and renames. Prefer focused hunks with enough surrounding context to stay unambiguous. Include at least 3 context lines before and after each changed line, and expand to 5–10 lines when the file contains repeated structures or similar patterns. Blank lines within hunks must have a space prefix to be valid context lines. Keep tool output bounded: do not paste enormous malformed patches, do not retry the same large failed patch unchanged, and split large refactors into smaller patch/application steps when that keeps failures recoverable. Avoid using ExecCommand with shell rewrite tricks like `sed -i` as the default editing path, but use a bounded script or heredoc when generating/replacing a large file is cheaper and safer than a huge diff. After a clean file mutation, rely on the ApplyPatch receipt first, then run focused verification with ExecCommand when correctness matters. If ApplyPatch reports diagnostics, warnings, partial application, context mismatch, or any non-clean receipt, inspect the exact affected region before continuing edits to that file and do not retry the same diagnostic-producing patch unchanged. Do not use file mutation tools for broad exploration; inspect with shell-first read commands through ExecCommand instead.".to_string(),
+            format!("File mutation is workspace-scoped and centered on ApplyPatch. {format_guidance} Keep tool output bounded: do not paste enormous malformed patches, do not retry the same large failed patch unchanged, and split large refactors into smaller patch/application steps when that keeps failures recoverable. Avoid using ExecCommand with shell rewrite tricks like `sed -i` as the default editing path, but use a bounded script or heredoc when generating/replacing a large file is cheaper and safer than a huge diff. After a clean file mutation, rely on the ApplyPatch receipt first, then run focused verification with ExecCommand when correctness matters. If ApplyPatch reports diagnostics, warnings, partial application, context mismatch, or any non-clean receipt, inspect the exact affected region before continuing edits to that file and do not retry the same diagnostic-producing patch unchanged. Do not use file mutation tools for broad exploration; inspect with shell-first read commands through ExecCommand instead."),
         ));
     }
     if names.contains(&"UseWorkspace") {
@@ -546,7 +559,7 @@ mod tests {
             .contains("do not send a raw freeform diff body"));
         assert!(!apply_patch
             .content
-            .contains("Current ApplyPatch surface is a freeform grammar tool"));
+            .contains("Current ApplyPatch surface is Codex DSL freeform"));
         let section = sections
             .iter()
             .find(|s| s.name == "tool_file_mutation")
@@ -582,10 +595,10 @@ mod tests {
 
         assert!(apply_patch
             .content
-            .contains("Current ApplyPatch surface is a freeform grammar tool"));
+            .contains("Current ApplyPatch surface is Codex DSL freeform"));
         assert!(apply_patch
             .content
-            .contains("send the unified diff body directly"));
+            .contains("send raw `*** Begin Patch` / `*** End Patch` text directly"));
         assert!(apply_patch
             .content
             .contains("do not use `patch` or `input` fields"));

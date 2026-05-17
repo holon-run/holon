@@ -6,7 +6,7 @@
 //! - `helpers`: Shared utility functions
 //! - `tools`: Builtin tool modules, one per tool
 
-mod apply_patch;
+pub(crate) mod apply_patch;
 pub mod dispatch;
 pub mod error;
 pub(crate) mod helpers;

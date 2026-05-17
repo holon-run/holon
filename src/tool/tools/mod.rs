@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::{
     runtime::RuntimeHandle,
-    tool::{ToolCall, ToolResult, ToolSpec},
+    tool::{apply_patch::ApplyPatchSurface, ToolCall, ToolResult, ToolSpec},
     types::{ToolCapabilityFamily, TrustLevel},
 };
 
@@ -71,6 +71,21 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         web_fetch::definition()?,
         web_search::definition()?,
     ])
+}
+
+pub(crate) fn builtin_tool_definitions_for_apply_patch_surface(
+    surface: ApplyPatchSurface,
+) -> Result<Vec<BuiltinToolDefinition>> {
+    builtin_tool_definitions()?
+        .into_iter()
+        .map(|definition| {
+            if definition.spec.name == apply_patch_tool::NAME {
+                apply_patch_tool::definition_for_surface(surface)
+            } else {
+                Ok(definition)
+            }
+        })
+        .collect()
 }
 
 pub(crate) async fn execute_builtin_tool(

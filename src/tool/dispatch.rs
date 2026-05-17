@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{
     runtime::RuntimeHandle,
-    tool::ToolError,
+    tool::{apply_patch::ApplyPatchSurface, ToolError},
     types::{ToolCapabilityFamily, ToolExecutionRecord, ToolExecutionStatus, TrustLevel},
 };
 
@@ -55,6 +55,7 @@ impl ToolRegistry {
             .collect())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn tool_specs_with_families(&self) -> Result<Vec<(ToolCapabilityFamily, ToolSpec)>> {
         let catalog = TOOL_SPEC_CATALOG
             .as_ref()
@@ -64,6 +65,18 @@ impl ToolRegistry {
             .iter()
             .map(|entry| (entry.family, entry.spec.clone()))
             .collect())
+    }
+
+    pub(crate) fn tool_specs_with_families_for_apply_patch_surface(
+        &self,
+        surface: ApplyPatchSurface,
+    ) -> Result<Vec<(ToolCapabilityFamily, ToolSpec)>> {
+        Ok(
+            tools::builtin_tool_definitions_for_apply_patch_surface(surface)?
+                .into_iter()
+                .map(|definition| (definition.family, definition.spec))
+                .collect(),
+        )
     }
 
     pub(crate) fn family_for_tool(&self, tool_name: &str) -> Result<Option<ToolCapabilityFamily>> {

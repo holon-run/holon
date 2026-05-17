@@ -4,7 +4,7 @@ use super::support::*;
 use super::*;
 use crate::provider::retry::{ProviderFailureKind, RetryDisposition};
 use crate::provider::transports::OpenAiResponsesTransportContract;
-use crate::tool::ToolSpec;
+use crate::tool::{apply_patch::ApplyPatchSurface, tools::apply_patch_tool, ToolSpec};
 use serde_json::{json, Value};
 
 #[test]
@@ -319,7 +319,7 @@ fn build_openai_codex_streaming_request_sends_supported_reasoning_effort() {
 }
 
 #[test]
-fn openai_request_uses_custom_tool_shape_for_apply_patch() {
+fn openai_request_uses_function_tool_shape_for_generic_apply_patch() {
     let apply_patch = tool_spec_named("ApplyPatch");
     let request = provider_turn_request_with_tools(vec![apply_patch]);
     let body = build_openai_responses_request(
@@ -332,6 +332,31 @@ fn openai_request_uses_custom_tool_shape_for_apply_patch() {
     )
     .unwrap();
 
+    assert_eq!(body["tools"][0]["type"], "function");
+    assert_eq!(body["tools"][0]["name"], "ApplyPatch");
+    assert_eq!(
+        body["tools"][0]["parameters"]["properties"]["patch"]["type"],
+        "string"
+    );
+    assert!(body["tools"][0].get("format").is_none());
+}
+
+#[test]
+fn openai_codex_request_uses_custom_codex_dsl_tool_shape_for_apply_patch() {
+    let apply_patch = apply_patch_tool::definition_for_surface(ApplyPatchSurface::CodexDslFreeform)
+        .unwrap()
+        .spec;
+    let request = provider_turn_request_with_tools(vec![apply_patch]);
+    let body = build_openai_responses_request(
+        "gpt-5.4",
+        256,
+        &request,
+        OpenAiResponsesTransportContract::CodexStreaming,
+        ToolSchemaContract::Relaxed,
+        None,
+    )
+    .unwrap();
+
     assert_eq!(body["tools"][0]["type"], "custom");
     assert_eq!(body["tools"][0]["name"], "ApplyPatch");
     assert_eq!(body["tools"][0]["format"]["type"], "grammar");
@@ -339,9 +364,8 @@ fn openai_request_uses_custom_tool_shape_for_apply_patch() {
     let grammar = body["tools"][0]["format"]["definition"]
         .as_str()
         .expect("grammar definition should be a string");
-    assert!(grammar.contains("old_file: \"--- \" file_path LF"));
-    assert!(grammar.contains("new_file: \"+++ \" file_path LF"));
-    assert!(!grammar.contains("*** Begin Patch"));
+    assert!(grammar.contains("*** Begin Patch"));
+    assert!(!grammar.contains("old_file: \"--- \" file_path LF"));
 }
 
 #[test]

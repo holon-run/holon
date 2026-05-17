@@ -7,7 +7,7 @@ use crate::{
     runtime::RuntimeHandle,
     system::ExecutionScopeKind,
     tool::{
-        apply_patch,
+        apply_patch::{self, ApplyPatchSurface},
         helpers::{invalid_tool_input, truncate_text, validate_non_empty},
         spec::{ToolFreeformGrammar, ToolResultStatus},
         ToolError, ToolResult,
@@ -21,7 +21,9 @@ use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::{helpers::parse_tool_args, schema::tool_input_schema};
 
 pub(crate) const NAME: &str = "ApplyPatch";
-const APPLY_PATCH_LARK_GRAMMAR: &str = include_str!("apply_patch_tool.lark");
+// Grammar matches OpenAI Codex's ApplyPatch DSL surface; Holon still applies
+// parsed edits through its own workspace guards and atomic apply path.
+const CODEX_DSL_LARK_GRAMMAR: &str = include_str!("apply_patch_tool_codex.lark");
 const MODEL_ERROR_TEXT_LIMIT: usize = 700;
 const MODEL_ERROR_TOKEN_LIMIT: usize = 96;
 const MODEL_DIAGNOSTIC_LIMIT: usize = 8;
@@ -34,16 +36,35 @@ pub(crate) struct ApplyPatchArgs {
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
+    definition_for_surface(ApplyPatchSurface::UnifiedDiffJson)
+}
+
+pub(crate) fn definition_for_surface(surface: ApplyPatchSurface) -> Result<BuiltinToolDefinition> {
+    let (description, input_schema, freeform_grammar) = match surface {
+        ApplyPatchSurface::CodexDslFreeform => (
+            "Apply a Codex-style patch DSL across one or more files. Submit raw *** Begin Patch / *** End Patch text directly as the freeform tool body; do not wrap it in JSON.".to_string(),
+            serde_json::json!({
+                "type": "string",
+                "description": "Raw Codex ApplyPatch DSL beginning with *** Begin Patch and ending with *** End Patch"
+            }),
+            Some(ToolFreeformGrammar {
+                syntax: "lark".to_string(),
+                definition: CODEX_DSL_LARK_GRAMMAR.to_string(),
+            }),
+        ),
+        ApplyPatchSurface::UnifiedDiffJson => (
+            "Apply a unified diff patch across one or more files. Call the JSON/function tool with exactly {\"patch\":\"--- a/path\\n+++ b/path\\n@@ ...\"}; do not use the Codex *** Begin Patch DSL as the advertised format.".to_string(),
+            tool_input_schema::<ApplyPatchArgs>()?,
+            None,
+        ),
+    };
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::LocalEnvironment,
         spec: crate::tool::ToolSpec {
             name: NAME.to_string(),
-            description: "Apply a unified diff patch across one or more files. Follow the invocation shape exposed by the current tool surface, and do not use the old *** Begin Patch format.".to_string(),
-            input_schema: tool_input_schema::<ApplyPatchArgs>()?,
-            freeform_grammar: Some(ToolFreeformGrammar {
-                syntax: "lark".to_string(),
-                definition: APPLY_PATCH_LARK_GRAMMAR.to_string(),
-            }),
+            description,
+            input_schema,
+            freeform_grammar,
         },
     })
 }
@@ -54,12 +75,14 @@ pub(crate) async fn execute(
     _trust: &TrustLevel,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
-    let patch_input = extract_patch_input(input)?;
+    let surface = runtime.current_apply_patch_surface().await;
+    let patch_input = extract_patch_input(input, surface)?;
     let execution = runtime
         .effective_execution(ExecutionScopeKind::AgentTurn)
         .await?;
     let outcome =
-        apply_patch::apply_patch(execution.workspace.execution_root(), &patch_input).await?;
+        apply_patch::apply_patch(execution.workspace.execution_root(), &patch_input, surface)
+            .await?;
     let mut summary_text = if outcome.changed_files.is_empty() {
         "patched no files".to_string()
     } else {
@@ -162,9 +185,7 @@ fn render_apply_patch_error_for_model(error: &ToolError) -> String {
     if error.retryable {
         lines.push("- retryable: true".to_string());
     }
-    lines.push(
-        "Use a smaller, valid unified diff or inspect the target file before retrying.".to_string(),
-    );
+    lines.push("Use the ApplyPatch format advertised for this turn, keep the patch smaller when possible, and inspect the target file before retrying.".to_string());
     format!("{}\n", lines.join("\n"))
 }
 
@@ -191,11 +212,26 @@ fn sanitize_model_visible_error_text(text: &str) -> String {
     truncate_text(&sanitized, MODEL_ERROR_TEXT_LIMIT)
 }
 
-fn extract_patch_input(input: &Value) -> Result<String> {
+fn extract_patch_input(input: &Value, surface: ApplyPatchSurface) -> Result<String> {
     match input {
         Value::String(patch) => validate_non_empty(patch.clone(), NAME, "patch"),
-        Value::Object(map) if map.contains_key("input") && !map.contains_key("patch") => Err(
-            invalid_tool_input(
+        Value::Object(map) if map.contains_key("input") && !map.contains_key("patch") => {
+            if matches!(surface, ApplyPatchSurface::CodexDslFreeform) {
+                return map
+                    .get("input")
+                    .and_then(Value::as_str)
+                    .map(|value| validate_non_empty(value.to_string(), NAME, "input"))
+                    .transpose()?
+                    .ok_or_else(|| {
+                        invalid_tool_input(
+                            NAME,
+                            "ApplyPatch input must be a string",
+                            serde_json::json!({"field": "input"}),
+                            "Submit raw *** Begin Patch / *** End Patch text directly.",
+                        )
+                    });
+            }
+            Err(invalid_tool_input(
                 NAME,
                 "ApplyPatch expects `patch`, not `input`",
                 serde_json::json!({
@@ -203,8 +239,8 @@ fn extract_patch_input(input: &Value) -> Result<String> {
                     "expected_field": "patch",
                 }),
                 "ApplyPatch expects exactly {\"patch\": \"--- a/path\\n+++ b/path\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n\"}. Do not use \"input\".",
-            ),
-        ),
+            ))
+        }
         _ => {
             let args: ApplyPatchArgs = parse_tool_args(NAME, input)?;
             validate_non_empty(args.patch, NAME, "patch")
@@ -427,9 +463,12 @@ mod tests {
 
     #[test]
     fn apply_patch_json_input_rejects_legacy_input_field() {
-        let error = extract_patch_input(&serde_json::json!({
-            "input": "--- a/old.txt\n+++ b/old.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n"
-        }))
+        let error = extract_patch_input(
+            &serde_json::json!({
+                "input": "--- a/old.txt\n+++ b/old.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n"
+            }),
+            ApplyPatchSurface::UnifiedDiffJson,
+        )
         .unwrap_err();
         let tool_error = crate::tool::ToolError::from_anyhow(&error);
         assert_eq!(tool_error.kind, "invalid_tool_input");
@@ -445,7 +484,18 @@ mod tests {
         let spec = definition().unwrap().spec;
         assert!(spec.input_schema["properties"]["patch"].is_object());
         assert!(spec.input_schema["properties"]["input"].is_null());
-        assert!(spec.freeform_grammar.is_some());
+        assert!(spec.freeform_grammar.is_none());
+    }
+
+    #[test]
+    fn apply_patch_codex_surface_uses_freeform_dsl_grammar() {
+        let spec = definition_for_surface(ApplyPatchSurface::CodexDslFreeform)
+            .unwrap()
+            .spec;
+        assert!(spec.input_schema["type"] == "string");
+        let grammar = spec.freeform_grammar.expect("codex grammar");
+        assert!(grammar.definition.contains("*** Begin Patch"));
+        assert!(!spec.description.contains("unified diff"));
     }
 
     #[test]
@@ -460,16 +510,16 @@ mod tests {
     }
 
     #[test]
-    fn apply_patch_freeform_grammar_requires_update_hunks() {
-        let grammar = definition()
+    fn apply_patch_codex_freeform_grammar_requires_codex_hunks() {
+        let grammar = definition_for_surface(ApplyPatchSurface::CodexDslFreeform)
             .unwrap()
             .spec
             .freeform_grammar
             .expect("apply patch should expose freeform grammar")
             .definition;
-        assert!(grammar.contains("old_file: \"--- \" file_path LF"));
-        assert!(grammar.contains("new_file: \"+++ \" file_path LF"));
-        assert!(grammar.contains("hunk_header: \"@@ -\" range \" +\" range \" @@\""));
-        assert!(!grammar.contains("*** Begin Patch"));
+        assert!(grammar.contains("begin_patch: \"*** Begin Patch\" LF"));
+        assert!(grammar.contains("update_hunk: \"*** Update File: \""));
+        assert!(grammar.contains("change_move: \"*** Move to: \""));
+        assert!(!grammar.contains("old_file: \"--- \" file_path LF"));
     }
 }
