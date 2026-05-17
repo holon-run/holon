@@ -502,16 +502,25 @@ impl AgentTemplateSourceKind {
             Self::AgentHome => "agent_home",
         }
     }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "builtin" => Some(Self::Builtin),
+            "user_global" | "user" => Some(Self::UserGlobal),
+            "agent_home" | "agent" => Some(Self::AgentHome),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentTemplateCatalogEntry {
     /// Stable source-scoped catalog identifier, such as `builtin:holon-default`.
     pub catalog_id: String,
-    /// Selector accepted by SpawnAgent.template.
+    /// Preferred selector accepted by SpawnAgent.template.
     ///
-    /// Builtin and user-global templates use the bare template id; agent-home
-    /// templates use an absolute local path.
+    /// `catalog_id` is also accepted, along with source aliases such as
+    /// `builtin:`, `user:`, and `agent:`.
     pub template: String,
     /// Human-readable local id after precedence is applied.
     pub template_id: String,

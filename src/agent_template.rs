@@ -249,6 +249,21 @@ pub async fn initialize_agent_home_from_template(
     initialize_agent_home_from_template_with_home(agent_home, &home_dir, template).await
 }
 
+pub async fn initialize_agent_home_from_template_with_catalog(
+    agent_home: &Path,
+    home_dir: &Path,
+    catalog_agent_home: &Path,
+    template: &str,
+) -> Result<TemplateProvenanceRecord> {
+    initialize_agent_home_from_template_with_home_and_catalog(
+        agent_home,
+        home_dir,
+        Some(catalog_agent_home),
+        template,
+    )
+    .await
+}
+
 pub fn initialize_agent_home_without_template(agent_home: &Path) -> Result<()> {
     ensure_agent_home_layout(agent_home)?;
     let agents_md_path = agent_home.join(TEMPLATE_AGENTS_FILENAME);
@@ -261,6 +276,16 @@ pub fn initialize_agent_home_without_template(agent_home: &Path) -> Result<()> {
 pub async fn initialize_agent_home_from_template_with_home(
     agent_home: &Path,
     home_dir: &Path,
+    template: &str,
+) -> Result<TemplateProvenanceRecord> {
+    initialize_agent_home_from_template_with_home_and_catalog(agent_home, home_dir, None, template)
+        .await
+}
+
+async fn initialize_agent_home_from_template_with_home_and_catalog(
+    agent_home: &Path,
+    home_dir: &Path,
+    catalog_agent_home: Option<&Path>,
     template: &str,
 ) -> Result<TemplateProvenanceRecord> {
     let agent_home = agent_home.to_path_buf();
@@ -284,7 +309,12 @@ pub async fn initialize_agent_home_from_template_with_home(
 
     let result = async {
         ensure_agent_home_layout(&agent_home)?;
-        let resolved = resolve_template(template, home_dir).await?;
+        let resolved = resolve_template(
+            template,
+            home_dir,
+            catalog_agent_home.unwrap_or(&agent_home),
+        )
+        .await?;
         materialize_template(&agent_home, &resolved).await?;
         let record = TemplateProvenanceRecord {
             selector: template.to_string(),
@@ -322,9 +352,36 @@ pub async fn ensure_agent_home_agents_md_from_template(
     ensure_agent_home_agents_md_from_template_with_home(agent_home, &home_dir, template).await
 }
 
+pub async fn ensure_agent_home_agents_md_from_template_with_catalog(
+    agent_home: &Path,
+    home_dir: &Path,
+    catalog_agent_home: &Path,
+    template: &str,
+) -> Result<Option<TemplateProvenanceRecord>> {
+    ensure_agent_home_agents_md_from_template_with_home_and_catalog(
+        agent_home,
+        home_dir,
+        Some(catalog_agent_home),
+        template,
+    )
+    .await
+}
+
 pub async fn ensure_agent_home_agents_md_from_template_with_home(
     agent_home: &Path,
     home_dir: &Path,
+    template: &str,
+) -> Result<Option<TemplateProvenanceRecord>> {
+    ensure_agent_home_agents_md_from_template_with_home_and_catalog(
+        agent_home, home_dir, None, template,
+    )
+    .await
+}
+
+async fn ensure_agent_home_agents_md_from_template_with_home_and_catalog(
+    agent_home: &Path,
+    home_dir: &Path,
+    catalog_agent_home: Option<&Path>,
     template: &str,
 ) -> Result<Option<TemplateProvenanceRecord>> {
     let agent_home = agent_home.to_path_buf();
@@ -335,7 +392,12 @@ pub async fn ensure_agent_home_agents_md_from_template_with_home(
     if agents_md_path.exists() {
         return Ok(None);
     }
-    let resolved = resolve_template(template, home_dir).await?;
+    let resolved = resolve_template(
+        template,
+        home_dir,
+        catalog_agent_home.unwrap_or(&agent_home),
+    )
+    .await?;
     let skills_root = agent_home.join("skills");
     let mut created_skill_destinations = Vec::new();
 
@@ -623,7 +685,11 @@ pub(crate) fn user_home_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("HOME is not set; cannot resolve ~/.agents/templates"))
 }
 
-async fn resolve_template(template: &str, home_dir: &Path) -> Result<ResolvedTemplate> {
+async fn resolve_template(
+    template: &str,
+    home_dir: &Path,
+    catalog_agent_home: &Path,
+) -> Result<ResolvedTemplate> {
     let template = template.trim();
     if template.is_empty() {
         bail!("template selector must not be empty");
@@ -642,15 +708,8 @@ async fn resolve_template(template: &str, home_dir: &Path) -> Result<ResolvedTem
         return resolve_github_template(template).await;
     }
 
-    validate_template_id(template)?;
-    let path = templates_root_for_home(home_dir).join(template);
-    resolve_local_template(
-        path.clone(),
-        TemplateProvenanceSource::TemplateId {
-            template_id: template.to_string(),
-            path,
-        },
-    )
+    let entry = resolve_template_catalog_entry(template, home_dir, catalog_agent_home)?;
+    resolve_catalog_template(entry, home_dir).await
 }
 
 fn resolve_absolute_template_path(template: &str) -> Result<PathBuf> {
@@ -675,6 +734,109 @@ fn validate_template_id(template_id: &str) -> Result<()> {
         bail!("template_id contains unsupported characters");
     }
     Ok(())
+}
+
+fn resolve_template_catalog_entry(
+    template: &str,
+    home_dir: &Path,
+    catalog_agent_home: &Path,
+) -> Result<AgentTemplateCatalogEntry> {
+    if let Some((source_label, template_id)) = template.split_once(':') {
+        let Some(source) = AgentTemplateSourceKind::from_label(source_label) else {
+            return Err(unknown_template_error(
+                template,
+                home_dir,
+                catalog_agent_home,
+            ));
+        };
+        validate_template_id(template_id)?;
+        let catalog = discover_agent_templates_catalog(Some(home_dir), catalog_agent_home);
+        return catalog
+            .into_iter()
+            .find(|entry| entry.source == source && entry.template_id == template_id)
+            .ok_or_else(|| unknown_template_error(template, home_dir, catalog_agent_home));
+    }
+
+    validate_template_id(template)?;
+    let catalog = discover_agent_templates_catalog(Some(home_dir), catalog_agent_home);
+    catalog
+        .into_iter()
+        .find(|entry| entry.template_id == template)
+        .ok_or_else(|| unknown_template_error(template, home_dir, catalog_agent_home))
+}
+
+async fn resolve_catalog_template(
+    entry: AgentTemplateCatalogEntry,
+    home_dir: &Path,
+) -> Result<ResolvedTemplate> {
+    match entry.source {
+        AgentTemplateSourceKind::Builtin => resolve_builtin_template(&entry.template_id, home_dir),
+        AgentTemplateSourceKind::UserGlobal | AgentTemplateSourceKind::AgentHome => {
+            let path = entry.path.clone().ok_or_else(|| {
+                anyhow!(
+                    "template catalog entry {} has no local source path",
+                    entry.catalog_id
+                )
+            })?;
+            resolve_local_template(
+                path.clone(),
+                TemplateProvenanceSource::TemplateId {
+                    template_id: entry.template_id,
+                    path,
+                },
+            )
+        }
+    }
+}
+
+fn resolve_builtin_template(template_id: &str, home_dir: &Path) -> Result<ResolvedTemplate> {
+    let builtin = BUILTIN_TEMPLATES
+        .iter()
+        .find(|builtin| builtin.template_id == template_id)
+        .ok_or_else(|| anyhow!("unknown builtin template id {template_id}"))?;
+    let skill_refs = builtin
+        .skills_json
+        .map(serde_json::from_str::<TemplateSkillsManifest>)
+        .transpose()
+        .with_context(|| format!("failed to parse builtin template {template_id} skills.json"))?
+        .map(|manifest| manifest.skill_refs)
+        .unwrap_or_default();
+    Ok(ResolvedTemplate {
+        provenance: TemplateProvenanceSource::TemplateId {
+            template_id: template_id.to_string(),
+            path: templates_root_for_home(home_dir).join(template_id),
+        },
+        agents_md: builtin.agents_md.to_string(),
+        skill_refs,
+    })
+}
+
+fn unknown_template_error(
+    template: &str,
+    home_dir: &Path,
+    catalog_agent_home: &Path,
+) -> anyhow::Error {
+    let catalog = discover_agent_templates_catalog(Some(home_dir), catalog_agent_home);
+    let known = if catalog.is_empty() {
+        "none".to_string()
+    } else {
+        catalog
+            .iter()
+            .map(|entry| {
+                let source = entry
+                    .path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| entry.source.label().to_string());
+                format!(
+                    "{} (id={}, source={source})",
+                    entry.catalog_id, entry.template_id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    anyhow!("unknown template selector: {template}; known template ids/catalog ids: {known}")
 }
 
 fn resolve_local_template(
@@ -1538,6 +1700,85 @@ mod tests {
         assert!(agent_home.join(".holon/indexes").is_dir());
         assert!(agent_home.join(".holon/cache").is_dir());
         assert!(template_provenance_path(&agent_home).is_file());
+    }
+
+    #[tokio::test]
+    async fn catalog_id_initializes_from_agent_home_catalog() {
+        let home = tempdir().unwrap();
+        let catalog_agent_home = tempdir().unwrap();
+        let template_dir = catalog_agent_home.path().join("templates").join("worker");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(
+            template_dir.join("AGENTS.md"),
+            "catalog worker instructions",
+        )
+        .unwrap();
+
+        let agent_home = home.path().join("agent-catalog-id");
+        let provenance = initialize_agent_home_from_template_with_catalog(
+            &agent_home,
+            home.path(),
+            catalog_agent_home.path(),
+            "agent_home:worker",
+        )
+        .await
+        .unwrap();
+
+        assert!(fs::read_to_string(agent_home.join("AGENTS.md"))
+            .unwrap()
+            .contains("catalog worker instructions"));
+        assert!(matches!(
+            provenance.source,
+            TemplateProvenanceSource::TemplateId {
+                ref template_id,
+                ref path
+            } if template_id == "worker" && path == &template_dir
+        ));
+
+        let bare_agent_home = home.path().join("agent-bare-id");
+        initialize_agent_home_from_template_with_catalog(
+            &bare_agent_home,
+            home.path(),
+            catalog_agent_home.path(),
+            "worker",
+        )
+        .await
+        .unwrap();
+
+        assert!(fs::read_to_string(bare_agent_home.join("AGENTS.md"))
+            .unwrap()
+            .contains("catalog worker instructions"));
+    }
+
+    #[tokio::test]
+    async fn template_catalog_selector_error_lists_known_ids() {
+        let home = tempdir().unwrap();
+        let catalog_agent_home = tempdir().unwrap();
+        let template_dir = catalog_agent_home.path().join("templates").join("worker");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(
+            template_dir.join("AGENTS.md"),
+            "catalog worker instructions",
+        )
+        .unwrap();
+
+        let agent_home = home.path().join("agent");
+        let err = initialize_agent_home_from_template_with_catalog(
+            &agent_home,
+            home.path(),
+            catalog_agent_home.path(),
+            "missing",
+        )
+        .await
+        .unwrap_err();
+        let message = err.to_string();
+
+        assert!(message.contains("unknown template selector: missing"));
+        assert!(message.contains("known template ids/catalog ids"));
+        assert!(message.contains("agent_home:worker"));
+        assert!(message.contains("worker"));
+        assert!(message.contains(&template_dir.display().to_string()));
+        assert!(message.contains("agent_home"));
     }
 
     #[tokio::test]
