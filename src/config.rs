@@ -406,6 +406,56 @@ pub struct WebProviderConfigFile {
     /// and must be of kind `api_key`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<WebCommandProviderConfigFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<WebCommandOutputConfigFile>,
+    #[serde(
+        default,
+        skip_serializing_if = "WebProviderLimitsConfigFile::is_default"
+    )]
+    pub limits: WebProviderLimitsConfigFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebCommandProviderConfigFile {
+    pub argv: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebCommandOutputConfigFile {
+    #[serde(default)]
+    pub format: WebCommandOutputFormatFile,
+    pub mapping: WebCommandResultMappingFile,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WebCommandOutputFormatFile {
+    #[default]
+    Json,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebCommandResultMappingFile {
+    pub title: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct WebProviderLimitsConfigFile {
+    pub timeout_ms: Option<u64>,
+    pub max_output_bytes: Option<usize>,
+}
+
+impl WebProviderLimitsConfigFile {
+    pub fn is_default(value: &Self) -> bool {
+        value == &Self::default()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -578,7 +628,7 @@ impl AppConfig {
             .transpose()?
             .or(stored_config.tui.alternate_screen)
             .unwrap_or(AltScreenMode::Auto);
-        let web_config = crate::web::materialize_web_config(&stored_config.web, &credential_store);
+        let web_config = crate::web::materialize_web_config(&stored_config.web, &credential_store)?;
 
         Ok(Self {
             default_agent_id,
@@ -1847,6 +1897,9 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                     kind,
                     base_url: None,
                     credential_profile: None,
+                    command: None,
+                    output: None,
+                    limits: Default::default(),
                 })
                 .kind = kind;
         }

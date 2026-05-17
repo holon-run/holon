@@ -6,6 +6,7 @@ pub mod search;
 
 use std::collections::BTreeMap;
 
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,17 +26,22 @@ impl Default for WebConfig {
     }
 }
 
-impl From<&crate::config::WebConfigFile> for WebConfig {
-    fn from(value: &crate::config::WebConfigFile) -> Self {
-        Self {
+impl TryFrom<&crate::config::WebConfigFile> for WebConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &crate::config::WebConfigFile) -> Result<Self> {
+        Ok(Self {
             fetch: WebFetchConfig::from(&value.fetch),
             search: WebSearchConfig::from(&value.search),
             providers: value
                 .providers
                 .iter()
-                .map(|(id, provider)| (id.clone(), WebProviderConfig::from(provider)))
-                .collect(),
-        }
+                .map(|(id, provider)| {
+                    WebProviderConfig::from_file(id, provider)
+                        .map(|provider| (id.clone(), provider))
+                })
+                .collect::<Result<BTreeMap<_, _>>>()?,
+        })
     }
 }
 
@@ -206,14 +212,85 @@ pub struct WebProviderConfig {
     /// Empty when no credential profile is configured.
     #[serde(skip)]
     pub api_key: String,
+    pub command: Option<WebCommandProviderConfig>,
+    pub output: Option<WebCommandOutputConfig>,
+    pub limits: WebProviderLimitsConfig,
 }
 
-impl From<&crate::config::WebProviderConfigFile> for WebProviderConfig {
-    fn from(value: &crate::config::WebProviderConfigFile) -> Self {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebCommandProviderConfig {
+    pub argv: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebCommandOutputConfig {
+    pub format: WebCommandOutputFormat,
+    pub mapping: WebCommandResultMapping,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WebCommandOutputFormat {
+    Json,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebCommandResultMapping {
+    pub title: String,
+    pub url: String,
+    pub snippet: Option<String>,
+    pub published_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebProviderLimitsConfig {
+    pub timeout_ms: u64,
+    pub max_output_bytes: usize,
+}
+
+impl Default for WebProviderLimitsConfig {
+    fn default() -> Self {
         Self {
+            timeout_ms: 10_000,
+            max_output_bytes: 200_000,
+        }
+    }
+}
+
+impl WebProviderConfig {
+    fn from_file(id: &str, value: &crate::config::WebProviderConfigFile) -> Result<Self> {
+        validate_provider_config(id, value)?;
+        Ok(Self {
             kind: value.kind,
             base_url: value.base_url.clone(),
             api_key: String::new(),
+            command: value
+                .command
+                .as_ref()
+                .map(|command| WebCommandProviderConfig {
+                    argv: command.argv.clone(),
+                }),
+            output: value.output.as_ref().map(|output| WebCommandOutputConfig {
+                format: output.format.into(),
+                mapping: WebCommandResultMapping {
+                    title: output.mapping.title.clone(),
+                    url: output.mapping.url.clone(),
+                    snippet: output.mapping.snippet.clone(),
+                    published_at: output.mapping.published_at.clone(),
+                },
+            }),
+            limits: WebProviderLimitsConfig {
+                timeout_ms: value.limits.timeout_ms.unwrap_or(10_000).max(1),
+                max_output_bytes: value.limits.max_output_bytes.unwrap_or(200_000).max(1),
+            },
+        })
+    }
+}
+
+impl From<crate::config::WebCommandOutputFormatFile> for WebCommandOutputFormat {
+    fn from(value: crate::config::WebCommandOutputFormatFile) -> Self {
+        match value {
+            crate::config::WebCommandOutputFormatFile::Json => Self::Json,
         }
     }
 }
@@ -222,36 +299,89 @@ impl From<&crate::config::WebProviderConfigFile> for WebProviderConfig {
 pub fn materialize_web_config(
     file: &crate::config::WebConfigFile,
     credential_store: &CredentialStoreFile,
-) -> WebConfig {
-    WebConfig {
+) -> Result<WebConfig> {
+    let providers = file
+        .providers
+        .iter()
+        .map(|(id, provider)| -> Result<(String, WebProviderConfig)> {
+            let api_key = provider
+                .credential_profile
+                .as_deref()
+                .and_then(|profile| {
+                    credential_store
+                        .profiles
+                        .get(profile)
+                        .filter(|entry| entry.kind == crate::config::CredentialKind::ApiKey)
+                })
+                .map(|entry| entry.material.clone())
+                .unwrap_or_default();
+            let mut provider_config = WebProviderConfig::from_file(id, provider)?;
+            provider_config.api_key = api_key;
+            Ok((id.clone(), provider_config))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+
+    Ok(WebConfig {
         fetch: WebFetchConfig::from(&file.fetch),
         search: WebSearchConfig::from(&file.search),
-        providers: file
-            .providers
-            .iter()
-            .map(|(id, provider)| {
-                let api_key = provider
-                    .credential_profile
-                    .as_deref()
-                    .and_then(|profile| {
-                        credential_store
-                            .profiles
-                            .get(profile)
-                            .filter(|entry| entry.kind == crate::config::CredentialKind::ApiKey)
-                    })
-                    .map(|entry| entry.material.clone())
-                    .unwrap_or_default();
-                (
-                    id.clone(),
-                    WebProviderConfig {
-                        kind: provider.kind,
-                        base_url: provider.base_url.clone(),
-                        api_key,
-                    },
-                )
-            })
-            .collect(),
+        providers,
+    })
+}
+
+fn validate_provider_config(
+    id: &str,
+    provider: &crate::config::WebProviderConfigFile,
+) -> Result<()> {
+    if provider.kind != WebProviderKind::Command {
+        if provider.command.is_some() {
+            return Err(anyhow!(
+                "web provider `{id}` kind={} must not configure command.argv; command is only supported for kind=command",
+                provider.kind.as_str()
+            ));
+        }
+        if provider.output.is_some() {
+            return Err(anyhow!(
+                "web provider `{id}` kind={} must not configure output.mapping; command output is only supported for kind=command",
+                provider.kind.as_str()
+            ));
+        }
+        if provider.limits.timeout_ms.is_some() || provider.limits.max_output_bytes.is_some() {
+            return Err(anyhow!(
+                "web provider `{id}` kind={} must not configure command limits; limits are only supported for kind=command",
+                provider.kind.as_str()
+            ));
+        }
+        return Ok(());
     }
+    let command = provider
+        .command
+        .as_ref()
+        .ok_or_else(|| anyhow!("web provider `{id}` kind=command requires command.argv"))?;
+    provider
+        .output
+        .as_ref()
+        .ok_or_else(|| anyhow!("web provider `{id}` kind=command requires output.mapping"))?;
+    let binary = command.argv.first().map(|arg| arg.trim()).unwrap_or("");
+    if binary.is_empty() {
+        return Err(anyhow!(
+            "web provider `{id}` command.argv must not be empty"
+        ));
+    }
+    let basename = binary.rsplit(['/', '\\']).next().unwrap_or(binary);
+    if matches!(
+        basename,
+        "sh" | "bash" | "zsh" | "fish" | "cmd" | "powershell" | "pwsh"
+    ) {
+        return Err(anyhow!(
+            "web provider `{id}` command binary `{binary}` is unsafe"
+        ));
+    }
+    if command.argv.iter().any(|arg| arg.contains('\0')) {
+        return Err(anyhow!(
+            "web provider `{id}` command argv contains a NUL byte"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -267,6 +397,7 @@ pub enum WebProviderKind {
     OpenAiNative,
     AnthropicNative,
     GeminiNative,
+    Command,
 }
 
 impl WebProviderKind {
@@ -282,6 +413,7 @@ impl WebProviderKind {
             WebProviderKind::OpenAiNative => "open_ai_native",
             WebProviderKind::AnthropicNative => "anthropic_native",
             WebProviderKind::GeminiNative => "gemini_native",
+            WebProviderKind::Command => "command",
         }
     }
 
@@ -385,6 +517,18 @@ impl WebProviderKind {
                 default_priority: 65,
                 status: WebProviderSupportStatus::NativeOnly,
             },
+            WebProviderKind::Command => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::None,
+                cost_class: WebProviderCostClass::Free,
+                quality_hint: WebProviderQualityHint::Keyword,
+                supports_domain_filter: false,
+                supports_freshness: false,
+                supports_region_or_language: false,
+                supports_full_content: false,
+                supports_native_citations: false,
+                default_priority: 40,
+                status: WebProviderSupportStatus::Unsupported,
+            },
         }
     }
 }
@@ -392,7 +536,10 @@ impl WebProviderKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CredentialProfileFile, CredentialStoreFile, WebProviderConfigFile};
+    use crate::config::{
+        CredentialProfileFile, CredentialStoreFile, WebCommandProviderConfigFile,
+        WebProviderConfigFile,
+    };
     use std::collections::BTreeMap;
 
     fn credential_store_with(profile: &str, material: &str) -> CredentialStoreFile {
@@ -407,6 +554,17 @@ mod tests {
         CredentialStoreFile { profiles }
     }
 
+    fn provider_file(kind: WebProviderKind) -> WebProviderConfigFile {
+        WebProviderConfigFile {
+            kind,
+            base_url: None,
+            credential_profile: None,
+            command: None,
+            output: None,
+            limits: Default::default(),
+        }
+    }
+
     #[test]
     fn materialize_resolves_api_key_from_credential_profile() {
         let mut providers = BTreeMap::new();
@@ -416,6 +574,9 @@ mod tests {
                 kind: WebProviderKind::Brave,
                 base_url: None,
                 credential_profile: Some("brave_key".to_string()),
+                command: None,
+                output: None,
+                limits: Default::default(),
             },
         );
         let file = crate::config::WebConfigFile {
@@ -424,7 +585,7 @@ mod tests {
             providers,
         };
         let store = credential_store_with("brave_key", "test-api-key-123");
-        let config = materialize_web_config(&file, &store);
+        let config = materialize_web_config(&file, &store).unwrap();
         let provider = config.providers.get("my_brave").unwrap();
         assert_eq!(provider.api_key, "test-api-key-123");
         assert_eq!(provider.kind, WebProviderKind::Brave);
@@ -439,6 +600,9 @@ mod tests {
                 kind: WebProviderKind::Tavily,
                 base_url: None,
                 credential_profile: None,
+                command: None,
+                output: None,
+                limits: Default::default(),
             },
         );
         let file = crate::config::WebConfigFile {
@@ -447,7 +611,7 @@ mod tests {
             providers,
         };
         let store = CredentialStoreFile::default();
-        let config = materialize_web_config(&file, &store);
+        let config = materialize_web_config(&file, &store).unwrap();
         let provider = config.providers.get("my_tavily").unwrap();
         assert!(provider.api_key.is_empty());
     }
@@ -461,6 +625,9 @@ mod tests {
                 kind: WebProviderKind::Brave,
                 base_url: None,
                 credential_profile: Some("missing_profile".to_string()),
+                command: None,
+                output: None,
+                limits: Default::default(),
             },
         );
         let file = crate::config::WebConfigFile {
@@ -470,7 +637,7 @@ mod tests {
         };
         // Credential store does not contain "missing_profile"
         let store = credential_store_with("other", "irrelevant");
-        let config = materialize_web_config(&file, &store);
+        let config = materialize_web_config(&file, &store).unwrap();
         let provider = config.providers.get("my_brave").unwrap();
         assert!(provider.api_key.is_empty());
     }
@@ -484,6 +651,9 @@ mod tests {
                 kind: WebProviderKind::Brave,
                 base_url: None,
                 credential_profile: Some("session_token".to_string()),
+                command: None,
+                output: None,
+                limits: Default::default(),
             },
         );
         let file = crate::config::WebConfigFile {
@@ -500,9 +670,53 @@ mod tests {
                 material: "some-session-hash".to_string(),
             },
         );
-        let config = materialize_web_config(&file, &store);
+        let config = materialize_web_config(&file, &store).unwrap();
         let provider = config.providers.get("my_brave").unwrap();
         assert!(provider.api_key.is_empty());
+    }
+
+    #[test]
+    fn try_from_web_config_file_propagates_provider_errors() {
+        let mut file = crate::config::WebConfigFile::default();
+        let mut provider = provider_file(WebProviderKind::Command);
+        provider.command = Some(WebCommandProviderConfigFile {
+            argv: vec!["search".to_string()],
+        });
+        file.providers.insert("cmd".to_string(), provider);
+
+        let error = WebConfig::try_from(&file).unwrap_err().to_string();
+
+        assert!(error.contains("requires output.mapping"));
+    }
+
+    #[test]
+    fn materialize_rejects_command_fields_on_non_command_provider() {
+        let mut file = crate::config::WebConfigFile::default();
+        let mut provider = provider_file(WebProviderKind::Brave);
+        provider.command = Some(WebCommandProviderConfigFile {
+            argv: vec!["search".to_string()],
+        });
+        file.providers.insert("brave".to_string(), provider);
+
+        let error = materialize_web_config(&file, &CredentialStoreFile::default())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("must not configure command.argv"));
+    }
+
+    #[test]
+    fn materialize_rejects_command_limits_on_non_command_provider() {
+        let mut file = crate::config::WebConfigFile::default();
+        let mut provider = provider_file(WebProviderKind::Brave);
+        provider.limits.timeout_ms = Some(1000);
+        file.providers.insert("brave".to_string(), provider);
+
+        let error = materialize_web_config(&file, &CredentialStoreFile::default())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("must not configure command limits"));
     }
 
     #[test]
@@ -512,5 +726,9 @@ mod tests {
             WebProviderSupportStatus::NativeOnly
         );
         assert_eq!(WebProviderKind::Brave.capabilities().default_priority, 80);
+        assert_eq!(
+            WebProviderKind::Command.capabilities().status,
+            WebProviderSupportStatus::Unsupported
+        );
     }
 }
