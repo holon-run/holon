@@ -308,12 +308,7 @@ fn redact_json_secrets(value: &Value) -> Value {
             map.iter()
                 .map(|(key, value)| {
                     let lowered = key.to_ascii_lowercase();
-                    let value = if lowered.contains("api_key")
-                        || lowered.contains("apikey")
-                        || lowered.contains("token")
-                        || lowered.contains("secret")
-                        || lowered == "authorization"
-                    {
+                    let value = if is_secret_json_key(&lowered) {
                         Value::String("[REDACTED]".into())
                     } else {
                         redact_json_secrets(value)
@@ -325,6 +320,17 @@ fn redact_json_secrets(value: &Value) -> Value {
         Value::Array(items) => Value::Array(items.iter().map(redact_json_secrets).collect()),
         other => other.clone(),
     }
+}
+
+fn is_secret_json_key(lowered: &str) -> bool {
+    lowered.contains("api_key")
+        || lowered.contains("apikey")
+        || lowered.contains("secret")
+        || lowered == "authorization"
+        || lowered == "token"
+        || lowered.ends_with("_token")
+        || lowered.starts_with("token_")
+        || lowered.contains("_token_")
 }
 
 fn request_agent_id(request: &ProviderTurnRequest) -> Option<&str> {
@@ -4260,11 +4266,19 @@ mod tests {
 
         let body = redact_json_secrets(&json!({
             "model": "gpt-test",
+            "max_output_tokens": 4096,
             "access_token": "secret",
-            "nested": { "api_key": "secret" }
+            "nested": {
+                "api_key": "secret",
+                "prompt_tokens": 123,
+                "reasoning_tokens": 45
+            }
         }));
         assert_eq!(body["access_token"], "[REDACTED]");
         assert_eq!(body["nested"]["api_key"], "[REDACTED]");
+        assert_eq!(body["max_output_tokens"], 4096);
+        assert_eq!(body["nested"]["prompt_tokens"], 123);
+        assert_eq!(body["nested"]["reasoning_tokens"], 45);
         assert_eq!(body["model"], "gpt-test");
     }
 
