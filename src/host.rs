@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fs,
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Weak},
     time::Duration,
@@ -19,6 +19,7 @@ use tracing::warn;
 use crate::{
     agent_template::{
         ensure_agent_home_agents_md_from_template_with_home,
+        initialize_agent_home_from_template_with_catalog,
         initialize_agent_home_from_template_with_home, initialize_agent_home_without_template,
         seed_builtin_templates_for_home, DEFAULT_AGENT_TEMPLATE_ID,
     },
@@ -317,7 +318,7 @@ impl RuntimeHost {
         agent_id: &str,
         template: Option<&str>,
     ) -> Result<AgentIdentityRecord> {
-        self.ensure_named_agent(agent_id, template, None)
+        self.ensure_named_agent(agent_id, template, None, None)
             .await
             .map(|(record, _)| record)
     }
@@ -327,6 +328,7 @@ impl RuntimeHost {
         agent_id: &str,
         template: Option<&str>,
         lineage_parent_agent_id: Option<&str>,
+        catalog_agent_home: Option<&Path>,
     ) -> Result<(AgentIdentityRecord, bool)> {
         self.validate_agent_id(agent_id)?;
         if agent_id == self.config().default_agent_id {
@@ -370,12 +372,23 @@ impl RuntimeHost {
             return Ok((existing, false));
         }
         if let Some(template) = template {
-            initialize_agent_home_from_template_with_home(
-                &self.agent_data_dir(agent_id),
-                &self.config().home_dir,
-                template,
-            )
-            .await?;
+            let agent_home = self.agent_data_dir(agent_id);
+            if let Some(catalog_agent_home) = catalog_agent_home {
+                initialize_agent_home_from_template_with_catalog(
+                    &agent_home,
+                    &self.config().home_dir,
+                    catalog_agent_home,
+                    template,
+                )
+                .await?;
+            } else {
+                initialize_agent_home_from_template_with_home(
+                    &agent_home,
+                    &self.config().home_dir,
+                    template,
+                )
+                .await?;
+            }
         } else {
             initialize_agent_home_without_template(&self.agent_data_dir(agent_id))?;
         }
@@ -744,13 +757,15 @@ impl RuntimeHost {
         parent_agent_id: &str,
         task_id: &str,
         template: Option<&str>,
+        catalog_agent_home: &Path,
     ) -> Result<AgentIdentityRecord> {
         let child_agent_id = format!("{TEMP_CHILD_AGENT_PREFIX}{}", uuid::Uuid::new_v4().simple());
         self.validate_agent_id(&child_agent_id)?;
         if let Some(template) = template {
-            initialize_agent_home_from_template_with_home(
+            initialize_agent_home_from_template_with_catalog(
                 &self.agent_data_dir(&child_agent_id),
                 &self.config().home_dir,
+                catalog_agent_home,
                 template,
             )
             .await?;
@@ -882,8 +897,14 @@ impl RuntimeHost {
         template: Option<String>,
     ) -> Result<ChildTaskSpawn> {
         let parent_state = parent_runtime.agent_state().await?;
+        let parent_agent_home = self.agent_data_dir(&parent_state.id);
         let child_identity = self
-            .create_child_identity(&parent_state.id, &task.id, template.as_deref())
+            .create_child_identity(
+                &parent_state.id,
+                &task.id,
+                template.as_deref(),
+                &parent_agent_home,
+            )
             .await?;
         let child_runtime = self.get_or_create_agent(&child_identity.agent_id).await?;
         child_runtime
@@ -974,11 +995,13 @@ impl RuntimeHost {
         template: Option<String>,
     ) -> Result<String> {
         let parent_state = parent_runtime.agent_state().await?;
+        let parent_agent_home = self.agent_data_dir(&parent_state.id);
         let (named_identity, created) = self
             .ensure_named_agent(
                 agent_id,
                 template.as_deref(),
                 Some(parent_state.id.as_str()),
+                Some(&parent_agent_home),
             )
             .await?;
         let named_runtime = self.get_or_create_agent(&named_identity.agent_id).await?;
@@ -1987,6 +2010,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_public_named_resolves_parent_agent_template_catalog() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let parent_state = parent.agent_state().await.unwrap();
+        let parent_agent_home = host.agent_data_dir(&parent_state.id);
+        let template_dir = parent_agent_home.join("templates").join("worker");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(
+            template_dir.join("AGENTS.md"),
+            "# Parent worker\n\nParent catalog worker\n",
+        )
+        .unwrap();
+
+        host.spawn_public_named_agent(
+            parent,
+            "worker-bot",
+            None,
+            TrustLevel::TrustedOperator,
+            Some("worker".into()),
+        )
+        .await
+        .unwrap();
+
+        let named_home = host.agent_data_dir("worker-bot");
+        let agents_md = fs::read_to_string(named_home.join("AGENTS.md")).unwrap();
+        assert!(agents_md.starts_with("# Parent worker\n\nParent catalog worker\n"));
+        assert!(agents_md.contains("## Holon Agent Home"));
+        assert!(agents_md.contains("`agent_home` is this agent's default workspace"));
+    }
+
+    #[tokio::test]
     async fn agent_summary_reports_runtime_default_then_override_and_clear() {
         let fixture = provider_test_config(Some("dummy-token"));
         let host = RuntimeHost::new(fixture.config).unwrap();
@@ -2103,8 +2157,9 @@ mod tests {
             .await
             .unwrap();
         let parent_state = parent.agent_state().await.unwrap();
+        let parent_agent_home = host.agent_data_dir(&parent_state.id);
         let child_identity = host
-            .create_child_identity(&parent_state.id, "task-1", None)
+            .create_child_identity(&parent_state.id, "task-1", None, &parent_agent_home)
             .await
             .unwrap();
         let child_home = host.agent_data_dir(&child_identity.agent_id);
@@ -2138,6 +2193,35 @@ mod tests {
                 "anthropic/claude-sonnet-4-6".to_string(),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn child_identity_template_resolves_parent_agent_template_catalog() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        let host = RuntimeHost::new(fixture.config).unwrap();
+        let parent = host.default_runtime().await.unwrap();
+        let parent_state = parent.agent_state().await.unwrap();
+        let parent_agent_home = host.agent_data_dir(&parent_state.id);
+        let template_dir = parent_agent_home.join("templates").join("worker");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(template_dir.join("AGENTS.md"), "parent catalog worker").unwrap();
+
+        let child_identity = host
+            .create_child_identity(
+                &parent_state.id,
+                "task-1",
+                Some("worker"),
+                &parent_agent_home,
+            )
+            .await
+            .unwrap();
+        let child_home = host.agent_data_dir(&child_identity.agent_id);
+        let agents_md = fs::read_to_string(child_home.join("AGENTS.md")).unwrap();
+
+        assert!(agents_md.contains("parent catalog worker"));
+        assert!(child_home.join("memory/self.md").is_file());
+        assert!(child_home.join("memory/operator.md").is_file());
+        assert!(child_home.join(".holon/state").is_dir());
     }
 
     #[tokio::test]
