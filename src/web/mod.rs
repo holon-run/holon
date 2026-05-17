@@ -357,7 +357,7 @@ impl WebProviderKind {
                 supports_full_content: false,
                 supports_native_citations: true,
                 default_priority: 60,
-                status: WebProviderSupportStatus::Unsupported,
+                status: WebProviderSupportStatus::Supported,
             },
             WebProviderKind::Firecrawl => WebProviderCapabilityMetadata {
                 auth: WebProviderAuthClass::ApiKey,
@@ -369,7 +369,7 @@ impl WebProviderKind {
                 supports_full_content: true,
                 supports_native_citations: false,
                 default_priority: 55,
-                status: WebProviderSupportStatus::Unsupported,
+                status: WebProviderSupportStatus::Supported,
             },
             WebProviderKind::OpenAiNative
             | WebProviderKind::AnthropicNative
