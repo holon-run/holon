@@ -18,17 +18,16 @@ pub struct WebConfig {
 
 impl WebConfig {
     pub fn native_search_provider(&self) -> Option<(String, WebProviderKind)> {
-        if !self.search.enabled || self.search.provider == "auto" {
+        let provider_id = self.search.provider.trim();
+        if !self.search.enabled || provider_id.is_empty() || provider_id == "auto" {
             return None;
         }
-        self.providers
-            .get(&self.search.provider)
-            .and_then(|provider| {
-                provider
-                    .kind
-                    .is_native_search()
-                    .then(|| (self.search.provider.clone(), provider.kind))
-            })
+        self.providers.get(provider_id).and_then(|provider| {
+            provider
+                .kind
+                .is_native_search()
+                .then(|| (provider_id.to_string(), provider.kind))
+        })
     }
 }
 
@@ -133,8 +132,10 @@ impl From<&crate::config::WebSearchConfigFile> for WebSearchConfig {
             enabled: value.enabled.unwrap_or(fallback.enabled),
             provider: value
                 .provider
-                .clone()
-                .filter(|provider| !provider.trim().is_empty())
+                .as_deref()
+                .map(str::trim)
+                .filter(|provider| !provider.is_empty())
+                .map(ToOwned::to_owned)
                 .unwrap_or(fallback.provider),
             mode: value.mode.unwrap_or(fallback.mode),
             providers: value
@@ -698,6 +699,40 @@ mod tests {
         let config = materialize_web_config(&file, &store).unwrap();
         let provider = config.providers.get("my_brave").unwrap();
         assert!(provider.api_key.is_empty());
+    }
+
+    #[test]
+    fn web_search_config_trims_primary_provider() {
+        let file = crate::config::WebSearchConfigFile {
+            provider: Some("  openai-native  ".to_string()),
+            ..Default::default()
+        };
+
+        let config = WebSearchConfig::from(&file);
+
+        assert_eq!(config.provider, "openai-native");
+    }
+
+    #[test]
+    fn native_search_provider_uses_normalized_provider_id() {
+        let mut config = WebConfig::default();
+        config.search.provider = " openai-native ".to_string();
+        config.providers.insert(
+            "openai-native".to_string(),
+            WebProviderConfig {
+                kind: WebProviderKind::OpenAiNative,
+                base_url: None,
+                api_key: String::new(),
+                command: None,
+                output: None,
+                limits: WebProviderLimitsConfig::default(),
+            },
+        );
+
+        assert_eq!(
+            config.native_search_provider(),
+            Some(("openai-native".to_string(), WebProviderKind::OpenAiNative))
+        );
     }
 
     #[test]
