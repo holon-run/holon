@@ -236,11 +236,12 @@ async fn preview_prompt_lowers_apply_patch_contract_for_json_tool_providers() {
         .contains("Current ApplyPatch surface is a JSON/function tool"));
     assert!(!preview
         .rendered_system_prompt
-        .contains("Current ApplyPatch surface is a freeform grammar tool"));
+        .contains("Current ApplyPatch surface is Codex DSL freeform"));
 }
 
 #[tokio::test]
-async fn preview_prompt_keeps_apply_patch_contract_for_freeform_tool_providers() {
+async fn preview_prompt_keeps_json_apply_patch_for_generic_lineage_even_when_provider_supports_freeform(
+) {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -261,10 +262,10 @@ async fn preview_prompt_keeps_apply_patch_contract_for_freeform_tool_providers()
 
     assert!(preview
         .rendered_system_prompt
-        .contains("Current ApplyPatch surface is a freeform grammar tool"));
+        .contains("Current ApplyPatch surface is a JSON/function tool"));
     assert!(!preview
         .rendered_system_prompt
-        .contains("Current ApplyPatch surface is a JSON/function tool"));
+        .contains("Current ApplyPatch surface is Codex DSL freeform"));
 }
 
 #[tokio::test]

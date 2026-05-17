@@ -18,6 +18,53 @@ pub(crate) struct ApplyPatchOutcome {
     pub(crate) diagnostics: Vec<ApplyPatchDiagnostic>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApplyPatchSurface {
+    CodexDslFreeform,
+    UnifiedDiffJson,
+}
+
+impl ApplyPatchSurface {
+    pub(crate) fn for_model_ref(model_ref: &str) -> Self {
+        if model_ref.starts_with("openai-codex/") {
+            Self::CodexDslFreeform
+        } else {
+            Self::UnifiedDiffJson
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::CodexDslFreeform => "codex_dsl_freeform",
+            Self::UnifiedDiffJson => "unified_diff_json",
+        }
+    }
+
+    fn expected_format(self) -> PatchFormat {
+        match self {
+            Self::CodexDslFreeform => PatchFormat::CodexDsl,
+            Self::UnifiedDiffJson => PatchFormat::UnifiedDiff,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PatchFormat {
+    CodexDsl,
+    UnifiedDiff,
+    Unknown,
+}
+
+impl PatchFormat {
+    fn label(self) -> &'static str {
+        match self {
+            Self::CodexDsl => "codex_dsl",
+            Self::UnifiedDiff => "unified_diff",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FilePatch {
     old_path: PatchPath,
@@ -105,10 +152,57 @@ impl FileState {
     }
 }
 
-pub(crate) async fn apply_patch(workspace_root: &Path, input: &str) -> Result<ApplyPatchOutcome> {
-    let patches = parse_patch(input)?;
+pub(crate) async fn apply_patch(
+    workspace_root: &Path,
+    input: &str,
+    surface: ApplyPatchSurface,
+) -> Result<ApplyPatchOutcome> {
+    let expected_format = surface.expected_format();
+    let patch_bytes = input.len();
+    let parse = parse_patch_for_format(input, expected_format);
+    let (patches, parser_mode, detected_format, strict_failure_kind) = match parse {
+        Ok(patches) => (patches, "strict", expected_format, None),
+        Err(strict_error) => {
+            let detected = detect_patch_format(input);
+            if detected != PatchFormat::Unknown && detected != expected_format {
+                match parse_patch_for_format(input, detected) {
+                    Ok(patches) => (
+                        patches,
+                        "compatibility",
+                        detected,
+                        Some(ToolError::from_anyhow(&strict_error).kind),
+                    ),
+                    Err(_) => return Err(strict_error),
+                }
+            } else {
+                return Err(strict_error);
+            }
+        }
+    };
+    let file_count = patches.len();
+    let hunk_count = patches.iter().map(|patch| patch.hunks.len()).sum::<usize>();
     let (changed_files, touched, ignored_metadata, diagnostics) =
         apply_file_patches(workspace_root, &patches).await?;
+    let mut diagnostics = diagnostics;
+    if let Some(kind) = strict_failure_kind {
+        diagnostics.push(ApplyPatchDiagnostic {
+            path: String::new(),
+            kind: "apply_patch_compatibility_fallback".to_string(),
+            message: format!(
+                "ApplyPatch succeeded using {}, but this turn expects {}. Continue using {} for future ApplyPatch calls. surface={}, expected_format={}, detected_format={}, parser_mode={}, compatibility_fallback_used=true, patch_bytes={}, file_count={}, hunk_count={}, strict_parse_failure_kind={kind}",
+                detected_format.label(),
+                expected_format.label(),
+                expected_format.label(),
+                surface.label(),
+                expected_format.label(),
+                detected_format.label(),
+                parser_mode,
+                patch_bytes,
+                file_count,
+                hunk_count,
+            ),
+        });
+    }
     Ok(ApplyPatchOutcome {
         changed_files,
         changed_paths: touched,
@@ -117,11 +211,48 @@ pub(crate) async fn apply_patch(workspace_root: &Path, input: &str) -> Result<Ap
     })
 }
 
-fn parse_patch(input: &str) -> Result<Vec<FilePatch>> {
-    if input.lines().next().map(str::trim) == Some("*** Begin Patch") {
+fn parse_patch_for_format(input: &str, format: PatchFormat) -> Result<Vec<FilePatch>> {
+    match format {
+        PatchFormat::CodexDsl => parse_codex_dsl_patch(input),
+        PatchFormat::UnifiedDiff => parse_unified_diff_patch(input),
+        PatchFormat::Unknown => Err(syntax_error(
+            "unknown_patch_format",
+            "unknown ApplyPatch format",
+            None,
+            "submit the patch format advertised for this turn",
+        )),
+    }
+}
+
+fn detect_patch_format(input: &str) -> PatchFormat {
+    let trimmed = input.trim_start();
+    if trimmed.starts_with("*** Begin Patch")
+        || codex_dsl_lines(input)
+            .first()
+            .is_some_and(|line| line == "*** Begin Patch")
+    {
+        return PatchFormat::CodexDsl;
+    }
+    let mut has_old = false;
+    let mut has_new = false;
+    let mut has_hunk = false;
+    for line in trimmed.lines().take(40) {
+        has_old |= line.starts_with("--- ");
+        has_new |= line.starts_with("+++ ");
+        has_hunk |= line.starts_with("@@ ");
+    }
+    if has_old && has_new && has_hunk {
+        PatchFormat::UnifiedDiff
+    } else {
+        PatchFormat::Unknown
+    }
+}
+
+fn parse_unified_diff_patch(input: &str) -> Result<Vec<FilePatch>> {
+    if detect_patch_format(input) == PatchFormat::CodexDsl {
         return Err(syntax_error(
-            "legacy_patch_format",
-            "ApplyPatch now expects unified diff text, not *** Begin Patch DSL",
+            "wrong_patch_format",
+            "this turn expects unified diff JSON, not Codex *** Begin Patch DSL",
             None,
             "submit unified diff with --- old_path, +++ new_path, and @@ hunks",
         ));
@@ -305,6 +436,240 @@ fn parse_patch(input: &str) -> Result<Vec<FilePatch>> {
     }
 
     Ok(patches)
+}
+
+fn parse_codex_dsl_patch(input: &str) -> Result<Vec<FilePatch>> {
+    let lines = codex_dsl_lines(input);
+    if lines.first().map(String::as_str) != Some("*** Begin Patch") {
+        return Err(syntax_error(
+            "wrong_patch_format",
+            "this turn expects Codex *** Begin Patch DSL",
+            None,
+            "submit raw *** Begin Patch / *** End Patch text without JSON wrapping",
+        ));
+    }
+    if lines.last().map(String::as_str) != Some("*** End Patch") {
+        return Err(syntax_error(
+            "missing_end_patch",
+            "Codex DSL patch must end with *** End Patch",
+            None,
+            "end the patch with *** End Patch",
+        ));
+    }
+
+    let mut patches = Vec::new();
+    let mut index = 1usize;
+    while index + 1 < lines.len() {
+        let line = &lines[index];
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            index += 1;
+            let mut hunk_lines = Vec::new();
+            while index + 1 < lines.len() && !lines[index].starts_with("*** ") {
+                let Some(text) = lines[index].strip_prefix('+') else {
+                    return Err(syntax_error(
+                        "invalid_codex_add_line",
+                        "Codex Add File lines must start with +",
+                        Some(path),
+                        "prefix every added line with +",
+                    ));
+                };
+                hunk_lines.push(HunkLine {
+                    kind: HunkLineKind::Add,
+                    text: text.to_string(),
+                });
+                index += 1;
+            }
+            if hunk_lines.is_empty() {
+                return Err(syntax_error(
+                    "missing_hunk",
+                    "Codex Add File must include at least one added line",
+                    Some(path),
+                    "add one or more + lines",
+                ));
+            }
+            patches.push(FilePatch {
+                old_path: PatchPath::DevNull,
+                new_path: PatchPath::Workspace(path.to_string()),
+                rename_from: None,
+                rename_to: None,
+                hunks: vec![PatchHunk {
+                    old_start: 0,
+                    old_count: 0,
+                    new_start: 1,
+                    new_count: hunk_lines.len(),
+                    lines: hunk_lines,
+                    no_newline_at_end: false,
+                }],
+                ignored_metadata: Vec::new(),
+                diagnostics: Vec::new(),
+            });
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Delete File: ") {
+            patches.push(FilePatch {
+                old_path: PatchPath::Workspace(path.to_string()),
+                new_path: PatchPath::DevNull,
+                rename_from: None,
+                rename_to: None,
+                hunks: Vec::new(),
+                ignored_metadata: Vec::new(),
+                diagnostics: Vec::new(),
+            });
+            index += 1;
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Update File: ") {
+            index += 1;
+            let mut rename_to = None;
+            if index + 1 < lines.len() {
+                if let Some(move_to) = lines[index].strip_prefix("*** Move to: ") {
+                    rename_to = Some(move_to.to_string());
+                    index += 1;
+                }
+            }
+            let mut hunks = Vec::new();
+            let mut current = Vec::new();
+            let mut no_newline_at_end = false;
+            while index + 1 < lines.len() {
+                let line = &lines[index];
+                if line == "*** End of File" {
+                    no_newline_at_end = true;
+                    index += 1;
+                    continue;
+                }
+                if line.starts_with("*** ") {
+                    break;
+                }
+                if line == "@@" || line.starts_with("@@ ") {
+                    if !current.is_empty() {
+                        hunks.push(codex_dsl_hunk(
+                            std::mem::take(&mut current),
+                            no_newline_at_end,
+                        ));
+                        no_newline_at_end = false;
+                    }
+                    index += 1;
+                    continue;
+                }
+                let Some(first) = line.chars().next() else {
+                    return Err(syntax_error(
+                        "invalid_codex_change_line",
+                        "Codex change lines must start with space, +, or -",
+                        Some(path),
+                        "prefix blank context lines with a space",
+                    ));
+                };
+                let kind = match first {
+                    ' ' => HunkLineKind::Context,
+                    '+' => HunkLineKind::Add,
+                    '-' => HunkLineKind::Remove,
+                    _ => {
+                        return Err(syntax_error(
+                            "invalid_codex_change_line",
+                            format!(
+                                "Codex change line must start with space, +, or -, got: {line}"
+                            ),
+                            Some(path),
+                            "use only context, added, and removed lines inside update chunks",
+                        ))
+                    }
+                };
+                current.push(HunkLine {
+                    kind,
+                    text: line[1..].to_string(),
+                });
+                index += 1;
+            }
+            if !current.is_empty() {
+                hunks.push(codex_dsl_hunk(current, no_newline_at_end));
+            }
+            if hunks.is_empty() && rename_to.is_none() {
+                return Err(syntax_error(
+                    "missing_hunk",
+                    "Codex Update File must include a change or Move to",
+                    Some(path),
+                    "add change lines or a *** Move to header",
+                ));
+            }
+            let target = rename_to.clone().unwrap_or_else(|| path.to_string());
+            patches.push(FilePatch {
+                old_path: PatchPath::Workspace(path.to_string()),
+                new_path: PatchPath::Workspace(target),
+                rename_from: rename_to.as_ref().map(|_| path.to_string()),
+                rename_to,
+                hunks,
+                ignored_metadata: Vec::new(),
+                diagnostics: Vec::new(),
+            });
+            continue;
+        }
+
+        return Err(syntax_error(
+            "invalid_codex_hunk",
+            format!("unexpected Codex DSL line: {line}"),
+            None,
+            "use *** Add File, *** Delete File, or *** Update File hunks",
+        ));
+    }
+
+    if patches.is_empty() {
+        return Err(syntax_error(
+            "missing_hunk",
+            "Codex DSL patch must include at least one file hunk",
+            None,
+            "add a file hunk between Begin Patch and End Patch",
+        ));
+    }
+    Ok(patches)
+}
+
+fn codex_dsl_lines(input: &str) -> Vec<String> {
+    let mut lines = input.lines().map(ToString::to_string).collect::<Vec<_>>();
+    while lines
+        .first()
+        .map(|line| line.trim().is_empty())
+        .unwrap_or(false)
+    {
+        lines.remove(0);
+    }
+    while lines
+        .last()
+        .map(|line| line.trim().is_empty())
+        .unwrap_or(false)
+    {
+        lines.pop();
+    }
+    if lines
+        .first()
+        .map(|line| line.trim_start())
+        .is_some_and(|line| line == "<<EOF" || line == "<<'EOF'" || line == "<<\"EOF\"")
+        && lines.last().map(String::as_str) == Some("EOF")
+    {
+        lines.remove(0);
+        lines.pop();
+    }
+    lines
+}
+
+fn codex_dsl_hunk(lines: Vec<HunkLine>, no_newline_at_end: bool) -> PatchHunk {
+    let old_count = lines
+        .iter()
+        .filter(|line| line.kind != HunkLineKind::Add)
+        .count();
+    let new_count = lines
+        .iter()
+        .filter(|line| line.kind != HunkLineKind::Remove)
+        .count();
+    PatchHunk {
+        old_start: 1,
+        old_count,
+        new_start: 1,
+        new_count,
+        lines,
+        no_newline_at_end,
+    }
 }
 
 fn parse_git_header(line: &str) -> Result<(String, String)> {
@@ -1236,6 +1601,14 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    async fn apply_patch(workspace_root: &Path, input: &str) -> Result<ApplyPatchOutcome> {
+        super::apply_patch(workspace_root, input, ApplyPatchSurface::UnifiedDiffJson).await
+    }
+
+    fn parse_patch(input: &str) -> Result<Vec<FilePatch>> {
+        parse_unified_diff_patch(input)
+    }
+
     #[tokio::test]
     async fn apply_patch_updates_multiple_files_with_unified_diff() {
         let dir = tempdir().unwrap();
@@ -1268,6 +1641,146 @@ mod tests {
             "keep\nnew\n"
         );
         assert_eq!(outcome.changed_files.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_unified_diff_allows_codex_marker_as_file_content() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "before\n*** Begin Patch\nafter\n")
+            .await
+            .unwrap();
+
+        let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1,3 +1,3 @@
+ before
+ *** Begin Patch
+-after
++AFTER
+"#;
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "before\n*** Begin Patch\nAFTER\n"
+        );
+        assert_eq!(outcome.changed_files[0].action, ApplyPatchAction::Modify);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_updates_file_with_codex_dsl() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "one\ntwo\nthree\n").await.unwrap();
+
+        let patch = r#"*** Begin Patch
+*** Update File: sample.txt
+ one
+-two
++TWO
+ three
+*** End Patch
+"#;
+
+        let outcome = super::apply_patch(dir.path(), patch, ApplyPatchSurface::CodexDslFreeform)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "one\nTWO\nthree\n"
+        );
+        assert_eq!(outcome.changed_files[0].action, ApplyPatchAction::Modify);
+        assert!(outcome.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_patch_codex_dsl_add_delete_and_move_share_changed_shape() {
+        let dir = tempdir().unwrap();
+        let old = dir.path().join("old.txt");
+        let doomed = dir.path().join("doomed.txt");
+        tokio::fs::write(&old, "hello\n").await.unwrap();
+        tokio::fs::write(&doomed, "bye\n").await.unwrap();
+
+        let patch = r#"*** Begin Patch
+*** Add File: created.txt
++hi
+*** Delete File: doomed.txt
+*** Update File: old.txt
+*** Move to: new.txt
+ hello
+*** End Patch
+"#;
+
+        let outcome = super::apply_patch(dir.path(), patch, ApplyPatchSurface::CodexDslFreeform)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("created.txt"))
+                .await
+                .unwrap(),
+            "hi\n"
+        );
+        assert!(!tokio::fs::try_exists(&doomed).await.unwrap());
+        assert!(!tokio::fs::try_exists(&old).await.unwrap());
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("new.txt"))
+                .await
+                .unwrap(),
+            "hello\n"
+        );
+        assert_eq!(outcome.changed_files.len(), 3);
+        assert_eq!(outcome.changed_files[0].action, ApplyPatchAction::Add);
+        assert_eq!(outcome.changed_files[1].action, ApplyPatchAction::Delete);
+        assert_eq!(outcome.changed_files[2].action, ApplyPatchAction::Move);
+    }
+
+    #[tokio::test]
+    async fn apply_patch_compatibility_parses_non_active_known_format() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+
+        let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1,1 +1,1 @@
+-old
++new
+"#;
+
+        let outcome = super::apply_patch(dir.path(), patch, ApplyPatchSurface::CodexDslFreeform)
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "new\n");
+        let diagnostic = outcome
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.kind == "apply_patch_compatibility_fallback")
+            .expect("compatibility diagnostic");
+        assert!(diagnostic.message.contains("expected_format=codex_dsl"));
+        assert!(diagnostic
+            .message
+            .contains("compatibility_fallback_used=true"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_codex_dsl_accepts_end_of_file_marker() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+
+        let patch = r#"*** Begin Patch
+*** Update File: sample.txt
+-old
++new
+*** End of File
+*** End Patch
+"#;
+
+        super::apply_patch(dir.path(), patch, ApplyPatchSurface::CodexDslFreeform)
+            .await
+            .unwrap();
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "new");
     }
 
     #[tokio::test]
@@ -1648,7 +2161,7 @@ rename to new.txt
         assert_eq!(tool_error.kind, "invalid_patch_syntax");
         assert_eq!(
             tool_error.details.as_ref().unwrap()["rule"],
-            "legacy_patch_format"
+            "wrong_patch_format"
         );
     }
 

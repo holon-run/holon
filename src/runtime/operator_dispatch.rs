@@ -1,5 +1,5 @@
 use super::*;
-use crate::tool::ToolSpec;
+use crate::tool::{apply_patch::ApplyPatchSurface, ToolSpec};
 
 impl RuntimeHandle {
     pub(super) async fn process_interactive_message(
@@ -112,14 +112,26 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn filtered_tool_specs(
         &self,
         identity: &AgentIdentityView,
     ) -> Result<Vec<crate::tool::ToolSpec>> {
+        self.filtered_tool_specs_for_apply_patch_surface(
+            identity,
+            ApplyPatchSurface::UnifiedDiffJson,
+        )
+    }
+
+    fn filtered_tool_specs_for_apply_patch_surface(
+        &self,
+        identity: &AgentIdentityView,
+        apply_patch_surface: ApplyPatchSurface,
+    ) -> Result<Vec<crate::tool::ToolSpec>> {
         Ok(self
             .inner
             .tools
-            .tool_specs_with_families()?
+            .tool_specs_with_families_for_apply_patch_surface(apply_patch_surface)?
             .into_iter()
             .filter(|(family, _)| {
                 identity
@@ -264,8 +276,12 @@ impl RuntimeHandle {
             provider.as_ref(),
             native_search_provider.as_ref(),
         );
+        let apply_patch_surface = {
+            let guard = self.inner.agent.lock().await;
+            self.apply_patch_surface_for_state(&guard.state)
+        };
         let available_tools = self.filter_native_web_search_tools(
-            self.filtered_tool_specs(identity)?,
+            self.filtered_tool_specs_for_apply_patch_surface(identity, apply_patch_surface)?,
             native_search_provider.is_some(),
         );
         Ok((provider, available_tools, native_web_search))

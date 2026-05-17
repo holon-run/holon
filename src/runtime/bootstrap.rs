@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::{
-    config::{AppConfig, RuntimeModelCatalog},
+    config::{AppConfig, ModelRef, RuntimeModelCatalog},
     context::ContextConfig,
     host::RuntimeHostBridge,
     model_catalog::BuiltInModelMetadata,
@@ -16,7 +16,7 @@ use crate::{
     queue::RuntimeQueue,
     storage::AppStorage,
     system::{LocalSystem, WorkspaceAccessMode, WorkspaceProjectionKind},
-    tool::ToolRegistry,
+    tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
     types::{
         ActiveWorkspaceEntry, AgentState, AuditEvent, ResolvedModelAvailability,
         SkillActivationSource, SkillActivationState,
@@ -343,6 +343,32 @@ impl RuntimeHandle {
             &self.inner.base_context_config,
             state,
         )
+    }
+
+    pub(crate) async fn current_apply_patch_surface(&self) -> ApplyPatchSurface {
+        let state = {
+            let guard = self.inner.agent.lock().await;
+            guard.state.clone()
+        };
+        self.apply_patch_surface_for_state(&state)
+    }
+
+    pub(crate) fn apply_patch_surface_for_state(&self, state: &AgentState) -> ApplyPatchSurface {
+        let model_ref = self
+            .selected_model_ref_for_state(state)
+            .unwrap_or_else(|| self.model_state_for(state).effective_model);
+        ApplyPatchSurface::for_model_ref(&model_ref.as_string())
+    }
+
+    fn selected_model_ref_for_state(&self, state: &AgentState) -> Option<ModelRef> {
+        self.inner
+            .model_catalog
+            .provider_chain_for_turn(
+                state.model_override.as_ref(),
+                state.pending_fallback_model.as_ref(),
+            )
+            .into_iter()
+            .next()
     }
 
     pub(crate) async fn reconfigure_provider_for_state(&self, state: &AgentState) -> Result<()> {
