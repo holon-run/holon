@@ -460,6 +460,12 @@ async fn search_configured_provider(
         WebProviderKind::Firecrawl => {
             firecrawl_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
+        WebProviderKind::Command => Err(search_error(
+            "provider_unavailable",
+            "WebSearch command providers can be configured but command execution is not implemented yet",
+            provider_id,
+            "configure a built-in web search provider until command provider execution lands",
+        )),
         kind => Err(search_error(
             "provider_unavailable",
             format!("WebSearch provider kind `{kind:?}` is reserved for future provider support"),

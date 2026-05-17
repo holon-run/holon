@@ -26,21 +26,22 @@ impl Default for WebConfig {
     }
 }
 
-impl From<&crate::config::WebConfigFile> for WebConfig {
-    fn from(value: &crate::config::WebConfigFile) -> Self {
-        Self {
+impl TryFrom<&crate::config::WebConfigFile> for WebConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &crate::config::WebConfigFile) -> Result<Self> {
+        Ok(Self {
             fetch: WebFetchConfig::from(&value.fetch),
             search: WebSearchConfig::from(&value.search),
             providers: value
                 .providers
                 .iter()
-                .filter_map(|(id, provider)| {
+                .map(|(id, provider)| {
                     WebProviderConfig::from_file(id, provider)
-                        .ok()
                         .map(|provider| (id.clone(), provider))
                 })
-                .collect(),
-        }
+                .collect::<Result<BTreeMap<_, _>>>()?,
+        })
     }
 }
 
@@ -256,12 +257,6 @@ impl Default for WebProviderLimitsConfig {
     }
 }
 
-impl From<&crate::config::WebProviderConfigFile> for WebProviderConfig {
-    fn from(value: &crate::config::WebProviderConfigFile) -> Self {
-        Self::from_file("", value).expect("non-command web provider config")
-    }
-}
-
 impl WebProviderConfig {
     fn from_file(id: &str, value: &crate::config::WebProviderConfigFile) -> Result<Self> {
         validate_provider_config(id, value)?;
@@ -338,6 +333,24 @@ fn validate_provider_config(
     provider: &crate::config::WebProviderConfigFile,
 ) -> Result<()> {
     if provider.kind != WebProviderKind::Command {
+        if provider.command.is_some() {
+            return Err(anyhow!(
+                "web provider `{id}` kind={} must not configure command.argv; command is only supported for kind=command",
+                provider.kind.as_str()
+            ));
+        }
+        if provider.output.is_some() {
+            return Err(anyhow!(
+                "web provider `{id}` kind={} must not configure output.mapping; command output is only supported for kind=command",
+                provider.kind.as_str()
+            ));
+        }
+        if provider.limits.timeout_ms.is_some() || provider.limits.max_output_bytes.is_some() {
+            return Err(anyhow!(
+                "web provider `{id}` kind={} must not configure command limits; limits are only supported for kind=command",
+                provider.kind.as_str()
+            ));
+        }
         return Ok(());
     }
     let command = provider
@@ -514,7 +527,7 @@ impl WebProviderKind {
                 supports_full_content: false,
                 supports_native_citations: false,
                 default_priority: 40,
-                status: WebProviderSupportStatus::Supported,
+                status: WebProviderSupportStatus::Unsupported,
             },
         }
     }
@@ -523,7 +536,10 @@ impl WebProviderKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CredentialProfileFile, CredentialStoreFile, WebProviderConfigFile};
+    use crate::config::{
+        CredentialProfileFile, CredentialStoreFile, WebCommandProviderConfigFile,
+        WebProviderConfigFile,
+    };
     use std::collections::BTreeMap;
 
     fn credential_store_with(profile: &str, material: &str) -> CredentialStoreFile {
@@ -536,6 +552,17 @@ mod tests {
             },
         );
         CredentialStoreFile { profiles }
+    }
+
+    fn provider_file(kind: WebProviderKind) -> WebProviderConfigFile {
+        WebProviderConfigFile {
+            kind,
+            base_url: None,
+            credential_profile: None,
+            command: None,
+            output: None,
+            limits: Default::default(),
+        }
     }
 
     #[test]
@@ -649,11 +676,59 @@ mod tests {
     }
 
     #[test]
+    fn try_from_web_config_file_propagates_provider_errors() {
+        let mut file = crate::config::WebConfigFile::default();
+        let mut provider = provider_file(WebProviderKind::Command);
+        provider.command = Some(WebCommandProviderConfigFile {
+            argv: vec!["search".to_string()],
+        });
+        file.providers.insert("cmd".to_string(), provider);
+
+        let error = WebConfig::try_from(&file).unwrap_err().to_string();
+
+        assert!(error.contains("requires output.mapping"));
+    }
+
+    #[test]
+    fn materialize_rejects_command_fields_on_non_command_provider() {
+        let mut file = crate::config::WebConfigFile::default();
+        let mut provider = provider_file(WebProviderKind::Brave);
+        provider.command = Some(WebCommandProviderConfigFile {
+            argv: vec!["search".to_string()],
+        });
+        file.providers.insert("brave".to_string(), provider);
+
+        let error = materialize_web_config(&file, &CredentialStoreFile::default())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("must not configure command.argv"));
+    }
+
+    #[test]
+    fn materialize_rejects_command_limits_on_non_command_provider() {
+        let mut file = crate::config::WebConfigFile::default();
+        let mut provider = provider_file(WebProviderKind::Brave);
+        provider.limits.timeout_ms = Some(1000);
+        file.providers.insert("brave".to_string(), provider);
+
+        let error = materialize_web_config(&file, &CredentialStoreFile::default())
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("must not configure command limits"));
+    }
+
+    #[test]
     fn provider_capabilities_mark_reserved_kinds() {
         assert_eq!(
             WebProviderKind::OpenAiNative.capabilities().status,
             WebProviderSupportStatus::NativeOnly
         );
         assert_eq!(WebProviderKind::Brave.capabilities().default_priority, 80);
+        assert_eq!(
+            WebProviderKind::Command.capabilities().status,
+            WebProviderSupportStatus::Unsupported
+        );
     }
 }
