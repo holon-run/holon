@@ -8,6 +8,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use crate::types::{SkillInstallKind, SkillInstallMode};
 
 const TEMPLATE_AGENTS_FILENAME: &str = "AGENTS.md";
 const TEMPLATE_SKILLS_FILENAME: &str = "skills.json";
@@ -281,7 +282,7 @@ pub async fn initialize_agent_home_from_template_with_home(
     let result = async {
         ensure_agent_home_layout(&agent_home)?;
         let resolved = resolve_template(template, home_dir).await?;
-        materialize_template(&agent_home, &resolved).await?;
+        materialize_template(&agent_home, &resolved, home_dir).await?;
         let record = TemplateProvenanceRecord {
             selector: template.to_string(),
             source: resolved.provenance,
@@ -339,7 +340,8 @@ pub async fn ensure_agent_home_agents_md_from_template_with_home(
         let agents_md = render_agent_home_agents_md(&resolved.agents_md, None);
         write_file_atomically(&agents_md_path, agents_md.as_bytes())?;
         for skill_ref in &resolved.skill_refs {
-            let destination = materialize_skill_ref(&agent_home, &skills_root, skill_ref).await?;
+            let destination =
+                materialize_skill_ref(&agent_home, home_dir, &skills_root, skill_ref).await?;
             created_skill_destinations.push(destination);
         }
         let record = TemplateProvenanceRecord {
@@ -480,21 +482,34 @@ fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
     }
     let content =
         fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    parse_skill_refs_from_manifest(&content).map_err(|error| {
+        anyhow!("failed to parse {}: {error}", path.display())
+    })
+}
+
+fn parse_skill_refs_from_manifest(content: &str) -> Result<Vec<TemplateSkillRef>> {
     let manifest: TemplateSkillsManifest = serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
+        .context("failed to parse skills.json")?;
     for skill_ref in &manifest.skill_refs {
         match skill_ref {
             TemplateSkillRef::Github { package } => {
-                bail!(
-                    "github skill refs are not supported in phase 1; use local or builtin skill refs instead: {package}"
-                );
+                if package.trim().is_empty() {
+                    bail!("github skill ref package must not be empty");
+                }
             }
             TemplateSkillRef::Builtin { name } => {
                 if builtin_skill(name).is_none() {
                     bail!("unknown builtin skill ref: {name}");
                 }
             }
-            TemplateSkillRef::Local { .. } => {}
+            TemplateSkillRef::Local { path } => {
+                if !path.is_absolute() {
+                    bail!(
+                        "local skill refs must be absolute paths: {}",
+                        path.display()
+                    );
+                }
+            }
         }
     }
     Ok(manifest.skill_refs)
@@ -649,13 +664,10 @@ async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
         let skills_path = format!("{template_path}/{TEMPLATE_SKILLS_FILENAME}");
         let skills_json = fetch_github_file(&owner, &repo, &git_ref, &skills_path).await?;
         let skill_refs = match skills_json {
-            Some(content) => {
-                let manifest: TemplateSkillsManifest = serde_json::from_str(&content)
-                    .with_context(|| {
-                        format!("failed to parse {template}::{TEMPLATE_SKILLS_FILENAME}")
-                    })?;
-                manifest.skill_refs
-            }
+            Some(content) => parse_skill_refs_from_manifest(&content)
+                .with_context(|| {
+                    format!("failed to parse {template}::{TEMPLATE_SKILLS_FILENAME}")
+                })?,
             None => Vec::new(),
         };
         return Ok(ResolvedTemplate {
@@ -732,7 +744,11 @@ async fn fetch_github_file(
         .map(Some)
 }
 
-async fn materialize_template(agent_home: &Path, template: &ResolvedTemplate) -> Result<()> {
+async fn materialize_template(
+    agent_home: &Path,
+    template: &ResolvedTemplate,
+    home_dir: &Path,
+) -> Result<()> {
     ensure_agent_home_layout(agent_home)?;
     let agents_md_path = agent_home.join(TEMPLATE_AGENTS_FILENAME);
     if agents_md_path.exists() {
@@ -747,7 +763,7 @@ async fn materialize_template(agent_home: &Path, template: &ResolvedTemplate) ->
 
     let skills_root = agent_home.join("skills");
     for skill_ref in &template.skill_refs {
-        materialize_skill_ref(agent_home, &skills_root, skill_ref).await?;
+        materialize_skill_ref(agent_home, home_dir, &skills_root, skill_ref).await?;
     }
     Ok(())
 }
@@ -800,16 +816,31 @@ fn render_agent_home_agents_md(template_guidance: &str, profile_seed: Option<&st
 }
 
 async fn materialize_skill_ref(
-    _agent_home: &Path,
+    agent_home: &Path,
+    home_dir: &Path,
     skills_root: &Path,
     skill_ref: &TemplateSkillRef,
 ) -> Result<PathBuf> {
     match skill_ref {
         TemplateSkillRef::Local { path } => materialize_local_skill_ref(skills_root, path),
         TemplateSkillRef::Builtin { name } => materialize_builtin_skill_ref(skills_root, name),
-        TemplateSkillRef::Github { package } => bail!(
-            "github skill refs are not supported in phase 1; use local or builtin skill refs instead: {package}"
-        ),
+        TemplateSkillRef::Github { package } => {
+            let package = package.trim();
+            if package.is_empty() {
+                bail!("github skill ref package must not be empty");
+            }
+            let name = crate::skills::install_skill_with_user_home(
+                agent_home,
+                Some(home_dir),
+                &SkillInstallKind::Remote {
+                    package: package.to_string(),
+                    skill: None,
+                    mode: SkillInstallMode::Linked,
+                },
+            )
+            .with_context(|| format!("failed to resolve github skill ref: {package}"))?;
+            Ok(skills_root.join(name))
+        }
     }
 }
 
@@ -1299,19 +1330,145 @@ mod tests {
     }
 
     #[test]
-    fn parse_skill_refs_rejects_github_skill_refs_in_phase_one() {
+    fn parse_skill_refs_rejects_empty_github_package() {
         let home = tempdir().unwrap();
         let manifest_path = home.path().join("skills.json");
         fs::write(
             &manifest_path,
-            r#"{"skill_refs":[{"kind":"github","package":"owner/repo@skill"}]}"#,
+            r#"{"skill_refs":[{"kind":"github","package":""}]}"#,
+        )
+        .unwrap();
+
+        let err = parse_skill_refs(manifest_path).unwrap_err();
+        assert!(err.to_string().contains("github skill ref package must not be empty"));
+    }
+
+    #[test]
+    fn parse_skill_refs_rejects_relative_local_refs() {
+        let home = tempdir().unwrap();
+        let manifest_path = home.path().join("skills.json");
+        fs::write(
+            &manifest_path,
+            r#"{"skill_refs":[{"kind":"local","path":"relative/path"}]}"#,
         )
         .unwrap();
 
         let err = parse_skill_refs(manifest_path).unwrap_err();
         assert!(err
             .to_string()
-            .contains("github skill refs are not supported in phase 1"));
+            .contains("local skill refs must be absolute paths"));
+    }
+
+    #[test]
+    fn parse_skill_refs_accepts_github_skill_refs() {
+        let home = tempdir().unwrap();
+        let manifest_path = home.path().join("skills.json");
+        fs::write(
+            &manifest_path,
+            r#"{"skill_refs":[{"kind":"github","package":"owner/repo/path"}]}"#,
+        )
+        .unwrap();
+
+        let refs = parse_skill_refs(manifest_path).unwrap();
+        assert!(matches!(
+            refs.first().unwrap(),
+            TemplateSkillRef::Github { package } if package == "owner/repo/path"
+        ));
+    }
+
+    fn write_fake_npx_script(script_dir: &Path) -> PathBuf {
+        let script_path = script_dir.join("npx");
+        fs::write(
+            &script_path,
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "0.0.0"
+  exit 0
+fi
+
+if [ "$1" = "--yes" ] && [ "$2" = "skills" ] && [ "$3" = "add" ]; then
+  package="$4"
+  shift 4
+  skill=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--skill" ]; then
+      shift
+      skill="$1"
+      break
+    fi
+    shift
+  done
+
+  if [ -z "$skill" ]; then
+    skill="${package##*/}"
+    skill="${skill%%@*}"
+  fi
+
+  mkdir -p "$HOME/.agents/skills/$skill"
+  cat > "$HOME/.agents/skills/$skill/SKILL.md" <<EOF
+---
+name: $skill
+---
+EOF
+  exit 0
+fi
+
+echo "unsupported npx args: $@" >&2
+exit 1
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        script_path
+    }
+
+    #[tokio::test]
+    async fn initialize_agent_home_from_template_supports_github_skill_refs() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempdir().unwrap();
+        let _guard = EnvGuard::set("HOME", home.path().display().to_string());
+        let bin_dir = home.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let _path_guard = EnvGuard::set(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                env::var("PATH").unwrap_or_default()
+            ),
+        );
+        write_fake_npx_script(&bin_dir);
+
+        let templates = templates_root().unwrap();
+        fs::create_dir_all(&templates).unwrap();
+        let template_dir = templates.join("github-skill-template");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(template_dir.join("AGENTS.md"), "github template").unwrap();
+        fs::write(
+            template_dir.join("skills.json"),
+            serde_json::json!({
+                "skill_refs": [
+                    { "kind":"github", "package":"owner/repo/skills/agentinbox" }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let agent_home = home.path().join("agent");
+        initialize_agent_home_from_template(&agent_home, "github-skill-template")
+            .await
+            .unwrap();
+
+        let skill_home = agent_home.join("skills/agentinbox");
+        assert!(skill_home.is_dir());
+        assert!(skill_home.join("SKILL.md").is_file());
     }
 
     #[test]
