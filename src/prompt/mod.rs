@@ -354,7 +354,7 @@ fn build_system_sections(
         section(
             "core_contract",
             PromptStability::Stable,
-            "Read before changing. When analyzing a project, describe the current structure before recommending changes. When changing code, keep edits as small and local as possible, but use ApplyPatch as the default file-mutation primitive instead of shell rewrite tricks or whole-file rewrites. Avoid redundant tool calls once you already have enough evidence to act.".to_string(),
+            "Read before changing. When analyzing a project, describe the current structure before recommending changes. When changing code, keep edits as small and local as possible, but use ApplyPatch as the default file-mutation primitive instead of shell rewrite tricks or whole-file rewrites. Avoid redundant tool calls once you already have enough evidence to act. Do not re-read files, AGENTS guidance, or command output already present in the current context unless a concrete changed-state question requires it.".to_string(),
         ),
         section(
             "engineering_guardrails",
@@ -374,7 +374,7 @@ fn build_system_sections(
         section(
             "context_completion",
             PromptStability::Stable,
-            "When the operator provides an external reference or another indirect task entry point, resolve only the minimum context needed to identify the task scope, acceptance target, relevant files or systems, and local conventions before making high-commitment changes. If that missing context can be obtained with available local or network tools, do so proactively; a failed first lookup does not by itself mean the task is blocked. Once those concrete execution facts are known, stop expanding context and make the smallest viable change, run the relevant verification, or report the specific blocker. Continue exploring only when one concrete missing fact still blocks editing, verification, or a grounded answer.".to_string(),
+            "When the operator provides an external reference or another indirect task entry point, resolve only the minimum context needed to identify the task scope, acceptance target, relevant files or systems, and local conventions before making high-commitment changes. If that missing context can be obtained with available local or network tools, do so proactively; a failed first lookup does not by itself mean the task is blocked. Once those concrete execution facts are known, stop expanding context and make the smallest viable change, run the relevant verification, or report the specific blocker. Continue exploring only when one concrete missing fact still blocks editing, verification, or a grounded answer. If context may have changed because another command, patch, formatter, or user edit touched the file, refresh only the smallest relevant slice before the next edit.".to_string(),
         ),
         section(
             "progress_reporting",
@@ -384,7 +384,7 @@ fn build_system_sections(
         section(
             "exploration_discipline",
             PromptStability::Stable,
-            "Exploration must reduce uncertainty toward the operator's goal. Prefer bounded questions over broad scans. After related read or search commands, decide whether you can act, conclude, ask for clarification, or need one more specific fact. If continuing exploration, name the specific missing fact and the next bounded command or query. Do not continue broad exploration just because more files or references are available.".to_string(),
+            "Exploration must reduce uncertainty toward the operator's goal. Prefer bounded questions over broad scans. After related read or search commands, decide whether you can act, conclude, ask for clarification, or need one more specific fact. If continuing exploration, name the specific missing fact and the next bounded command or query. Do not continue broad exploration just because more files or references are available. Do not repeat the same read command or nearby one-line slice after the useful context is already present; use a targeted refresh only for diagnostics, suspected external edits, formatter/script changes, or other concrete changed-state questions.".to_string(),
         ),
         section(
             "planning_discipline",
@@ -911,6 +911,12 @@ mod tests {
         assert!(section.content.contains("minimum context needed"));
         assert!(section.content.contains("stop expanding context"));
         assert!(section.content.contains("one concrete missing fact"));
+        assert!(section
+            .content
+            .contains("refresh only the smallest relevant slice"));
+        assert!(section
+            .content
+            .contains("formatter, or user edit touched the file"));
     }
 
     #[test]
@@ -973,6 +979,10 @@ mod tests {
         assert!(section
             .content
             .contains("just because more files or references are available"));
+        assert!(section
+            .content
+            .contains("Do not repeat the same read command"));
+        assert!(section.content.contains("concrete changed-state questions"));
     }
 
     #[test]

@@ -386,6 +386,11 @@ async fn max_output_mutation_tool_call_is_rejected_without_side_effects() {
     assert!(content.contains("ApplyPatch failed"));
     assert!(content.contains("truncated_mutation_tool_call"));
     assert!(content.contains("max_tokens"));
+    assert!(content.contains("was not executed"));
+    assert!(content.contains("do not resend the same huge patch unchanged"));
+    assert!(content.contains("complete smaller patch"));
+    assert!(content.contains("bounded ExecCommand/scripted rewrite"));
+    assert!(content.contains("Inspect only the necessary context"));
     assert!(content.contains("retryable: true"));
     assert!(content.len() < 800);
 }

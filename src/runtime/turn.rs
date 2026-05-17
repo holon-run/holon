@@ -2443,7 +2443,7 @@ impl TurnExecution<'_> {
                     }
                     max_output_recovery_count += 1;
                     let continuation_text =
-                        "Output token limit hit. Continue exactly where you left off. Do not restart from the top. Finish the remaining report directly.".to_string();
+                        "Output token limit hit. Continue exactly where you left off. Do not restart from the top, repeat analysis, or re-read context already provided. Finish the remaining report directly.".to_string();
                     completed_rounds.push(TurnRoundRecord {
                         round,
                         estimated_tokens: build_round_estimated_tokens(
@@ -2610,7 +2610,7 @@ impl TurnExecution<'_> {
                         "round": round,
                     }))
                     .with_recovery_hint(
-                        "retry the mutation as a complete, smaller tool call after inspecting any needed context",
+                        "the previous mutation was not executed because the provider stopped at the output limit; do not resend the same huge patch unchanged. Retry as a complete smaller patch, a sequence of smaller patches, or a bounded ExecCommand/scripted rewrite when cheaper to verify. Inspect only the necessary context, not broad surrounding files",
                     )
                     .with_retryable(true);
                     let result = crate::tool::ToolResult::error(&tool_name, error.clone());
