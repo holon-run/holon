@@ -49,6 +49,7 @@ use uuid::Uuid;
 #[cfg(test)]
 use crate::provider::{ConversationMessage, ProviderTurnRequest};
 use crate::{
+    agent_template::discover_agent_templates_catalog,
     agents_md::load_agents_md,
     brief,
     config::RuntimeModelCatalog,
@@ -599,7 +600,7 @@ impl RuntimeHandle {
         state: &AgentState,
         identity: &AgentIdentityView,
     ) -> Result<SkillsRuntimeView> {
-        load_skills_runtime_view(
+        let mut view = load_skills_runtime_view(
             self.skill_visibility(identity),
             self.user_home().as_deref(),
             self.agent_home().as_path(),
@@ -608,7 +609,12 @@ impl RuntimeHandle {
                 .as_ref()
                 .map(|entry| entry.workspace_anchor.as_path()),
             &state.active_skills,
-        )
+        )?;
+        view.agent_templates_catalog = discover_agent_templates_catalog(
+            self.user_home().as_deref(),
+            self.agent_home().as_path(),
+        );
+        Ok(view)
     }
 
     async fn begin_interactive_turn(

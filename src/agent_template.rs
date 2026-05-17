@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::types::{SkillInstallKind, SkillInstallMode};
+use crate::types::{
+    AgentTemplateCatalogEntry, AgentTemplateSourceKind, SkillInstallKind, SkillInstallMode,
+};
+
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
@@ -374,6 +377,155 @@ fn templates_root() -> Result<PathBuf> {
 
 fn templates_root_for_home(home_dir: &Path) -> PathBuf {
     home_dir.join(".agents").join("templates")
+}
+
+pub(crate) fn discover_agent_templates_catalog(
+    user_home: Option<&Path>,
+    agent_home: &Path,
+) -> Vec<AgentTemplateCatalogEntry> {
+    let user_templates_root = user_home.map(templates_root_for_home);
+    let mut entries = Vec::new();
+
+    if let Some(root) = user_templates_root.as_deref() {
+        entries.extend(discover_local_templates(
+            root,
+            AgentTemplateSourceKind::UserGlobal,
+            false,
+        ));
+    }
+
+    let user_template_ids = entries
+        .iter()
+        .map(|entry| entry.template_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for builtin in BUILTIN_TEMPLATES {
+        if user_template_ids.contains(builtin.template_id) {
+            continue;
+        }
+        entries.push(builtin_template_catalog_entry(builtin));
+    }
+
+    entries.extend(discover_local_templates(
+        &agent_home.join("templates"),
+        AgentTemplateSourceKind::AgentHome,
+        true,
+    ));
+    entries.sort_by(|left, right| {
+        (
+            left.source,
+            left.template_id.as_str(),
+            left.path.as_ref().map(|path| path.display().to_string()),
+        )
+            .cmp(&(
+                right.source,
+                right.template_id.as_str(),
+                right.path.as_ref().map(|path| path.display().to_string()),
+            ))
+    });
+    entries
+}
+
+fn builtin_template_catalog_entry(builtin: &BuiltinTemplate) -> AgentTemplateCatalogEntry {
+    AgentTemplateCatalogEntry {
+        catalog_id: format!("builtin:{}", builtin.template_id),
+        template: builtin.template_id.to_string(),
+        template_id: builtin.template_id.to_string(),
+        source: AgentTemplateSourceKind::Builtin,
+        path: None,
+        description: template_description(builtin.agents_md),
+        included_skills: builtin_template_skills(builtin),
+    }
+}
+
+fn discover_local_templates(
+    root: &Path,
+    source: AgentTemplateSourceKind,
+    use_absolute_selector: bool,
+) -> Vec<AgentTemplateCatalogEntry> {
+    let Ok(read_dir) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(template_id) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if validate_template_id(template_id).is_err() {
+            continue;
+        }
+        let agents_md_path = path.join(TEMPLATE_AGENTS_FILENAME);
+        let Ok(agents_md) = fs::read_to_string(&agents_md_path) else {
+            continue;
+        };
+        if agents_md.trim().is_empty() {
+            continue;
+        }
+        let template = if use_absolute_selector {
+            path.to_string_lossy().into_owned()
+        } else {
+            template_id.to_string()
+        };
+        entries.push(AgentTemplateCatalogEntry {
+            catalog_id: format!("{}:{}", source.label(), template_id),
+            template,
+            template_id: template_id.to_string(),
+            source,
+            path: Some(path.clone()),
+            description: template_description(&agents_md),
+            included_skills: local_template_skills(&path),
+        });
+    }
+    entries
+}
+
+fn template_description(agents_md: &str) -> String {
+    for line in agents_md.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("<!--") || trimmed.starts_with('#') {
+            continue;
+        }
+        return trimmed.to_string();
+    }
+    agents_md
+        .lines()
+        .find_map(|line| {
+            let heading = line.trim().trim_start_matches('#').trim();
+            (!heading.is_empty()).then(|| heading.to_string())
+        })
+        .unwrap_or_default()
+}
+
+fn local_template_skills(path: &Path) -> Vec<String> {
+    parse_skill_refs(path.join(TEMPLATE_SKILLS_FILENAME))
+        .map(skill_ref_names)
+        .unwrap_or_default()
+}
+
+fn builtin_template_skills(builtin: &BuiltinTemplate) -> Vec<String> {
+    let Some(skills_json) = builtin.skills_json else {
+        return Vec::new();
+    };
+    serde_json::from_str::<TemplateSkillsManifest>(skills_json)
+        .map(|manifest| skill_ref_names(manifest.skill_refs))
+        .unwrap_or_default()
+}
+
+fn skill_ref_names(skill_refs: Vec<TemplateSkillRef>) -> Vec<String> {
+    let mut names = skill_refs
+        .into_iter()
+        .map(|skill_ref| match skill_ref {
+            TemplateSkillRef::Local { path } => path.display().to_string(),
+            TemplateSkillRef::Github { package } => package,
+            TemplateSkillRef::Builtin { name } => name,
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
 }
 
 pub(crate) fn user_home_dir() -> Result<PathBuf> {
@@ -1070,6 +1222,70 @@ mod tests {
         seed_builtin_templates_for_home(home.path()).unwrap();
 
         assert!(template_dir.join("AGENTS.md").is_file());
+    }
+
+    #[test]
+    fn discover_agent_templates_catalog_lists_stable_selectors_and_shadowing() {
+        let user_home = tempdir().unwrap();
+        let agent_home = tempdir().unwrap();
+        let user_templates = templates_root_for_home(user_home.path());
+        let worker = user_templates.join("worker");
+        fs::create_dir_all(&worker).unwrap();
+        fs::write(
+            worker.join(TEMPLATE_AGENTS_FILENAME),
+            "# Worker\n\nDoes worker things\n",
+        )
+        .unwrap();
+        fs::write(
+            worker.join(TEMPLATE_SKILLS_FILENAME),
+            r#"{"skill_refs":[{"kind":"builtin","name":"ghx"}]}"#,
+        )
+        .unwrap();
+
+        let shadowed_default = user_templates.join("holon-default");
+        fs::create_dir_all(&shadowed_default).unwrap();
+        fs::write(
+            shadowed_default.join(TEMPLATE_AGENTS_FILENAME),
+            "# Custom default\n",
+        )
+        .unwrap();
+
+        let local = agent_home.path().join("templates").join("local-agent");
+        fs::create_dir_all(&local).unwrap();
+        fs::write(
+            local.join(TEMPLATE_AGENTS_FILENAME),
+            "# Local agent\n\nLocal template\n",
+        )
+        .unwrap();
+
+        let catalog = discover_agent_templates_catalog(Some(user_home.path()), agent_home.path());
+
+        assert!(catalog
+            .iter()
+            .any(|entry| entry.catalog_id == "user_global:holon-default"));
+        assert!(!catalog
+            .iter()
+            .any(|entry| entry.catalog_id == "builtin:holon-default"));
+        assert!(catalog
+            .iter()
+            .any(|entry| entry.catalog_id == "builtin:holon-developer"));
+
+        let worker_entry = catalog
+            .iter()
+            .find(|entry| entry.catalog_id == "user_global:worker")
+            .unwrap();
+        assert_eq!(worker_entry.template, "worker");
+        assert_eq!(worker_entry.source, AgentTemplateSourceKind::UserGlobal);
+        assert_eq!(worker_entry.path.as_deref(), Some(worker.as_path()));
+        assert_eq!(worker_entry.description, "Does worker things");
+        assert_eq!(worker_entry.included_skills, vec!["ghx"]);
+
+        let local_entry = catalog
+            .iter()
+            .find(|entry| entry.catalog_id == "agent_home:local-agent")
+            .unwrap();
+        assert_eq!(local_entry.template, local.display().to_string());
+        assert_eq!(local_entry.path.as_deref(), Some(local.as_path()));
     }
 
     #[test]

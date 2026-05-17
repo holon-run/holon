@@ -1553,7 +1553,6 @@ mod tests {
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView {
-                discovered_roots: Vec::new(),
                 discoverable_skills: vec![crate::types::SkillCatalogEntry {
                     skill_id: "user:demo".into(),
                     name: "demo".into(),
@@ -1561,8 +1560,7 @@ mod tests {
                     path: PathBuf::from("/tmp/user/.agents/skills/demo/SKILL.md"),
                     scope: crate::types::SkillScope::User,
                 }],
-                attached_skills: Vec::new(),
-                active_skills: Vec::new(),
+                ..SkillsRuntimeView::default()
             },
             &[],
         );
