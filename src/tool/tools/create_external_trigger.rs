@@ -6,11 +6,11 @@ use serde_json::Value;
 use crate::{
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{CallbackDeliveryMode, ExternalTriggerScope, ToolCapabilityFamily, TrustLevel},
+    types::{CallbackDeliveryMode, ToolCapabilityFamily, TrustLevel},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
-use crate::tool::helpers::{parse_tool_args, validate_non_empty};
+use crate::tool::helpers::parse_tool_args;
 
 pub(crate) const NAME: &str = "CreateExternalTrigger";
 
@@ -26,8 +26,10 @@ pub(crate) enum CallbackDeliveryModeArgs {
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CreateExternalTriggerArgs {
-    pub(crate) description: String,
-    pub(crate) source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<String>,
     pub(crate) delivery_mode: CallbackDeliveryModeArgs,
 }
 
@@ -36,7 +38,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::ExternalTrigger,
         spec: typed_spec::<CreateExternalTriggerArgs>(
             NAME,
-            "Create an external trigger capability for an external system and record the waiting intent in the current agent.",
+            "Return the default external ingress capability for this agent and delivery mode.",
         )?,
     })
 }
@@ -48,22 +50,11 @@ pub(crate) async fn execute(
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: CreateExternalTriggerArgs = parse_tool_args(NAME, input)?;
-    let description = validate_non_empty(args.description, NAME, "description")?;
-    let source = validate_non_empty(args.source, NAME, "source")?;
     let delivery_mode = match args.delivery_mode {
         CallbackDeliveryModeArgs::EnqueueMessage => CallbackDeliveryMode::EnqueueMessage,
         CallbackDeliveryModeArgs::WakeHint => CallbackDeliveryMode::WakeHint,
     };
-    let capability = runtime
-        .create_external_trigger(
-            description,
-            source,
-            ExternalTriggerScope::Agent,
-            delivery_mode,
-            None,
-            None,
-        )
-        .await?;
+    let capability = runtime.default_external_trigger(delivery_mode).await?;
     serialize_success(NAME, &capability)
 }
 

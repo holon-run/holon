@@ -1340,7 +1340,7 @@ async fn persist_brief_binds_current_turn_work_item() {
 }
 
 #[tokio::test]
-async fn create_callback_remains_agent_scoped_with_current_turn_work_item() {
+async fn create_callback_returns_default_ingress_with_current_turn_work_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -1367,10 +1367,11 @@ async fn create_callback_remains_agent_scoped_with_current_turn_work_item() {
         .await
         .unwrap();
 
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
-    assert_eq!(waiting.len(), 1);
-    assert_eq!(waiting[0].scope, ExternalTriggerScope::Agent);
-    assert!(waiting[0].work_item_id.is_none());
+    assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
+    let descriptors = runtime.latest_external_triggers().await.unwrap();
+    assert_eq!(descriptors.len(), 1);
+    assert_eq!(descriptors[0].scope, ExternalTriggerScope::Agent);
+    assert!(descriptors[0].waiting_intent_id.is_none());
 }
 
 #[tokio::test]
@@ -2148,7 +2149,7 @@ async fn turn_end_work_item_commit_preserves_explicit_queued_claim() {
 }
 
 #[tokio::test]
-async fn work_item_scoped_external_trigger_requires_current_work_item_anchor() {
+async fn external_trigger_creation_returns_default_ingress_without_waiting_intent() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -2162,7 +2163,7 @@ async fn work_item_scoped_external_trigger_requires_current_work_item_anchor() {
     )
     .unwrap();
 
-    let result = runtime
+    let capability = runtime
         .create_external_trigger(
             "wait for external review".into(),
             "github".into(),
@@ -2171,12 +2172,10 @@ async fn work_item_scoped_external_trigger_requires_current_work_item_anchor() {
             None,
             None,
         )
-        .await;
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("requires a current work item"));
+        .await
+        .unwrap();
+    assert_eq!(capability.delivery_mode, CallbackDeliveryMode::WakeHint);
+    assert_eq!(capability.status, ExternalTriggerStatus::Active);
     assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
 }
 
@@ -2225,13 +2224,18 @@ async fn agent_scoped_external_trigger_survives_missing_work_item_cleanup() {
         .await
         .unwrap();
 
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
-    assert_eq!(waiting.len(), 1);
-    assert_eq!(waiting[0].id, capability.waiting_intent_id);
-    assert_eq!(waiting[0].scope, ExternalTriggerScope::Agent);
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Active);
+    assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
+    assert!(runtime
+        .latest_external_triggers()
+        .await
+        .unwrap()
+        .iter()
+        .any(
+            |record| record.external_trigger_id == capability.external_trigger_id
+                && record.status == ExternalTriggerStatus::Active
+        ));
     let closure = runtime.current_closure_decision().await.unwrap();
-    assert_eq!(
+    assert_ne!(
         closure.waiting_reason,
         Some(WaitingReason::AwaitingExternalChange)
     );
@@ -2302,20 +2306,14 @@ async fn agent_scoped_wake_hint_preserves_external_trigger_provenance() {
         .as_ref()
         .and_then(|metadata| metadata.get("wake_hint"))
         .expect("wake hint metadata should exist");
-    assert_eq!(wake_hint["source"].as_str(), Some("agentinbox"));
+    assert_eq!(wake_hint["source"].as_str(), None);
     assert_eq!(wake_hint["scope"].as_str(), Some("agent"));
-    assert_eq!(
-        wake_hint["waiting_intent_id"].as_str(),
-        Some(capability.waiting_intent_id.as_str())
-    );
+    assert_eq!(wake_hint["waiting_intent_id"].as_str(), None);
     assert_eq!(
         wake_hint["external_trigger_id"].as_str(),
         Some(capability.external_trigger_id.as_str())
     );
-    assert_eq!(
-        wake_hint["description"].as_str(),
-        Some("Check AgentInbox for unread items")
-    );
+    assert_eq!(wake_hint["description"].as_str(), None);
     assert_eq!(wake_hint["correlation_id"].as_str(), Some("corr-inbox"));
     assert_eq!(wake_hint["causation_id"].as_str(), Some("cause-webhook"));
     assert_eq!(
@@ -2325,7 +2323,7 @@ async fn agent_scoped_wake_hint_preserves_external_trigger_provenance() {
 }
 
 #[tokio::test]
-async fn triggered_work_item_waiting_intent_preserves_explicit_work_item_state_until_completion() {
+async fn default_external_ingress_wakes_without_owning_work_item_wait_state() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -2383,40 +2381,21 @@ async fn triggered_work_item_waiting_intent_preserves_explicit_work_item_state_u
         .unwrap();
     assert_eq!(result.disposition, CallbackIngressDisposition::Triggered);
 
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
-    let waiting = waiting
-        .iter()
-        .find(|record| record.id == capability.waiting_intent_id)
-        .expect("waiting intent should remain visible");
-    assert_eq!(waiting.status, WaitingIntentStatus::Active);
-    assert_eq!(waiting.trigger_count, 1);
-    assert_eq!(waiting.work_item_id.as_deref(), Some(work.id.as_str()));
+    assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
     let messages = runtime.storage().read_recent_messages(10).unwrap();
     let tick = messages
         .iter()
         .find(|message| message.kind == MessageKind::SystemTick)
-        .expect("work item wake hint should emit a system tick");
-    assert_eq!(tick.work_item_id.as_deref(), Some(work.id.as_str()));
+        .expect("wake hint should emit a system tick");
+    assert_eq!(tick.work_item_id.as_deref(), None);
     let wake_hint = tick
         .metadata
         .as_ref()
         .and_then(|metadata| metadata.get("wake_hint"))
         .expect("wake hint metadata should exist");
-    assert_eq!(wake_hint["scope"].as_str(), Some("work_item"));
-    assert_eq!(wake_hint["work_item_id"].as_str(), Some(work.id.as_str()));
-    assert_eq!(
-        wake_hint["waiting_intent_id"].as_str(),
-        Some(capability.waiting_intent_id.as_str())
-    );
-    let projection = runtime.storage().work_queue_prompt_projection().unwrap();
-    assert_eq!(
-        projection
-            .triggered_blocked
-            .iter()
-            .map(|item| item.work_item.objective.as_str())
-            .collect::<Vec<_>>(),
-        vec!["wait for CI"]
-    );
+    assert_eq!(wake_hint["scope"].as_str(), Some("agent"));
+    assert_eq!(wake_hint["work_item_id"].as_str(), None);
+    assert_eq!(wake_hint["waiting_intent_id"].as_str(), None);
 
     let repeated = runtime
         .deliver_callback(
@@ -2433,14 +2412,6 @@ async fn triggered_work_item_waiting_intent_preserves_explicit_work_item_state_u
         .await
         .unwrap();
     assert_eq!(repeated.disposition, CallbackIngressDisposition::Coalesced);
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
-    let waiting = waiting
-        .iter()
-        .find(|record| record.id == capability.waiting_intent_id)
-        .expect("waiting intent should remain active after repeated trigger");
-    assert_eq!(waiting.status, WaitingIntentStatus::Active);
-    assert_eq!(waiting.trigger_count, 2);
-    assert_eq!(waiting.work_item_id.as_deref(), Some(work.id.as_str()));
     let latest = runtime
         .storage()
         .latest_work_item(&work.id)
@@ -2451,11 +2422,10 @@ async fn triggered_work_item_waiting_intent_preserves_explicit_work_item_state_u
     let events = runtime.storage().read_recent_events(20).unwrap();
     assert!(events.iter().any(|event| {
         event.kind == "callback_delivered"
-            && event.data["waiting_intent_id"].as_str()
-                == Some(capability.waiting_intent_id.as_str())
-            && event.data["work_item_id"].as_str() == Some(work.id.as_str())
-            && event.data["resource"].as_str() == Some("holon-run/holon#1079")
-            && event.data["trigger_count"].as_u64() == Some(1)
+            && event.data["waiting_intent_id"].is_null()
+            && event.data["work_item_id"].is_null()
+            && event.data["external_trigger_id"].as_str()
+                == Some(capability.external_trigger_id.as_str())
     }));
 
     let completed = runtime
@@ -2464,12 +2434,7 @@ async fn triggered_work_item_waiting_intent_preserves_explicit_work_item_state_u
         .unwrap();
     assert_eq!(completed.state, WorkItemState::Completed);
     assert!(completed.blocked_by.is_none());
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
-    let waiting = waiting
-        .iter()
-        .find(|record| record.id == capability.waiting_intent_id)
-        .expect("waiting intent should remain auditable after completion");
-    assert_eq!(waiting.status, WaitingIntentStatus::Active);
+    assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -2509,7 +2474,6 @@ async fn completing_work_item_does_not_revoke_agent_external_trigger() {
         .await
         .unwrap();
 
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
     let descriptor = runtime
         .latest_external_triggers()
         .await
@@ -2517,10 +2481,7 @@ async fn completing_work_item_does_not_revoke_agent_external_trigger() {
         .into_iter()
         .find(|record| record.external_trigger_id == capability.external_trigger_id)
         .expect("external trigger descriptor should exist");
-    assert_eq!(waiting.len(), 1);
-    assert_eq!(waiting[0].id, capability.waiting_intent_id);
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Active);
-    assert_eq!(waiting[0].work_item_id, None);
+    assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
     assert_eq!(descriptor.status, ExternalTriggerStatus::Active);
 
     let result = runtime
@@ -2588,36 +2549,14 @@ async fn creating_agent_trigger_is_idempotent_for_source_and_delivery_mode() {
         .unwrap();
 
     assert_eq!(
-        old_capability.waiting_intent_id,
-        new_capability.waiting_intent_id
-    );
-    assert_eq!(
         old_capability.external_trigger_id,
         new_capability.external_trigger_id
     );
-    assert_eq!(new_capability.scope, ExternalTriggerScope::Agent);
+    assert_eq!(new_capability.status, ExternalTriggerStatus::Active);
 
     let waiting = runtime.latest_waiting_intents().await.unwrap();
     let descriptors = runtime.latest_external_triggers().await.unwrap();
-    assert_eq!(
-        waiting
-            .iter()
-            .filter(|record| record.status == WaitingIntentStatus::Active)
-            .count(),
-        1
-    );
-    let active_waiting = waiting
-        .iter()
-        .find(|record| {
-            record.id == new_capability.waiting_intent_id
-                && record.status == WaitingIntentStatus::Active
-        })
-        .expect("active waiting intent should be retained");
-    assert_eq!(active_waiting.scope, ExternalTriggerScope::Agent);
-    assert_eq!(active_waiting.description, "wait for review approval");
-    assert_eq!(active_waiting.condition.as_deref(), Some("review approved"));
-    assert_eq!(active_waiting.resource.as_deref(), Some("pull/1217#review"));
-    assert_eq!(active_waiting.trigger_count, 0);
+    assert!(waiting.is_empty());
     assert!(descriptors.iter().any(|record| {
         record.external_trigger_id == new_capability.external_trigger_id
             && record.status == ExternalTriggerStatus::Active
@@ -2678,17 +2617,20 @@ async fn picking_new_work_item_does_not_cancel_agent_trigger() {
 
     runtime.pick_work_item(new_work.id.clone()).await.unwrap();
 
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
-    assert!(waiting.iter().any(|record| {
-        record.id == old_work_trigger.waiting_intent_id
-            && record.scope == ExternalTriggerScope::Agent
-            && record.status == WaitingIntentStatus::Active
-    }));
-    assert!(waiting.iter().any(|record| {
-        record.id == agent_trigger.waiting_intent_id
-            && record.scope == ExternalTriggerScope::Agent
-            && record.status == WaitingIntentStatus::Active
-    }));
+    assert_eq!(
+        old_work_trigger.external_trigger_id,
+        agent_trigger.external_trigger_id
+    );
+    assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
+    assert!(runtime
+        .latest_external_triggers()
+        .await
+        .unwrap()
+        .iter()
+        .any(
+            |record| record.external_trigger_id == agent_trigger.external_trigger_id
+                && record.status == ExternalTriggerStatus::Active
+        ));
     let events = runtime.storage().read_recent_events(20).unwrap();
     assert!(!events
         .iter()
@@ -2733,13 +2675,7 @@ async fn reconcile_waiting_contract_preserves_agent_callback_after_active_work_s
         )
         .await
         .unwrap();
-    let old_waiting_created_at = runtime
-        .latest_waiting_intents()
-        .await
-        .unwrap()
-        .first()
-        .expect("waiting intent should exist")
-        .created_at;
+    let old_waiting_created_at = Utc::now();
 
     runtime
         .complete_work_item(old_work.id.clone(), Vec::new())
@@ -2769,11 +2705,8 @@ async fn reconcile_waiting_contract_preserves_agent_callback_after_active_work_s
         .await
         .unwrap();
 
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
-    assert_eq!(waiting.len(), 1);
-    assert_eq!(waiting[0].id, capability.waiting_intent_id);
-    assert_eq!(waiting[0].scope, ExternalTriggerScope::Agent);
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Active);
+    assert_eq!(capability.status, ExternalTriggerStatus::Active);
+    assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
     assert_eq!(
         runtime
             .storage()
@@ -2821,13 +2754,7 @@ async fn reconcile_waiting_contract_keeps_agent_scoped_waits_after_active_work_s
         )
         .await
         .unwrap();
-    let old_waiting_created_at = runtime
-        .latest_waiting_intents()
-        .await
-        .unwrap()
-        .first()
-        .expect("waiting intent should exist")
-        .created_at;
+    let old_waiting_created_at = Utc::now();
 
     runtime
         .complete_work_item(old_work.id.clone(), Vec::new())
@@ -2857,11 +2784,8 @@ async fn reconcile_waiting_contract_keeps_agent_scoped_waits_after_active_work_s
         .await
         .unwrap();
 
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
-    assert_eq!(waiting.len(), 1);
-    assert_eq!(waiting[0].id, capability.waiting_intent_id);
-    assert_eq!(waiting[0].scope, ExternalTriggerScope::Agent);
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Active);
+    assert_eq!(capability.status, ExternalTriggerStatus::Active);
+    assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
     let events = runtime.storage().read_recent_events(20).unwrap();
     assert!(!events
         .iter()
@@ -2869,7 +2793,7 @@ async fn reconcile_waiting_contract_keeps_agent_scoped_waits_after_active_work_s
 }
 
 #[tokio::test]
-async fn agent_scoped_waiting_intent_contributes_to_closure() {
+async fn default_external_ingress_does_not_contribute_to_waiting_closure() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -2896,15 +2820,15 @@ async fn agent_scoped_waiting_intent_contributes_to_closure() {
         .unwrap();
 
     let closure = runtime.current_closure_decision().await.unwrap();
-    assert_eq!(closure.outcome, ClosureOutcome::Waiting);
-    assert_eq!(
+    assert_ne!(closure.outcome, ClosureOutcome::Waiting);
+    assert_ne!(
         closure.waiting_reason,
         Some(WaitingReason::AwaitingExternalChange)
     );
     assert!(closure
         .evidence
         .iter()
-        .any(|item| item == "active_waiting_intents=1"));
+        .all(|item| item != "active_waiting_intents=1"));
 }
 
 #[tokio::test]
@@ -3005,11 +2929,8 @@ async fn reconcile_waiting_contract_preserves_agent_callback_when_only_waiting_a
         .await
         .unwrap();
 
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
-    assert_eq!(waiting.len(), 1);
-    assert_eq!(waiting[0].id, capability.waiting_intent_id);
-    assert_eq!(waiting[0].scope, ExternalTriggerScope::Agent);
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Active);
+    assert_eq!(capability.status, ExternalTriggerStatus::Active);
+    assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
     assert!(runtime
         .storage()
         .work_queue_prompt_projection()
@@ -3052,13 +2973,7 @@ async fn reconcile_waiting_contract_keeps_waits_when_anchor_is_newly_established
         )
         .await
         .unwrap();
-    let waiting_created_at = runtime
-        .latest_waiting_intents()
-        .await
-        .unwrap()
-        .first()
-        .expect("waiting intent should exist")
-        .created_at;
+    let waiting_created_at = Utc::now();
 
     let mut message = MessageEnvelope::new(
         "default",
@@ -3080,11 +2995,8 @@ async fn reconcile_waiting_contract_keeps_waits_when_anchor_is_newly_established
         .await
         .unwrap();
 
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
-    assert_eq!(waiting.len(), 1);
-    assert_eq!(waiting[0].id, capability.waiting_intent_id);
-    assert_eq!(waiting[0].scope, ExternalTriggerScope::Agent);
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Active);
+    assert_eq!(capability.status, ExternalTriggerStatus::Active);
+    assert!(runtime.latest_waiting_intents().await.unwrap().is_empty());
     assert_eq!(
         runtime
             .storage()

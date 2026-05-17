@@ -27,14 +27,13 @@ use holon::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{ToolCall, ToolError, ToolRegistry, ToolResult},
     types::{
-        AgentKind, AgentProfilePreset, AgentStatus, BriefKind, CallbackDeliveryMode,
-        ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction, ExternalTriggerStatus,
-        FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
-        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, QueueEntryStatus, TaskStatus, TodoItem,
-        TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel,
-        WaitingIntentStatus, WaitingReason, WorkItemState,
+        AgentKind, AgentProfilePreset, AgentStatus, BriefKind, ChildAgentPhase, ClosureOutcome,
+        CommandTaskSpec, ControlAction, ExternalTriggerStatus, FailureArtifactCategory,
+        MessageBody, MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationBoundary,
+        OperatorTransportBinding, OperatorTransportBindingStatus, OperatorTransportCapabilities,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority,
+        QueueEntryStatus, TaskStatus, TodoItem, TodoItemState, TokenUsage, TranscriptEntry,
+        TranscriptEntryKind, TrustLevel, WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -937,22 +936,17 @@ pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
 
     let waiting = runtime.latest_waiting_intents().await?;
     let descriptors = runtime.latest_external_triggers().await?;
-    assert_eq!(waiting.len(), 1);
+    assert!(waiting.is_empty());
     assert_eq!(descriptors.len(), 1);
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Active);
     assert_eq!(descriptors[0].status, ExternalTriggerStatus::Active);
 
     let summary = runtime.agent_summary().await?;
-    assert_eq!(summary.active_waiting_intents.len(), 1);
+    assert!(summary.active_waiting_intents.is_empty());
     assert_eq!(summary.active_external_triggers.len(), 1);
-    assert_eq!(summary.closure.outcome, ClosureOutcome::Waiting);
-    assert_eq!(
+    assert_ne!(summary.closure.outcome, ClosureOutcome::Waiting);
+    assert_ne!(
         summary.closure.waiting_reason,
         Some(WaitingReason::AwaitingExternalChange)
-    );
-    assert_eq!(
-        summary.active_waiting_intents[0].delivery_mode,
-        CallbackDeliveryMode::EnqueueMessage
     );
     let summary_json = serde_json::to_string(&summary)?;
     assert!(!summary_json.contains(callback_token));
@@ -985,25 +979,25 @@ pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
                 id: "tool-cancel-waiting".into(),
                 name: "CancelExternalTrigger".into(),
                 input: json!({
-                    "waiting_intent_id": waiting[0].id,
+                    "external_trigger_id": capability["external_trigger_id"],
                 }),
             },
         )
         .await?;
     let cancelled: serde_json::Value = parse_tool_result_payload(&cancelled)?;
-    assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(cancelled["status"], "revoked");
     assert!(cancelled["external_trigger_id"].is_string());
     let events = runtime.storage().read_recent_events(20)?;
     let cancelled_event = events
         .iter()
         .rev()
-        .find(|event| event.kind == "waiting_intent_cancelled")
-        .expect("waiting_intent_cancelled event");
+        .find(|event| event.kind == "external_trigger_revoked")
+        .expect("external_trigger_revoked event");
     assert!(cancelled_event.data["external_trigger_id"].is_string());
 
     let waiting = runtime.latest_waiting_intents().await?;
     let descriptors = runtime.latest_external_triggers().await?;
-    assert_eq!(waiting[0].status, WaitingIntentStatus::Cancelled);
+    assert!(waiting.is_empty());
     assert_eq!(descriptors[0].status, ExternalTriggerStatus::Revoked);
     let summary = runtime.agent_summary().await?;
     assert!(summary.active_waiting_intents.is_empty());

@@ -1651,7 +1651,8 @@ pub enum ExternalTriggerStatus {
 pub struct ExternalTriggerRecord {
     pub external_trigger_id: String,
     pub target_agent_id: String,
-    pub waiting_intent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_intent_id: Option<String>,
     #[serde(default = "default_external_trigger_scope")]
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
@@ -1669,7 +1670,8 @@ pub struct ExternalTriggerRecord {
 pub struct ExternalTriggerStateSnapshot {
     pub external_trigger_id: String,
     pub target_agent_id: String,
-    pub waiting_intent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_intent_id: Option<String>,
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
     pub status: ExternalTriggerStatus,
@@ -1718,7 +1720,8 @@ pub struct WaitingIntentSummary {
 pub struct ExternalTriggerSummary {
     pub external_trigger_id: String,
     pub target_agent_id: String,
-    pub waiting_intent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_intent_id: Option<String>,
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
     pub status: ExternalTriggerStatus,
@@ -1730,12 +1733,11 @@ pub struct ExternalTriggerSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalTriggerCapability {
-    pub waiting_intent_id: String,
     pub external_trigger_id: String,
     pub trigger_url: String,
     pub target_agent_id: String,
-    pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,
+    pub status: ExternalTriggerStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1757,7 +1759,8 @@ pub enum CallbackIngressDisposition {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CallbackDeliveryResult {
     pub agent_id: String,
-    pub waiting_intent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_intent_id: Option<String>,
     pub external_trigger_id: String,
     pub scope: ExternalTriggerScope,
     pub delivery_mode: CallbackDeliveryMode,

@@ -83,8 +83,7 @@ use crate::{
         SkillActivationState, SkillCatalogEntry, SkillLoadReason, SkillsRuntimeView, TaskKind,
         TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord,
         TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentRecord, WaitingIntentStatus,
-        WaitingIntentSummary, WaitingReason, WorkItemState, WorkspaceEntry,
-        AGENT_HOME_WORKSPACE_ID,
+        WaitingIntentSummary, WaitingReason, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
     web::WebConfig,
 };
