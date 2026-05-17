@@ -1,22 +1,28 @@
 use std::collections::BTreeSet;
+use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use reqwest::{Client, Response, StatusCode};
 use serde::Serialize;
 use serde_json::{json, Value};
+use tokio::{io::AsyncReadExt, process::Command, time};
 use url::{form_urlencoded, Url};
 
 use crate::{
     tool::ToolError,
     web::{
-        policy::timeout, WebConfig, WebFetchConfig, WebProviderCapabilityMetadata,
-        WebProviderConfig, WebProviderKind, WebProviderSupportStatus, WebSearchMode,
+        policy::timeout, WebCommandOutputConfig, WebCommandResultMapping, WebConfig,
+        WebFetchConfig, WebProviderCapabilityMetadata, WebProviderConfig, WebProviderKind,
+        WebProviderSupportStatus, WebSearchMode,
     },
 };
 
 const DUCKDUCKGO_PROVIDER_ID: &str = "duckduckgo";
 const SEARCH_RESPONSE_BYTES: usize = 1_000_000;
+const COMMAND_QUERY_TEMPLATE: &str = "{{query}}";
+const COMMAND_MAX_RESULTS_TEMPLATE: &str = "{{max_results}}";
 
 #[derive(Debug, Clone)]
 pub struct WebSearchRequest {
@@ -460,12 +466,9 @@ async fn search_configured_provider(
         WebProviderKind::Firecrawl => {
             firecrawl_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
-        WebProviderKind::Command => Err(search_error(
-            "provider_unavailable",
-            "WebSearch command providers can be configured but command execution is not implemented yet",
-            provider_id,
-            "configure a built-in web search provider until command provider execution lands",
-        )),
+        WebProviderKind::Command => {
+            command_search(query, max_results, provider_id, provider_config).await
+        }
         kind => Err(search_error(
             "provider_unavailable",
             format!("WebSearch provider kind `{kind:?}` is reserved for future provider support"),
@@ -473,6 +476,196 @@ async fn search_configured_provider(
             "configure a duckduckgo, searxng, brave, tavily, exa, perplexity, or firecrawl provider for this Holon version",
         )),
     }
+}
+
+async fn command_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+) -> Result<Vec<WebSearchResult>> {
+    let command = provider.command.as_ref().ok_or_else(|| {
+        search_error(
+            "provider_unavailable",
+            "WebSearch command provider requires command.argv",
+            provider_id,
+            "configure web.providers.<id>.command.argv",
+        )
+    })?;
+    let output = provider.output.as_ref().ok_or_else(|| {
+        search_error(
+            "provider_unavailable",
+            "WebSearch command provider requires output.mapping",
+            provider_id,
+            "configure web.providers.<id>.output.mapping",
+        )
+    })?;
+    let (binary, args) = expand_command_argv(&command.argv, query, max_results, provider_id)?;
+    let mut child = Command::new(binary)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| {
+            search_error(
+                "provider_unavailable",
+                format!("WebSearch command provider failed to start: {error}"),
+                provider_id,
+                "check that the configured command binary is installed and executable",
+            )
+        })?;
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        search_error(
+            "provider_unavailable",
+            "WebSearch command provider stdout was unavailable",
+            provider_id,
+            "check the configured command provider",
+        )
+    })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| {
+        search_error(
+            "provider_unavailable",
+            "WebSearch command provider stderr was unavailable",
+            provider_id,
+            "check the configured command provider",
+        )
+    })?;
+    let stdout_limit = provider.limits.max_output_bytes;
+    let stderr_limit = provider.limits.max_output_bytes.min(64 * 1024);
+    let stdout_task =
+        tokio::spawn(async move { read_limited_output(&mut stdout, stdout_limit).await });
+    let stderr_task =
+        tokio::spawn(async move { read_limited_output(&mut stderr, stderr_limit).await });
+    let wait = time::timeout(
+        Duration::from_millis(provider.limits.timeout_ms),
+        child.wait(),
+    )
+    .await;
+    let status = match wait {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            return Err(search_error(
+                "network_failed",
+                format!("WebSearch command provider failed while waiting: {error}"),
+                provider_id,
+                "retry later or check the configured command provider",
+            ));
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            return Err(search_error(
+                "network_failed",
+                format!(
+                    "WebSearch command provider timed out after {} ms",
+                    provider.limits.timeout_ms
+                ),
+                provider_id,
+                "increase web.providers.<id>.limits.timeout_ms or use another provider",
+            ));
+        }
+    };
+    let stdout = stdout_task.await.map_err(|error| {
+        search_error(
+            "network_failed",
+            format!("WebSearch command stdout reader failed: {error}"),
+            provider_id,
+            "retry later or check the configured command provider",
+        )
+    })??;
+    let stderr = stderr_task.await.map_err(|error| {
+        search_error(
+            "network_failed",
+            format!("WebSearch command stderr reader failed: {error}"),
+            provider_id,
+            "retry later or check the configured command provider",
+        )
+    })??;
+    if stdout.truncated || stderr.truncated {
+        return Err(search_error(
+            "response_too_large",
+            "WebSearch command provider output exceeded the configured byte limit",
+            provider_id,
+            "narrow the query or increase web.providers.<id>.limits.max_output_bytes",
+        ));
+    }
+    if !status.success() {
+        return Err(search_error(
+            "network_failed",
+            format!(
+                "WebSearch command provider exited with status {}; stderr: {}",
+                status,
+                String::from_utf8_lossy(&stderr.bytes).trim()
+            ),
+            provider_id,
+            "retry later or check the configured command provider",
+        ));
+    }
+    let stdout = String::from_utf8(stdout.bytes).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("WebSearch command provider returned non-UTF-8 stdout: {error}"),
+            provider_id,
+            "configure the command provider to emit UTF-8 JSON",
+        )
+    })?;
+    parse_command_results(&stdout, output, provider_id, max_results)
+}
+
+fn expand_command_argv(
+    argv: &[String],
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+) -> Result<(String, Vec<String>)> {
+    let binary = argv
+        .first()
+        .map(|arg| arg.trim())
+        .filter(|arg| !arg.is_empty())
+        .ok_or_else(|| {
+            search_error(
+                "provider_unavailable",
+                "WebSearch command provider command.argv must not be empty",
+                provider_id,
+                "configure web.providers.<id>.command.argv with a fixed binary",
+            )
+        })?;
+    let args = argv
+        .iter()
+        .skip(1)
+        .map(|arg| expand_command_arg(arg, query, max_results))
+        .collect::<Vec<_>>();
+    Ok((binary.to_string(), args))
+}
+
+fn expand_command_arg(arg: &str, query: &str, max_results: usize) -> String {
+    arg.replace(COMMAND_QUERY_TEMPLATE, query)
+        .replace(COMMAND_MAX_RESULTS_TEMPLATE, &max_results.to_string())
+}
+
+struct LimitedOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+async fn read_limited_output<R>(reader: &mut R, max_bytes: usize) -> Result<LimitedOutput>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    let mut truncated = false;
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = max_bytes.saturating_sub(bytes.len());
+        bytes.extend_from_slice(&chunk[..read.min(remaining)]);
+        truncated |= read > remaining;
+    }
+    Ok(LimitedOutput { bytes, truncated })
 }
 
 async fn duckduckgo_search(
@@ -1113,6 +1306,84 @@ async fn firecrawl_search(
     Ok(results)
 }
 
+fn parse_command_results(
+    body: &str,
+    output: &WebCommandOutputConfig,
+    provider_id: &str,
+    max_results: usize,
+) -> Result<Vec<WebSearchResult>> {
+    let payload: Value = serde_json::from_str(body).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("WebSearch command provider returned invalid JSON: {error}"),
+            provider_id,
+            "configure the command provider to emit JSON",
+        )
+    })?;
+    let entries = payload
+        .as_array()
+        .map(|array| array.iter().collect::<Vec<_>>())
+        .or_else(|| {
+            payload
+                .get("results")
+                .and_then(|results| results.as_array())
+                .map(|array| array.iter().collect::<Vec<_>>())
+        })
+        .ok_or_else(|| {
+            search_error(
+                "parse_failed",
+                "WebSearch command provider JSON must be an array or object with a results array",
+                provider_id,
+                "configure output.mapping for the command provider JSON shape",
+            )
+        })?;
+    let results = entries
+        .into_iter()
+        .filter_map(|entry| command_result_from_entry(entry, &output.mapping, provider_id))
+        .take(max_results)
+        .collect::<Vec<_>>();
+    if results.is_empty() {
+        return Err(search_error(
+            "parse_failed",
+            "WebSearch command provider returned no parseable search results",
+            provider_id,
+            "check output.mapping for title and url fields",
+        ));
+    }
+    Ok(results)
+}
+
+fn command_result_from_entry(
+    entry: &Value,
+    mapping: &WebCommandResultMapping,
+    provider_id: &str,
+) -> Option<WebSearchResult> {
+    let title = mapped_json_string(entry, &mapping.title)?
+        .trim()
+        .to_string();
+    let url = mapped_json_string(entry, &mapping.url)?.trim().to_string();
+    if title.is_empty() || url.is_empty() {
+        return None;
+    }
+    Some(WebSearchResult {
+        title,
+        url,
+        snippet: mapping
+            .snippet
+            .as_deref()
+            .and_then(|path| mapped_json_string(entry, path))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        source: provider_id.to_string(),
+        published_at: mapping
+            .published_at
+            .as_deref()
+            .and_then(|path| mapped_json_string(entry, path))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+    })
+}
+
 fn normalize_max_results(requested: Option<usize>, configured: usize) -> Result<usize> {
     if requested == Some(0) {
         return Err(search_error(
@@ -1303,6 +1574,21 @@ fn decode_html_entities(value: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#x2F;", "/")
         .replace("&#39;", "'")
+}
+
+fn mapped_json_string(entry: &Value, path: &str) -> Option<String> {
+    let mut current = entry;
+    for segment in path.trim().trim_start_matches('.').split('.') {
+        if segment.is_empty() {
+            continue;
+        }
+        current = current.get(segment)?;
+    }
+    current
+        .as_str()
+        .map(str::trim)
+        .map(ToOwned::to_owned)
+        .filter(|value| !value.is_empty())
 }
 
 fn search_error(
@@ -1638,6 +1924,76 @@ mod tests {
             .any(|result| result.url == "https://example.com/two" && result.source == "two"));
     }
 
+    #[tokio::test]
+    async fn command_provider_executes_fixed_argv_and_maps_json_results() {
+        let provider = WebProviderConfig {
+            kind: WebProviderKind::Command,
+            base_url: None,
+            api_key: String::new(),
+            command: Some(crate::web::WebCommandProviderConfig {
+                argv: vec![
+                    "printf".into(),
+                    r#"[{"title":"{{query}}","url":"https://example.com/{{max_results}}","abstract":"Snippet"}]"#.into(),
+                ],
+            }),
+            output: Some(crate::web::WebCommandOutputConfig {
+                format: crate::web::WebCommandOutputFormat::Json,
+                mapping: crate::web::WebCommandResultMapping {
+                    title: ".title".into(),
+                    url: ".url".into(),
+                    snippet: Some(".abstract".into()),
+                    published_at: None,
+                },
+            }),
+            limits: crate::web::WebProviderLimitsConfig {
+                timeout_ms: 5_000,
+                max_output_bytes: 10_000,
+            },
+        };
+
+        let results = command_search("holon", 3, "cmd", &provider).await.unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "holon");
+        assert_eq!(results[0].url, "https://example.com/3");
+        assert_eq!(results[0].snippet.as_deref(), Some("Snippet"));
+        assert_eq!(results[0].source, "cmd");
+    }
+
+    #[tokio::test]
+    async fn command_provider_exit_failure_is_structured_tool_error() {
+        let provider = command_test_provider(vec!["false".into()]);
+
+        let err = command_search("holon", 3, "cmd", &provider)
+            .await
+            .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+
+        assert_eq!(tool_error.kind, "network_failed");
+        assert_eq!(
+            tool_error.details.as_ref().unwrap()["provider"],
+            json!("cmd")
+        );
+    }
+
+    #[test]
+    fn command_result_mapping_reads_nested_paths() {
+        let entry = json!({
+            "meta": { "title": "Nested" },
+            "url": "https://example.com"
+        });
+
+        assert_eq!(
+            mapped_json_string(&entry, ".meta.title").as_deref(),
+            Some("Nested")
+        );
+        assert_eq!(
+            mapped_json_string(&entry, "url").as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(mapped_json_string(&entry, ".missing.title"), None);
+    }
+
     // ---------------------------------------------------------------------------
     // Integration tests against mock HTTP servers for API-backed providers
     // ---------------------------------------------------------------------------
@@ -1649,6 +2005,25 @@ mod tests {
             api_key: "test-key-123".to_string(),
             command: None,
             output: None,
+            limits: Default::default(),
+        }
+    }
+
+    fn command_test_provider(argv: Vec<String>) -> WebProviderConfig {
+        WebProviderConfig {
+            kind: WebProviderKind::Command,
+            base_url: None,
+            api_key: String::new(),
+            command: Some(crate::web::WebCommandProviderConfig { argv }),
+            output: Some(crate::web::WebCommandOutputConfig {
+                format: crate::web::WebCommandOutputFormat::Json,
+                mapping: crate::web::WebCommandResultMapping {
+                    title: ".title".into(),
+                    url: ".url".into(),
+                    snippet: None,
+                    published_at: None,
+                },
+            }),
             limits: Default::default(),
         }
     }
