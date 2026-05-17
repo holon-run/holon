@@ -136,14 +136,14 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_file_mutation",
             PromptStability::Stable,
-            format!("File mutation is workspace-scoped and centered on ApplyPatch. {format_guidance} Keep tool output bounded: do not paste enormous malformed patches, do not retry the same large failed patch unchanged, and split large refactors into smaller patch/application steps when that keeps failures recoverable. Avoid using ExecCommand with shell rewrite tricks like `sed -i` as the default editing path, but use a bounded script or heredoc when generating/replacing a large file is cheaper and safer than a huge diff. After a clean file mutation, rely on the ApplyPatch receipt first and do not re-read the same file merely to confirm that the tool applied; run focused verification with ExecCommand when behavior matters. If exact final content affects the next edit, read only the smallest relevant slice. If ApplyPatch reports diagnostics, warnings, partial application, context mismatch, or any non-clean receipt, inspect the exact affected region before continuing edits to that file and do not retry the same diagnostic-producing patch unchanged. Also inspect the minimal affected slice when a formatter, script, command, or user edit may have changed the file after your last read. Do not use file mutation tools for broad exploration; inspect with shell-first read commands through ExecCommand instead."),
+            format!("File mutation is centered on ApplyPatch. Relative patch paths resolve from the active workspace; explicit absolute paths are filesystem targets and should be used only when the operator or task context clearly identifies that target. {format_guidance} Keep tool output bounded: do not paste enormous malformed patches, do not retry the same large failed patch unchanged, and split large refactors into smaller patch/application steps when that keeps failures recoverable. Avoid using ExecCommand with shell rewrite tricks like `sed -i` as the default editing path, but use a bounded script or heredoc when generating/replacing a large file is cheaper and safer than a huge diff. After a clean file mutation, rely on the ApplyPatch receipt first and do not re-read the same file merely to confirm that the tool applied; run focused verification with ExecCommand when behavior matters. If exact final content affects the next edit, read only the smallest relevant slice. If ApplyPatch reports diagnostics, warnings, partial application, context mismatch, or any non-clean receipt, inspect the exact affected region before continuing edits to that file and do not retry the same diagnostic-producing patch unchanged. Also inspect the minimal affected slice when a formatter, script, command, or user edit may have changed the file after your last read. Do not use file mutation tools for broad exploration; inspect with shell-first read commands through ExecCommand instead."),
         ));
     }
     if names.contains(&"UseWorkspace") {
         sections.push(section(
             "tool_workspace",
             PromptStability::Stable,
-            "Workspace is explicit runtime state, not just a shell directory. The active workspace defines the instruction root, execution root, default cwd, workspace-scoped memory/policy boundary, and where ApplyPatch and future local tools operate. Every agent always has exactly one active workspace. `agent_home` is the built-in fallback workspace for durable agent-local state; it is not a substitute for project work.\n\nUse UseWorkspace to make the right workspace active before local file or command work. Call `UseWorkspace({\"path\":\"/repo/or/subdir\"})` when the operator gave you a project path or you need to discover/adopt a directory. Call `UseWorkspace({\"workspace_id\":\"agent_home\"})` to return to AgentHome, or `UseWorkspace({\"workspace_id\":\"ws-...\"})` to switch to a known workspace id from agent state. Provide exactly one of `path` or `workspace_id`. Use `mode=\"isolated\"` only when you need a runtime-managed isolated execution root, and provide an `isolation_label` as an intent/branch hint rather than inventing a worktree path.\n\nShell `cd` affects only that shell command process. It does not redefine the active workspace, instruction root, or ApplyPatch target root. Switching workspaces does not delete files, remove bindings, or clean up retained isolated roots; cleanup is a separate explicit lifecycle action.".to_string(),
+            "Workspace is explicit runtime state, not just a shell directory. The active workspace is the default long-lived project context: it defines the instruction root, default cwd/execution root, scoped AGENTS.md or CLAUDE.md guidance, workspace-scoped memory/policy context, and the base for relative ApplyPatch paths. It is not a global prohibition against explicit filesystem targets outside the workspace. Every agent always has exactly one active workspace. `agent_home` is the built-in fallback workspace for durable agent-local state; it is not a substitute for project work.\n\nUse UseWorkspace to make the right workspace active when you will inspect, edit, or verify a project over more than a one-off explicit path. Call `UseWorkspace({\"path\":\"/repo/or/subdir\"})` when the operator gave you a project path or you need to discover/adopt a directory. Call `UseWorkspace({\"workspace_id\":\"agent_home\"})` to return to AgentHome, or `UseWorkspace({\"workspace_id\":\"ws-...\"})` to switch to a known workspace id from agent state. Provide exactly one of `path` or `workspace_id`. Use `mode=\"isolated\"` only when you need a runtime-managed isolated execution root, and provide an `isolation_label` as an intent/branch hint rather than inventing a worktree path.\n\nShell `cd` affects only that shell command process. It does not redefine the active workspace, instruction root, AGENTS.md loading scope, or relative ApplyPatch base. Switching workspaces does not delete files, remove bindings, or clean up retained isolated roots; cleanup is a separate explicit lifecycle action.".to_string(),
         ));
     }
     sections
@@ -571,6 +571,12 @@ mod tests {
             .find(|s| s.name == "tool_file_mutation")
             .expect("file mutation section");
         assert!(section.content.contains("centered on ApplyPatch"));
+        assert!(section
+            .content
+            .contains("Relative patch paths resolve from the active workspace"));
+        assert!(section
+            .content
+            .contains("explicit absolute paths are filesystem targets"));
         assert!(section.content.contains("sed -i"));
         assert!(section
             .content
@@ -638,10 +644,21 @@ mod tests {
         assert!(section
             .content
             .contains("always has exactly one active workspace"));
+        assert!(section
+            .content
+            .contains("default long-lived project context"));
+        assert!(section
+            .content
+            .contains("the base for relative ApplyPatch paths"));
+        assert!(section
+            .content
+            .contains("not a global prohibition against explicit filesystem targets"));
         assert!(section.content.contains("agent_home"));
         assert!(section
             .content
             .contains("Shell `cd` affects only that shell command"));
+        assert!(section.content.contains("AGENTS.md loading scope"));
+        assert!(section.content.contains("relative ApplyPatch base"));
         assert!(section.content.contains("UseWorkspace"));
     }
 
