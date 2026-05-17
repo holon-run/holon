@@ -942,6 +942,7 @@ async function runHolonRealTask({ runnerConfig, prompt, worktreePath, taskDir, r
   await copyAgentJsonlArtifact(agentDir, taskDir, "transcript.jsonl");
   await copyAgentStateArtifact(agentDir, taskDir, "agent.json");
   await copyAgentJsonlArtifact(agentDir, taskDir, "work_items.jsonl");
+  await copyHolonProviderHttpTraceArtifacts(homeDir, agentId, taskDir);
 
   const briefs = await readAgentJsonlArtifact(agentDir, "briefs.jsonl", taskDir);
   const toolExecutions = await readAgentJsonlArtifact(agentDir, "tools.jsonl", taskDir);
@@ -3913,6 +3914,23 @@ async function copyAgentStateArtifact(agentDir, taskDir, filename) {
       return;
     }
   }
+}
+
+export async function copyHolonProviderHttpTraceArtifacts(homeDir, agentId, taskDir) {
+  const destination = path.join(taskDir, "provider-http-trace");
+  const candidates = [
+    path.join(homeDir, ".holon", "http-trace", agentId),
+    path.join(homeDir, "agents", agentId, ".holon", "http-trace")
+  ];
+  let copied = false;
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      await mkdir(destination, { recursive: true });
+      await cp(candidate, destination, { recursive: true });
+      copied = true;
+    }
+  }
+  return copied;
 }
 
 function latestRecordsById(rows) {
