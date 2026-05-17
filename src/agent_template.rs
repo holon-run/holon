@@ -3,12 +3,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::types::{SkillInstallKind, SkillInstallMode};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use crate::types::{SkillInstallKind, SkillInstallMode};
 
 const TEMPLATE_AGENTS_FILENAME: &str = "AGENTS.md";
 const TEMPLATE_SKILLS_FILENAME: &str = "skills.json";
@@ -482,14 +482,13 @@ fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
     }
     let content =
         fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    parse_skill_refs_from_manifest(&content).map_err(|error| {
-        anyhow!("failed to parse {}: {error}", path.display())
-    })
+    parse_skill_refs_from_manifest(&content)
+        .map_err(|error| anyhow!("failed to parse {}: {error}", path.display()))
 }
 
 fn parse_skill_refs_from_manifest(content: &str) -> Result<Vec<TemplateSkillRef>> {
-    let manifest: TemplateSkillsManifest = serde_json::from_str(&content)
-        .context("failed to parse skills.json")?;
+    let manifest: TemplateSkillsManifest =
+        serde_json::from_str(&content).context("failed to parse skills.json")?;
     for skill_ref in &manifest.skill_refs {
         match skill_ref {
             TemplateSkillRef::Github { package } => {
@@ -664,10 +663,9 @@ async fn resolve_github_template(template: &str) -> Result<ResolvedTemplate> {
         let skills_path = format!("{template_path}/{TEMPLATE_SKILLS_FILENAME}");
         let skills_json = fetch_github_file(&owner, &repo, &git_ref, &skills_path).await?;
         let skill_refs = match skills_json {
-            Some(content) => parse_skill_refs_from_manifest(&content)
-                .with_context(|| {
-                    format!("failed to parse {template}::{TEMPLATE_SKILLS_FILENAME}")
-                })?,
+            Some(content) => parse_skill_refs_from_manifest(&content).with_context(|| {
+                format!("failed to parse {template}::{TEMPLATE_SKILLS_FILENAME}")
+            })?,
             None => Vec::new(),
         };
         return Ok(ResolvedTemplate {
@@ -1340,7 +1338,9 @@ mod tests {
         .unwrap();
 
         let err = parse_skill_refs(manifest_path).unwrap_err();
-        assert!(err.to_string().contains("github skill ref package must not be empty"));
+        assert!(err
+            .to_string()
+            .contains("github skill ref package must not be empty"));
     }
 
     #[test]
