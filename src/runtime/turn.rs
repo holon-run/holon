@@ -1712,7 +1712,7 @@ impl TurnExecution<'_> {
             let guard = runtime.inner.agent.lock().await;
             checkpoint_state_from_last_terminal(guard.state.last_turn_terminal.as_ref())
         };
-        let turn_lineage_state = {
+        let (turn_model_override, turn_pending_fallback_model, turn_model_state) = {
             let guard = runtime.inner.agent.lock().await;
             (
                 guard.state.model_override.clone(),
@@ -1732,12 +1732,12 @@ impl TurnExecution<'_> {
             "lineage_selected",
             serde_json::json!({
                 "agent_id": agent_id,
-                "model_override": turn_lineage_state.0,
-                "pending_fallback_model": turn_lineage_state.1,
-                "model": turn_lineage_state.2,
+                "model_override": turn_model_override,
+                "pending_fallback_model": turn_pending_fallback_model,
+                "model": turn_model_state,
             }),
         ))?;
-        if let Some(pending) = turn_lineage_state.1.as_ref() {
+        if let Some(pending) = turn_pending_fallback_model.as_ref() {
             runtime.inner.storage.append_event(&AuditEvent::new(
                 "pending_model_promoted",
                 serde_json::json!({
