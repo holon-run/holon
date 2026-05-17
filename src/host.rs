@@ -2010,6 +2010,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_public_named_resolves_parent_agent_template_catalog() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        let parent_state = parent.agent_state().await.unwrap();
+        let parent_agent_home = host.agent_data_dir(&parent_state.id);
+        let template_dir = parent_agent_home.join("templates").join("worker");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(
+            template_dir.join("AGENTS.md"),
+            "# Parent worker\n\nParent catalog worker\n",
+        )
+        .unwrap();
+
+        host.spawn_public_named_agent(
+            parent,
+            "worker-bot",
+            None,
+            TrustLevel::TrustedOperator,
+            Some("worker".into()),
+        )
+        .await
+        .unwrap();
+
+        let named_home = host.agent_data_dir("worker-bot");
+        let agents_md = fs::read_to_string(named_home.join("AGENTS.md")).unwrap();
+        assert!(agents_md.starts_with("# Parent worker\n\nParent catalog worker\n"));
+        assert!(agents_md.contains("## Holon Agent Home"));
+        assert!(agents_md.contains("`agent_home` is this agent's default workspace"));
+    }
+
+    #[tokio::test]
     async fn agent_summary_reports_runtime_default_then_override_and_clear() {
         let fixture = provider_test_config(Some("dummy-token"));
         let host = RuntimeHost::new(fixture.config).unwrap();

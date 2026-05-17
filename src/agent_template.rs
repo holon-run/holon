@@ -750,11 +750,13 @@ fn resolve_template_catalog_entry(
             ));
         };
         validate_template_id(template_id)?;
-        let catalog = discover_agent_templates_catalog(Some(home_dir), catalog_agent_home);
-        return catalog
-            .into_iter()
-            .find(|entry| entry.source == source && entry.template_id == template_id)
-            .ok_or_else(|| unknown_template_error(template, home_dir, catalog_agent_home));
+        return resolve_prefixed_template_catalog_entry(
+            source,
+            template_id,
+            home_dir,
+            catalog_agent_home,
+        )
+        .ok_or_else(|| unknown_template_error(template, home_dir, catalog_agent_home));
     }
 
     validate_template_id(template)?;
@@ -763,6 +765,34 @@ fn resolve_template_catalog_entry(
         .into_iter()
         .find(|entry| entry.template_id == template)
         .ok_or_else(|| unknown_template_error(template, home_dir, catalog_agent_home))
+}
+
+fn resolve_prefixed_template_catalog_entry(
+    source: AgentTemplateSourceKind,
+    template_id: &str,
+    home_dir: &Path,
+    catalog_agent_home: &Path,
+) -> Option<AgentTemplateCatalogEntry> {
+    match source {
+        AgentTemplateSourceKind::Builtin => BUILTIN_TEMPLATES
+            .iter()
+            .find(|template| template.template_id == template_id)
+            .map(builtin_template_catalog_entry),
+        AgentTemplateSourceKind::UserGlobal => discover_local_templates(
+            &templates_root_for_home(home_dir),
+            AgentTemplateSourceKind::UserGlobal,
+            false,
+        )
+        .into_iter()
+        .find(|entry| entry.template_id == template_id),
+        AgentTemplateSourceKind::AgentHome => discover_local_templates(
+            &catalog_agent_home.join("templates"),
+            AgentTemplateSourceKind::AgentHome,
+            true,
+        )
+        .into_iter()
+        .find(|entry| entry.template_id == template_id),
+    }
 }
 
 async fn resolve_catalog_template(
@@ -1574,6 +1604,54 @@ mod tests {
         assert!(!catalog
             .iter()
             .any(|entry| entry.catalog_id == "user_global:holon-default"));
+    }
+
+    #[tokio::test]
+    async fn prefixed_template_selector_resolves_requested_source_when_shadowed() {
+        let user_home = tempdir().unwrap();
+        let agent_home = tempdir().unwrap();
+        let user_templates = templates_root_for_home(user_home.path());
+        seed_builtin_templates_for_home(user_home.path()).unwrap();
+
+        let agent_default = agent_home.path().join("templates").join("holon-default");
+        fs::create_dir_all(&agent_default).unwrap();
+        fs::write(
+            agent_default.join(TEMPLATE_AGENTS_FILENAME),
+            "# Agent default\n\nAgent-home default\n",
+        )
+        .unwrap();
+
+        let user_worker = user_templates.join("worker");
+        fs::create_dir_all(&user_worker).unwrap();
+        fs::write(
+            user_worker.join(TEMPLATE_AGENTS_FILENAME),
+            "# User worker\n\nUser-global worker\n",
+        )
+        .unwrap();
+
+        let agent_worker = agent_home.path().join("templates").join("worker");
+        fs::create_dir_all(&agent_worker).unwrap();
+        fs::write(
+            agent_worker.join(TEMPLATE_AGENTS_FILENAME),
+            "# Agent worker\n\nAgent-home worker\n",
+        )
+        .unwrap();
+
+        let builtin =
+            resolve_template("builtin:holon-default", user_home.path(), agent_home.path())
+                .await
+                .unwrap();
+        assert!(builtin.agents_md.contains("## Role"));
+
+        let user = resolve_template("user_global:worker", user_home.path(), agent_home.path())
+            .await
+            .unwrap();
+        assert_eq!(user.agents_md, "# User worker\n\nUser-global worker\n");
+
+        let agent = resolve_template("agent_home:worker", user_home.path(), agent_home.path())
+            .await
+            .unwrap();
+        assert_eq!(agent.agents_md, "# Agent worker\n\nAgent-home worker\n");
     }
 
     #[test]
