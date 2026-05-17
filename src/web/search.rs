@@ -958,6 +958,7 @@ async fn perplexity_search(
         .and_then(|content| content.as_str())
         .map(str::trim)
         .filter(|content| !content.is_empty());
+    let summary = summary.map(str::to_string);
     let results = payload
         .get("search_results")
         .and_then(|results| results.as_array())
@@ -982,7 +983,7 @@ async fn perplexity_search(
             Some(WebSearchResult {
                 title,
                 url,
-                snippet: summary.map(str::to_string),
+                snippet: summary.clone(),
                 source: provider_id.to_string(),
                 published_at: entry
                     .get("date")
@@ -1979,6 +1980,228 @@ mod tests {
             results[1].snippet.as_deref(),
             Some("Firecrawl API documentation")
         );
+    }
+
+    #[tokio::test]
+    async fn perplexity_search_empty_results_is_error() {
+        let router = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(|| async { axum::Json(empty_results_json()) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Perplexity, &base_url);
+        let err = perplexity_search(
+            "test",
+            5,
+            "perplexity_test",
+            &provider,
+            &test_fetch_config(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("no parseable search results"));
+    }
+
+    #[tokio::test]
+    async fn perplexity_search_invalid_json_is_error() {
+        let router = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(|| async { "not json" }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Perplexity, &base_url);
+        let err = perplexity_search(
+            "test",
+            5,
+            "perplexity_test",
+            &provider,
+            &test_fetch_config(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("invalid JSON"));
+    }
+
+    #[tokio::test]
+    async fn perplexity_search_http_401_is_error() {
+        let router = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(|| async { axum::http::StatusCode::UNAUTHORIZED }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Perplexity, &base_url);
+        let err = perplexity_search(
+            "test",
+            5,
+            "perplexity_test",
+            &provider,
+            &test_fetch_config(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("HTTP 401"));
+    }
+
+    #[tokio::test]
+    async fn perplexity_search_http_429_is_error() {
+        let router = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(|| async { axum::http::StatusCode::TOO_MANY_REQUESTS }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Perplexity, &base_url);
+        let err = perplexity_search(
+            "test",
+            5,
+            "perplexity_test",
+            &provider,
+            &test_fetch_config(),
+        )
+        .await
+        .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+        assert_eq!(tool_error.kind, "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn perplexity_search_missing_api_key_is_error() {
+        let provider = WebProviderConfig {
+            kind: WebProviderKind::Perplexity,
+            base_url: Some("http://localhost:1".to_string()),
+            api_key: String::new(),
+        };
+
+        let err = perplexity_search(
+            "test",
+            5,
+            "perplexity_test",
+            &provider,
+            &test_fetch_config(),
+        )
+        .await
+        .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+        assert_eq!(tool_error.kind, "provider_unavailable");
+        assert!(err.to_string().contains("API key"));
+    }
+
+    #[tokio::test]
+    async fn firecrawl_search_empty_results_is_error() {
+        let router = axum::Router::new().route(
+            "/v1/search",
+            axum::routing::post(|| async { axum::Json(empty_results_json()) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Firecrawl, &base_url);
+        let err = firecrawl_search("test", 5, "firecrawl_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no parseable search results"));
+    }
+
+    #[tokio::test]
+    async fn firecrawl_search_invalid_json_is_error() {
+        let router =
+            axum::Router::new().route("/v1/search", axum::routing::post(|| async { "not json" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Firecrawl, &base_url);
+        let err = firecrawl_search("test", 5, "firecrawl_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid JSON"));
+    }
+
+    #[tokio::test]
+    async fn firecrawl_search_http_401_is_error() {
+        let router = axum::Router::new().route(
+            "/v1/search",
+            axum::routing::post(|| async { axum::http::StatusCode::UNAUTHORIZED }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Firecrawl, &base_url);
+        let err = firecrawl_search("test", 5, "firecrawl_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("HTTP 401"));
+    }
+
+    #[tokio::test]
+    async fn firecrawl_search_http_429_is_error() {
+        let router = axum::Router::new().route(
+            "/v1/search",
+            axum::routing::post(|| async { axum::http::StatusCode::TOO_MANY_REQUESTS }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let base_url = format!("http://{}", addr);
+
+        let provider = test_provider(WebProviderKind::Firecrawl, &base_url);
+        let err = firecrawl_search("test", 5, "firecrawl_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+        assert_eq!(tool_error.kind, "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn firecrawl_search_missing_api_key_is_error() {
+        let provider = WebProviderConfig {
+            kind: WebProviderKind::Firecrawl,
+            base_url: Some("http://localhost:1".to_string()),
+            api_key: String::new(),
+        };
+
+        let err = firecrawl_search("test", 5, "firecrawl_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+        assert_eq!(tool_error.kind, "provider_unavailable");
+        assert!(err.to_string().contains("API key"));
     }
 
     #[tokio::test]
