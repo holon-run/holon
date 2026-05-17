@@ -155,7 +155,10 @@ pub(crate) fn agent_model_state_for_catalog(
         .and_then(|_| state.last_active_model.clone())
         .unwrap_or_else(|| effective_model.clone());
     let fallback_active = active_model != effective_model;
-    let effective_chain = model_catalog.provider_chain(state.model_override.as_ref());
+    let effective_chain = model_catalog.provider_chain_for_turn(
+        state.model_override.as_ref(),
+        state.pending_fallback_model.as_ref(),
+    );
     let resolved_policy =
         model_catalog.resolved_model_policy(base_context_config, state.model_override.as_ref());
     AgentModelState {

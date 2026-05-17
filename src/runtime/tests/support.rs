@@ -310,6 +310,12 @@ impl BaselineOverBudgetProbeProvider {
 
 pub(crate) struct ContextLengthExceededProvider;
 
+pub(crate) struct DeferredFallbackProvider;
+
+pub(crate) struct TextThenFailingFallbackProvider {
+    pub(crate) calls: Mutex<usize>,
+}
+
 pub(crate) struct SleepOnlyToolProvider {
     pub(crate) calls: Mutex<usize>,
 }
@@ -440,6 +446,7 @@ impl AgentProvider for TimelineProvider {
                 requested_model_ref: "openai/gpt-5.4".into(),
                 active_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
                 winning_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
+                pending_fallback_model_ref: None,
             }),
         ))
     }
@@ -752,6 +759,7 @@ impl AgentProvider for FailingTimelineProvider {
                 requested_model_ref: "openai/gpt-5.4".into(),
                 active_model_ref: None,
                 winning_model_ref: None,
+                pending_fallback_model_ref: None,
             },
             anyhow!("bad request"),
         ))
@@ -784,8 +792,90 @@ impl AgentProvider for ContextLengthExceededProvider {
                 requested_model_ref: "openai-codex/gpt-5.3-codex-spark".into(),
                 active_model_ref: None,
                 winning_model_ref: None,
+                pending_fallback_model_ref: None,
             },
             anyhow!("context_length_exceeded: input too long"),
+        ))
+    }
+}
+
+#[async_trait]
+impl AgentProvider for DeferredFallbackProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        Err(provider_turn_error(
+            "all configured providers failed for this turn: openai/gpt-5.4: retryable exhausted",
+            ProviderAttemptTimeline {
+                attempts: vec![ProviderAttemptRecord {
+                    provider: "openai".into(),
+                    model_ref: "openai/gpt-5.4".into(),
+                    attempt: 3,
+                    max_attempts: 3,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: Some(125),
+                    failure_kind: Some("server_error".into()),
+                    disposition: Some("retryable".into()),
+                    outcome: ProviderAttemptOutcome::RetriesExhausted,
+                    advanced_to_fallback: true,
+                    backoff_ms: None,
+                    token_usage: None,
+                    transport_diagnostics: None,
+                }],
+                aggregated_token_usage: None,
+                requested_model_ref: "openai/gpt-5.4".into(),
+                active_model_ref: None,
+                winning_model_ref: None,
+                pending_fallback_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
+            },
+            anyhow!("server unavailable"),
+        ))
+    }
+}
+
+#[async_trait]
+impl AgentProvider for TextThenFailingFallbackProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        if *calls == 1 {
+            return Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::Text {
+                    text: "Partial report heading".into(),
+                }],
+                stop_reason: Some("max_output_tokens".into()),
+                input_tokens: 20,
+                output_tokens: 10,
+                cache_usage: None,
+                request_diagnostics: None,
+            });
+        }
+
+        Err(provider_turn_error(
+            "all configured providers failed for this turn: openai/gpt-5.4: retryable exhausted",
+            ProviderAttemptTimeline {
+                attempts: vec![ProviderAttemptRecord {
+                    provider: "openai".into(),
+                    model_ref: "openai/gpt-5.4".into(),
+                    attempt: 3,
+                    max_attempts: 3,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: Some(125),
+                    failure_kind: Some("server_error".into()),
+                    disposition: Some("retryable".into()),
+                    outcome: ProviderAttemptOutcome::RetriesExhausted,
+                    advanced_to_fallback: true,
+                    backoff_ms: None,
+                    token_usage: None,
+                    transport_diagnostics: None,
+                }],
+                aggregated_token_usage: None,
+                requested_model_ref: "openai/gpt-5.4".into(),
+                active_model_ref: None,
+                winning_model_ref: None,
+                pending_fallback_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
+            },
+            anyhow!("server unavailable"),
         ))
     }
 }

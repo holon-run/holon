@@ -914,6 +914,127 @@ async fn runtime_persists_provider_attempt_timeline_on_successful_round() {
 }
 
 #[tokio::test]
+async fn provider_failure_before_output_defers_fallback_to_next_turn() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(DeferredFallbackProvider),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            TrustLevel::TrustedOperator,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.terminal_kind, TurnTerminalKind::DeferredToFallback);
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state
+            .pending_fallback_model
+            .as_ref()
+            .map(|model| model.as_string())
+            .as_deref(),
+        Some("anthropic/claude-sonnet-4-6")
+    );
+    assert_eq!(
+        state.last_turn_terminal.as_ref().map(|record| record.kind),
+        Some(TurnTerminalKind::DeferredToFallback)
+    );
+    let queued = {
+        let guard = runtime.inner.agent.lock().await;
+        guard.queue.peek().cloned().expect("fallback followup")
+    };
+    assert_eq!(queued.kind, MessageKind::InternalFollowup);
+    assert_eq!(queued.priority, Priority::Next);
+    assert!(matches!(queued.trust, TrustLevel::TrustedSystem));
+
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "lineage_retry_exhausted"));
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "deferred_to_fallback"));
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "recovery_turn_started"));
+}
+
+#[tokio::test]
+async fn provider_failure_after_accepted_output_queues_recovery_turn() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(TextThenFailingFallbackProvider {
+            calls: Mutex::new(0),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            TrustLevel::TrustedOperator,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome.terminal_kind,
+        TurnTerminalKind::ProviderFailedNeedsRecovery
+    );
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.last_turn_terminal.as_ref().map(|record| record.kind),
+        Some(TurnTerminalKind::ProviderFailedNeedsRecovery)
+    );
+    assert_eq!(
+        state
+            .last_turn_terminal
+            .as_ref()
+            .and_then(|record| record.last_assistant_message.as_deref()),
+        Some("Partial report heading")
+    );
+
+    let events = runtime.storage().read_recent_events(30).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "provider_failed_needs_recovery"));
+    let exhausted = events
+        .iter()
+        .find(|event| event.kind == "lineage_retry_exhausted")
+        .expect("lineage retry exhausted event");
+    assert_eq!(
+        exhausted.data["side_effect_boundary_crossed"].as_bool(),
+        Some(true)
+    );
+}
+
+#[tokio::test]
 async fn runtime_records_turn_latency_phase_events_for_provider_and_tool() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

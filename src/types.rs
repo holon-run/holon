@@ -1237,6 +1237,8 @@ pub enum TurnTerminalKind {
     Completed,
     Aborted,
     BaselineOverBudget,
+    DeferredToFallback,
+    ProviderFailedNeedsRecovery,
 }
 
 impl TurnTerminalKind {
@@ -1531,6 +1533,8 @@ pub struct AgentState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override_reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_fallback_model: Option<ModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_requested_model: Option<ModelRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_active_model: Option<ModelRef>,
@@ -1602,6 +1606,7 @@ impl AgentState {
             last_continuation: None,
             model_override: None,
             model_override_reasoning_effort: None,
+            pending_fallback_model: None,
             last_requested_model: None,
             last_active_model: None,
             last_turn_terminal: None,

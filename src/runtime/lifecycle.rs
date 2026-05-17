@@ -608,20 +608,30 @@ impl RuntimeHandle {
         let mut next_state = self.agent_state().await?;
         next_state.model_override = Some(model_override.clone());
         next_state.model_override_reasoning_effort = reasoning_effort.clone();
-        self.reconfigure_provider_for_state(&next_state).await?;
+        next_state.pending_fallback_model = None;
+        let turn_in_progress = next_state.current_run_id.is_some();
+        if !turn_in_progress {
+            self.reconfigure_provider_for_state(&next_state).await?;
+        }
 
         let model_state = self.model_state_for(&next_state);
         {
             let mut guard = self.inner.agent.lock().await;
             guard.state.model_override = Some(model_override);
             guard.state.model_override_reasoning_effort = reasoning_effort;
+            guard.state.pending_fallback_model = None;
             self.inner.storage.write_agent(&guard.state)?;
         }
         self.append_audit_event(
-            "agent_model_override_set",
+            if turn_in_progress {
+                "agent_model_override_requested"
+            } else {
+                "agent_model_override_set"
+            },
             serde_json::json!({
                 "agent_id": next_state.id,
                 "model": model_state,
+                "pending_next_turn": turn_in_progress,
             }),
         )?;
         Ok(model_state)
@@ -631,20 +641,30 @@ impl RuntimeHandle {
         let mut next_state = self.agent_state().await?;
         next_state.model_override = None;
         next_state.model_override_reasoning_effort = None;
-        self.reconfigure_provider_for_state(&next_state).await?;
+        next_state.pending_fallback_model = None;
+        let turn_in_progress = next_state.current_run_id.is_some();
+        if !turn_in_progress {
+            self.reconfigure_provider_for_state(&next_state).await?;
+        }
 
         let model_state = self.model_state_for(&next_state);
         {
             let mut guard = self.inner.agent.lock().await;
             guard.state.model_override = None;
             guard.state.model_override_reasoning_effort = None;
+            guard.state.pending_fallback_model = None;
             self.inner.storage.write_agent(&guard.state)?;
         }
         self.append_audit_event(
-            "agent_model_override_cleared",
+            if turn_in_progress {
+                "agent_model_override_clear_requested"
+            } else {
+                "agent_model_override_cleared"
+            },
             serde_json::json!({
                 "agent_id": next_state.id,
                 "model": model_state,
+                "pending_next_turn": turn_in_progress,
             }),
         )?;
         Ok(model_state)

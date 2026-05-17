@@ -22,8 +22,9 @@ use crate::{
         ToolCall, ToolError, ToolSpec,
     },
     types::{
-        AuditEvent, MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TodoItemState, TokenUsage,
-        TranscriptEntry, TranscriptEntryKind, TrustLevel, TurnTerminalCheckpointRecord,
+        AdmissionContext, AuditEvent, MessageBody, MessageDeliverySurface, MessageEnvelope,
+        MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TodoItemState,
+        TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, TurnTerminalCheckpointRecord,
         TurnTerminalKind, TurnTerminalRecord, WorkItemPlanStatus, WorkItemRecord,
     },
 };
@@ -1352,6 +1353,122 @@ impl RuntimeHandle {
         Ok(record)
     }
 
+    async fn maybe_defer_provider_lineage_failure(
+        &self,
+        agent_id: &str,
+        round: usize,
+        error: &anyhow::Error,
+        last_assistant_message: Option<String>,
+        duration_ms: u64,
+        side_effect_boundary_crossed: bool,
+    ) -> Result<Option<AgentLoopOutcome>> {
+        let Some(timeline) = provider_attempt_timeline(error).cloned() else {
+            return Ok(None);
+        };
+        let Some(fallback_ref) = timeline.pending_fallback_model_ref.as_deref() else {
+            return Ok(None);
+        };
+        let Ok(fallback_model) = ModelRef::parse(fallback_ref) else {
+            return Ok(None);
+        };
+        let terminal_kind = if side_effect_boundary_crossed {
+            TurnTerminalKind::ProviderFailedNeedsRecovery
+        } else {
+            TurnTerminalKind::DeferredToFallback
+        };
+        {
+            let mut guard = self.inner.agent.lock().await;
+            guard.state.pending_fallback_model = Some(fallback_model.clone());
+            self.inner.storage.write_agent(&guard.state)?;
+        }
+        self.inner.storage.append_event(&AuditEvent::new(
+            "lineage_retry_exhausted",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "round": round,
+                "requested_model_ref": timeline.requested_model_ref,
+                "active_model_ref": timeline.active_model_ref,
+                "pending_fallback_model_ref": fallback_ref,
+                "side_effect_boundary_crossed": side_effect_boundary_crossed,
+                "provider_attempt_timeline": timeline,
+            }),
+        ))?;
+        let final_text = if side_effect_boundary_crossed {
+            format!(
+                "Turn stopped after the active provider lineage failed; queued a recovery turn on {fallback_ref}."
+            )
+        } else {
+            format!(
+                "Turn stopped before provider output was accepted; queued fallback turn on {fallback_ref}."
+            )
+        };
+        self.persist_turn_terminal_record(
+            terminal_kind,
+            last_assistant_message
+                .clone()
+                .or_else(|| Some(final_text.clone())),
+            duration_ms,
+            None,
+        )
+        .await?;
+        let event_kind = if side_effect_boundary_crossed {
+            "provider_failed_needs_recovery"
+        } else {
+            "deferred_to_fallback"
+        };
+        self.inner.storage.append_event(&AuditEvent::new(
+            event_kind,
+            serde_json::json!({
+                "agent_id": agent_id,
+                "round": round,
+                "fallback_model_ref": fallback_ref,
+                "side_effect_boundary_crossed": side_effect_boundary_crossed,
+                "last_assistant_preview": last_assistant_message
+                    .as_deref()
+                    .map(|text| truncate_preview(text, ROUND_TEXT_PREVIEW_LIMIT)),
+            }),
+        ))?;
+
+        let mut message = MessageEnvelope::new(
+            agent_id.to_string(),
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "model_lineage_recovery".into(),
+            },
+            TrustLevel::TrustedSystem,
+            Priority::Next,
+            MessageBody::Text {
+                text: "Runtime recovery: the previous turn stopped after the active provider failed. Continue from the persisted transcript, current work item, and workspace state. Do not assume hidden provider continuation state is still available. Do not repeat completed tool work unless current evidence shows it is necessary.".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        message.metadata = Some(serde_json::json!({
+            "fallback_model_ref": fallback_ref,
+            "source_terminal_kind": terminal_kind,
+            "source_round": round,
+            "side_effect_boundary_crossed": side_effect_boundary_crossed,
+        }));
+        let queued = self.enqueue(message).await?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "recovery_turn_started",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "message_id": queued.id,
+                "fallback_model_ref": fallback_ref,
+                "source_terminal_kind": terminal_kind,
+            }),
+        ))?;
+        Ok(Some(AgentLoopOutcome {
+            final_text,
+            should_sleep: false,
+            sleep_duration_ms: None,
+            terminal_kind,
+        }))
+    }
+
     async fn persist_turn_aborted_record(
         &self,
         run_id: &str,
@@ -1595,6 +1712,40 @@ impl TurnExecution<'_> {
             let guard = runtime.inner.agent.lock().await;
             checkpoint_state_from_last_terminal(guard.state.last_turn_terminal.as_ref())
         };
+        let turn_lineage_state = {
+            let guard = runtime.inner.agent.lock().await;
+            (
+                guard.state.model_override.clone(),
+                guard.state.pending_fallback_model.clone(),
+                runtime.model_state_for(&guard.state),
+            )
+        };
+        runtime.reconfigure_provider_for_current_state().await?;
+        let identity = runtime.agent_identity_view().await?;
+        let (provider, available_tools, native_web_search) =
+            runtime.provider_tool_selection(&identity).await?;
+        let allowed_tool_names = available_tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<HashSet<_>>();
+        runtime.inner.storage.append_event(&AuditEvent::new(
+            "lineage_selected",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "model_override": turn_lineage_state.0,
+                "pending_fallback_model": turn_lineage_state.1,
+                "model": turn_lineage_state.2,
+            }),
+        ))?;
+        if let Some(pending) = turn_lineage_state.1.as_ref() {
+            runtime.inner.storage.append_event(&AuditEvent::new(
+                "pending_model_promoted",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "fallback_model": pending,
+                }),
+            ))?;
+        }
 
         loop {
             if let Err(err) = runtime.ensure_not_aborted().await {
@@ -1644,13 +1795,6 @@ impl TurnExecution<'_> {
             }
 
             let context_build_started = Instant::now();
-            let identity = runtime.agent_identity_view().await?;
-            let (provider, available_tools, native_web_search) =
-                runtime.provider_tool_selection(&identity).await?;
-            let allowed_tool_names = available_tools
-                .iter()
-                .map(|tool| tool.name.clone())
-                .collect::<HashSet<_>>();
 
             let (
                 response,
@@ -1663,13 +1807,15 @@ impl TurnExecution<'_> {
             ) = if round == 1 {
                 let request = build_provider_turn_request(
                     &effective_prompt,
-                    available_tools,
-                    native_web_search,
+                    available_tools.clone(),
+                    native_web_search.clone(),
                 );
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
-                    runtime.complete_turn_with_timing(provider, request).await;
+                    runtime
+                        .complete_turn_with_timing(provider.clone(), request)
+                        .await;
                 match result {
                     Ok((response, attempt_timeline)) => (
                         response,
@@ -1698,6 +1844,19 @@ impl TurnExecution<'_> {
                                 round,
                                 &err,
                                 turn_started_at.elapsed().as_millis() as u64,
+                            )
+                            .await?
+                        {
+                            return Ok(outcome);
+                        }
+                        if let Some(outcome) = runtime
+                            .maybe_defer_provider_lineage_failure(
+                                agent_id,
+                                round,
+                                &err,
+                                last_assistant_message.clone(),
+                                turn_started_at.elapsed().as_millis() as u64,
+                                !completed_rounds.is_empty() || last_assistant_message.is_some(),
                             )
                             .await?
                         {
@@ -1894,13 +2053,15 @@ impl TurnExecution<'_> {
                 let request = build_continuation_request(
                     prompt_frame,
                     projection.conversation,
-                    available_tools,
-                    native_web_search,
+                    available_tools.clone(),
+                    native_web_search.clone(),
                 );
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
-                    runtime.complete_turn_with_timing(provider, request).await;
+                    runtime
+                        .complete_turn_with_timing(provider.clone(), request)
+                        .await;
                 match result {
                     Ok((response, attempt_timeline)) => (
                         response,
@@ -1934,6 +2095,19 @@ impl TurnExecution<'_> {
                         {
                             return Ok(outcome);
                         }
+                        if let Some(outcome) = runtime
+                            .maybe_defer_provider_lineage_failure(
+                                agent_id,
+                                round,
+                                &err,
+                                last_assistant_message.clone(),
+                                turn_started_at.elapsed().as_millis() as u64,
+                                !completed_rounds.is_empty() || last_assistant_message.is_some(),
+                            )
+                            .await?
+                        {
+                            return Ok(outcome);
+                        }
                         runtime
                             .persist_turn_terminal_record(
                                 TurnTerminalKind::Aborted,
@@ -1962,6 +2136,7 @@ impl TurnExecution<'_> {
                 ));
                 guard.state.last_requested_model = model_attempt_state.requested_model.clone();
                 guard.state.last_active_model = model_attempt_state.active_model.clone();
+                guard.state.pending_fallback_model = None;
                 runtime.inner.storage.write_agent(&guard.state)?;
                 (
                     guard.state.turn_index,
@@ -3299,6 +3474,7 @@ mod tests {
             requested_model_ref: "test/model".into(),
             active_model_ref: None,
             winning_model_ref: None,
+            pending_fallback_model_ref: None,
             aggregated_token_usage: None,
         };
         let single = normalize_provider_attempt_timing(single.into(), started_at, completed_at, 42)
@@ -3313,6 +3489,7 @@ mod tests {
             requested_model_ref: "test/model".into(),
             active_model_ref: None,
             winning_model_ref: None,
+            pending_fallback_model_ref: None,
             aggregated_token_usage: None,
         };
         let multiple =

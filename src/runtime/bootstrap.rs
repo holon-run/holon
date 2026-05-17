@@ -282,7 +282,10 @@ impl RuntimeHandle {
         );
 
         if let Some(reconfig) = provider_reconfig.as_ref() {
-            let chain = model_catalog.provider_chain(state.model_override.as_ref());
+            let chain = model_catalog.provider_chain_for_turn(
+                state.model_override.as_ref(),
+                state.pending_fallback_model.as_ref(),
+            );
             let mut provider_config = reconfig.config.clone();
             provider_config.runtime_max_output_tokens = model_catalog
                 .resolved_model_policy(&base_context_config, state.model_override.as_ref())
@@ -348,10 +351,10 @@ impl RuntimeHandle {
                 "agent model override is unavailable for runtimes without host-managed provider configuration"
             ));
         };
-        let chain = self
-            .inner
-            .model_catalog
-            .provider_chain(state.model_override.as_ref());
+        let chain = self.inner.model_catalog.provider_chain_for_turn(
+            state.model_override.as_ref(),
+            state.pending_fallback_model.as_ref(),
+        );
         let resolved_context_config = self.inner.model_catalog.resolved_context_config(
             &self.inner.base_context_config,
             state.model_override.as_ref(),
@@ -377,6 +380,17 @@ impl RuntimeHandle {
         *self.inner.provider.write().await = provider;
         *self.inner.context_config.write().await = resolved_context_config;
         Ok(())
+    }
+
+    pub(crate) async fn reconfigure_provider_for_current_state(&self) -> Result<()> {
+        if self.inner.provider_reconfig.is_none() {
+            return Ok(());
+        }
+        let state = {
+            let guard = self.inner.agent.lock().await;
+            guard.state.clone()
+        };
+        self.reconfigure_provider_for_state(&state).await
     }
 
     pub(crate) async fn current_context_config(&self) -> ContextConfig {
