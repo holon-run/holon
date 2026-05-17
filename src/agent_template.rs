@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::types::{SkillInstallKind, SkillInstallMode};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
@@ -485,9 +486,7 @@ fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
     for skill_ref in &manifest.skill_refs {
         match skill_ref {
             TemplateSkillRef::Github { package } => {
-                bail!(
-                    "github skill refs are not supported in phase 1; use local or builtin skill refs instead: {package}"
-                );
+                template_github_skill_install_kind(package)?;
             }
             TemplateSkillRef::Builtin { name } => {
                 if builtin_skill(name).is_none() {
@@ -498,6 +497,63 @@ fn parse_skill_refs(path: PathBuf) -> Result<Vec<TemplateSkillRef>> {
         }
     }
     Ok(manifest.skill_refs)
+}
+
+fn template_github_skill_install_kind(package: &str) -> Result<SkillInstallKind> {
+    validate_template_github_skill_package(package)?;
+    let (remote_package, skill) = split_template_github_skill_package(package)?;
+    Ok(SkillInstallKind::Remote {
+        package: remote_package.to_string(),
+        skill: skill.map(str::to_string),
+        mode: SkillInstallMode::Linked,
+    })
+}
+
+fn split_template_github_skill_package(package: &str) -> Result<(&str, Option<&str>)> {
+    let Some(at_index) = package.rfind('@') else {
+        return Ok((package, None));
+    };
+    let remote_package = &package[..at_index];
+    if at_index == 0 || !remote_package.contains('/') {
+        return Ok((package, None));
+    }
+
+    let skill = &package[at_index + 1..];
+    validate_template_github_skill_package(remote_package)?;
+    validate_template_github_skill_name(skill)?;
+    Ok((remote_package, Some(skill)))
+}
+
+fn validate_template_github_skill_package(package: &str) -> Result<()> {
+    if package.trim().is_empty() {
+        bail!("github skill ref package must not be empty");
+    }
+    if package.trim() != package {
+        bail!("github skill ref package must not contain leading or trailing whitespace");
+    }
+    if package.starts_with('-') {
+        bail!("github skill ref package must not start with '-'");
+    }
+    if package
+        .chars()
+        .any(|ch| ch.is_control() || ch.is_ascii_whitespace())
+    {
+        bail!("github skill ref package must not contain whitespace or control characters");
+    }
+    Ok(())
+}
+
+fn validate_template_github_skill_name(skill: &str) -> Result<()> {
+    if skill.is_empty()
+        || skill == "."
+        || skill == ".."
+        || skill.contains('/')
+        || skill.contains('\\')
+    {
+        bail!("github skill ref skill name must be a plain skill directory name");
+    }
+    validate_template_github_skill_package(skill)?;
+    Ok(())
 }
 
 fn read_builtin_template_state(template_dir: &Path) -> Result<Option<BuiltinTemplateState>> {
@@ -800,17 +856,26 @@ fn render_agent_home_agents_md(template_guidance: &str, profile_seed: Option<&st
 }
 
 async fn materialize_skill_ref(
-    _agent_home: &Path,
+    agent_home: &Path,
     skills_root: &Path,
     skill_ref: &TemplateSkillRef,
 ) -> Result<PathBuf> {
     match skill_ref {
         TemplateSkillRef::Local { path } => materialize_local_skill_ref(skills_root, path),
         TemplateSkillRef::Builtin { name } => materialize_builtin_skill_ref(skills_root, name),
-        TemplateSkillRef::Github { package } => bail!(
-            "github skill refs are not supported in phase 1; use local or builtin skill refs instead: {package}"
-        ),
+        TemplateSkillRef::Github { package } => materialize_github_skill_ref(agent_home, package),
     }
+}
+
+fn materialize_github_skill_ref(agent_home: &Path, package: &str) -> Result<PathBuf> {
+    let install_kind = template_github_skill_install_kind(package)?;
+    let user_home = user_home_dir()?;
+    let skill_name = crate::skills::install_skill_with_user_home(
+        agent_home,
+        Some(user_home.as_path()),
+        &install_kind,
+    )?;
+    Ok(agent_home.join("skills").join(skill_name))
 }
 
 fn builtin_skill(name: &str) -> Option<&'static BuiltinSkill> {
@@ -1299,19 +1364,59 @@ mod tests {
     }
 
     #[test]
-    fn parse_skill_refs_rejects_github_skill_refs_in_phase_one() {
+    fn parse_skill_refs_accepts_github_skill_refs() {
         let home = tempdir().unwrap();
         let manifest_path = home.path().join("skills.json");
         fs::write(
             &manifest_path,
-            r#"{"skill_refs":[{"kind":"github","package":"owner/repo@skill"}]}"#,
+            r#"{"skill_refs":[{"kind":"github","package":"owner/repo@skill"},{"kind":"github","package":"@scope/package"}]}"#,
         )
         .unwrap();
 
+        let refs = parse_skill_refs(manifest_path).unwrap();
+        assert_eq!(refs.len(), 2);
+        assert!(
+            matches!(&refs[0], TemplateSkillRef::Github { package } if package == "owner/repo@skill")
+        );
+        assert!(
+            matches!(&refs[1], TemplateSkillRef::Github { package } if package == "@scope/package")
+        );
+    }
+
+    #[test]
+    fn template_github_skill_install_kind_splits_skill_selector() {
+        let kind = template_github_skill_install_kind("owner/repo@skill").unwrap();
+        assert!(matches!(
+            kind,
+            SkillInstallKind::Remote {
+                package,
+                skill: Some(skill),
+                mode: SkillInstallMode::Linked,
+            } if package == "owner/repo" && skill == "skill"
+        ));
+
+        let scoped = template_github_skill_install_kind("@scope/package").unwrap();
+        assert!(matches!(
+            scoped,
+            SkillInstallKind::Remote {
+                package,
+                skill: None,
+                mode: SkillInstallMode::Linked,
+            } if package == "@scope/package"
+        ));
+    }
+
+    #[test]
+    fn parse_skill_refs_rejects_invalid_github_skill_refs() {
+        let home = tempdir().unwrap();
+        let manifest_path = home.path().join("skills.json");
+        fs::write(
+            &manifest_path,
+            r#"{"skill_refs":[{"kind":"github","package":"owner/repo@../bad"}]}"#,
+        )
+        .unwrap();
         let err = parse_skill_refs(manifest_path).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("github skill refs are not supported in phase 1"));
+        assert!(err.to_string().contains("plain skill directory name"));
     }
 
     #[test]
