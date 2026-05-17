@@ -546,15 +546,18 @@ async fn command_search(
     let status = match wait {
         Ok(Ok(status)) => status,
         Ok(Err(error)) => {
+            abort_output_readers(stdout_task, stderr_task).await;
             return Err(search_error(
-                "network_failed",
+                "provider_unavailable",
                 format!("WebSearch command provider failed while waiting: {error}"),
                 provider_id,
-                "retry later or check the configured command provider",
+                "check the configured command provider",
             ));
         }
         Err(_) => {
             let _ = child.kill().await;
+            let _ = time::timeout(Duration::from_millis(100), child.wait()).await;
+            abort_output_readers(stdout_task, stderr_task).await;
             return Err(search_error(
                 "network_failed",
                 format!(
@@ -585,21 +588,23 @@ async fn command_search(
     if stdout.truncated || stderr.truncated {
         return Err(search_error(
             "response_too_large",
-            "WebSearch command provider output exceeded the configured byte limit",
+            format!(
+                "WebSearch command provider output exceeded limits (stdout limit: {stdout_limit} bytes; stderr limit: {stderr_limit} bytes)"
+            ),
             provider_id,
-            "narrow the query or increase web.providers.<id>.limits.max_output_bytes",
+            "narrow the query, reduce stderr output, or increase web.providers.<id>.limits.max_output_bytes",
         ));
     }
     if !status.success() {
         return Err(search_error(
-            "network_failed",
+            "provider_unavailable",
             format!(
                 "WebSearch command provider exited with status {}; stderr: {}",
                 status,
                 String::from_utf8_lossy(&stderr.bytes).trim()
             ),
             provider_id,
-            "retry later or check the configured command provider",
+            "check the configured command provider and its arguments",
         ));
     }
     let stdout = String::from_utf8(stdout.bytes).map_err(|error| {
@@ -640,8 +645,8 @@ fn expand_command_argv(
 }
 
 fn expand_command_arg(arg: &str, query: &str, max_results: usize) -> String {
-    arg.replace(COMMAND_QUERY_TEMPLATE, query)
-        .replace(COMMAND_MAX_RESULTS_TEMPLATE, &max_results.to_string())
+    arg.replace(COMMAND_MAX_RESULTS_TEMPLATE, &max_results.to_string())
+        .replace(COMMAND_QUERY_TEMPLATE, query)
 }
 
 struct LimitedOutput {
@@ -666,6 +671,21 @@ where
         truncated |= read > remaining;
     }
     Ok(LimitedOutput { bytes, truncated })
+}
+
+async fn abort_output_readers(
+    stdout_task: tokio::task::JoinHandle<Result<LimitedOutput>>,
+    stderr_task: tokio::task::JoinHandle<Result<LimitedOutput>>,
+) {
+    let _ = tokio::join!(
+        abort_output_reader(stdout_task),
+        abort_output_reader(stderr_task)
+    );
+}
+
+async fn abort_output_reader(task: tokio::task::JoinHandle<Result<LimitedOutput>>) {
+    task.abort();
+    let _ = time::timeout(Duration::from_millis(100), task).await;
 }
 
 async fn duckduckgo_search(
@@ -1969,10 +1989,23 @@ mod tests {
             .unwrap_err();
         let tool_error = ToolError::from_anyhow(&err);
 
-        assert_eq!(tool_error.kind, "network_failed");
+        assert_eq!(tool_error.kind, "provider_unavailable");
+        assert!(!tool_error.retryable);
         assert_eq!(
             tool_error.details.as_ref().unwrap()["provider"],
             json!("cmd")
+        );
+    }
+
+    #[test]
+    fn command_arg_expansion_does_not_reexpand_query_placeholders() {
+        assert_eq!(
+            expand_command_arg(
+                "q={{query}}&n={{max_results}}",
+                "literal {{max_results}}",
+                7
+            ),
+            "q=literal {{max_results}}&n=7"
         );
     }
 
