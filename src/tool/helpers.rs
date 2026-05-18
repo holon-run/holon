@@ -6,6 +6,7 @@ use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 use crate::tool::ToolError;
@@ -153,6 +154,21 @@ pub(crate) fn command_preview(cmd: &str) -> String {
         return "[omitted: command contains heredoc or inline script]".to_string();
     }
     truncate_text(&redact_command_secrets(cmd), COMMAND_PREVIEW_CHARS)
+}
+
+pub(crate) fn command_digest(cmd: &str) -> String {
+    let digest = Sha256::digest(cmd.as_bytes());
+    format!("{digest:x}")
+}
+
+pub(crate) fn command_receipt_source_ref(
+    tool_execution_id: &str,
+    batch_item_index: Option<usize>,
+) -> String {
+    match batch_item_index {
+        Some(index) => format!("tool_execution:{tool_execution_id}:batch_item:{index}:cmd"),
+        None => format!("tool_execution:{tool_execution_id}:cmd"),
+    }
 }
 
 pub(crate) fn command_cost_diagnostics(

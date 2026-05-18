@@ -17,7 +17,9 @@ use crate::{
         build_continuation_request, build_provider_prompt_frame, build_provider_turn_request,
     },
     tool::{
-        helpers::{command_cost_diagnostics, command_preview, effective_tool_output_tokens},
+        helpers::{
+            command_cost_diagnostics, command_digest, command_preview, effective_tool_output_tokens,
+        },
         spec::{ToolResultEnvelope, ToolResultStatus},
         ToolCall, ToolError, ToolSpec,
     },
@@ -654,6 +656,17 @@ fn build_round_recap_line(round: &TurnRoundRecord) -> String {
     if !tool_calls.is_empty() {
         parts.push(format!("tool_calls=[{}]", tool_calls.join(", ")));
     }
+    let command_receipts = round
+        .tool_calls
+        .iter()
+        .filter_map(command_recap_receipt)
+        .collect::<Vec<_>>();
+    if !command_receipts.is_empty() {
+        parts.push(format!(
+            "recoverable_command_inputs=[{}]",
+            command_receipts.join(", ")
+        ));
+    }
     if !tool_results.is_empty() {
         parts.push(format!("results=[{}]", tool_results.join(" | ")));
     }
@@ -670,6 +683,42 @@ fn build_round_recap_line(round: &TurnRoundRecord) -> String {
         parts.join("; ")
     };
     format!("- Round {}: {}", round.round, detail)
+}
+
+fn command_recap_receipt(call: &ToolCall) -> Option<String> {
+    match call.name.as_str() {
+        "ExecCommand" => {
+            let cmd = call.input.get("cmd").and_then(Value::as_str)?;
+            Some(format!(
+                "ExecCommand tool_call_id={} cmd_digest={}",
+                call.id,
+                command_digest(cmd)
+            ))
+        }
+        "ExecCommandBatch" => {
+            let items = call.input.get("items").and_then(Value::as_array)?;
+            let refs = items
+                .iter()
+                .enumerate()
+                .filter_map(|(offset, item)| {
+                    let cmd = item.get("cmd").and_then(Value::as_str)?;
+                    Some(format!(
+                        "item={} cmd_digest={}",
+                        offset + 1,
+                        command_digest(cmd)
+                    ))
+                })
+                .collect::<Vec<_>>();
+            (!refs.is_empty()).then(|| {
+                format!(
+                    "ExecCommandBatch tool_call_id={} {}",
+                    call.id,
+                    refs.join(" | ")
+                )
+            })
+        }
+        _ => None,
+    }
 }
 
 fn build_compacted_round_recap(rounds: &[TurnRoundRecord], recap_budget: usize) -> String {
@@ -3098,6 +3147,49 @@ mod tests {
         assert!(work_item.contains("complete smaller tool call"));
         assert!(!work_item.contains("huge patch"));
         assert!(!work_item.contains("ExecCommand/scripted rewrite"));
+    }
+
+    #[test]
+    fn turn_local_round_recap_preserves_command_recovery_identity() {
+        let command = "python - <<'PY'\nprint('turn_recap_hidden_1246')\nPY";
+        let round = fixture_round_with_tool(
+            3,
+            "running a diagnostic command",
+            "ExecCommand",
+            serde_json::json!({"cmd": command}),
+        );
+
+        let recap = build_round_recap_line(&round);
+
+        assert!(recap.contains("recoverable_command_inputs=[ExecCommand"));
+        assert!(recap.contains("tool_call_id=call_3"));
+        assert!(recap.contains("cmd_digest="));
+        assert!(!recap.contains("cmd_preview="));
+        assert!(!recap.contains("turn_recap_hidden_1246"));
+    }
+
+    #[test]
+    fn turn_local_round_recap_preserves_batch_command_recovery_identity() {
+        let round = fixture_round_with_tool(
+            4,
+            "running command batch",
+            "ExecCommandBatch",
+            serde_json::json!({
+                "items": [
+                    {"cmd": "rg -n \"foo\" src"},
+                    {"cmd": "node - <<'NODE'\nconsole.log('turn_batch_hidden_1246')\nNODE"}
+                ]
+            }),
+        );
+
+        let recap = build_round_recap_line(&round);
+
+        assert!(recap.contains("recoverable_command_inputs=[ExecCommandBatch"));
+        assert!(recap.contains("tool_call_id=call_4"));
+        assert!(recap.contains("item=1 cmd_digest="));
+        assert!(recap.contains("item=2 cmd_digest="));
+        assert!(!recap.contains("cmd_preview="));
+        assert!(!recap.contains("turn_batch_hidden_1246"));
     }
 
     fn fixture_round(round: usize, text: &str) -> TurnRoundRecord {

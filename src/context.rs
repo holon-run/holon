@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
+use serde_json::Value;
 
 use crate::{
     prompt::{PromptSection, PromptStability},
@@ -1367,19 +1368,63 @@ fn render_recent_briefs_with_budget(briefs: &[BriefRecord], budget: usize) -> Op
 fn render_recent_tools_with_budget(tools: &[ToolExecutionRecord], budget: usize) -> Option<String> {
     render_budgeted_lines(
         "Recent tool executions:",
-        tools
-            .iter()
-            .map(|record| {
-                format!(
-                    "- [{}][{:?}] {}",
-                    trust_label(&record.trust),
-                    record.status,
-                    record.summary
-                )
-            })
-            .collect(),
+        tools.iter().map(render_recent_tool_execution).collect(),
         budget,
     )
+}
+
+fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
+    let prefix = format!(
+        "- [{}][{:?}] {}",
+        trust_label(&record.trust),
+        record.status,
+        record.summary
+    );
+    match record.tool_name.as_str() {
+        "ExecCommand" => record
+            .input
+            .get("cmd")
+            .and_then(Value::as_str)
+            .map(|cmd| {
+                format!(
+                    "{prefix} tool_execution_id={} cmd_digest={} cmd_ref={} cmd_preview={}",
+                    record.id,
+                    crate::tool::helpers::command_digest(cmd),
+                    crate::tool::helpers::command_receipt_source_ref(&record.id, None),
+                    crate::tool::helpers::command_preview(cmd)
+                )
+            })
+            .unwrap_or(prefix),
+        "ExecCommandBatch" => {
+            let Some(items) = record.input.get("items").and_then(Value::as_array) else {
+                return prefix;
+            };
+            let refs = items
+                .iter()
+                .enumerate()
+                .filter_map(|(offset, item)| {
+                    let cmd = item.get("cmd").and_then(Value::as_str)?;
+                    let index = offset + 1;
+                    Some(format!(
+                        "{{index={index}, cmd_digest={}, cmd_ref={}, cmd_preview={}}}",
+                        crate::tool::helpers::command_digest(cmd),
+                        crate::tool::helpers::command_receipt_source_ref(&record.id, Some(index)),
+                        crate::tool::helpers::command_preview(cmd)
+                    ))
+                })
+                .collect::<Vec<_>>();
+            if refs.is_empty() {
+                prefix
+            } else {
+                format!(
+                    "{prefix} tool_execution_id={} batch_cmds=[{}]",
+                    record.id,
+                    refs.join(", ")
+                )
+            }
+        }
+        _ => prefix,
+    }
 }
 
 fn render_budgeted_lines(heading: &str, lines: Vec<String>, budget: usize) -> Option<String> {
@@ -1996,6 +2041,72 @@ mod tests {
         assert!(context_contract
             .content
             .contains("current work item objective first"));
+    }
+
+    #[test]
+    fn recent_tool_context_includes_recoverable_command_receipt_ref() {
+        let command = "python - <<'PY'\nprint('context_receipt_middle_1246')\nPY";
+        let record = ToolExecutionRecord {
+            id: "tool-context-1246".to_string(),
+            agent_id: "default".to_string(),
+            work_item_id: Some("work_123".to_string()),
+            turn_index: 1,
+            tool_name: "ExecCommand".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 123,
+            trust: TrustLevel::TrustedOperator,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": command}),
+            output: json!({"exit_code": 0}),
+            summary: "command exited with status 0".to_string(),
+            invocation_surface: None,
+        };
+
+        let rendered = render_recent_tool_execution(&record);
+
+        assert!(rendered.contains("tool_execution_id=tool-context-1246"));
+        assert!(rendered.contains("cmd_ref=tool_execution:tool-context-1246:cmd"));
+        assert!(rendered.contains("cmd_digest="));
+        assert!(rendered.contains("[omitted: command contains heredoc or inline script]"));
+        assert!(!rendered.contains("context_receipt_middle_1246"));
+    }
+
+    #[test]
+    fn recent_tool_context_includes_batch_item_receipt_refs() {
+        let record = ToolExecutionRecord {
+            id: "tool-context-batch-1246".to_string(),
+            agent_id: "default".to_string(),
+            work_item_id: None,
+            turn_index: 1,
+            tool_name: "ExecCommandBatch".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 123,
+            trust: TrustLevel::TrustedOperator,
+            status: ToolExecutionStatus::Success,
+            input: json!({
+                "items": [
+                    {"cmd": "rg -n \"foo\" src"},
+                    {"cmd": "node - <<'NODE'\nconsole.log('hidden_batch_1246')\nNODE"}
+                ]
+            }),
+            output: json!({"completed_count": 2}),
+            summary: "ExecCommandBatch completed 2/2 items".to_string(),
+            invocation_surface: None,
+        };
+
+        let rendered = render_recent_tool_execution(&record);
+
+        assert!(rendered.contains("tool_execution_id=tool-context-batch-1246"));
+        assert!(
+            rendered.contains("cmd_ref=tool_execution:tool-context-batch-1246:batch_item:1:cmd")
+        );
+        assert!(
+            rendered.contains("cmd_ref=tool_execution:tool-context-batch-1246:batch_item:2:cmd")
+        );
+        assert!(rendered.contains("cmd_digest="));
+        assert!(!rendered.contains("hidden_batch_1246"));
     }
 
     #[test]

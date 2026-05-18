@@ -14,7 +14,10 @@ use sha2::{Digest, Sha256};
 use crate::{
     agent_template::{agent_memory_operator_path, agent_memory_self_path},
     storage::AppStorage,
-    types::{BriefRecord, ContextEpisodeRecord, WorkItemRecord, WorkspaceEntry},
+    tool::helpers::{command_digest, command_preview, command_receipt_source_ref},
+    types::{
+        BriefRecord, ContextEpisodeRecord, ToolExecutionRecord, WorkItemRecord, WorkspaceEntry,
+    },
 };
 
 const INDEX_FILENAME: &str = "memory.sqlite3";
@@ -25,6 +28,7 @@ const GET_CHARS_MAX: usize = 50_000;
 const REBUILD_BRIEF_LIMIT: usize = 500;
 const REBUILD_EPISODE_LIMIT: usize = 500;
 const REBUILD_WORK_ITEM_LIMIT: usize = 500;
+const REBUILD_COMMAND_RECEIPT_LIMIT: usize = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -490,6 +494,7 @@ fn collect_documents(
     documents.extend(brief_documents(storage)?);
     documents.extend(context_episode_documents(storage)?);
     documents.extend(work_item_documents(storage)?);
+    documents.extend(command_execution_documents(storage)?);
     Ok(documents)
 }
 
@@ -712,6 +717,93 @@ fn work_item_document_body(item: &WorkItemRecord) -> String {
         }
     }
     lines.join("\n")
+}
+
+fn command_execution_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
+    let mut documents = Vec::new();
+    for record in storage.read_recent_tool_executions(REBUILD_COMMAND_RECEIPT_LIMIT)? {
+        match record.tool_name.as_str() {
+            "ExecCommand" => {
+                if let Some(cmd) = record.input.get("cmd").and_then(Value::as_str) {
+                    documents.push(command_receipt_document(&record, None, None, cmd));
+                }
+            }
+            "ExecCommandBatch" => {
+                if let Some(items) = record.input.get("items").and_then(Value::as_array) {
+                    for (offset, item) in items.iter().enumerate() {
+                        if let Some(cmd) = item.get("cmd").and_then(Value::as_str) {
+                            documents.push(command_receipt_document(
+                                &record,
+                                Some(offset + 1),
+                                Some(item),
+                                cmd,
+                            ));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(documents)
+}
+
+fn command_receipt_document(
+    record: &ToolExecutionRecord,
+    batch_item_index: Option<usize>,
+    batch_item_input: Option<&Value>,
+    cmd: &str,
+) -> MemoryDocument {
+    let cmd_digest = command_digest(cmd);
+    let source_ref = command_receipt_source_ref(&record.id, batch_item_index);
+    let title = match batch_item_index {
+        Some(index) => format!("{} command receipt item {}", record.tool_name, index),
+        None => format!("{} command receipt", record.tool_name),
+    };
+    let preview = command_preview(cmd);
+    let input_json =
+        serde_json::to_string_pretty(&record.input).unwrap_or_else(|_| record.input.to_string());
+    let batch_item_input = batch_item_input
+        .map(|value| serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()));
+    let body = format!(
+        "tool_execution_id: {}\ntool_name: {}\ncmd_digest: {}\ninput_json:\n{}\n{}cmd:\n{}",
+        record.id,
+        record.tool_name,
+        cmd_digest,
+        input_json,
+        batch_item_input
+            .as_deref()
+            .map(|value| format!("batch_item_input_json:\n{value}\n"))
+            .unwrap_or_default(),
+        cmd
+    );
+    MemoryDocument {
+        source_ref,
+        source_kind: "tool_command_receipt".into(),
+        scope_kind: "agent".into(),
+        workspace_id: None,
+        agent_id: record.agent_id.clone(),
+        source_path: None,
+        title,
+        sanitized_excerpt: format!(
+            "tool_execution_id={} tool_name={} cmd_digest={} cmd_preview={}",
+            record.id, record.tool_name, cmd_digest, preview
+        ),
+        body,
+        metadata: json!({
+            "tool_execution_id": record.id,
+            "tool_name": record.tool_name,
+            "turn_index": record.turn_index,
+            "work_item_id": record.work_item_id,
+            "batch_item_index": batch_item_index,
+            "cmd_digest": cmd_digest,
+            "cmd_preview": preview,
+            "governance_surface": "runtime_evidence",
+            "provenance_class": "tool_execution_record",
+            "trust_class": "runtime_evidence",
+        }),
+        updated_at: record.completed_at.unwrap_or(record.created_at),
+    }
 }
 
 fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'static str {
@@ -1233,5 +1325,115 @@ mod tests {
             results.is_empty(),
             "workspace README marker must not be searchable as Holon memory: {results:?}"
         );
+    }
+
+    #[test]
+    fn command_receipts_preserve_long_exec_command_input_for_memory_get() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let command = "python - <<'PY'\nprint('receipt_start')\nprint('sentinel_middle_line_1246')\nprint('receipt_end')\nPY";
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-exec-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: Some("work-1246".into()),
+                turn_index: 7,
+                tool_name: "ExecCommand".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 10,
+                trust: crate::types::TrustLevel::TrustedOperator,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: json!({"cmd": command}),
+                output: json!({"exit_code": 0}),
+                summary: "command exited with status 0".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let results = search_memory(
+            &storage,
+            "sentinel_middle_line_1246",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        let result = results
+            .iter()
+            .find(|result| result.kind == "tool_command_receipt")
+            .expect("command receipt should be indexed");
+        assert_eq!(result.source_ref, "tool_execution:tool-exec-1246:cmd");
+        assert_eq!(
+            result.metadata["tool_execution_id"].as_str(),
+            Some("tool-exec-1246")
+        );
+        assert_eq!(
+            result.metadata["cmd_preview"].as_str(),
+            Some("[omitted: command contains heredoc or inline script]")
+        );
+
+        let memory = get_memory(&storage, &result.source_ref, None, Some("ws-holon"))
+            .unwrap()
+            .expect("command receipt should be retrievable");
+        assert!(memory.content.contains(command));
+        assert!(memory.content.contains("sentinel_middle_line_1246"));
+        assert!(!memory.truncated);
+    }
+
+    #[test]
+    fn command_receipts_preserve_exec_command_batch_item_inputs() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let first_command = "rg -n \"MemorySearch\" src/memory/index.rs";
+        let second_command = "node - <<'NODE'\nconsole.log('batch_receipt_middle_1246')\nNODE";
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-batch-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 8,
+                tool_name: "ExecCommandBatch".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 20,
+                trust: crate::types::TrustLevel::TrustedOperator,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: json!({
+                    "items": [
+                        {"cmd": first_command},
+                        {"cmd": second_command}
+                    ]
+                }),
+                output: json!({"completed_count": 2}),
+                summary: "ExecCommandBatch completed 2/2 items".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let results = search_memory(
+            &storage,
+            "batch_receipt_middle_1246",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        let result = results
+            .iter()
+            .find(|result| result.source_ref == "tool_execution:tool-batch-1246:batch_item:2:cmd")
+            .expect("second batch item receipt should be indexed");
+        assert_eq!(result.metadata["batch_item_index"].as_u64(), Some(2));
+        assert_eq!(
+            result.metadata["cmd_preview"].as_str(),
+            Some("[omitted: command contains heredoc or inline script]")
+        );
+        let memory = get_memory(&storage, &result.source_ref, None, Some("ws-holon"))
+            .unwrap()
+            .expect("batch command receipt should be retrievable");
+        assert!(memory.content.contains(second_command));
+        assert!(!memory.content.contains(first_command));
     }
 }
