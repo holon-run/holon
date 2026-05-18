@@ -1211,10 +1211,10 @@ fn hint_match_window(line_count: usize, needle_len: usize, hint: usize) -> Optio
     }
 
     // Keep hint matching local, while giving larger hunks proportionally more drift tolerance.
-    let radius = (needle_len * 2).max(20);
+    let radius = needle_len.saturating_mul(2).max(20);
     Some((
         hint_index.saturating_sub(radius),
-        (hint_index + radius).min(max_start),
+        hint_index.saturating_add(radius).min(max_start),
     ))
 }
 
@@ -1225,9 +1225,9 @@ fn find_exact_matches(
     end_inclusive: usize,
 ) -> Vec<usize> {
     let mut matches = Vec::new();
-    for start in start..=end_inclusive {
-        if lines[start..start + needle.len()] == *needle {
-            matches.push(start);
+    for idx in start..=end_inclusive {
+        if lines[idx..idx + needle.len()] == *needle {
+            matches.push(idx);
         }
     }
     matches
