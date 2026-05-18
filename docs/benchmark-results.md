@@ -916,3 +916,124 @@ Key takeaways:
 See also:
 
 - `docs/tool-surface-comparison.md`
+
+## `#1244`: Tool Input Validation Contract Benchmark
+
+Run label:
+
+- `.benchmark-results/openai-tool-contract-validation-2026-05-18-1244-r1`
+
+Task:
+
+- Issue: [#1244](https://github.com/holon-run/holon/issues/1244)
+- Goal: harden common invalid built-in tool input shape handling, especially
+  `Sleep`, `ExecCommand`, `ExecCommandBatch`, and existing `ApplyPatch` JSON
+  surface behavior.
+- Model: `openai-codex/gpt-5.3-codex-spark`
+
+Both runners produced draft PRs that completed the core task and passed GitHub
+CI:
+
+| Runner | PR | Draft | CI | Changed Files | Additions | Deletions | Local/Agent Duration | Input Tokens | Cached/Read Input | Output Tokens | Rounds |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Codex | [#1250](https://github.com/holon-run/holon/pull/1250) | yes | pass | 4 | 207 | 125 | 389.0s | 3,366,894 | 3,214,976 | 20,397 | 1 CLI turn |
+| Holon | [#1252](https://github.com/holon-run/holon/pull/1252) | yes | pass | 4 | 169 | 122 | 1,002.3s | 5,515,298 | 4,783,360 | 24,821 | 88 model rounds |
+
+Changed files are the same in both PRs:
+
+- `src/tool/helpers.rs`
+- `src/tool/tools/exec_command.rs`
+- `src/tool/tools/exec_command_batch.rs`
+- `src/tool/tools/sleep.rs`
+
+### Implementation Comparison
+
+Both implementations:
+
+- remove the old permissive `Sleep` helper path that folded unknown structured
+  fields into `reason`
+- make `Sleep` reject unknown top-level fields
+- make `Sleep` reject `duration_ms = 0`
+- add `ExecCommand` invalid-shape coverage for `command` instead of `cmd`
+- add `ExecCommand` invalid-shape coverage for task metadata such as `status`
+- extend `ExecCommandBatch` coverage for unsupported continuation fields
+
+The Codex PR adds a custom `parse_exec_command_args` wrapper that emits more
+specific errors for:
+
+- `command` vs `cmd`
+- `status`
+- `task_handle`
+
+That gives better model-facing recovery hints, but it also adds more bespoke
+parsing logic.
+
+The Holon PR keeps `ExecCommand` validation on the shared typed parser path and
+tests the generic strict-schema error. It is smaller and closer to the existing
+tool parsing pattern. Its PR body is also clearer: it lists focused validation
+commands and explicitly explains the typed parsing direction.
+
+### Verification Notes
+
+GitHub CI passed for both PRs:
+
+- `Rust`
+- `Coverage`
+- `Run Holon / solve`
+- Vercel preview checks
+
+The Codex benchmark artifact reports `verify_status = failed` because the
+benchmark-local `cargo test --quiet --workspace` run failed in unrelated
+`runtime_compaction` tests:
+
+- `preview_prompt_after_compaction_keeps_work_item_plan_and_pending_work_visible`
+- `contentful_wake_hint_after_compaction_keeps_active_work_truth`
+
+The focused `cargo test --quiet tool` step passed in the same artifact, and the
+PR's GitHub Rust CI later passed. Treat the Codex artifact verification failure
+as an environment/base verification mismatch, not as evidence that the PR
+implementation is broken.
+
+Holon's agent run performed the focused tests listed in the PR body and then
+GitHub CI validated the full PR.
+
+### Runner Behavior
+
+Codex finished materially faster and cheaper:
+
+- about 6.5 minutes locally versus Holon's about 16.7 minutes
+- lower total input and output tokens
+- one CLI turn versus Holon's 88 model rounds
+
+Holon still completed the task and produced a valid PR, but the run shows the
+same cost pattern seen in recent command/tool-contract benchmarks:
+
+- many small model rounds
+- substantial provider replay/compaction traffic
+- repeated correction cycles around edits and command/PR flow
+
+Holon cache behavior was healthy in the sense that most input was cache-read
+or replayed through incremental continuation:
+
+- 87 of 88 rounds hit incremental continuation
+- total cache-read input tokens: 4,783,360
+
+The remaining gap is therefore less about total context loss and more about
+round count and execution path efficiency.
+
+### Recommendation
+
+Prefer keeping **Holon PR #1252** as the official PR for this benchmark.
+
+Reasons:
+
+- smaller patch with the same changed-file set
+- stays closer to shared typed parser behavior instead of adding bespoke
+  `ExecCommand` pre-parse branches
+- clearer PR body and validation section
+- full GitHub CI is green
+
+Codex PR #1250 is a useful comparison artifact and has stronger custom recovery
+hints for `ExecCommand`, especially `task_handle`, but those improvements should
+be considered separately if we want better bespoke model-facing errors. They are
+not necessary for the core #1244 contract fix.
