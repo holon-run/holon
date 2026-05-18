@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::{env, time::Duration};
 
 pub use anthropic::AnthropicProvider;
+pub(crate) use openai::OpenAiCompactionPolicy;
 #[cfg(test)]
 pub(crate) use openai::OpenAiResponsesTransportContract;
 #[cfg(test)]

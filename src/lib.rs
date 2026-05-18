@@ -26,6 +26,7 @@ pub mod skills;
 pub mod solve;
 pub mod storage;
 pub mod system;
+mod token_estimate;
 pub mod tool;
 pub mod tui;
 mod tui_markdown;
