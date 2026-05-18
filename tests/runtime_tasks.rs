@@ -42,6 +42,7 @@ runtime_async_tests!(
     task_output_accepts_terminal_command_without_snapshot_fields,
     task_output_rejects_message_only_terminal_status_for_running_command,
     task_status_and_task_output_keep_lifecycle_and_output_boundaries,
+    task_list_includes_command_identity,
     command_task_output_truncation_preserves_path_artifact_reference,
     command_task_stop_cancels_running_command,
     background_command_task_persists_terminal_state_while_runtime_stopped,

@@ -15,6 +15,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 use holon::{
     config::{AppConfig, ControlAuthMode},
     host::RuntimeHost,
@@ -1652,15 +1653,16 @@ pub async fn task_status_and_task_output_keep_lifecycle_and_output_boundaries() 
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
+    let cmd = "printf boundary_ok";
     let registry = ToolRegistry::new(runtime.workspace_root());
 
     let task = runtime
         .schedule_command_task(
             "separate status from output".into(),
             holon::types::CommandTaskSpec {
-                cmd: "printf boundary_ok".into(),
+                cmd: cmd.into(),
                 workdir: None,
-                shell: None,
+                shell: Some("sh".into()),
                 login: true,
                 tty: false,
                 yield_time_ms: 10_000,
@@ -1696,6 +1698,18 @@ pub async fn task_status_and_task_output_keep_lifecycle_and_output_boundaries() 
     assert_eq!(status_value["task"]["kind"], "command_task");
     assert_eq!(status_value["task"]["status"], "completed");
     assert!(status_value["task"]["command"]["output_path"].is_string());
+    assert_eq!(status_value["task"]["command"]["cmd"], cmd);
+    assert_eq!(
+        status_value["task"]["command"]["cmd_digest"],
+        serde_json::Value::String(format!("{:x}", Sha256::digest(cmd.as_bytes())))
+    );
+    assert_eq!(
+        status_value["task"]["command"]["workdir"],
+        serde_json::Value::String(runtime.workspace_root().to_string_lossy().to_string())
+    );
+    assert_eq!(status_value["task"]["command"]["shell"], "sh");
+    assert_eq!(status_value["task"]["command"]["login"], true);
+    assert_eq!(status_value["task"]["command"]["tty"], false);
     assert!(status_value["task"].get("output_preview").is_none());
     assert!(status_value["task"].get("artifacts").is_none());
 
@@ -1720,6 +1734,76 @@ pub async fn task_status_and_task_output_keep_lifecycle_and_output_boundaries() 
     assert_eq!(output_value["task"]["output_artifact"], 0);
     assert!(output_value["task"]["artifacts"][0]["path"].is_string());
     assert_eq!(output_value["task"]["exit_status"], 0);
+    Ok(())
+}
+
+pub async fn task_list_includes_command_identity() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+    let cmd = "printf list_identity";
+
+    let task = runtime
+        .schedule_command_task(
+            "identity task".into(),
+            holon::types::CommandTaskSpec {
+                cmd: cmd.into(),
+                workdir: None,
+                shell: Some("sh".into()),
+                login: true,
+                tty: false,
+                yield_time_ms: 10_000,
+                max_output_tokens: Some(512),
+                accepts_input: false,
+                terminal_reentry: false,
+            },
+            TrustLevel::TrustedOperator,
+        )
+        .await?;
+
+    wait_until(|| {
+        let tasks = runtime.storage().latest_task_records()?;
+        Ok(tasks
+            .iter()
+            .any(|record| record.id == task.id && record.status == TaskStatus::Completed))
+    })
+    .await?;
+
+    let (list_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-task-list-identity".into(),
+                name: "TaskList".into(),
+                input: json!({}),
+            },
+        )
+        .await?;
+    let list_value: serde_json::Value = parse_tool_result_payload(&list_result)?;
+    let entries = list_value
+        .as_array()
+        .expect("TaskList should return an array");
+    let entry = entries
+        .iter()
+        .find(|entry| entry["id"] == task.id)
+        .expect("task list should include created command task");
+    let command = &entry["command"];
+
+    assert_eq!(command["cmd"], cmd);
+    assert_eq!(
+        command["cmd_digest"],
+        serde_json::Value::String(format!("{:x}", Sha256::digest(cmd.as_bytes())))
+    );
+    assert_eq!(
+        command["workdir"],
+        serde_json::Value::String(runtime.workspace_root().to_string_lossy().to_string())
+    );
+    assert_eq!(command["shell"], "sh");
+    assert_eq!(command["login"], true);
+    assert_eq!(command["tty"], false);
     Ok(())
 }
 

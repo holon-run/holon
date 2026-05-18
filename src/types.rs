@@ -2152,10 +2152,22 @@ pub struct TaskListEntry {
     pub summary: Option<String>,
     pub updated_at: DateTime<Utc>,
     pub wait_policy: TaskWaitPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<CommandTaskStatusSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CommandTaskStatusSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tty: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2257,6 +2269,11 @@ impl TaskStatusSnapshot {
     pub fn from_task_record(task: &TaskRecord) -> Self {
         let command = if task.kind == TaskKind::CommandTask {
             Some(CommandTaskStatusSnapshot {
+                cmd: task_detail_string(&task.detail, "cmd"),
+                cmd_digest: task_detail_string(&task.detail, "cmd_digest"),
+                workdir: task_detail_string(&task.detail, "workdir"),
+                shell: task_detail_string(&task.detail, "shell"),
+                login: task_detail_bool(&task.detail, "login"),
                 tty: task_detail_bool(&task.detail, "tty"),
                 output_path: task_detail_string(&task.detail, "output_path"),
                 result_summary: task_detail_string(&task.detail, "output_summary"),

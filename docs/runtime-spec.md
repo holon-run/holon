@@ -2447,11 +2447,24 @@ Phase-1 envelope rules:
 - `TaskStatus` returns a stable lifecycle envelope with a compact `task`
   snapshot rather than exposing a bare internal record or raw detail blob
   - `TaskStatus` is lifecycle and coordination state, not an output channel
-  - `TaskStatus.task.command.output_path` may identify where command output is
-    stored, but the status snapshot must not include raw output preview bytes or
-    artifact arrays
+  - `TaskStatus.task.command` exposes full command-task identity for agent-facing
+    coordination:
+    - `cmd`: full command string
+    - `cmd_digest`: stable machine-comparable command identity hash
+    - `workdir`, `shell`, `login`, `tty`
+    - `output_path`, `result_summary`, `exit_status`,
+      `terminal_reentry`, `promoted_from_exec_command`, `accepts_input`,
+      and `input_target`
+  - For command-task projections, `cmd_preview` is intentionally not a
+    coordination source of truth and may remain summary-only in logs and audit
+    surfaces
+  - The status snapshot must not include raw output bytes or artifact arrays
   - `TaskStatus.task.command.terminal_reentry` is the explicit command-task
     terminal result re-entry projection; it is not a scheduler wait policy
+- `TaskList` keeps its compact shape and includes a compact `command` projection
+  for `command_task` entries with the same `cmd`, `cmd_digest`, `workdir`,
+  `shell`, `login`, and `tty` fields so model-facing task dedup and handoff can
+  compare command identity safely
 - for `child_agent_task`, the `task` detail carries
   `workspace_mode = inherit | worktree`; in worktree mode, worktree artifact
   metadata is reported under task detail/result metadata when available
