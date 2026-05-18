@@ -251,7 +251,14 @@ impl AppStorage {
     }
 
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
-        self.append_jsonl(&self.tools_path, record)
+        self.append_jsonl(&self.tools_path, record)?;
+        if matches!(
+            record.tool_name.as_str(),
+            "ExecCommand" | "ExecCommandBatch"
+        ) {
+            self.mark_memory_index_dirty()?;
+        }
+        Ok(())
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
