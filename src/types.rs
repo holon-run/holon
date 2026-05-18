@@ -2152,10 +2152,22 @@ pub struct TaskListEntry {
     pub summary: Option<String>,
     pub updated_at: DateTime<Utc>,
     pub wait_policy: TaskWaitPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<CommandTaskStatusSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CommandTaskStatusSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tty: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2172,6 +2184,33 @@ pub struct CommandTaskStatusSnapshot {
     pub accepts_input: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_target: Option<String>,
+}
+
+impl CommandTaskStatusSnapshot {
+    pub(crate) fn from_task_record(task: &TaskRecord) -> Option<Self> {
+        if task.kind != TaskKind::CommandTask {
+            return None;
+        }
+
+        Some(Self {
+            cmd: task_detail_string(&task.detail, "cmd"),
+            cmd_digest: task_detail_string(&task.detail, "cmd_digest"),
+            workdir: task_detail_string(&task.detail, "workdir"),
+            shell: task_detail_string(&task.detail, "shell"),
+            login: task_detail_bool(&task.detail, "login"),
+            tty: task_detail_bool(&task.detail, "tty"),
+            output_path: task_detail_string(&task.detail, "output_path"),
+            result_summary: task_detail_string(&task.detail, "output_summary"),
+            exit_status: task_detail_i32(&task.detail, "exit_status"),
+            terminal_reentry: task.terminal_reentry().then_some(true),
+            promoted_from_exec_command: task_detail_bool(
+                &task.detail,
+                "promoted_from_exec_command",
+            ),
+            accepts_input: task_detail_bool(&task.detail, "accepts_input"),
+            input_target: task_detail_string(&task.detail, "input_target"),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2255,23 +2294,7 @@ pub struct TaskStatusSnapshot {
 
 impl TaskStatusSnapshot {
     pub fn from_task_record(task: &TaskRecord) -> Self {
-        let command = if task.kind == TaskKind::CommandTask {
-            Some(CommandTaskStatusSnapshot {
-                tty: task_detail_bool(&task.detail, "tty"),
-                output_path: task_detail_string(&task.detail, "output_path"),
-                result_summary: task_detail_string(&task.detail, "output_summary"),
-                exit_status: task_detail_i32(&task.detail, "exit_status"),
-                terminal_reentry: task.terminal_reentry().then_some(true),
-                promoted_from_exec_command: task_detail_bool(
-                    &task.detail,
-                    "promoted_from_exec_command",
-                ),
-                accepts_input: task_detail_bool(&task.detail, "accepts_input"),
-                input_target: task_detail_string(&task.detail, "input_target"),
-            })
-        } else {
-            None
-        };
+        let command = CommandTaskStatusSnapshot::from_task_record(task);
         let child_agent_id = task_detail_string(&task.detail, "child_agent_id");
         let child_observability = task_detail_value(&task.detail, "child_observability")
             .and_then(|value| serde_json::from_value(value.clone()).ok());
@@ -3691,6 +3714,62 @@ mod tests {
                 .expect("command task snapshot")
                 .terminal_reentry,
             Some(true)
+        );
+    }
+
+    #[test]
+    fn task_status_snapshot_includes_command_identity_fields() {
+        let cmd = "git status --short";
+        let digest = crate::tool::helpers::command_digest(cmd);
+        let task = TaskRecord {
+            id: "task-command".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Completed,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("check git".into()),
+            detail: Some(serde_json::json!({
+                "cmd": cmd,
+                "cmd_digest": digest,
+                "workdir": "/tmp/repo",
+                "shell": "/bin/bash",
+                "login": true,
+                "tty": false,
+                "output_path": "/tmp/command-output.txt",
+            })),
+            recovery: Some(TaskRecoverySpec::CommandTask {
+                summary: "check git".into(),
+                spec: CommandTaskSpec {
+                    cmd: cmd.into(),
+                    workdir: Some("/tmp/repo".into()),
+                    shell: Some("/bin/bash".into()),
+                    login: true,
+                    tty: false,
+                    yield_time_ms: 10_000,
+                    max_output_tokens: None,
+                    accepts_input: false,
+                    terminal_reentry: false,
+                },
+                trust: TrustLevel::TrustedOperator,
+                promoted_from_exec_command: false,
+            }),
+        };
+
+        let snapshot = TaskStatusSnapshot::from_task_record(&task);
+        let command = snapshot.command.expect("command task snapshot");
+
+        assert_eq!(command.cmd.as_deref(), Some(cmd));
+        assert_eq!(command.cmd_digest.as_deref(), Some(digest.as_str()));
+        assert_eq!(command.workdir.as_deref(), Some("/tmp/repo"));
+        assert_eq!(command.shell.as_deref(), Some("/bin/bash"));
+        assert_eq!(command.login, Some(true));
+        assert_eq!(command.tty, Some(false));
+        assert_eq!(
+            command.output_path.as_deref(),
+            Some("/tmp/command-output.txt")
         );
     }
 

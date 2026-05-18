@@ -2450,6 +2450,13 @@ Phase-1 envelope rules:
   - `TaskStatus.task.command.output_path` may identify where command output is
     stored, but the status snapshot must not include raw output preview bytes or
     artifact arrays
+  - `TaskStatus.task.command.cmd` is the model-facing command identity
+  - `TaskStatus.task.command.cmd_digest` is the machine-comparable identity key
+  - `TaskStatus.task.command.workdir`, `TaskStatus.task.command.shell`,
+    `TaskStatus.task.command.login`, and `TaskStatus.task.command.tty` are
+    identity-carrying execution metadata
+  - `cmd_preview` remains a model/operator-facing summary only; it is not the
+    source of truth for command identity
   - `TaskStatus.task.command.terminal_reentry` is the explicit command-task
     terminal result re-entry projection; it is not a scheduler wait policy
 - for `child_agent_task`, the `task` detail carries

@@ -1148,6 +1148,7 @@ impl RuntimeHandle {
             .into_iter()
             .map(|task| {
                 let wait_policy = task.wait_policy();
+                let command = CommandTaskStatusSnapshot::from_task_record(&task);
                 TaskListEntry {
                     id: task.id,
                     kind: task.kind.as_str().to_string(),
@@ -1155,6 +1156,7 @@ impl RuntimeHandle {
                     summary: task.summary,
                     updated_at: task.updated_at,
                     wait_policy,
+                    command,
                 }
             })
             .collect())
