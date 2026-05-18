@@ -20,6 +20,7 @@ const ALLOWED_SOURCE_REF_PREFIXES: &[&str] = &[
     "brief:",
     "episode:",
     "work_item:",
+    "tool_execution:",
 ];
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -93,6 +94,11 @@ fn validate_source_ref(source_ref: String) -> Result<String> {
             "missing source_ref prefix",
         ));
     };
+    let prefix = format!("{prefix}:");
+    if prefix == "tool_execution:" {
+        return validate_tool_execution_source_ref(&source_ref, suffix);
+    }
+
     if suffix.is_empty() {
         return Err(invalid_source_ref_error(
             &source_ref,
@@ -109,7 +115,6 @@ fn validate_source_ref(source_ref: String) -> Result<String> {
         ));
     }
 
-    let prefix = format!("{prefix}:");
     if !ALLOWED_SOURCE_REF_PREFIXES.contains(&prefix.as_str()) {
         return Err(invalid_source_ref_error(
             &source_ref,
@@ -118,6 +123,33 @@ fn validate_source_ref(source_ref: String) -> Result<String> {
     }
 
     Ok(source_ref)
+}
+
+fn validate_tool_execution_source_ref(source_ref: &str, suffix: &str) -> Result<String> {
+    let parts = suffix.split(':').collect::<Vec<_>>();
+    let valid = match parts.as_slice() {
+        [tool_execution_id, "cmd"] => valid_source_ref_segment(tool_execution_id),
+        [tool_execution_id, "batch_item", index, "cmd"] => {
+            valid_source_ref_segment(tool_execution_id)
+                && !index.is_empty()
+                && index.chars().all(|ch| ch.is_ascii_digit())
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(invalid_source_ref_error(
+            source_ref,
+            "tool_execution source_ref must match tool_execution:<id>:cmd or tool_execution:<id>:batch_item:<index>:cmd",
+        ));
+    }
+    Ok(source_ref.to_string())
+}
+
+fn valid_source_ref_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 fn validate_max_chars(max_chars: Option<usize>) -> Result<Option<usize>> {
@@ -157,7 +189,19 @@ fn invalid_source_ref_error(source_ref: &str, validation_error: &'static str) ->
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use chrono::Utc;
+    use serde_json::json;
+    use tempfile::tempdir;
+
     use super::*;
+    use crate::{
+        context::ContextConfig,
+        provider::StubProvider,
+        runtime::RuntimeHandle,
+        types::{ToolExecutionRecord, ToolExecutionStatus, TrustLevel},
+    };
 
     fn tool_error(error: anyhow::Error) -> crate::tool::ToolError {
         error
@@ -174,6 +218,8 @@ mod tests {
             "brief:abc",
             "episode:ep_123",
             "work_item:work_123",
+            "tool_execution:tool-123:cmd",
+            "tool_execution:tool-123:batch_item:2:cmd",
         ] {
             assert_eq!(
                 validate_source_ref(source_ref.to_string()).unwrap(),
@@ -194,6 +240,9 @@ mod tests {
             "brief:https://example.com/memory",
             "episode:../ledger/episode-1",
             "work_item:work_123?raw=true",
+            "tool_execution:tool-123",
+            "tool_execution:tool-123:batch_item:abc:cmd",
+            "tool_execution:tool-123:batch_item:2",
         ] {
             let error = tool_error(validate_source_ref(source_ref.to_string()).unwrap_err());
             assert_eq!(error.kind, "invalid_tool_input");
@@ -246,5 +295,66 @@ mod tests {
                 .and_then(|details| details.get("maximum"))
                 .is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn memory_get_tool_accepts_command_receipt_source_refs() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("done")),
+            "default".into(),
+            ContextConfig::default(),
+        )
+        .unwrap();
+        let command = "python - <<'PY'\nprint('memory_get_tool_receipt_1246')\nPY";
+        runtime
+            .storage()
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-get-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 1,
+                tool_name: "ExecCommand".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 10,
+                trust: TrustLevel::TrustedOperator,
+                status: ToolExecutionStatus::Success,
+                input: json!({
+                    "cmd": command,
+                    "workdir": "src",
+                    "yield_time_ms": 1000,
+                    "max_output_tokens": 1200
+                }),
+                output: json!({"exit_code": 0}),
+                summary: "command exited with status 0".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let result = execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &json!({
+                "source_ref": "tool_execution:tool-get-1246:cmd"
+            }),
+        )
+        .await
+        .unwrap();
+        let content = result.envelope.result.unwrap()["memory"]["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert!(content.contains("memory_get_tool_receipt_1246"));
+        assert!(content.contains("\"workdir\": \"src\""));
+        assert!(content.contains("\"yield_time_ms\": 1000"));
+        assert!(content.contains("\"max_output_tokens\": 1200"));
     }
 }

@@ -725,7 +725,7 @@ fn command_execution_documents(storage: &AppStorage) -> Result<Vec<MemoryDocumen
         match record.tool_name.as_str() {
             "ExecCommand" => {
                 if let Some(cmd) = record.input.get("cmd").and_then(Value::as_str) {
-                    documents.push(command_receipt_document(&record, None, cmd));
+                    documents.push(command_receipt_document(&record, None, None, cmd));
                 }
             }
             "ExecCommandBatch" => {
@@ -735,6 +735,7 @@ fn command_execution_documents(storage: &AppStorage) -> Result<Vec<MemoryDocumen
                             documents.push(command_receipt_document(
                                 &record,
                                 Some(offset + 1),
+                                Some(item),
                                 cmd,
                             ));
                         }
@@ -750,6 +751,7 @@ fn command_execution_documents(storage: &AppStorage) -> Result<Vec<MemoryDocumen
 fn command_receipt_document(
     record: &ToolExecutionRecord,
     batch_item_index: Option<usize>,
+    batch_item_input: Option<&Value>,
     cmd: &str,
 ) -> MemoryDocument {
     let cmd_digest = command_digest(cmd);
@@ -759,9 +761,21 @@ fn command_receipt_document(
         None => format!("{} command receipt", record.tool_name),
     };
     let preview = command_preview(cmd);
+    let input_json =
+        serde_json::to_string_pretty(&record.input).unwrap_or_else(|_| record.input.to_string());
+    let batch_item_input = batch_item_input
+        .map(|value| serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()));
     let body = format!(
-        "tool_execution_id: {}\ntool_name: {}\ncmd_digest: {}\ncmd:\n{}",
-        record.id, record.tool_name, cmd_digest, cmd
+        "tool_execution_id: {}\ntool_name: {}\ncmd_digest: {}\ninput_json:\n{}\n{}cmd:\n{}",
+        record.id,
+        record.tool_name,
+        cmd_digest,
+        input_json,
+        batch_item_input
+            .as_deref()
+            .map(|value| format!("batch_item_input_json:\n{value}\n"))
+            .unwrap_or_default(),
+        cmd
     );
     MemoryDocument {
         source_ref,
