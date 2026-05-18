@@ -1,0 +1,38 @@
+schema_version: 1
+task_id: holon-1256-command-task-identity
+repo:
+  name: holon-run/holon
+  local_path: /Users/jolestar/opensource/src/github.com/holon-run/holon
+issue:
+  number: 1256
+  title: "Expose command identity in TaskList and TaskStatus"
+base:
+  branch: main
+  sha: 8800a336b9ba0eff76650b6fb2e02063d314a117
+benchmark:
+  mode: live
+task:
+  kind: implementation
+verification:
+  commands:
+    - "cargo test --quiet task"
+    - "cargo test --quiet --workspace"
+evaluation:
+  summary: |
+    TaskList and TaskStatus expose command identity for command_task records so
+    agents can compare active background commands without relying on summaries
+    or cmd_preview. The projection should include full cmd, digest, resolved
+    workdir, shell, login, tty, and promoted_from_exec_command where available,
+    while preserving compact behavior for non-command tasks.
+  expected_outcome: change_required
+  scope_policy: soft
+  allowed_paths: []
+  forbidden_paths: []
+budget:
+  max_minutes: 90
+  max_operator_followups: 0
+review:
+  mode: none
+metadata:
+  difficulty: medium
+  benchmark_group: command-task-coordination-2026-05-18

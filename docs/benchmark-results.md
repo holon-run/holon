@@ -1037,3 +1037,117 @@ Codex PR #1250 is a useful comparison artifact and has stronger custom recovery
 hints for `ExecCommand`, especially `task_handle`, but those improvements should
 be considered separately if we want better bespoke model-facing errors. They are
 not necessary for the core #1244 contract fix.
+
+## `#1256`: Command Task Identity Projection Benchmark
+
+Run label:
+
+- `.benchmark-results/command-task-identity-2026-05-18-1256-r1`
+
+Task:
+
+- Issue: [#1256](https://github.com/holon-run/holon/issues/1256)
+- Goal: expose full command identity on agent-facing `TaskList` and
+  `TaskStatus` projections for `command_task`.
+- Model: `openai-codex/gpt-5.3-codex-spark`
+
+Raw benchmark results:
+
+| Runner | PR | Draft | Verify | Changed Files | Additions | Deletions | Duration | Input Tokens | Cached/Read Input | Output Tokens | Rounds |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Holon | [#1258](https://github.com/holon-run/holon/pull/1258) | yes | fail | 6 | 124 | 6 | 616.1s | 2,584,038 | 2,109,952 | 14,761 | 55 provider rounds |
+| Codex | [#1259](https://github.com/holon-run/holon/pull/1259) | yes | fail | 5 | 124 | 18 | 1,292.6s | 9,407,166 | n/a | 33,909 | 1 CLI turn |
+
+Changed files:
+
+- Holon: `docs/runtime-spec.md`, `src/runtime/command_task.rs`,
+  `src/runtime/tasks.rs`, `src/types.rs`, `tests/runtime_tasks.rs`,
+  `tests/support/runtime_tasks.rs`
+- Codex: `docs/runtime-spec.md`, `src/runtime/command_task.rs`,
+  `src/runtime/tasks.rs`, `src/runtime/tests/agent_and_tools.rs`,
+  `src/types.rs`
+
+### Implementation Comparison
+
+Both implementations add the core behavior requested by #1256:
+
+- persist `cmd_digest` in command task detail
+- expose `cmd`, `cmd_digest`, `workdir`, `shell`, `login`, and `tty` in
+  `TaskStatus.task.command`
+- expose a command projection in `TaskList` entries for `command_task`
+- keep non-command task entries compact via an absent optional `command` field
+- document that `cmd_preview` is not the agent-facing identity source
+
+The Holon implementation is much cheaper and faster in this run:
+
+- 2.58M input tokens versus Codex 9.41M
+- 14.8K output tokens versus Codex 33.9K
+- about 10.3 minutes versus about 21.5 minutes
+- 51 tool calls versus Codex 124
+
+However, the Codex implementation is cleaner as the PR to keep:
+
+- it extracts `CommandTaskStatusSnapshot::from_task_record` and reuses it from
+  both `TaskList` and `TaskStatus`
+- it keeps the command projection construction local to the command projection
+  type rather than routing `TaskList` through `TaskStatusSnapshot`
+- it uses existing runtime unit tests plus a type-level projection test, so the
+  behavior is covered close to the projection boundary
+- its PR body is already a normal implementation PR with `Closes #1256`
+
+The Holon implementation is valid enough as a benchmark result, but the PR is
+less polished:
+
+- PR body is still benchmark boilerplate
+- the final agent summary only mentions a late test type-fix, not the full
+  issue implementation
+- the `TaskList` implementation obtains the command projection via
+  `TaskStatusSnapshot::from_task_record(&task).command`, which works but is a
+  less direct boundary than the Codex helper
+
+### Verification Notes
+
+Both raw benchmark artifacts report failed verification.
+
+Holon:
+
+- `cargo test --quiet task` exited with code `1` without useful diagnostic
+  output in the benchmark verify log
+- `cargo test --quiet --workspace` later failed in existing
+  `runtime_compaction` tests:
+  - `preview_prompt_after_compaction_keeps_work_item_plan_and_pending_work_visible`
+  - `contentful_wake_hint_after_compaction_keeps_active_work_truth`
+- GitHub CI initially failed only at `cargo fmt --check`
+
+Codex:
+
+- focused task tests passed in the raw artifact:
+  - `cargo test --quiet task`
+  - agent-run targeted projection tests
+- `cargo test --quiet --workspace` failed in an unrelated
+  `agent_template::tests::initialize_agent_home_fails_closed_on_invalid_skill_ref`
+  assertion
+- GitHub CI initially failed only at `cargo fmt --check`
+- after selection, a follow-up formatting commit was pushed to #1259:
+  `2fea61e style: format command identity test`
+
+One benchmark-framework observation: the Codex runner artifact records
+`pr_status = skipped_no_changes`, but the agent itself had already created
+[#1259](https://github.com/holon-run/holon/pull/1259). Treat #1259 as the real
+Codex PR for this run.
+
+### Recommendation
+
+Prefer keeping **Codex PR #1259** as the official PR.
+
+Reasons:
+
+- better projection boundary via a shared `CommandTaskStatusSnapshot` builder
+- cleaner PR body and issue linkage
+- simpler changed-file set
+- focused task tests passed before the unrelated workspace verification failure
+- CI failure was a trivial formatting issue and was fixed after selection
+
+Close **Holon PR #1258** as superseded by #1259. Holon had the better token and
+runtime profile in this benchmark, so this run is still a positive signal for
+Holon execution efficiency, but #1259 is the cleaner code review artifact.
