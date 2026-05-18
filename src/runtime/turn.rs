@@ -690,9 +690,9 @@ fn command_recap_receipt(call: &ToolCall) -> Option<String> {
         "ExecCommand" => {
             let cmd = call.input.get("cmd").and_then(Value::as_str)?;
             Some(format!(
-                "ExecCommand cmd_digest={} cmd_preview={}",
-                command_digest(cmd),
-                command_preview(cmd)
+                "ExecCommand tool_call_id={} cmd_digest={}",
+                call.id,
+                command_digest(cmd)
             ))
         }
         "ExecCommandBatch" => {
@@ -703,14 +703,19 @@ fn command_recap_receipt(call: &ToolCall) -> Option<String> {
                 .filter_map(|(offset, item)| {
                     let cmd = item.get("cmd").and_then(Value::as_str)?;
                     Some(format!(
-                        "item={} cmd_digest={} cmd_preview={}",
+                        "item={} cmd_digest={}",
                         offset + 1,
-                        command_digest(cmd),
-                        command_preview(cmd)
+                        command_digest(cmd)
                     ))
                 })
                 .collect::<Vec<_>>();
-            (!refs.is_empty()).then(|| format!("ExecCommandBatch {}", refs.join(" | ")))
+            (!refs.is_empty()).then(|| {
+                format!(
+                    "ExecCommandBatch tool_call_id={} {}",
+                    call.id,
+                    refs.join(" | ")
+                )
+            })
         }
         _ => None,
     }
@@ -3157,8 +3162,9 @@ mod tests {
         let recap = build_round_recap_line(&round);
 
         assert!(recap.contains("recoverable_command_inputs=[ExecCommand"));
+        assert!(recap.contains("tool_call_id=call_3"));
         assert!(recap.contains("cmd_digest="));
-        assert!(recap.contains("[omitted: command contains heredoc or inline script]"));
+        assert!(!recap.contains("cmd_preview="));
         assert!(!recap.contains("turn_recap_hidden_1246"));
     }
 
@@ -3179,9 +3185,10 @@ mod tests {
         let recap = build_round_recap_line(&round);
 
         assert!(recap.contains("recoverable_command_inputs=[ExecCommandBatch"));
+        assert!(recap.contains("tool_call_id=call_4"));
         assert!(recap.contains("item=1 cmd_digest="));
         assert!(recap.contains("item=2 cmd_digest="));
-        assert!(recap.contains("[omitted: command contains heredoc or inline script]"));
+        assert!(!recap.contains("cmd_preview="));
         assert!(!recap.contains("turn_batch_hidden_1246"));
     }
 
