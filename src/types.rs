@@ -2188,27 +2188,76 @@ pub struct CommandTaskStatusSnapshot {
 
 impl CommandTaskStatusSnapshot {
     pub(crate) fn from_task_record(task: &TaskRecord) -> Option<Self> {
+        Self::from_task_record_with_runtime_fields(task, true)
+    }
+
+    pub(crate) fn identity_from_task_record(task: &TaskRecord) -> Option<Self> {
+        Self::from_task_record_with_runtime_fields(task, false)
+    }
+
+    fn from_task_record_with_runtime_fields(
+        task: &TaskRecord,
+        include_runtime_fields: bool,
+    ) -> Option<Self> {
         if task.kind != TaskKind::CommandTask {
             return None;
         }
 
+        let recovery_command = match task.recovery.as_ref() {
+            Some(TaskRecoverySpec::CommandTask {
+                spec,
+                promoted_from_exec_command,
+                ..
+            }) => Some((spec, *promoted_from_exec_command)),
+            _ => None,
+        };
+
+        let cmd = task_detail_string(&task.detail, "cmd")
+            .or_else(|| recovery_command.map(|(spec, _)| spec.cmd.clone()));
+        let cmd_digest = task_detail_string(&task.detail, "cmd_digest").or_else(|| {
+            cmd.as_ref()
+                .map(|cmd| crate::tool::helpers::command_digest(cmd))
+        });
+        let workdir = task_detail_string(&task.detail, "workdir").or_else(|| {
+            recovery_command.and_then(|(spec, _)| spec.workdir.as_ref().map(ToString::to_string))
+        });
+        let shell = task_detail_string(&task.detail, "shell").or_else(|| {
+            recovery_command.and_then(|(spec, _)| spec.shell.as_ref().map(ToString::to_string))
+        });
+        let login = task_detail_bool(&task.detail, "login")
+            .or_else(|| recovery_command.map(|(spec, _)| spec.login));
+        let tty = task_detail_bool(&task.detail, "tty")
+            .or_else(|| recovery_command.map(|(spec, _)| spec.tty));
+        let promoted_from_exec_command =
+            task_detail_bool(&task.detail, "promoted_from_exec_command")
+                .or_else(|| recovery_command.map(|(_, promoted)| promoted));
+
         Some(Self {
-            cmd: task_detail_string(&task.detail, "cmd"),
-            cmd_digest: task_detail_string(&task.detail, "cmd_digest"),
-            workdir: task_detail_string(&task.detail, "workdir"),
-            shell: task_detail_string(&task.detail, "shell"),
-            login: task_detail_bool(&task.detail, "login"),
-            tty: task_detail_bool(&task.detail, "tty"),
-            output_path: task_detail_string(&task.detail, "output_path"),
-            result_summary: task_detail_string(&task.detail, "output_summary"),
-            exit_status: task_detail_i32(&task.detail, "exit_status"),
-            terminal_reentry: task.terminal_reentry().then_some(true),
-            promoted_from_exec_command: task_detail_bool(
-                &task.detail,
-                "promoted_from_exec_command",
-            ),
-            accepts_input: task_detail_bool(&task.detail, "accepts_input"),
-            input_target: task_detail_string(&task.detail, "input_target"),
+            cmd,
+            cmd_digest,
+            workdir,
+            shell,
+            login,
+            tty,
+            output_path: include_runtime_fields
+                .then(|| task_detail_string(&task.detail, "output_path"))
+                .flatten(),
+            result_summary: include_runtime_fields
+                .then(|| task_detail_string(&task.detail, "output_summary"))
+                .flatten(),
+            exit_status: include_runtime_fields
+                .then(|| task_detail_i32(&task.detail, "exit_status"))
+                .flatten(),
+            terminal_reentry: include_runtime_fields
+                .then(|| task.terminal_reentry().then_some(true))
+                .flatten(),
+            promoted_from_exec_command,
+            accepts_input: include_runtime_fields
+                .then(|| task_detail_bool(&task.detail, "accepts_input"))
+                .flatten(),
+            input_target: include_runtime_fields
+                .then(|| task_detail_string(&task.detail, "input_target"))
+                .flatten(),
         })
     }
 }
@@ -3733,7 +3782,7 @@ mod tests {
             summary: Some("check git".into()),
             detail: Some(serde_json::json!({
                 "cmd": cmd,
-                "cmd_digest": digest,
+                "cmd_digest": digest.clone(),
                 "workdir": "/tmp/repo",
                 "shell": "/bin/bash",
                 "login": true,
@@ -3771,6 +3820,68 @@ mod tests {
             command.output_path.as_deref(),
             Some("/tmp/command-output.txt")
         );
+    }
+
+    #[test]
+    fn command_snapshot_falls_back_to_recovery_identity() {
+        let cmd = "cargo test --quiet";
+        let task = TaskRecord {
+            id: "task-command".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("run tests".into()),
+            detail: Some(serde_json::json!({
+                "output_summary": "still running"
+            })),
+            recovery: Some(TaskRecoverySpec::CommandTask {
+                summary: "run tests".into(),
+                spec: CommandTaskSpec {
+                    cmd: cmd.into(),
+                    workdir: Some("/tmp/repo".into()),
+                    shell: Some("/bin/zsh".into()),
+                    login: false,
+                    tty: true,
+                    yield_time_ms: 1_000,
+                    max_output_tokens: None,
+                    accepts_input: false,
+                    terminal_reentry: false,
+                },
+                trust: TrustLevel::TrustedOperator,
+                promoted_from_exec_command: true,
+            }),
+        };
+
+        let snapshot = TaskStatusSnapshot::from_task_record(&task);
+        let command = snapshot.command.expect("command task snapshot");
+
+        assert_eq!(command.cmd.as_deref(), Some(cmd));
+        assert_eq!(
+            command.cmd_digest,
+            Some(crate::tool::helpers::command_digest(cmd))
+        );
+        assert_eq!(command.workdir.as_deref(), Some("/tmp/repo"));
+        assert_eq!(command.shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(command.login, Some(false));
+        assert_eq!(command.tty, Some(true));
+        assert_eq!(command.promoted_from_exec_command, Some(true));
+        assert_eq!(command.result_summary.as_deref(), Some("still running"));
+
+        let list_command =
+            CommandTaskStatusSnapshot::identity_from_task_record(&task).expect("list projection");
+        assert_eq!(list_command.cmd.as_deref(), Some(cmd));
+        assert_eq!(
+            list_command.cmd_digest,
+            Some(crate::tool::helpers::command_digest(cmd))
+        );
+        assert_eq!(list_command.promoted_from_exec_command, Some(true));
+        assert_eq!(list_command.result_summary, None);
+        assert_eq!(list_command.output_path, None);
+        assert_eq!(list_command.exit_status, None);
     }
 
     #[test]

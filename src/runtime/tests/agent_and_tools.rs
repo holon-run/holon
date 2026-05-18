@@ -848,6 +848,7 @@ async fn latest_task_list_entries_return_compact_projection() {
                 "shell": "/bin/bash",
                 "login": false,
                 "output_path": "/tmp/output.log",
+                "output_summary": "large output summary should not appear in TaskList",
                 "tty": false,
                 "promoted_from_exec_command": false,
             })),
@@ -892,7 +893,8 @@ async fn latest_task_list_entries_return_compact_projection() {
     assert_eq!(command.shell.as_deref(), Some("/bin/bash"));
     assert_eq!(command.login, Some(false));
     assert_eq!(command.tty, Some(false));
-    assert_eq!(command.output_path.as_deref(), Some("/tmp/output.log"));
+    assert_eq!(command.output_path, None);
+    assert_eq!(command.result_summary, None);
 }
 
 #[tokio::test]

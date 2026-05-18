@@ -1148,7 +1148,7 @@ impl RuntimeHandle {
             .into_iter()
             .map(|task| {
                 let wait_policy = task.wait_policy();
-                let command = CommandTaskStatusSnapshot::from_task_record(&task);
+                let command = CommandTaskStatusSnapshot::identity_from_task_record(&task);
                 TaskListEntry {
                     id: task.id,
                     kind: task.kind.as_str().to_string(),
