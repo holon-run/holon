@@ -365,10 +365,10 @@ mod tests {
             workdir: None,
             shell: None,
             login: None,
+            yield_time_ms: None,
             max_output_tokens: None,
             tty: None,
             accepts_input: Some(true),
-            yield_time_ms: None,
         };
         let error = rejected_item_error(&item).expect("accepts_input should be rejected");
         assert_eq!(error.kind, "unsupported_batch_command_field");
