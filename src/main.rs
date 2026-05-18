@@ -118,8 +118,6 @@ enum Commands {
         #[arg(long)]
         max_output_tokens: Option<u64>,
         #[arg(long)]
-        continue_on_result: bool,
-        #[arg(long)]
         agent: Option<String>,
     },
     Timer {
@@ -604,7 +602,6 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
             tty,
             yield_time_ms,
             max_output_tokens,
-            continue_on_result,
             agent,
         } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
@@ -621,7 +618,6 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
                     yield_time_ms,
                     max_output_tokens,
                     accepts_input: Some(false),
-                    continue_on_result: Some(continue_on_result),
                     trust: Some(TrustLevel::TrustedOperator),
                 },
             )

@@ -14,6 +14,7 @@ macro_rules! http_async_tests {
 http_async_tests!(
     create_command_task_route_rejects_legacy_kind_field,
     create_task_route_rejects_unknown_prompt_field,
+    create_command_task_route_rejects_continue_on_result_field,
     create_command_task_route_no_longer_denies_integration_trust,
     create_command_task_route_accepts_command_request,
     tasks_and_state_routes_return_active_latest_tasks_only,

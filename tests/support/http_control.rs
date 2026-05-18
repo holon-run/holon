@@ -1042,7 +1042,7 @@ pub async fn runtime_status_route_reports_waiting_activity_summary() -> Result<(
                 yield_time_ms: 10,
                 max_output_tokens: None,
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )

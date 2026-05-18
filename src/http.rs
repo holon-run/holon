@@ -474,7 +474,6 @@ pub struct CreateCommandTaskRequest {
     pub yield_time_ms: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub accepts_input: Option<bool>,
-    pub continue_on_result: Option<bool>,
     pub trust: Option<TrustLevel>,
 }
 
@@ -1673,7 +1672,7 @@ pub async fn create_command_task(
                 yield_time_ms: request.yield_time_ms.unwrap_or(10_000),
                 max_output_tokens: request.max_output_tokens,
                 accepts_input: request.accepts_input.unwrap_or(false),
-                continue_on_result: request.continue_on_result.unwrap_or(false),
+                terminal_reentry: false,
             },
             effective_trust.clone(),
         )

@@ -1184,8 +1184,7 @@ fn command_task_detail(
         "tty": resolved.spec.tty,
         "yield_time_ms": resolved.spec.yield_time_ms,
         "max_output_tokens": resolved.spec.max_output_tokens,
-        "continue_on_result": resolved.spec.continue_on_result,
-        "terminal_reentry": resolved.spec.continue_on_result,
+        "terminal_reentry": resolved.spec.terminal_reentry,
         "promoted_from_exec_command": promoted_from_exec_command,
         "accepts_input": resolved.spec.accepts_input && !terminal_snapshot_ready,
         "input_target": if resolved.spec.accepts_input && !terminal_snapshot_ready {
@@ -1376,7 +1375,7 @@ mod tests {
         (home, workspace, runtime)
     }
 
-    fn command_spec(accepts_input: bool, continue_on_result: bool) -> CommandTaskSpec {
+    fn command_spec(accepts_input: bool, terminal_reentry: bool) -> CommandTaskSpec {
         CommandTaskSpec {
             cmd: "fake command".into(),
             workdir: None,
@@ -1386,7 +1385,7 @@ mod tests {
             yield_time_ms: 10,
             max_output_tokens: None,
             accepts_input,
-            continue_on_result,
+            terminal_reentry,
         }
     }
 
@@ -1428,9 +1427,9 @@ mod tests {
         summary: &str,
         resolved: &ResolvedCommandTask,
         accepts_input: bool,
-        continue_on_result: bool,
+        terminal_reentry: bool,
     ) -> TaskRecord {
-        let spec = command_spec(accepts_input, continue_on_result);
+        let spec = command_spec(accepts_input, terminal_reentry);
         TaskRecord {
             id: id.into(),
             agent_id: "default".into(),

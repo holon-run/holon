@@ -88,6 +88,28 @@ pub async fn create_task_route_rejects_unknown_prompt_field() -> Result<()> {
     Ok(())
 }
 
+pub async fn create_command_task_route_rejects_continue_on_result_field() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!("{base}/control/agents/default/tasks"))
+        .json(&serde_json::json!({
+            "summary": "run route command",
+            "cmd": "printf route_command_ok",
+            "continue_on_result": true
+        }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body = response.text().await?;
+    assert!(body.contains("unknown field `continue_on_result`"));
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn create_command_task_route_no_longer_denies_integration_trust() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();

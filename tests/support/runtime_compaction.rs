@@ -261,7 +261,7 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(128),
                 accepts_input: false,
-                continue_on_result: true,
+                terminal_reentry: true,
             },
             TrustLevel::TrustedOperator,
         )
@@ -891,7 +891,7 @@ pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artif
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(24),
                 accepts_input: false,
-                continue_on_result: true,
+                terminal_reentry: true,
             },
             TrustLevel::TrustedOperator,
         )
