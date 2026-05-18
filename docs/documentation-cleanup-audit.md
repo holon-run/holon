@@ -108,7 +108,6 @@ implementation specs, comparison references, or review artifacts.
 | `docs/local-operator-troubleshooting.md` | Operational guide, not architecture. |
 | `docs/agentinbox-dogfood-runbook.md` | Operational runbook for real integration dogfooding. |
 | `docs/agentinbox-wake-hint-quickstart.md` | Operational quickstart. Keep, but ensure External Trigger naming remains current. |
-| `docs/test-coverage-review.md` | Test planning/review artifact. Keep if actively used. |
 | `docs/benchmark-guardrails.md` | Benchmark policy. Keep. |
 | `docs/benchmark-plan.md` | Keep if still driving benchmark work; otherwise archive after current benchmark cycle. |
 | `docs/benchmark-results.md` | Historical results. Keep or move to a benchmark archive later. |
