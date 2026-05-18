@@ -365,11 +365,10 @@ mod tests {
             workdir: None,
             shell: None,
             login: None,
-            yield_time_ms: None,
             max_output_tokens: None,
             tty: None,
             accepts_input: Some(true),
-            continue_on_result: None,
+            yield_time_ms: None,
         };
         let error = rejected_item_error(&item).expect("accepts_input should be rejected");
         assert_eq!(error.kind, "unsupported_batch_command_field");
@@ -378,24 +377,6 @@ mod tests {
             .recovery_hint
             .as_deref()
             .is_some_and(|hint| hint == "call ExecCommand directly when you need `accepts_input`"));
-
-        let item = ExecCommandBatchItemArgs {
-            cmd: "python -i".into(),
-            workdir: None,
-            shell: None,
-            login: None,
-            yield_time_ms: None,
-            max_output_tokens: None,
-            tty: None,
-            accepts_input: None,
-            continue_on_result: Some(true),
-        };
-        let error = rejected_item_error(&item).expect("continue_on_result should be rejected");
-        assert_eq!(error.kind, "unsupported_batch_command_field");
-        assert!(error.message.contains("continue_on_result"));
-        assert!(error.recovery_hint.as_deref().is_some_and(
-            |hint| hint == "call ExecCommand directly when you need `continue_on_result`"
-        ));
     }
 
     #[test]
