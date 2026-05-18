@@ -16,7 +16,7 @@ use crate::{
         RunningProcessExitStatus, StdioSpec, StopSignal,
     },
     tool::helpers::{
-        command_cost_diagnostics, command_preview, effective_tool_output_tokens,
+        command_cost_diagnostics, command_digest, command_preview, effective_tool_output_tokens,
         output_char_budget, truncate_output_to_char_budget, truncate_output_with_flag,
         truncate_text,
     },
@@ -1176,6 +1176,7 @@ fn command_task_detail(
 ) -> serde_json::Value {
     serde_json::json!({
         "cmd": resolved.spec.cmd,
+        "cmd_digest": command_digest(&resolved.spec.cmd),
         "wait_policy": "background",
         "workdir": resolved.workdir,
         "execution": resolved.execution,

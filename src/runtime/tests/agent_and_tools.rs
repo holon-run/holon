@@ -843,7 +843,14 @@ async fn latest_task_list_entries_return_compact_projection() {
             detail: Some(serde_json::json!({
                 "wait_policy": "blocking",
                 "cmd": "tail -f app.log",
+                "cmd_digest": crate::tool::helpers::command_digest("tail -f app.log"),
+                "workdir": "/tmp/workspace",
+                "shell": "/bin/bash",
+                "login": false,
                 "output_path": "/tmp/output.log",
+                "output_summary": "large output summary should not appear in TaskList",
+                "tty": false,
+                "promoted_from_exec_command": false,
             })),
             recovery: Some(TaskRecoverySpec::CommandTask {
                 summary: "watch logs".into(),
@@ -873,6 +880,21 @@ async fn latest_task_list_entries_return_compact_projection() {
         entries[0].wait_policy,
         crate::types::TaskWaitPolicy::Blocking
     );
+    let command = entries[0]
+        .command
+        .as_ref()
+        .expect("command projection should be present for command_task");
+    assert_eq!(command.cmd.as_deref(), Some("tail -f app.log"));
+    assert_eq!(
+        command.cmd_digest,
+        Some(crate::tool::helpers::command_digest("tail -f app.log"))
+    );
+    assert_eq!(command.workdir.as_deref(), Some("/tmp/workspace"));
+    assert_eq!(command.shell.as_deref(), Some("/bin/bash"));
+    assert_eq!(command.login, Some(false));
+    assert_eq!(command.tty, Some(false));
+    assert_eq!(command.output_path, None);
+    assert_eq!(command.result_summary, None);
 }
 
 #[tokio::test]
