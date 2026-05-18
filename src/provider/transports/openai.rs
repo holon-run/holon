@@ -90,14 +90,6 @@ pub(crate) struct OpenAiCompactionPolicy {
     pub(crate) trigger_input_tokens: u64,
 }
 
-impl Default for OpenAiCompactionPolicy {
-    fn default() -> Self {
-        Self {
-            trigger_input_tokens: u64::MAX,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 struct OpenAiHttpTrace {
     home_dir: PathBuf,
@@ -405,7 +397,7 @@ struct OpenAiProviderWindow {
     items: Vec<Value>,
     append_match_items: Vec<Value>,
     latest_compaction_index: Option<usize>,
-    total_usage_tokens: u64,
+    latest_input_tokens: u64,
     generation: u64,
 }
 
@@ -480,7 +472,7 @@ impl OpenAiProvider {
             model,
             max_output_tokens,
             trace_home_dir,
-            OpenAiCompactionPolicy::default(),
+            openai_compaction_policy_for_model(ProviderId::openai(), model, max_output_tokens),
         )
     }
 
@@ -550,7 +542,11 @@ impl OpenAiCodexProvider {
             model,
             max_output_tokens,
             trace_home_dir,
-            OpenAiCompactionPolicy::default(),
+            openai_compaction_policy_for_model(
+                ProviderId::openai_codex(),
+                model,
+                max_output_tokens,
+            ),
         )
     }
 
@@ -607,6 +603,23 @@ fn openai_compaction_policy_from_config(
         config.validated_unknown_model_fallback.as_ref(),
         &base_context_config,
         config.runtime_max_output_tokens,
+    );
+    OpenAiCompactionPolicy {
+        trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
+    }
+}
+
+fn openai_compaction_policy_for_model(
+    provider: ProviderId,
+    model: &str,
+    max_output_tokens: u32,
+) -> OpenAiCompactionPolicy {
+    let policy = BuiltInModelCatalog::default().resolve_policy(
+        &ModelRef::new(provider, model),
+        &Default::default(),
+        None,
+        &ContextConfig::default(),
+        max_output_tokens,
     );
     OpenAiCompactionPolicy {
         trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
@@ -1827,20 +1840,7 @@ fn update_openai_continuation(
         return;
     };
     let mut state = lock_openai_continuation(continuation);
-    let previous_total_usage_tokens = state
-        .windows
-        .get(&scope)
-        .map(|window| window.total_usage_tokens)
-        .unwrap_or_default();
-    let previous_total_usage_tokens = if latest_openai_compaction_index(&provider_input).is_some() {
-        0
-    } else {
-        previous_total_usage_tokens
-    };
-    let latest_usage_tokens = parsed
-        .response
-        .input_tokens
-        .saturating_add(parsed.response.output_tokens);
+    let latest_input_tokens = parsed.response.input_tokens;
     let next = match (parsed.response_id.as_ref(), parsed.output_items.is_empty()) {
         (Some(response_id), false) => {
             state.next_generation = state.next_generation.saturating_add(1);
@@ -1863,7 +1863,7 @@ fn update_openai_continuation(
                 items,
                 append_match_items,
                 generation: state.next_generation,
-                total_usage_tokens: previous_total_usage_tokens.saturating_add(latest_usage_tokens),
+                latest_input_tokens,
             })
         }
         _ => None,
@@ -2101,7 +2101,7 @@ async fn maybe_compact_openai_provider_window(
                 items,
                 append_match_items: window.append_match_items,
                 latest_compaction_index,
-                total_usage_tokens: 0,
+                latest_input_tokens: 0,
                 generation,
             },
         );
@@ -2155,7 +2155,7 @@ async fn maybe_compact_openai_request_plan(
         latest_compaction_index: latest_openai_compaction_index(&compactable_items),
         items: compactable_items,
         append_match_items: plan.append_match_input.clone(),
-        total_usage_tokens: previous.total_usage_tokens,
+        latest_input_tokens: previous.latest_input_tokens,
         generation: previous.generation,
     };
     let Some(trigger) =
@@ -2457,12 +2457,14 @@ fn openai_compaction_trigger_for_window(
     request_shape: &OpenAiRequestShape,
     policy: OpenAiCompactionPolicy,
 ) -> Option<OpenAiCompactionTrigger> {
-    if window.total_usage_tokens > 0 && window.total_usage_tokens >= policy.trigger_input_tokens {
-        return Some(OpenAiCompactionTrigger {
-            reason: "token_budget_pressure",
-            estimated_input_tokens: None,
-            trigger_input_tokens: policy.trigger_input_tokens,
-        });
+    if window.latest_input_tokens > 0 {
+        return (window.latest_input_tokens >= policy.trigger_input_tokens).then_some(
+            OpenAiCompactionTrigger {
+                reason: "token_budget_pressure",
+                estimated_input_tokens: None,
+                trigger_input_tokens: policy.trigger_input_tokens,
+            },
+        );
     }
 
     let estimated = estimate_openai_provider_payload_tokens(
@@ -2481,23 +2483,13 @@ fn openai_compaction_trigger_for_request_plan(
     plan: &OpenAiRequestPlan,
     policy: OpenAiCompactionPolicy,
 ) -> Option<OpenAiCompactionTrigger> {
-    let estimated_incremental_input =
-        estimate_openai_provider_payload_tokens(&plan.request_shape, &plan.provider_input);
-    if previous.total_usage_tokens > 0
-        && previous
-            .total_usage_tokens
-            .saturating_add(estimated_incremental_input)
-            >= policy.trigger_input_tokens
-    {
-        return Some(OpenAiCompactionTrigger {
-            reason: "token_budget_pressure",
-            estimated_input_tokens: Some(estimated_incremental_input),
-            trigger_input_tokens: policy.trigger_input_tokens,
-        });
-    }
-
     let mut compactable_items = previous.items.clone();
     compactable_items.extend(plan.provider_input.clone());
+    if previous.latest_input_tokens == 0
+        && latest_openai_compaction_index(&compactable_items).is_some()
+    {
+        return None;
+    }
     let estimated = estimate_openai_provider_payload_tokens(
         &plan.request_shape,
         openai_items_after_latest_compaction(&compactable_items),
@@ -2510,10 +2502,15 @@ fn openai_compaction_trigger_for_request_plan(
 }
 
 fn estimate_openai_provider_payload_tokens(
-    _request_shape: &OpenAiRequestShape,
+    request_shape: &OpenAiRequestShape,
     input_items: &[Value],
 ) -> u64 {
-    estimate_json_tokens(&Value::Array(input_items.to_vec())) as u64
+    let shape_tokens = estimate_json_tokens(&request_shape.wire_shape);
+    let input_tokens = input_items
+        .iter()
+        .map(estimate_json_tokens)
+        .fold(0usize, usize::saturating_add);
+    shape_tokens.saturating_add(input_tokens).saturating_add(1) as u64
 }
 
 fn openai_items_after_latest_compaction(items: &[Value]) -> &[Value] {
@@ -4382,10 +4379,11 @@ fn unsupported_streaming_transport_error(provider_name: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_openai_responses_request, chat_completions_url, latest_openai_compaction_index,
+        build_openai_responses_request, chat_completions_url, incremental_diagnostics,
+        latest_openai_compaction_index, openai_compaction_trigger_for_request_plan,
         openai_compaction_trigger_for_window, openai_provider_window_compaction_candidate,
         redact_headers, redact_json_secrets, redact_url, sanitize_trace_path_segment,
-        OpenAiCompactionPolicy, OpenAiProviderWindow, OpenAiRequestShape,
+        OpenAiCompactionPolicy, OpenAiProviderWindow, OpenAiRequestPlan, OpenAiRequestShape,
         OpenAiResponsesTransportContract, ToolSchemaContract,
     };
     use crate::provider::{
@@ -4476,7 +4474,7 @@ mod tests {
                 .collect(),
             append_match_items: Vec::new(),
             latest_compaction_index: None,
-            total_usage_tokens: 0,
+            latest_input_tokens: 0,
             generation: 1,
         };
 
@@ -4502,7 +4500,7 @@ mod tests {
             })],
             append_match_items: Vec::new(),
             latest_compaction_index: None,
-            total_usage_tokens: 0,
+            latest_input_tokens: 0,
             generation: 1,
         };
 
@@ -4530,7 +4528,7 @@ mod tests {
             items: vec![json!({ "type": "message", "content": "small" })],
             append_match_items: Vec::new(),
             latest_compaction_index: None,
-            total_usage_tokens: 512,
+            latest_input_tokens: 512,
             generation: 1,
         };
 
@@ -4544,6 +4542,47 @@ mod tests {
         .expect("usage should reach token pressure");
         assert_eq!(trigger.reason, "token_budget_pressure");
         assert_eq!(trigger.estimated_input_tokens, None);
+    }
+
+    #[test]
+    fn openai_compaction_trigger_skips_immediate_compacted_replay_before_usage() {
+        let request_shape = test_request_shape();
+        let previous = OpenAiProviderWindow {
+            response_id: Some("resp_1".into()),
+            request_shape: request_shape.clone(),
+            items: vec![
+                json!({ "type": "compaction", "encrypted_content": "opaque" }),
+                json!({ "type": "message", "content": "recent" }),
+            ],
+            append_match_items: Vec::new(),
+            latest_compaction_index: Some(0),
+            latest_input_tokens: 0,
+            generation: 1,
+        };
+        let plan = OpenAiRequestPlan {
+            body: json!({ "model": "gpt-test", "input": [] }),
+            scope: None,
+            append_match_input: Vec::new(),
+            provider_input: vec![json!({ "type": "message", "content": "continue" })],
+            request_shape,
+            diagnostics: incremental_diagnostics(
+                "provider_window_compacted",
+                "test",
+                None,
+                0,
+                None,
+                None,
+            ),
+        };
+
+        assert!(openai_compaction_trigger_for_request_plan(
+            &previous,
+            &plan,
+            OpenAiCompactionPolicy {
+                trigger_input_tokens: 1,
+            },
+        )
+        .is_none());
     }
 
     fn test_request_shape() -> OpenAiRequestShape {

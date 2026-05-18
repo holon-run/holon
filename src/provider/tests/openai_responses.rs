@@ -17,7 +17,7 @@ fn openai_tool_call_response(response_id: &str) -> Value {
     json!({
         "id": response_id,
         "status": "completed",
-        "usage": { "input_tokens": 3, "output_tokens": 2 },
+        "usage": { "input_tokens": 256, "output_tokens": 2 },
         "output": [{
             "type": "function_call",
             "id": "fc_non_persisted",
@@ -30,10 +30,18 @@ fn openai_tool_call_response(response_id: &str) -> Value {
 }
 
 fn openai_text_response(response_id: &str, text: &str) -> Value {
+    openai_text_response_with_input_tokens(response_id, text, 2)
+}
+
+fn openai_text_response_with_input_tokens(
+    response_id: &str,
+    text: &str,
+    input_tokens: u64,
+) -> Value {
     json!({
         "id": response_id,
         "status": "completed",
-        "usage": { "input_tokens": 2, "output_tokens": 1 },
+        "usage": { "input_tokens": input_tokens, "output_tokens": 1 },
         "output": [{
             "type": "message",
             "id": "msg_non_persisted",
@@ -48,7 +56,7 @@ fn openai_text_response_with_provider_metadata(response_id: &str, text: &str) ->
     json!({
         "id": response_id,
         "status": "completed",
-        "usage": { "input_tokens": 2, "output_tokens": 1 },
+        "usage": { "input_tokens": 256, "output_tokens": 1 },
         "output": [{
             "type": "message",
             "id": "msg_non_persisted",
@@ -78,12 +86,20 @@ fn set_remote_compaction_trigger(config: &mut crate::config::AppConfig, model_re
 }
 
 fn openai_text_sse_response(response_id: &str, text: &str) -> String {
+    openai_text_sse_response_with_input_tokens(response_id, text, 2)
+}
+
+fn openai_text_sse_response_with_input_tokens(
+    response_id: &str,
+    text: &str,
+    input_tokens: u64,
+) -> String {
     format!(
         concat!(
             "event: response.completed\n",
-            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":2,\"output_tokens\":1}},\"output\":[{{\"type\":\"message\",\"id\":\"msg_non_persisted\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{}\"}}]}}]}}}}\n\n"
+            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":{},\"output_tokens\":1}},\"output\":[{{\"type\":\"message\",\"id\":\"msg_non_persisted\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{}\"}}]}}]}}}}\n\n"
         ),
-        response_id, text
+        response_id, input_tokens, text
     )
 }
 
@@ -91,7 +107,7 @@ fn openai_reasoning_and_tool_call_sse_response(response_id: &str) -> String {
     format!(
         concat!(
             "event: response.completed\n",
-            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":10,\"output_tokens\":4}},\"output\":[",
+            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":256,\"output_tokens\":4}},\"output\":[",
             "{{\"type\":\"reasoning\",\"id\":\"rs_non_persisted\",\"encrypted_content\":\"opaque-reasoning\"}},",
             "{{\"type\":\"function_call\",\"id\":\"fc_non_persisted\",\"call_id\":\"exec-1\",\"name\":\"ExecCommand\",\"arguments\":\"{{\\\"cmd\\\":\\\"printf ok\\\"}}\"}}",
             "]}}}}\n\n"
@@ -479,7 +495,7 @@ async fn openai_codex_remote_compact_uses_codex_backend_route_for_legacy_base_ur
                         captured.lock().unwrap().push(body);
                         (
                             [("content-type", "text/event-stream")],
-                            openai_text_sse_response("resp_1", "ready"),
+                            openai_text_sse_response_with_input_tokens("resp_1", "ready", 256),
                         )
                     }
                 }),
@@ -540,7 +556,7 @@ async fn openai_codex_remote_compact_does_not_double_codex_path_for_new_base_url
                 post(|Json(_body): Json<Value>| async {
                     (
                         [("content-type", "text/event-stream")],
-                        openai_text_sse_response("resp_1", "ready"),
+                        openai_text_sse_response_with_input_tokens("resp_1", "ready", 256),
                     )
                 }),
             )
@@ -682,7 +698,9 @@ async fn openai_responses_caches_unsupported_remote_compact_endpoint() {
                     async move {
                         let attempt = attempts.fetch_add(1, Ordering::SeqCst);
                         if attempt == 0 {
-                            Json(openai_text_response("resp_1", "ready"))
+                            Json(openai_text_response_with_input_tokens(
+                                "resp_1", "ready", 256,
+                            ))
                         } else {
                             Json(openai_text_response("resp_2", "done"))
                         }
@@ -756,7 +774,9 @@ async fn openai_responses_reports_non_persisted_compact_item_ids_without_endpoin
                     async move {
                         let attempt = attempts.fetch_add(1, Ordering::SeqCst);
                         if attempt == 0 {
-                            Json(openai_text_response("resp_1", "ready"))
+                            Json(openai_text_response_with_input_tokens(
+                                "resp_1", "ready", 256,
+                            ))
                         } else {
                             Json(openai_text_response("resp_2", "done"))
                         }
@@ -1106,7 +1126,7 @@ async fn openai_responses_compacts_safe_prefix_without_item_count_gate() {
     );
     assert_eq!(
         remote_compaction.trigger_reason.as_deref(),
-        Some("estimated_window_pressure")
+        Some("token_budget_pressure")
     );
     assert_eq!(remote_compaction.trigger_input_tokens, Some(128));
 
@@ -1194,7 +1214,7 @@ async fn openai_responses_replays_compacted_prefix_with_retained_tool_tail() {
     assert_eq!(first_compaction.status, "compacted");
     assert_eq!(
         first_compaction.trigger_reason.as_deref(),
-        Some("estimated_window_pressure")
+        Some("token_budget_pressure")
     );
     assert_eq!(first_compaction.input_items, Some(8));
 

@@ -6,5 +6,8 @@ pub(crate) fn estimate_text_tokens(text: &str) -> usize {
 }
 
 pub(crate) fn estimate_json_tokens(value: &Value) -> usize {
-    estimate_text_tokens(&serde_json::to_string(value).unwrap_or_default())
+    match serde_json::to_string(value) {
+        Ok(json) => estimate_text_tokens(&json),
+        Err(_) => 1,
+    }
 }
