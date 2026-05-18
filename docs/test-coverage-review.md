@@ -1,6 +1,6 @@
 # Holon Core Test Coverage Review
 
-Snapshot date: 2026-04-20
+Snapshot date: 2026-05-18
 
 ## Scope
 
@@ -20,13 +20,18 @@ Current automated test surface is broad:
 
 - 458 test functions total across unit, integration, worktree, HTTP, TUI, and
   live-provider suites
-- heaviest coverage files:
-  - `tests/runtime_flow.rs`: 58 tests
-  - `tests/http_routes.rs`: 49 tests
-  - `src/provider/tests.rs`: 57 tests
-  - `src/runtime.rs`: 45 tests
-  - `src/tui.rs` + `src/tui/projection.rs` + `src/tui_markdown.rs`: 46 tests
-  - `tests/run_once.rs`: 20 tests
+- current concentration areas:
+  - `tests/support/runtime_tasks.rs`
+  - `tests/support/runtime_workspace_worktree.rs`
+  - `tests/support/runtime_providers.rs`
+  - `tests/support/runtime_waiting.rs`
+  - `tests/support/runtime_compaction.rs`
+  - `tests/support/runtime_compaction_providers.rs`
+  - `tests/http_control.rs`
+  - `tests/http_client.rs`
+  - `tests/http_events.rs`
+  - `tests/run_once.rs`
+  - `src/tui.rs` + `src/tui/projection.rs` + `src/tui_markdown.rs`
 
 This means the repo is not test-light. The real issue is that coverage is
 uneven: many high-value runtime contracts are exercised only through large
@@ -50,9 +55,13 @@ place to spend more test effort unless regressions appear:
   - failure briefs
   - wake hints
   - token usage persistence
-  - `tests/runtime_flow.rs`
+  - `tests/runtime_tasks.rs`
+  - `tests/runtime_workspace_worktree.rs`
+  - `tests/runtime_waiting_and_delivery_regressions.rs`
+  - `tests/runtime_waiting_and_reactivation.rs`
+  - `tests/runtime_subagents.rs`
 - HTTP control and status API behavior
-  - `tests/http_routes.rs`
+  - `tests/http_control.rs`
 - `run_once` lifecycle and wait/no-wait semantics
   - `tests/run_once.rs`
 - TUI projection/render behavior on top of runtime events
@@ -104,7 +113,9 @@ Several runtime-core files currently have zero explicit local tests:
 - `src/runtime/worktree.rs`
 
 That does not mean they are uncovered. Many are exercised indirectly through
-`runtime_flow` or `runtime.rs` tests. But it does mean these contracts are not
+current split support suites and integration coverage (for example:
+`tests/support/runtime_tasks.rs`, `tests/support/runtime_workspace_worktree.rs`,
+`tests/runtime_waiting_and_delivery_regressions.rs`, and `tests/runtime_waiting_and_reactivation.rs`). But it does mean these contracts are not
 isolated well enough yet:
 
 - closure decision precedence
@@ -113,6 +124,11 @@ isolated well enough yet:
 - tool-loop edge conditions inside `turn.rs`
 - internal command-task persistence/recovery behavior
 - worktree helper error paths
+
+### Historical Note
+
+- `tests/runtime_flow.rs` was part of the pre-split coverage map and has been removed
+  from `main`; avoid using it as a current ownership reference.
 
 ## Core Risk Areas
 
