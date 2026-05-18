@@ -920,6 +920,29 @@ mod tests {
     }
 
     #[test]
+    fn core_contract_includes_stable_anti_reread_guidance() {
+        let sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("."),
+            &LoadedAgentsMd::default(),
+            &SkillsRuntimeView::default(),
+            &[],
+        );
+        let section = sections
+            .iter()
+            .find(|section| section.name == "core_contract")
+            .expect("core contract section");
+
+        assert!(section
+            .content
+            .contains("Do not re-read files, AGENTS guidance, or command output"));
+        assert!(section
+            .content
+            .contains("unless a concrete changed-state question requires it"));
+    }
+
+    #[test]
     fn system_prompt_includes_context_completion_principle() {
         let sections = build_system_sections(
             &sample_identity(),

@@ -391,6 +391,7 @@ async fn max_output_mutation_tool_call_is_rejected_without_side_effects() {
     assert!(content.contains("complete smaller patch"));
     assert!(content.contains("bounded ExecCommand/scripted rewrite"));
     assert!(content.contains("Inspect only the necessary context"));
+    assert!(!content.contains("inspect the target file before retrying"));
     assert!(content.contains("retryable: true"));
     assert!(content.len() < 800);
 }
