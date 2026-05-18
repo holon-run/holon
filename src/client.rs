@@ -341,10 +341,6 @@ impl LocalClient {
         self.remote.as_ref().map(|remote| remote.base_url.as_str())
     }
 
-    pub async fn list_agents(&self) -> Result<Vec<AgentSummary>> {
-        self.get_json("/agents").await
-    }
-
     pub async fn list_agent_entries(&self) -> Result<Vec<AgentListEntry>> {
         self.get_json("/agents/list").await
     }

@@ -39,8 +39,6 @@ pub struct RuntimeStatusResponse {
     pub startup_surface: Option<RuntimeStartupSurface>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_surface: Option<RuntimeConfigSurface>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub agent_model_overrides: Vec<RuntimeAgentOverrideSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_failure: Option<RuntimeFailureSummary>,
 }
@@ -135,13 +133,6 @@ impl RuntimeConfigSurface {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeAgentOverrideSummary {
-    pub agent_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub override_model: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeActivityState {
@@ -202,7 +193,6 @@ impl RuntimeServiceHandle {
         last_failure: Option<RuntimeFailureSummary>,
         startup_surface: RuntimeStartupSurface,
         runtime_surface: RuntimeConfigSurface,
-        agent_model_overrides: Vec<RuntimeAgentOverrideSummary>,
     ) -> RuntimeStatusResponse {
         RuntimeStatusResponse {
             ok: true,
@@ -215,7 +205,6 @@ impl RuntimeServiceHandle {
             config_fingerprint: self.inner.metadata.config_fingerprint.clone(),
             startup_surface: Some(startup_surface),
             runtime_surface: Some(runtime_surface),
-            agent_model_overrides,
             activity: Some(activity),
             last_failure,
         }

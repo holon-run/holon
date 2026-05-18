@@ -169,18 +169,18 @@ pub async fn generic_webhook_and_multi_agent_listing_work() -> Result<()> {
     assert!(response.status().is_success());
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
-    let agents = client.get(format!("{base}/agents")).send().await?;
+    let agents = client.get(format!("{base}/agents/list")).send().await?;
     let agents_json: serde_json::Value = agents.json().await?;
     assert!(agents_json
         .as_array()
         .unwrap()
         .iter()
-        .any(|item| item["agent"]["id"] == "default"));
+        .any(|item| item["identity"]["agent_id"] == "default"));
     assert!(agents_json
         .as_array()
         .unwrap()
         .iter()
-        .any(|item| item["agent"]["id"] == "alpha"));
+        .any(|item| item["identity"]["agent_id"] == "alpha"));
 
     let alpha = host.get_or_create_agent("alpha").await?;
     let briefs = alpha.recent_briefs(10).await?;

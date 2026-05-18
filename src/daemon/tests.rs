@@ -299,7 +299,6 @@ fn effective_config_mismatch_summary_lists_actionable_differences() {
             control_auth_mode: RuntimeControlAuthMode::Auto,
         }),
         runtime_surface: Some(actual_surface),
-        agent_model_overrides: Vec::new(),
         last_failure: None,
     };
 

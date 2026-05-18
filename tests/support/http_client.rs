@@ -65,7 +65,7 @@ pub async fn local_client_over_unix_socket_can_poll_without_http_fallback() -> R
     let (_host, _socket_path, server) = spawn_unix_server(config.clone()).await?;
     let client = LocalClient::new(config)?;
 
-    let agents = client.list_agents().await?;
+    let agents = client.list_agent_entries().await?;
     assert_eq!(agents.len(), 1);
     assert_eq!(agents[0].identity.agent_id, "default");
 
@@ -141,19 +141,11 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
         );
     }
 
-    let agents_payload: serde_json::Value = client
-        .get(format!("{base}/agents"))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let agent = agents_payload
-        .as_array()
-        .and_then(|entries| entries.first())
-        .expect("agent list should contain default agent");
-    assert!(
-        agent.get("model_availability").is_none(),
-        "/agents must not embed runtime-global model availability"
+    let removed_agents = client.get(format!("{base}/agents")).send().await?;
+    assert_eq!(
+        removed_agents.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "/agents aggregate summary endpoint should not be exposed"
     );
 
     let models_payload: serde_json::Value = client
