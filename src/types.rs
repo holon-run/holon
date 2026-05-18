@@ -3767,7 +3767,10 @@ mod tests {
         assert_eq!(command.shell.as_deref(), Some("/bin/bash"));
         assert_eq!(command.login, Some(true));
         assert_eq!(command.tty, Some(false));
-        assert_eq!(command.output_path.as_deref(), Some("/tmp/command-output.txt"));
+        assert_eq!(
+            command.output_path.as_deref(),
+            Some("/tmp/command-output.txt")
+        );
     }
 
     #[test]
