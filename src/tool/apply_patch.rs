@@ -1185,17 +1185,51 @@ fn find_unique_match(
         return Err(context_not_found(path, needle, lines, hint));
     }
 
-    let mut matches = Vec::new();
-    for start in 0..=lines.len() - needle.len() {
-        if lines[start..start + needle.len()] == *needle {
-            matches.push(start);
+    if let Some((window_start, window_end)) = hint_match_window(lines.len(), needle.len(), hint) {
+        let window_matches = find_exact_matches(lines, needle, window_start, window_end);
+        if window_matches.len() == 1 {
+            return Ok(window_matches[0]);
         }
     }
+
+    let matches = find_exact_matches(lines, needle, 0, lines.len() - needle.len());
     match matches.len() {
         0 => Err(context_not_found(path, needle, lines, hint)),
         1 => Ok(matches[0]),
         _ => Err(ambiguous_context(path, needle, lines, &matches, hint)),
     }
+}
+
+fn hint_match_window(line_count: usize, needle_len: usize, hint: usize) -> Option<(usize, usize)> {
+    if hint == 0 || needle_len > line_count {
+        return None;
+    }
+    let max_start = line_count - needle_len;
+    let hint_index = hint - 1;
+    if hint_index > max_start {
+        return None;
+    }
+
+    let radius = (needle_len * 2).max(20);
+    Some((
+        hint_index.saturating_sub(radius),
+        (hint_index + radius).min(max_start),
+    ))
+}
+
+fn find_exact_matches(
+    lines: &[String],
+    needle: &[String],
+    start: usize,
+    end_inclusive: usize,
+) -> Vec<usize> {
+    let mut matches = Vec::new();
+    for start in start..=end_inclusive {
+        if lines[start..start + needle.len()] == *needle {
+            matches.push(start);
+        }
+    }
+    matches
 }
 
 fn parse_accepted_metadata(line: &str, path: Option<&str>) -> Option<ApplyPatchIgnoredMetadata> {
@@ -1390,25 +1424,54 @@ fn context_not_found(
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let markdown_list_prefix_suspected =
+        suspected_markdown_list_prefix_loss(needle, lines, window_start, window_end);
+    let mut details = serde_json::json!({
+        "path": path,
+        "expected_lines": needle.iter().take(3).cloned().collect::<Vec<_>>().join("\\n"),
+        "nearby_range": {
+            "start": if lines.is_empty() { 0 } else { window_start + 1 },
+            "end": window_end,
+        },
+        "nearby_lines": nearby_lines,
+    });
+    let markdown_list_hint = "If you are editing Markdown list lines, keep the diff prefix separate from the list marker: context ` - item`, deletion `-- item`, addition `+- item`.";
+    let recovery_hint = if markdown_list_prefix_suspected {
+        details["suspected_issue"] =
+            serde_json::Value::String("markdown_list_diff_prefix".to_string());
+        format!(
+            "read the exact target region in {path} and retry with explicit diff prefixes. {markdown_list_hint} Nearby current content:\n{nearby_preview}"
+        )
+    } else {
+        format!(
+            "read the exact target region in {path} and submit a hunk with matching context. Nearby current content:\n{nearby_preview}"
+        )
+    };
 
     anyhow::Error::from(
         ToolError::new(
             "context_not_found",
             format!("hunk context does not match current file: {path}"),
         )
-        .with_details(serde_json::json!({
-            "path": path,
-            "expected_lines": needle.iter().take(3).cloned().collect::<Vec<_>>().join("\\n"),
-            "nearby_range": {
-                "start": if lines.is_empty() { 0 } else { window_start + 1 },
-                "end": window_end,
-            },
-            "nearby_lines": nearby_lines,
-        }))
-        .with_recovery_hint(format!(
-            "read the exact target region in {path} and submit a hunk with matching context. Nearby current content:\n{nearby_preview}"
-        )),
+        .with_details(details)
+        .with_recovery_hint(recovery_hint),
     )
+}
+
+fn suspected_markdown_list_prefix_loss(
+    needle: &[String],
+    lines: &[String],
+    window_start: usize,
+    window_end: usize,
+) -> bool {
+    let nearby = lines.get(window_start..window_end).unwrap_or(&[]);
+    needle.iter().any(|expected| {
+        if !expected.starts_with(' ') {
+            return false;
+        }
+        let candidate = format!("-{expected}");
+        candidate.starts_with("- ") && nearby.iter().any(|line| line == &candidate)
+    })
 }
 
 fn ambiguous_context(
@@ -1927,6 +1990,92 @@ rename to new.txt
         assert_eq!(
             tokio::fs::read_to_string(&file).await.unwrap(),
             "hello\nworld\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_handles_markdown_list_context_line() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.md");
+        tokio::fs::write(&file, "- keep\nold\n").await.unwrap();
+
+        let patch = r#"--- a/sample.md
++++ b/sample.md
+@@ -1,2 +1,2 @@
+ - keep
+-old
++new
+"#;
+
+        apply_patch(dir.path(), patch).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "- keep\nnew\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_handles_markdown_list_deletion_line() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.md");
+        tokio::fs::write(&file, "- remove\nkeep\n").await.unwrap();
+
+        let patch = r#"--- a/sample.md
++++ b/sample.md
+@@ -1,2 +1,1 @@
+-- remove
+ keep
+"#;
+
+        apply_patch(dir.path(), patch).await.unwrap();
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "keep\n");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_handles_markdown_list_addition_line() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.md");
+        tokio::fs::write(&file, "heading\n").await.unwrap();
+
+        let patch = r#"--- a/sample.md
++++ b/sample.md
+@@ -1,1 +1,2 @@
+ heading
++- added
+"#;
+
+        apply_patch(dir.path(), patch).await.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "heading\n- added\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_context_not_found_suggests_markdown_list_prefixes() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.md");
+        tokio::fs::write(&file, "- item\nnext\n").await.unwrap();
+
+        let patch = r#"--- a/sample.md
++++ b/sample.md
+@@ -1,1 +1,1 @@
+- item
++done
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "context_not_found");
+        let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["suspected_issue"], "markdown_list_diff_prefix");
+        let recovery_hint = tool_error.recovery_hint.unwrap();
+        assert!(recovery_hint.contains("context ` - item`"));
+        assert!(recovery_hint.contains("deletion `-- item`"));
+        assert!(recovery_hint.contains("addition `+- item`"));
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "- item\nnext\n"
         );
     }
 
@@ -2450,6 +2599,51 @@ rename to new.txt
             assert!(c["line_number"].is_number());
             assert!(c["distance_from_hint"].is_number());
         }
+    }
+
+    #[tokio::test]
+    async fn apply_patch_uses_line_hint_when_window_has_unique_match() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        let mut lines = vec!["target".to_string()];
+        lines.extend((1..=30).map(|index| format!("filler {index}")));
+        lines.push("target".to_string());
+        tokio::fs::write(&file, lines.join("\n") + "\n")
+            .await
+            .unwrap();
+
+        let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ -32,1 +32,1 @@
+-target
++changed
+"#;
+
+        apply_patch(dir.path(), patch).await.unwrap();
+        let content = tokio::fs::read_to_string(&file).await.unwrap();
+        assert!(content.starts_with("target\n"));
+        assert!(content.ends_with("changed\n"));
+        assert!(!content.ends_with("target\n"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_preserves_ambiguous_context_when_hint_window_is_not_unique() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "target\nnear\ntarget\n")
+            .await
+            .unwrap();
+
+        let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ -2,1 +2,1 @@
+-target
++changed
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "ambiguous_context");
     }
 
     #[tokio::test]
