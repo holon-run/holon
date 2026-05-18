@@ -19,7 +19,7 @@ use crate::tool::helpers::parse_tool_args;
 
 pub(crate) const NAME: &str = "ExecCommand";
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExecCommandArgs {
     pub(crate) cmd: String,
@@ -137,6 +137,8 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
 mod tests {
     use super::*;
     use crate::tool::tools::serialize_success;
+    use crate::tool::ToolError;
+    use serde_json::json;
 
     #[test]
     fn exec_command_completed_renders_text_receipt() {
@@ -162,6 +164,55 @@ mod tests {
         assert!(rendered.contains("Process exited with code 0"));
         assert!(rendered.contains("stdout:"));
         assert!(rendered.contains("line one"));
+    }
+
+    #[test]
+    fn exec_command_rejects_command_field_instead_of_cmd() {
+        let error = parse_tool_args::<ExecCommandArgs>(
+            NAME,
+            &json!({
+                "command": "git status",
+            }),
+        )
+        .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        assert!(tool_error.recovery_hint.as_deref().is_some_and(|hint| hint
+            .contains("provide input for ExecCommand that matches the published tool schema")));
+        assert!(tool_error
+            .details
+            .as_ref()
+            .and_then(|value| value.get("parse_error"))
+            .and_then(|value| value.as_str())
+            .is_some_and(|message| {
+                message.contains("command")
+                    || message.contains("cmd")
+                    || message.contains("missing field")
+            }));
+    }
+
+    #[test]
+    fn exec_command_rejects_task_metadata_fields() {
+        let error = parse_tool_args::<ExecCommandArgs>(
+            NAME,
+            &json!({
+                "cmd": "git status",
+                "status": "running",
+            }),
+        )
+        .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        assert!(tool_error
+            .details
+            .as_ref()
+            .and_then(|value| value.get("parse_error"))
+            .and_then(|value| value.as_str())
+            .is_some_and(|message| message.contains("status")));
+        assert!(tool_error.recovery_hint.as_deref().is_some_and(|hint| hint
+            .contains("provide input for ExecCommand that matches the published tool schema")));
     }
 
     #[test]
