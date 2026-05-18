@@ -15,11 +15,11 @@ use crate::{
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
-use crate::tool::helpers::parse_tool_args;
+use crate::tool::helpers::{invalid_tool_input, parse_tool_args_with_recovery_hint};
 
 pub(crate) const NAME: &str = "ExecCommand";
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExecCommandArgs {
     pub(crate) cmd: String,
@@ -49,7 +49,7 @@ pub(crate) async fn execute(
     trust: &TrustLevel,
     input: &Value,
 ) -> Result<ToolResult> {
-    let args: ExecCommandArgs = parse_tool_args(NAME, input)?;
+    let args: ExecCommandArgs = parse_exec_command_args(input)?;
     let tty = args.tty.unwrap_or(false);
     let spec = CommandTaskSpec {
         cmd: args.cmd,
@@ -67,6 +67,50 @@ pub(crate) async fn execute(
         .execute_exec_command(spec, trust)
         .await?;
     serialize_success(NAME, &result)
+}
+
+fn parse_exec_command_args(input: &Value) -> Result<ExecCommandArgs> {
+    if let Some(object) = input.as_object() {
+        if object.contains_key("command") {
+            return Err(invalid_tool_input(
+                NAME,
+                "ExecCommand uses `cmd`, not `command`",
+                serde_json::json!({
+                    "field": "command",
+                    "expected_field": "cmd",
+                }),
+                "use `cmd` to provide the startup command",
+            ));
+        }
+        if object.contains_key("status") {
+            return Err(invalid_tool_input(
+                NAME,
+                "ExecCommand does not accept command-task result fields",
+                serde_json::json!({
+                    "field": "status",
+                    "expected_tool": "TaskStatus",
+                    "expected_field": "task_id",
+                }),
+                "pass only startup arguments to ExecCommand, and use TaskStatus when you need task handle metadata",
+            ));
+        }
+        if object.contains_key("task_handle") {
+            return Err(invalid_tool_input(
+                NAME,
+                "ExecCommand does not accept command-task result fields",
+                serde_json::json!({
+                    "field": "task_handle",
+                    "expected_tool": "TaskStatus",
+                    "expected_field": "task_id",
+                }),
+                "pass only startup arguments to ExecCommand, and use TaskStatus when you need task handle metadata",
+            ));
+        }
+    }
+
+    parse_tool_args_with_recovery_hint(NAME, input, || {
+        "provide input for ExecCommand that matches the published tool schema".to_string()
+    })
 }
 
 pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
@@ -137,6 +181,8 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
 mod tests {
     use super::*;
     use crate::tool::tools::serialize_success;
+    use crate::tool::ToolError;
+    use serde_json::json;
 
     #[test]
     fn exec_command_completed_renders_text_receipt() {
@@ -215,5 +261,39 @@ mod tests {
         let rendered = render_for_model(&result).unwrap();
         assert!(rendered.contains("Initial output:"));
         assert!(rendered.contains("(none captured before promotion)"));
+    }
+
+    #[test]
+    fn rejects_command_alias_for_exec_command() {
+        let error = parse_exec_command_args(&json!({
+            "command": "git status"
+        }))
+        .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        assert!(tool_error.message.contains("`cmd`"));
+        assert_eq!(tool_error.details.as_ref().unwrap()["field"], "command");
+        assert!(tool_error
+            .recovery_hint
+            .as_deref()
+            .unwrap_or_default()
+            .contains("cmd"));
+    }
+
+    #[test]
+    fn rejects_task_status_metadata_for_exec_command() {
+        let error = parse_exec_command_args(&json!({
+            "cmd": "git status",
+            "status": "running"
+        }))
+        .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        assert_eq!(tool_error.details.as_ref().unwrap()["field"], "status");
+        assert!(tool_error
+            .recovery_hint
+            .as_deref()
+            .unwrap_or_default()
+            .contains("TaskStatus"));
     }
 }

@@ -1,3 +1,4 @@
+use crate::tool::helpers::{invalid_tool_input, parse_tool_args_with_recovery_hint};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -11,11 +12,10 @@ use crate::{
 };
 
 use super::BuiltinToolDefinition;
-use crate::tool::helpers::{extract_sleep_duration_ms, extract_sleep_reason};
-
 pub(crate) const NAME: &str = "Sleep";
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SleepArgs {
     pub(crate) reason: Option<String>,
     #[schemars(range(min = 1))]
@@ -38,8 +38,14 @@ pub(crate) async fn execute(
     _trust: &TrustLevel,
     input: &Value,
 ) -> Result<ToolResult> {
-    let reason = extract_sleep_reason(input);
-    let sleep_duration_ms = extract_sleep_duration_ms(input)?;
+    let args = parse_sleep_args(input)?;
+    let reason = args
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("sleep requested");
+    let sleep_duration_ms = args.duration_ms.filter(|duration| *duration > 0);
     Ok(ToolResult::sleep(
         NAME,
         json!({
@@ -53,4 +59,74 @@ pub(crate) async fn execute(
         ),
         sleep_duration_ms,
     ))
+}
+
+fn parse_sleep_args(input: &Value) -> Result<SleepArgs> {
+    let args: SleepArgs = parse_tool_args_with_recovery_hint(NAME, input, || {
+        "provide only `reason` and optional `duration_ms` that match the Sleep tool schema"
+            .to_string()
+    })?;
+    if let Some(0) = args.duration_ms {
+        return Err(invalid_tool_input(
+            NAME,
+            "Sleep `duration_ms` must be a positive integer",
+            json!({
+                "field": "duration_ms",
+                "validation_error": "must be greater than 0",
+            }),
+            "omit `duration_ms` for ordinary sleep, or provide a positive integer millisecond delay",
+        ));
+    }
+    Ok(SleepArgs {
+        reason: args.reason,
+        duration_ms: args.duration_ms,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::ToolError;
+
+    #[test]
+    fn parse_sleep_args_rejects_unknown_fields() {
+        let error = parse_sleep_args(&serde_json::json!({
+            "reason": "done",
+            "summary": "should be rejected",
+        }))
+        .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        assert!(tool_error.details.as_ref().unwrap()["parse_error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown field"));
+    }
+
+    #[test]
+    fn parse_sleep_args_rejects_zero_duration() {
+        let error = parse_sleep_args(&serde_json::json!({
+            "reason": "pause",
+            "duration_ms": 0,
+        }))
+        .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        assert_eq!(tool_error.details.as_ref().unwrap()["field"], "duration_ms");
+        assert!(tool_error
+            .recovery_hint
+            .as_deref()
+            .unwrap_or_default()
+            .contains("positive integer"));
+    }
+
+    #[test]
+    fn parse_sleep_args_accepts_defaulted_duration() {
+        let args = parse_sleep_args(&serde_json::json!({
+            "reason": "pause",
+        }))
+        .unwrap();
+        assert_eq!(args.reason.as_deref(), Some("pause"));
+        assert_eq!(args.duration_ms, None);
+    }
 }

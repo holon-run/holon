@@ -342,68 +342,9 @@ pub(crate) fn truncate_output_with_flag(
     truncate_output_to_char_budget(text, output_char_budget(max_output_tokens))
 }
 
-/// Extract the sleep reason from input, handling structured payloads.
-pub(crate) fn extract_sleep_reason(input: &Value) -> String {
-    let reason = input
-        .get("reason")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
-    let object = match input {
-        Value::Object(map) => map,
-        _ => return reason.unwrap_or("sleep requested").to_string(),
-    };
-
-    let has_extra_fields = object
-        .keys()
-        .any(|key| key != "reason" && key != "duration_ms");
-    if !has_extra_fields {
-        return reason.unwrap_or("sleep requested").to_string();
-    }
-
-    let pretty = serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string());
-    match reason {
-        Some(reason) if reason.len() >= 160 => reason.to_string(),
-        Some(reason) => {
-            format!("{reason}\n\nAdditional structured summary from Sleep input:\n{pretty}")
-        }
-        None => format!("Sleep requested with structured summary:\n{pretty}"),
-    }
-}
-
-pub(crate) fn extract_sleep_duration_ms(input: &Value) -> Result<Option<u64>> {
-    let object = match input {
-        Value::Object(map) => map,
-        _ => return Ok(None),
-    };
-    let Some(duration) = object.get("duration_ms") else {
-        return Ok(None);
-    };
-    if duration.is_null() {
-        return Ok(None);
-    }
-    let Some(duration_ms) = duration.as_u64() else {
-        return Err(invalid_tool_input(
-            "Sleep",
-            "Sleep `duration_ms` must be an integer when provided",
-            json!({
-                "field": "duration_ms",
-                "validation_error": "expected integer",
-            }),
-            "omit `duration_ms` for ordinary terminal rest, or provide a positive integer millisecond delay",
-        ));
-    };
-    if duration_ms == 0 {
-        return Ok(None);
-    }
-    Ok(Some(duration_ms))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn output_budget_defaults_to_command_tool_default() {
@@ -452,63 +393,5 @@ mod tests {
         assert!(!preview.contains("abc123"));
         assert!(!preview.contains("hunter2"));
         assert!(!preview.contains("user:pass"));
-    }
-
-    #[test]
-    fn sleep_reason_uses_plain_reason_when_input_is_simple() {
-        let reason = extract_sleep_reason(&json!({ "reason": "done with verification" }));
-        assert_eq!(reason, "done with verification");
-    }
-
-    #[test]
-    fn sleep_reason_preserves_structured_payload_when_input_is_malformed() {
-        let reason = extract_sleep_reason(&json!({
-            "reason": "## Analysis Complete",
-            "Recommendation": "Add a stronger final delivery contract in src/runtime.rs.",
-            "Citations": "docs/benchmark-results.md and src/prompt.rs"
-        }));
-        assert!(reason.contains("## Analysis Complete"));
-        assert!(reason.contains("Additional structured summary from Sleep input"));
-        assert!(reason.contains("Recommendation"));
-        assert!(reason.contains("src/runtime.rs"));
-    }
-
-    #[test]
-    fn sleep_reason_ignores_supported_duration_field() {
-        let reason = extract_sleep_reason(&json!({
-            "reason": "wait briefly for a filesystem settle",
-            "duration_ms": 250,
-        }));
-        assert_eq!(reason, "wait briefly for a filesystem settle");
-    }
-
-    #[test]
-    fn sleep_duration_reads_positive_integer_delay() {
-        let duration_ms = extract_sleep_duration_ms(&json!({
-            "reason": "pause",
-            "duration_ms": 250,
-        }))
-        .unwrap();
-        assert_eq!(duration_ms, Some(250));
-    }
-
-    #[test]
-    fn sleep_duration_treats_null_as_omitted() {
-        let duration_ms = extract_sleep_duration_ms(&json!({
-            "reason": "pause",
-            "duration_ms": null,
-        }))
-        .unwrap();
-        assert_eq!(duration_ms, None);
-    }
-
-    #[test]
-    fn sleep_duration_treats_zero_as_omitted() {
-        let duration_ms = extract_sleep_duration_ms(&json!({
-            "reason": "pause",
-            "duration_ms": 0,
-        }))
-        .unwrap();
-        assert_eq!(duration_ms, None);
     }
 }
