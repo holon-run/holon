@@ -1210,6 +1210,7 @@ fn hint_match_window(line_count: usize, needle_len: usize, hint: usize) -> Optio
         return None;
     }
 
+    // Keep hint matching local, while giving larger hunks proportionally more drift tolerance.
     let radius = (needle_len * 2).max(20);
     Some((
         hint_index.saturating_sub(radius),
