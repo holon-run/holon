@@ -70,15 +70,10 @@ Returns model catalog and runtime availability.
 
 ### Agents
 
-**`GET /agents`** — List agent summaries
+**`GET /agents/list`** — List agent entries
 
-Returns a compact summary for each registered agent: id, visibility, profile, current
-work item, waiting state, and latest execution snapshot.
-
-**`GET /agents/list`** — List agent entries (detailed)
-
-Returns full `AgentRegistryStatus` entries including registered-at timestamps and
-workspace occupancies.
+Returns lightweight public agent entries for selection and navigation without
+loading full per-agent runtime summaries.
 
 **`GET /agents/:id/status`** — Single agent status
 
@@ -452,7 +447,7 @@ These will be added as the surface stabilizes.
 curl http://127.0.0.1:9101/handshake
 
 # List agents
-curl http://127.0.0.1:9101/agents
+curl http://127.0.0.1:9101/agents/list
 
 # Get agent state
 curl http://127.0.0.1:9101/agents/main/state

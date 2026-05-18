@@ -97,7 +97,7 @@ The same token authenticates HTTP control plane requests:
 
 ```bash
 curl -H "Authorization: Bearer your-token" \
-  https://your-server:8787/v1/agents
+  https://your-server:8787/v1/agents/list
 ```
 
 See the [HTTP Control Plane reference](/reference/http-control-plane.md) for

@@ -2258,7 +2258,7 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
     match command {
         None | Some(AgentCommands::List) => {
             let client = LocalClient::new(config.clone())?;
-            print_json(&serde_json::to_value(client.list_agents().await?)?)
+            print_json(&serde_json::to_value(client.list_agent_entries().await?)?)
         }
         Some(AgentCommands::Status { agent_id }) => {
             let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());

@@ -454,7 +454,7 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         "/handshake",
         "/",
         "/control/runtime/status",
-        "/agents",
+        "/agents/list",
         "/agents/default/status",
         "/agents/default/state",
         "/agents/default/briefs",
@@ -486,11 +486,18 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
     assert_eq!(handshake["runtime"]["default_agent"], "default");
 
     let agents = client
-        .get(format!("{base}/agents"))
+        .get(format!("{base}/agents/list"))
         .bearer_auth("secret")
         .send()
         .await?;
     assert!(agents.status().is_success());
+
+    let removed_agents = client
+        .get(format!("{base}/agents"))
+        .bearer_auth("secret")
+        .send()
+        .await?;
+    assert_eq!(removed_agents.status(), reqwest::StatusCode::NOT_FOUND);
 
     let invalid_runtime_status = client
         .get(format!("{base}/control/runtime/status"))
@@ -992,7 +999,7 @@ pub async fn runtime_status_route_reports_runtime_metadata() -> Result<()> {
         payload["runtime_surface"]["disable_provider_fallback"],
         false
     );
-    assert!(payload["agent_model_overrides"].as_array().is_some());
+    assert!(payload.get("agent_model_overrides").is_none());
     assert!(payload["pid"].as_u64().unwrap_or_default() > 0);
     assert_eq!(payload["activity"]["state"], "idle");
     assert_eq!(payload["activity"]["active_agent_count"], 1);

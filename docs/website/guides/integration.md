@@ -32,8 +32,7 @@ Access modes: `local`, `tunnel`, `lan`, `tailnet`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/agents` | List active agent IDs |
-| `GET` | `/agents/list` | List agent entries with metadata |
+| `GET` | `/agents/list` | List active agent entries with metadata |
 | `POST` | `/control/agents/:agent_id/create` | Create a new agent |
 | `GET` | `/agents/:agent_id/status` | Get agent status and lifecycle |
 | `GET` | `/agents/:agent_id/state` | Get full agent state snapshot |
@@ -206,4 +205,3 @@ curl -X POST http://localhost:8787/control/agents/my-agent/operator-ingress \
 - [HTTP Control Plane Reference](/reference/http-control-plane.md) — Design philosophy and concepts
 - [CLI Reference](/reference/cli.md) — Command-line equivalent operations
 - [Configuration Reference](/reference/configuration.md) — Server and runtime configuration
-

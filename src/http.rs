@@ -133,7 +133,6 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(root))
         .route("/handshake", get(handshake))
         .route("/models", get(models_handler))
-        .route("/agents", get(list_agents))
         .route("/agents/list", get(list_agent_entries))
         .route("/agents/:agent_id/enqueue", post(enqueue))
         .route("/agents/:agent_id/status", get(status))
@@ -603,15 +602,6 @@ pub async fn handshake(
     })))
 }
 
-pub async fn list_agents(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
-    let agents = state.host.list_agents().await.map_err(error_response)?;
-    Ok(Json(agents))
-}
-
 pub async fn list_agent_entries(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -644,7 +634,6 @@ pub async fn runtime_status(
         .into_iter()
         .filter_map(|agent| agent.last_runtime_failure)
         .max_by(|left, right| left.occurred_at.cmp(&right.occurred_at));
-    let agent_summaries = state.host.list_agents().await.map_err(error_response)?;
     let config = state.host.config();
     let startup_surface = crate::daemon::RuntimeStartupSurface {
         home_dir: config.home_dir.clone(),
@@ -656,19 +645,11 @@ pub async fn runtime_status(
         control_auth_mode: config.control_auth_mode.into(),
     };
     let runtime_surface = RuntimeConfigSurface::new(config);
-    let agent_model_overrides = agent_summaries
-        .into_iter()
-        .map(|summary| crate::daemon::RuntimeAgentOverrideSummary {
-            agent_id: summary.identity.agent_id,
-            override_model: summary.model.override_model.map(|model| model.as_string()),
-        })
-        .collect::<Vec<_>>();
     Ok(Json(runtime_service.status_response(
         activity,
         last_failure,
         startup_surface,
         runtime_surface,
-        agent_model_overrides,
     )))
 }
 
