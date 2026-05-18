@@ -1130,6 +1130,13 @@ Codex:
 - GitHub CI initially failed only at `cargo fmt --check`
 - after selection, a follow-up formatting commit was pushed to #1259:
   `2fea61e style: format command identity test`
+- after the formatting commit, GitHub Rust/Coverage still failed on the current
+  base with an unrelated compile error in
+  `src/tool/tools/exec_command_batch.rs`:
+  `ExecCommandBatchItemArgs` has no field named `continue_on_result`
+- the same error reproduces on current `main` with
+  `cargo check --all-targets -q`, so this is a base/main break rather than a
+  regression introduced by #1259
 
 One benchmark-framework observation: the Codex runner artifact records
 `pr_status = skipped_no_changes`, but the agent itself had already created
@@ -1146,7 +1153,10 @@ Reasons:
 - cleaner PR body and issue linkage
 - simpler changed-file set
 - focused task tests passed before the unrelated workspace verification failure
-- CI failure was a trivial formatting issue and was fixed after selection
+- the initial PR-specific CI issue was a trivial formatting issue and was fixed
+  after selection
+- the remaining red CI is caused by current `main` and should be handled
+  separately before merge
 
 Close **Holon PR #1258** as superseded by #1259. Holon had the better token and
 runtime profile in this benchmark, so this run is still a positive signal for
