@@ -351,7 +351,7 @@ async fn runtime_activity_summary_reports_waiting_runtime() {
                 yield_time_ms: 10,
                 max_output_tokens: None,
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )

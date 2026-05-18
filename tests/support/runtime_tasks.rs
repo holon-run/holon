@@ -132,7 +132,7 @@ pub async fn background_task_rejoins_main_session() -> Result<()> {
                 yield_time_ms: 10,
                 max_output_tokens: None,
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -209,7 +209,7 @@ pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reent
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -266,7 +266,7 @@ pub async fn stop_task_cancels_running_background_task() -> Result<()> {
                 yield_time_ms: 10,
                 max_output_tokens: None,
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -305,7 +305,7 @@ pub async fn lifecycle_stop_interrupts_active_command_task() -> Result<()> {
                 yield_time_ms: 10,
                 max_output_tokens: None,
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1080,7 +1080,7 @@ pub async fn command_task_runs_to_completion_and_persists_detail() -> Result<()>
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(512),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1099,7 +1099,7 @@ pub async fn command_task_runs_to_completion_and_persists_detail() -> Result<()>
     let detail = stored.detail.unwrap_or_default();
     assert_eq!(detail["cmd"], "printf managed_ok");
     assert_eq!(detail["wait_policy"], "background");
-    assert_eq!(detail["continue_on_result"], false);
+    assert!(detail.get("continue_on_result").is_none());
     assert_eq!(detail["terminal_reentry"], false);
     let output_path = detail["output_path"]
         .as_str()
@@ -1127,7 +1127,7 @@ pub async fn task_output_returns_completed_command_task_output() -> Result<()> {
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(512),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1180,7 +1180,7 @@ pub async fn task_output_non_blocking_reports_running_command_task() -> Result<(
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1233,7 +1233,7 @@ pub async fn task_output_waits_for_command_task_completion() -> Result<()> {
                 yield_time_ms: 10,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1280,7 +1280,7 @@ pub async fn task_input_delivers_stdin_to_managed_command_task() -> Result<()> {
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: true,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1340,7 +1340,7 @@ pub async fn task_output_times_out_for_long_running_task() -> Result<()> {
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1398,7 +1398,7 @@ pub async fn task_output_prefers_terminal_task_record_over_stale_task_message() 
                 yield_time_ms: 10,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1470,7 +1470,7 @@ pub async fn task_output_accepts_terminal_command_snapshot_without_explicit_read
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1530,7 +1530,7 @@ pub async fn task_output_accepts_terminal_command_without_snapshot_fields() -> R
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1592,7 +1592,7 @@ pub async fn task_output_rejects_message_only_terminal_status_for_running_comman
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1666,7 +1666,7 @@ pub async fn task_status_and_task_output_keep_lifecycle_and_output_boundaries() 
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(512),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1740,7 +1740,7 @@ pub async fn command_task_output_truncation_preserves_path_artifact_reference() 
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(20_000),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1784,7 +1784,7 @@ pub async fn command_task_stop_cancels_running_command() -> Result<()> {
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1861,7 +1861,7 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_stopp
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1917,7 +1917,7 @@ pub async fn blocking_command_task_clears_active_state_while_runtime_stopped() -
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: true,
+                terminal_reentry: true,
             },
             TrustLevel::TrustedOperator,
         )
@@ -1959,7 +1959,7 @@ pub async fn command_task_result_is_canonical_follow_up_on_completion() -> Resul
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: true,
+                terminal_reentry: true,
             },
             TrustLevel::TrustedOperator,
         )
@@ -2008,7 +2008,7 @@ pub async fn task_result_rejoin_preserves_runtime_provenance_not_operator_author
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: true,
+                terminal_reentry: true,
             },
             TrustLevel::TrustedOperator,
         )
@@ -2055,7 +2055,7 @@ pub async fn task_result_rejoin_preserves_runtime_provenance_not_operator_author
     Ok(())
 }
 
-pub async fn command_continue_on_result_does_not_set_awaiting_task_closure() -> Result<()> {
+pub async fn command_terminal_reentry_does_not_set_awaiting_task_closure() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
@@ -2072,7 +2072,7 @@ pub async fn command_continue_on_result_does_not_set_awaiting_task_closure() -> 
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(64),
                 accepts_input: false,
-                continue_on_result: true,
+                terminal_reentry: true,
             },
             TrustLevel::TrustedOperator,
         )
@@ -2091,7 +2091,7 @@ pub async fn command_continue_on_result_does_not_set_awaiting_task_closure() -> 
     assert!(!stored.is_blocking());
     assert!(stored.terminal_reentry());
     let detail = stored.detail.as_ref().expect("command task detail");
-    assert_eq!(detail["continue_on_result"].as_bool(), Some(true));
+    assert!(detail.get("continue_on_result").is_none());
     assert_eq!(detail["terminal_reentry"].as_bool(), Some(true));
 
     runtime
@@ -2126,7 +2126,7 @@ pub async fn command_task_runner_failure_marks_task_failed_and_cleans_up() -> Re
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -2183,7 +2183,7 @@ pub async fn command_task_nonzero_exit_produces_failed_output_and_runtime_state(
                 yield_time_ms: 10_000,
                 max_output_tokens: Some(256),
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )

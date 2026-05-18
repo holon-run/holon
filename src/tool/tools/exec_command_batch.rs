@@ -42,7 +42,6 @@ pub(crate) struct ExecCommandBatchItemArgs {
     pub(crate) max_output_tokens: Option<u64>,
     pub(crate) tty: Option<bool>,
     pub(crate) accepts_input: Option<bool>,
-    pub(crate) continue_on_result: Option<bool>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -50,7 +49,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::LocalEnvironment,
         spec: crate::tool::spec::typed_spec::<ExecCommandBatchArgs>(
             NAME,
-            "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Per-item yield_time_ms defaults to 10_000 ms when omitted; set it only when intentionally changing that item's foreground wait window. Do not use tty, accepts_input, continue_on_result, or non-command tools inside the batch.",
+            "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Per-item yield_time_ms defaults to 10_000 ms when omitted; set it only when intentionally changing that item's foreground wait window. Do not use tty, accepts_input, or non-command tools inside the batch.",
         )?,
     })
 }
@@ -186,7 +185,7 @@ async fn execute_batch_item(
         yield_time_ms: item.yield_time_ms.unwrap_or(10_000),
         max_output_tokens: item.max_output_tokens,
         accepts_input: false,
-        continue_on_result: false,
+        terminal_reentry: false,
     };
 
     match runtime
@@ -232,8 +231,6 @@ fn rejected_item_error(item: &ExecCommandBatchItemArgs) -> Option<ToolError> {
         Some("tty")
     } else if item.accepts_input.is_some() {
         Some("accepts_input")
-    } else if item.continue_on_result.is_some() {
-        Some("continue_on_result")
     } else {
         None
     }?;
@@ -357,7 +354,6 @@ mod tests {
             max_output_tokens: None,
             tty: Some(true),
             accepts_input: None,
-            continue_on_result: None,
         };
 
         let error = rejected_item_error(&item).expect("tty should be rejected");

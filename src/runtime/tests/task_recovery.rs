@@ -28,7 +28,7 @@ async fn runtime_tracks_background_task() {
                 yield_time_ms: 10,
                 max_output_tokens: None,
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -274,7 +274,7 @@ async fn runtime_interrupts_inflight_task_after_restart() {
                     yield_time_ms: 10,
                     max_output_tokens: None,
                     accepts_input: false,
-                    continue_on_result: false,
+                    terminal_reentry: false,
                 },
                 trust: TrustLevel::TrustedOperator,
                 promoted_from_exec_command: false,

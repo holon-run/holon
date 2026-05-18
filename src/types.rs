@@ -2165,8 +2165,6 @@ pub struct CommandTaskStatusSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_status: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub continue_on_result: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_reentry: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promoted_from_exec_command: Option<bool>,
@@ -2263,7 +2261,6 @@ impl TaskStatusSnapshot {
                 output_path: task_detail_string(&task.detail, "output_path"),
                 result_summary: task_detail_string(&task.detail, "output_summary"),
                 exit_status: task_detail_i32(&task.detail, "exit_status"),
-                continue_on_result: task_detail_bool(&task.detail, "continue_on_result"),
                 terminal_reentry: task.terminal_reentry().then_some(true),
                 promoted_from_exec_command: task_detail_bool(
                     &task.detail,
@@ -2638,7 +2635,7 @@ impl TaskRecoverySpec {
 
     pub fn terminal_reentry(&self) -> bool {
         match self {
-            TaskRecoverySpec::CommandTask { spec, .. } => spec.continue_on_result,
+            TaskRecoverySpec::CommandTask { spec, .. } => spec.terminal_reentry,
             TaskRecoverySpec::ChildAgentTask { .. }
             | TaskRecoverySpec::SubagentTask { .. }
             | TaskRecoverySpec::WorktreeSubagentTask { .. } => false,
@@ -2661,8 +2658,8 @@ pub struct CommandTaskSpec {
     pub max_output_tokens: Option<u64>,
     #[serde(default)]
     pub accepts_input: bool,
-    #[serde(default)]
-    pub continue_on_result: bool,
+    #[serde(default, alias = "continue_on_result")]
+    pub terminal_reentry: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3638,20 +3635,21 @@ mod tests {
     }
 
     #[test]
-    fn command_continue_on_result_recovery_is_terminal_reentry_not_blocking() {
+    fn legacy_command_continue_on_result_recovery_is_terminal_reentry_not_blocking() {
         let recovery = TaskRecoverySpec::CommandTask {
             summary: "long command".into(),
-            spec: CommandTaskSpec {
-                cmd: "sleep 10".into(),
-                workdir: None,
-                shell: None,
-                login: true,
-                tty: false,
-                yield_time_ms: 100,
-                max_output_tokens: None,
-                accepts_input: false,
-                continue_on_result: true,
-            },
+            spec: serde_json::from_value(serde_json::json!({
+                "cmd": "sleep 10",
+                "workdir": null,
+                "shell": null,
+                "login": true,
+                "tty": false,
+                "yield_time_ms": 100,
+                "max_output_tokens": null,
+                "accepts_input": false,
+                "continue_on_result": true
+            }))
+            .expect("legacy command task spec"),
             trust: TrustLevel::TrustedOperator,
             promoted_from_exec_command: true,
         };
@@ -3678,7 +3676,6 @@ mod tests {
 
         let snapshot = TaskStatusSnapshot::from_task_record(&task);
         let command = snapshot.command.expect("command task snapshot");
-        assert_eq!(command.continue_on_result, Some(true));
         assert_eq!(command.terminal_reentry, Some(true));
 
         let recovered_task = TaskRecord {

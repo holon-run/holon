@@ -465,7 +465,7 @@ async fn schedule_command_task_rejects_when_process_execution_disabled() {
                 yield_time_ms: 100,
                 max_output_tokens: None,
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -538,7 +538,7 @@ async fn schedule_command_task_rejects_when_background_tasks_disabled() {
                 yield_time_ms: 100,
                 max_output_tokens: None,
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -574,7 +574,7 @@ async fn stop_command_task_marks_cancelling_before_terminal_cancelled() {
                 yield_time_ms: 10,
                 max_output_tokens: None,
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -637,7 +637,7 @@ async fn second_stop_requests_force_stop_and_runner_terminates_process_before_ca
                 yield_time_ms: 10,
                 max_output_tokens: None,
                 accepts_input: false,
-                continue_on_result: false,
+                terminal_reentry: false,
             },
             TrustLevel::TrustedOperator,
         )
@@ -856,7 +856,7 @@ async fn latest_task_list_entries_return_compact_projection() {
                     yield_time_ms: 100,
                     max_output_tokens: None,
                     accepts_input: false,
-                    continue_on_result: true,
+                    terminal_reentry: true,
                 },
                 trust: TrustLevel::TrustedOperator,
                 promoted_from_exec_command: false,

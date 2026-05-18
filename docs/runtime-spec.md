@@ -1583,9 +1583,8 @@ Rules:
   dispatch marker must not suppress model-visible triggers such as
   `internal_followup` or `timer_fire`
 - `TaskResult` is the canonical rejoin point for terminal task-result
-  re-entry. This is independent from scheduler blocking; command
-  `continue_on_result` maps to terminal re-entry metadata and must not by itself
-  make the task a scheduler-blocking wait.
+  re-entry. This is independent from scheduler blocking; command terminal
+  re-entry metadata must not by itself make the task a scheduler-blocking wait.
 - `TaskStatus` remains observational; it does not by itself create a new model turn.
 - `TimerTick` may resume local work even if the timer record has already been
   updated out of the active set.
@@ -2324,11 +2323,12 @@ accepted while reading old persisted records so the runtime can recover
 supervised child identity and workspace mode. They are not emitted for new
 records and do not imply scheduler blocking.
 
-For `command_task`, `CommandTaskSpec.continue_on_result` is a compatibility
-startup field for terminal result re-entry. New command task records expose that
-intent as `terminal_reentry` in task detail and `TaskStatus.task.command`, but
-the command task remains `wait_policy = background` unless another explicit
-runtime mechanism marks a task as blocking.
+For `command_task`, terminal result re-entry is runtime-owned metadata. New
+agent/API command startup requests do not accept a terminal re-entry flag.
+Persisted legacy command specs may still contain `continue_on_result`; readers
+map that field into `terminal_reentry` for compatibility. Command tasks remain
+`wait_policy = background` unless another explicit runtime mechanism marks a
+task as blocking.
 
 ### Recovery Behavior
 
@@ -2434,9 +2434,8 @@ Phase-1 envelope rules:
     a general nested-tool batch surface
   - each item supports `cmd`, `workdir`, `shell`, `login`, `yield_time_ms`, and
     `max_output_tokens`
-  - items reject `tty`, `accepts_input`, and `continue_on_result`; use
-    `ExecCommand` directly when interactive input, tty behavior, or
-    command-task continuation is needed
+  - items reject `tty` and `accepts_input`; use `ExecCommand` directly when
+    interactive input or tty behavior is needed
   - V1 does not promote items into `command_task`; item timeout or spawn failure
     is reported as an item-level failure
   - canonical results preserve per-item status, command, bounded previews,

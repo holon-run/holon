@@ -125,9 +125,8 @@ Disallowed item fields:
 
 - `tty`
 - `accepts_input`
-- `continue_on_result`
 
-The disallowed fields are command-task lifecycle fields. They are appropriate
+The disallowed fields are interactive command-task fields. They are appropriate
 for `ExecCommand`, but not for a batch whose V1 contract is "run these bounded
 commands and return one grouped receipt."
 
@@ -292,4 +291,3 @@ into V1:
 
 Those require their own design because they change safety, ordering, and
 lifecycle semantics.
-

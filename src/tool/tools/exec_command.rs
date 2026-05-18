@@ -28,7 +28,6 @@ pub(crate) struct ExecCommandArgs {
     pub(crate) login: Option<bool>,
     pub(crate) tty: Option<bool>,
     pub(crate) accepts_input: Option<bool>,
-    pub(crate) continue_on_result: Option<bool>,
     pub(crate) yield_time_ms: Option<u64>,
     pub(crate) max_output_tokens: Option<u64>,
 }
@@ -38,7 +37,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::LocalEnvironment,
         spec: typed_spec::<ExecCommandArgs>(
             NAME,
-            "Start a shell command inside the workspace. Valid startup input uses `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `accepts_input`, `continue_on_result`, `yield_time_ms`, and `max_output_tokens`; do not pass result or task metadata such as `status` or `task_handle`. `yield_time_ms` defaults to 10_000 ms when omitted; set it only when intentionally changing the foreground wait window. Short commands return immediately; long non-interactive commands become command_task automatically.",
+            "Start a shell command inside the workspace. Valid startup input uses `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `accepts_input`, `yield_time_ms`, and `max_output_tokens`; do not pass result or task metadata such as `status` or `task_handle`. `yield_time_ms` defaults to 10_000 ms when omitted; set it only when intentionally changing the foreground wait window. Short commands return immediately; long non-interactive commands become command_task automatically.",
         )?,
     })
 }
@@ -60,7 +59,7 @@ pub(crate) async fn execute(
         yield_time_ms: args.yield_time_ms.unwrap_or(10_000),
         max_output_tokens: args.max_output_tokens,
         accepts_input: args.accepts_input.unwrap_or(tty),
-        continue_on_result: args.continue_on_result.unwrap_or(false),
+        terminal_reentry: false,
     };
     let result: ExecCommandResult = runtime
         .managed_tasks()
@@ -137,6 +136,19 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
 mod tests {
     use super::*;
     use crate::tool::tools::serialize_success;
+
+    #[test]
+    fn exec_command_args_reject_continue_on_result() {
+        let err = match serde_json::from_value::<ExecCommandArgs>(serde_json::json!({
+            "cmd": "echo ok",
+            "continue_on_result": true
+        })) {
+            Ok(_) => panic!("continue_on_result is no longer an ExecCommand startup field"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("continue_on_result"));
+    }
 
     #[test]
     fn exec_command_completed_renders_text_receipt() {
