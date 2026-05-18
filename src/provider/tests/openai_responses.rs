@@ -7,7 +7,8 @@ use std::sync::{
 
 use super::support::*;
 use super::*;
-use crate::config::ProviderId;
+use crate::config::{ModelRef, ProviderId};
+use crate::model_catalog::ModelRuntimeOverride;
 use crate::provider::transports::set_stream_idle_timeout_override_for_tests;
 use axum::{http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use serde_json::{json, Value};
@@ -16,7 +17,7 @@ fn openai_tool_call_response(response_id: &str) -> Value {
     json!({
         "id": response_id,
         "status": "completed",
-        "usage": { "input_tokens": 3, "output_tokens": 2 },
+        "usage": { "input_tokens": 256, "output_tokens": 2 },
         "output": [{
             "type": "function_call",
             "id": "fc_non_persisted",
@@ -29,10 +30,18 @@ fn openai_tool_call_response(response_id: &str) -> Value {
 }
 
 fn openai_text_response(response_id: &str, text: &str) -> Value {
+    openai_text_response_with_input_tokens(response_id, text, 2)
+}
+
+fn openai_text_response_with_input_tokens(
+    response_id: &str,
+    text: &str,
+    input_tokens: u64,
+) -> Value {
     json!({
         "id": response_id,
         "status": "completed",
-        "usage": { "input_tokens": 2, "output_tokens": 1 },
+        "usage": { "input_tokens": input_tokens, "output_tokens": 1 },
         "output": [{
             "type": "message",
             "id": "msg_non_persisted",
@@ -47,7 +56,7 @@ fn openai_text_response_with_provider_metadata(response_id: &str, text: &str) ->
     json!({
         "id": response_id,
         "status": "completed",
-        "usage": { "input_tokens": 2, "output_tokens": 1 },
+        "usage": { "input_tokens": 256, "output_tokens": 1 },
         "output": [{
             "type": "message",
             "id": "msg_non_persisted",
@@ -64,13 +73,33 @@ fn openai_text_response_with_provider_metadata(response_id: &str, text: &str) ->
     })
 }
 
+fn set_remote_compaction_trigger(config: &mut crate::config::AppConfig, model_ref: &str) {
+    config.validated_model_overrides.insert(
+        ModelRef::parse(model_ref).unwrap(),
+        ModelRuntimeOverride {
+            prompt_budget_estimated_tokens: Some(256),
+            compaction_trigger_estimated_tokens: Some(128),
+            compaction_keep_recent_estimated_tokens: Some(32),
+            ..ModelRuntimeOverride::default()
+        },
+    );
+}
+
 fn openai_text_sse_response(response_id: &str, text: &str) -> String {
+    openai_text_sse_response_with_input_tokens(response_id, text, 2)
+}
+
+fn openai_text_sse_response_with_input_tokens(
+    response_id: &str,
+    text: &str,
+    input_tokens: u64,
+) -> String {
     format!(
         concat!(
             "event: response.completed\n",
-            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":2,\"output_tokens\":1}},\"output\":[{{\"type\":\"message\",\"id\":\"msg_non_persisted\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{}\"}}]}}]}}}}\n\n"
+            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":{},\"output_tokens\":1}},\"output\":[{{\"type\":\"message\",\"id\":\"msg_non_persisted\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{}\"}}]}}]}}}}\n\n"
         ),
-        response_id, text
+        response_id, input_tokens, text
     )
 }
 
@@ -78,7 +107,7 @@ fn openai_reasoning_and_tool_call_sse_response(response_id: &str) -> String {
     format!(
         concat!(
             "event: response.completed\n",
-            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":10,\"output_tokens\":4}},\"output\":[",
+            "data: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"{}\",\"status\":\"completed\",\"usage\":{{\"input_tokens\":256,\"output_tokens\":4}},\"output\":[",
             "{{\"type\":\"reasoning\",\"id\":\"rs_non_persisted\",\"encrypted_content\":\"opaque-reasoning\"}},",
             "{{\"type\":\"function_call\",\"id\":\"fc_non_persisted\",\"call_id\":\"exec-1\",\"name\":\"ExecCommand\",\"arguments\":\"{{\\\"cmd\\\":\\\"printf ok\\\"}}\"}}",
             "]}}}}\n\n"
@@ -401,6 +430,7 @@ async fn openai_responses_remote_compacts_provider_window_and_replays_compaction
         .get_mut(&ProviderId::openai())
         .unwrap()
         .base_url = base_url;
+    set_remote_compaction_trigger(&mut fixture.config, "openai/gpt-5.4");
     let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     let first = provider
@@ -465,7 +495,7 @@ async fn openai_codex_remote_compact_uses_codex_backend_route_for_legacy_base_ur
                         captured.lock().unwrap().push(body);
                         (
                             [("content-type", "text/event-stream")],
-                            openai_text_sse_response("resp_1", "ready"),
+                            openai_text_sse_response_with_input_tokens("resp_1", "ready", 256),
                         )
                     }
                 }),
@@ -493,6 +523,7 @@ async fn openai_codex_remote_compact_uses_codex_backend_route_for_legacy_base_ur
         .get_mut(&ProviderId::openai_codex())
         .unwrap()
         .base_url = base_url;
+    set_remote_compaction_trigger(&mut fixture.config, "openai-codex/gpt-5.4");
     let provider = OpenAiCodexProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     let response = provider
@@ -525,7 +556,7 @@ async fn openai_codex_remote_compact_does_not_double_codex_path_for_new_base_url
                 post(|Json(_body): Json<Value>| async {
                     (
                         [("content-type", "text/event-stream")],
-                        openai_text_sse_response("resp_1", "ready"),
+                        openai_text_sse_response_with_input_tokens("resp_1", "ready", 256),
                     )
                 }),
             )
@@ -552,6 +583,7 @@ async fn openai_codex_remote_compact_does_not_double_codex_path_for_new_base_url
         .get_mut(&ProviderId::openai_codex())
         .unwrap()
         .base_url = format!("{base_url}/codex");
+    set_remote_compaction_trigger(&mut fixture.config, "openai-codex/gpt-5.4");
     let provider = OpenAiCodexProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     provider
@@ -612,6 +644,7 @@ async fn openai_codex_remote_compact_sanitizes_ids_and_retains_unpaired_tail() {
         .get_mut(&ProviderId::openai_codex())
         .unwrap()
         .base_url = base_url;
+    set_remote_compaction_trigger(&mut fixture.config, "openai-codex/gpt-5.4");
     let provider = OpenAiCodexProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     let first = provider
@@ -665,7 +698,9 @@ async fn openai_responses_caches_unsupported_remote_compact_endpoint() {
                     async move {
                         let attempt = attempts.fetch_add(1, Ordering::SeqCst);
                         if attempt == 0 {
-                            Json(openai_text_response("resp_1", "ready"))
+                            Json(openai_text_response_with_input_tokens(
+                                "resp_1", "ready", 256,
+                            ))
                         } else {
                             Json(openai_text_response("resp_2", "done"))
                         }
@@ -694,6 +729,7 @@ async fn openai_responses_caches_unsupported_remote_compact_endpoint() {
         .get_mut(&ProviderId::openai())
         .unwrap()
         .base_url = base_url;
+    set_remote_compaction_trigger(&mut fixture.config, "openai/gpt-5.4");
     let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     let first = provider
@@ -738,7 +774,9 @@ async fn openai_responses_reports_non_persisted_compact_item_ids_without_endpoin
                     async move {
                         let attempt = attempts.fetch_add(1, Ordering::SeqCst);
                         if attempt == 0 {
-                            Json(openai_text_response("resp_1", "ready"))
+                            Json(openai_text_response_with_input_tokens(
+                                "resp_1", "ready", 256,
+                            ))
                         } else {
                             Json(openai_text_response("resp_2", "done"))
                         }
@@ -774,6 +812,7 @@ async fn openai_responses_reports_non_persisted_compact_item_ids_without_endpoin
         .get_mut(&ProviderId::openai())
         .unwrap()
         .base_url = base_url;
+    set_remote_compaction_trigger(&mut fixture.config, "openai/gpt-5.4");
     let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     let first = provider
@@ -986,6 +1025,7 @@ async fn openai_responses_compacts_safe_prefix_before_unpaired_tool_call() {
         .get_mut(&ProviderId::openai())
         .unwrap()
         .base_url = base_url;
+    set_remote_compaction_trigger(&mut fixture.config, "openai/gpt-5.4");
     let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     let response = provider
@@ -1008,7 +1048,7 @@ async fn openai_responses_compacts_safe_prefix_before_unpaired_tool_call() {
 }
 
 #[tokio::test]
-async fn openai_responses_skips_remote_compaction_when_safe_prefix_is_below_threshold() {
+async fn openai_responses_compacts_safe_prefix_without_item_count_gate() {
     let response_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let response_bodies_for_server = response_bodies.clone();
     let compact_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -1056,6 +1096,7 @@ async fn openai_responses_skips_remote_compaction_when_safe_prefix_is_below_thre
         .get_mut(&ProviderId::openai())
         .unwrap()
         .base_url = base_url;
+    set_remote_compaction_trigger(&mut fixture.config, "openai/gpt-5.4");
     let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     let response = provider
@@ -1071,37 +1112,36 @@ async fn openai_responses_skips_remote_compaction_when_safe_prefix_is_below_thre
         .request_diagnostics
         .as_ref()
         .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
-        .expect("remote compaction skip diagnostics");
-    assert_eq!(remote_compaction.status, "skipped_unpaired_tool_call");
-    assert_eq!(remote_compaction.input_items, Some(8));
+        .expect("remote compaction diagnostics");
+    assert_eq!(remote_compaction.status, "compacted");
+    assert_eq!(remote_compaction.input_items, Some(7));
 
-    let second_compaction = second
-        .request_diagnostics
-        .as_ref()
-        .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
-        .expect("pre-request remote compaction diagnostics");
-    assert_eq!(second_compaction.status, "compacted");
-    assert_eq!(
-        second_compaction.trigger_reason.as_deref(),
-        Some("provider_window_item_threshold_before_request")
+    assert!(
+        second
+            .request_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.openai_remote_compaction.as_ref())
+            .is_none(),
+        "the second request should replay the compacted prefix and retained tool tail without another compact pass"
     );
-    assert_eq!(second_compaction.input_items, Some(9));
+    assert_eq!(
+        remote_compaction.trigger_reason.as_deref(),
+        Some("token_budget_pressure")
+    );
+    assert_eq!(remote_compaction.trigger_input_tokens, Some(128));
 
     let response_bodies = response_bodies.lock().unwrap();
     assert_eq!(response_bodies.len(), 2);
     assert!(response_bodies[1].get("previous_response_id").is_none());
     let second_input = response_bodies[1]["input"].as_array().unwrap();
-    assert_eq!(second_input.len(), 1);
+    assert_eq!(second_input.len(), 3);
     assert_eq!(second_input[0]["type"], json!("compaction"));
 
     let compact_bodies = compact_bodies.lock().unwrap();
     assert_eq!(compact_bodies.len(), 1);
     let compact_input = compact_bodies[0]["input"].as_array().unwrap();
-    assert_eq!(compact_input.len(), 9);
-    assert_eq!(
-        compact_input.last().unwrap()["type"],
-        json!("function_call_output")
-    );
+    assert_eq!(compact_input.len(), 7);
+    assert_eq!(compact_input.last().unwrap()["type"], json!("message"));
 }
 
 #[tokio::test]
@@ -1154,6 +1194,7 @@ async fn openai_responses_replays_compacted_prefix_with_retained_tool_tail() {
         .get_mut(&ProviderId::openai())
         .unwrap()
         .base_url = base_url;
+    set_remote_compaction_trigger(&mut fixture.config, "openai/gpt-5.4");
     let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     let first = provider
@@ -1173,7 +1214,7 @@ async fn openai_responses_replays_compacted_prefix_with_retained_tool_tail() {
     assert_eq!(first_compaction.status, "compacted");
     assert_eq!(
         first_compaction.trigger_reason.as_deref(),
-        Some("provider_window_item_threshold")
+        Some("token_budget_pressure")
     );
     assert_eq!(first_compaction.input_items, Some(8));
 

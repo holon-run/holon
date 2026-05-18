@@ -255,6 +255,10 @@ pub struct ProviderOpenAiRemoteCompactionDiagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_compaction_index: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encrypted_content_hashes: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encrypted_content_bytes: Option<Vec<usize>>,

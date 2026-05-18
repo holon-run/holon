@@ -253,8 +253,9 @@ Remote compaction should be budget-driven.
 
 Suggested initial triggers:
 
-- provider input estimate exceeds a soft limit
-- provider rounds exceed a benchmarked loop threshold
+- provider-reported input usage reaches the configured compaction trigger
+- provider input estimate reaches the configured compaction trigger when usage
+  data is unavailable
 - OpenAI returns a context-window error and the provider window is compactable
 
 Suggested non-triggers:
@@ -264,6 +265,12 @@ Suggested non-triggers:
 - after every local semantic compaction
 - while a tool call and its output are not paired yet
 - when request shape changed for unrelated reasons
+
+Holon should not use a minimum provider-item count as an additional compaction
+gate. Item boundaries are safety boundaries for choosing the compactable prefix;
+they are not pressure signals. A single large provider item may need compaction,
+while many tiny items should not compact until the token budget is under
+pressure.
 
 The "tool call and its output are not paired yet" rule applies to the compacted
 span, not necessarily to the whole provider window. If the latest provider

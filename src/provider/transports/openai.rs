@@ -16,7 +16,11 @@ use std::{
 
 use crate::{
     auth::load_codex_cli_credential,
-    config::{AppConfig, CredentialKind, CredentialSource, ProviderId, ProviderRuntimeConfig},
+    config::{
+        AppConfig, CredentialKind, CredentialSource, ModelRef, ProviderId, ProviderRuntimeConfig,
+    },
+    context::ContextConfig,
+    model_catalog::BuiltInModelCatalog,
     provider::{
         emitted_tool_json_schema, AgentProvider, ConversationMessage, ModelBlock,
         ProviderCacheUsage, ProviderIncrementalContinuationDiagnostics,
@@ -25,6 +29,7 @@ use crate::{
         ProviderPromptFrame, ProviderRequestDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
         ToolSchemaContract,
     },
+    token_estimate::estimate_json_tokens,
 };
 
 use super::{build_http_client, request_send_timeout, stream_idle_timeout};
@@ -41,6 +46,7 @@ pub struct OpenAiProvider {
     api_key: Option<String>,
     model: String,
     max_output_tokens: u32,
+    compaction_policy: OpenAiCompactionPolicy,
     trace_home_dir: PathBuf,
     continuation: Arc<Mutex<OpenAiContinuationState>>,
 }
@@ -54,6 +60,7 @@ pub struct OpenAiCodexProvider {
     model: String,
     max_output_tokens: u32,
     reasoning_effort: Option<String>,
+    compaction_policy: OpenAiCompactionPolicy,
     trace_home_dir: PathBuf,
     continuation: Arc<Mutex<OpenAiContinuationState>>,
 }
@@ -75,9 +82,13 @@ pub(crate) enum OpenAiResponsesTransportContract {
     CodexStreaming,
 }
 
-const OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS: usize = 8;
 const OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND: &str = "responses_compact";
 static OPENAI_HTTP_TRACE_SEQ: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OpenAiCompactionPolicy {
+    pub(crate) trigger_input_tokens: u64,
+}
 
 #[derive(Clone, Debug)]
 struct OpenAiHttpTrace {
@@ -386,6 +397,7 @@ struct OpenAiProviderWindow {
     items: Vec<Value>,
     append_match_items: Vec<Value>,
     latest_compaction_index: Option<usize>,
+    latest_input_tokens: u64,
     generation: u64,
 }
 
@@ -440,11 +452,12 @@ impl OpenAiProvider {
             .providers
             .get(&ProviderId::openai())
             .ok_or_else(|| anyhow::anyhow!("missing openai provider config"))?;
-        Self::from_runtime_config(
+        Self::from_runtime_config_with_compaction_policy(
             provider_config,
             model,
             config.runtime_max_output_tokens,
             &config.home_dir,
+            openai_compaction_policy_from_config(config, ProviderId::openai(), model),
         )
     }
 
@@ -453,6 +466,22 @@ impl OpenAiProvider {
         model: &str,
         max_output_tokens: u32,
         trace_home_dir: &Path,
+    ) -> Result<Self> {
+        Self::from_runtime_config_with_compaction_policy(
+            provider_config,
+            model,
+            max_output_tokens,
+            trace_home_dir,
+            openai_compaction_policy_for_model(ProviderId::openai(), model, max_output_tokens),
+        )
+    }
+
+    pub(crate) fn from_runtime_config_with_compaction_policy(
+        provider_config: &ProviderRuntimeConfig,
+        model: &str,
+        max_output_tokens: u32,
+        trace_home_dir: &Path,
+        compaction_policy: OpenAiCompactionPolicy,
     ) -> Result<Self> {
         let client = build_http_client()?;
         let api_key = match (provider_config.auth.source, provider_config.auth.kind) {
@@ -480,6 +509,7 @@ impl OpenAiProvider {
             api_key,
             model: model.to_string(),
             max_output_tokens,
+            compaction_policy,
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
         })
@@ -492,11 +522,12 @@ impl OpenAiCodexProvider {
             .providers
             .get(&ProviderId::openai_codex())
             .ok_or_else(|| anyhow::anyhow!("missing openai-codex provider config"))?;
-        Self::from_runtime_config(
+        Self::from_runtime_config_with_compaction_policy(
             provider_config,
             model,
             config.runtime_max_output_tokens,
             &config.home_dir,
+            openai_compaction_policy_from_config(config, ProviderId::openai_codex(), model),
         )
     }
 
@@ -505,6 +536,26 @@ impl OpenAiCodexProvider {
         model: &str,
         max_output_tokens: u32,
         trace_home_dir: &Path,
+    ) -> Result<Self> {
+        Self::from_runtime_config_with_compaction_policy(
+            provider_config,
+            model,
+            max_output_tokens,
+            trace_home_dir,
+            openai_compaction_policy_for_model(
+                ProviderId::openai_codex(),
+                model,
+                max_output_tokens,
+            ),
+        )
+    }
+
+    pub(crate) fn from_runtime_config_with_compaction_policy(
+        provider_config: &ProviderRuntimeConfig,
+        model: &str,
+        max_output_tokens: u32,
+        trace_home_dir: &Path,
+        compaction_policy: OpenAiCompactionPolicy,
     ) -> Result<Self> {
         let client = build_http_client()?;
         let codex_home = provider_config
@@ -523,9 +574,55 @@ impl OpenAiCodexProvider {
             model: model.to_string(),
             max_output_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
+            compaction_policy,
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
         })
+    }
+}
+
+fn openai_compaction_policy_from_config(
+    config: &AppConfig,
+    provider: ProviderId,
+    model: &str,
+) -> OpenAiCompactionPolicy {
+    let base_context_config = ContextConfig {
+        recent_messages: config.context_window_messages,
+        recent_briefs: config.context_window_briefs,
+        compaction_trigger_messages: config.compaction_trigger_messages,
+        compaction_keep_recent_messages: config.compaction_keep_recent_messages,
+        prompt_budget_estimated_tokens: config.prompt_budget_estimated_tokens,
+        compaction_trigger_estimated_tokens: config.compaction_trigger_estimated_tokens,
+        compaction_keep_recent_estimated_tokens: config.compaction_keep_recent_estimated_tokens,
+        recent_episode_candidates: config.recent_episode_candidates,
+        max_relevant_episodes: config.max_relevant_episodes,
+    };
+    let policy = BuiltInModelCatalog::default().resolve_policy(
+        &ModelRef::new(provider, model),
+        &config.validated_model_overrides,
+        config.validated_unknown_model_fallback.as_ref(),
+        &base_context_config,
+        config.runtime_max_output_tokens,
+    );
+    OpenAiCompactionPolicy {
+        trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
+    }
+}
+
+fn openai_compaction_policy_for_model(
+    provider: ProviderId,
+    model: &str,
+    max_output_tokens: u32,
+) -> OpenAiCompactionPolicy {
+    let policy = BuiltInModelCatalog::default().resolve_policy(
+        &ModelRef::new(provider, model),
+        &Default::default(),
+        None,
+        &ContextConfig::default(),
+        max_output_tokens,
+    );
+    OpenAiCompactionPolicy {
+        trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
     }
 }
 
@@ -605,6 +702,7 @@ impl AgentProvider for OpenAiProvider {
         if let Some(remote_compaction) = maybe_compact_openai_request_plan(
             &self.continuation,
             &mut plan,
+            self.compaction_policy,
             &self.client,
             openai_responses_compact_url(&self.base_url),
             headers.clone(),
@@ -645,6 +743,7 @@ impl AgentProvider for OpenAiProvider {
                 &self.continuation,
                 plan_scope.as_ref(),
                 &plan_request_shape,
+                self.compaction_policy,
                 &self.client,
                 openai_responses_compact_url(&self.base_url),
                 headers,
@@ -707,6 +806,7 @@ impl AgentProvider for OpenAiCodexProvider {
         if let Some(remote_compaction) = maybe_compact_openai_request_plan(
             &self.continuation,
             &mut plan,
+            self.compaction_policy,
             &self.client,
             openai_codex_responses_compact_url(&self.base_url),
             headers.clone(),
@@ -747,6 +847,7 @@ impl AgentProvider for OpenAiCodexProvider {
                 &self.continuation,
                 plan_scope.as_ref(),
                 &plan_request_shape,
+                self.compaction_policy,
                 &self.client,
                 openai_codex_responses_compact_url(&self.base_url),
                 headers,
@@ -1739,6 +1840,7 @@ fn update_openai_continuation(
         return;
     };
     let mut state = lock_openai_continuation(continuation);
+    let latest_input_tokens = parsed.response.input_tokens;
     let next = match (parsed.response_id.as_ref(), parsed.output_items.is_empty()) {
         (Some(response_id), false) => {
             state.next_generation = state.next_generation.saturating_add(1);
@@ -1761,6 +1863,7 @@ fn update_openai_continuation(
                 items,
                 append_match_items,
                 generation: state.next_generation,
+                latest_input_tokens,
             })
         }
         _ => None,
@@ -1791,6 +1894,7 @@ async fn maybe_compact_openai_provider_window(
     continuation: &Arc<Mutex<OpenAiContinuationState>>,
     scope: Option<&OpenAiContinuationScope>,
     request_shape: &OpenAiRequestShape,
+    compaction_policy: OpenAiCompactionPolicy,
     client: &Client,
     compact_url: String,
     headers: Vec<(&str, String)>,
@@ -1804,21 +1908,25 @@ async fn maybe_compact_openai_provider_window(
         let state = lock_openai_continuation(continuation);
         state.windows.get(scope).cloned()
     }?;
+    let Some(trigger) =
+        openai_compaction_trigger_for_window(&window, request_shape, compaction_policy)
+    else {
+        return None;
+    };
     let candidate = match openai_provider_window_compaction_candidate(&window) {
         Ok(candidate) => candidate,
         Err(skip_reason) => {
-            if skip_reason == "below_item_threshold" {
-                return None;
-            }
             return Some(ProviderOpenAiRemoteCompactionDiagnostics {
                 status: format!("skipped_{skip_reason}"),
-                trigger_reason: Some("provider_window_item_threshold".into()),
+                trigger_reason: Some(trigger.reason.into()),
                 endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
                 http_status: None,
                 input_items: Some(window.items.len()),
                 output_items: None,
                 compaction_items: None,
                 latest_compaction_index: window.latest_compaction_index,
+                estimated_input_tokens: trigger.estimated_input_tokens,
+                trigger_input_tokens: Some(trigger.trigger_input_tokens),
                 encrypted_content_hashes: None,
                 encrypted_content_bytes: None,
                 request_shape_hash: Some(request_shape_hash(request_shape)),
@@ -1833,9 +1941,11 @@ async fn maybe_compact_openai_provider_window(
     if let Some(http_status) = compact_endpoint_unsupported_status(continuation, &compact_url) {
         return Some(openai_compact_unsupported_diagnostics(
             "skipped_unsupported_endpoint",
-            "provider_window_item_threshold",
+            trigger.reason,
             input_items,
             candidate.latest_compaction_index,
+            trigger.estimated_input_tokens,
+            Some(trigger.trigger_input_tokens),
             Some(request_shape_hash),
             Some(window.generation),
             http_status,
@@ -1858,13 +1968,15 @@ async fn maybe_compact_openai_provider_window(
             if is_non_persisted_compact_item_id_error(&error) {
                 return Some(ProviderOpenAiRemoteCompactionDiagnostics {
                     status: "invalid_non_persisted_item_id".into(),
-                    trigger_reason: Some("provider_window_item_threshold".into()),
+                    trigger_reason: Some(trigger.reason.into()),
                     endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
                     http_status: error_status(&error),
                     input_items: Some(input_items),
                     output_items: None,
                     compaction_items: None,
                     latest_compaction_index: candidate.latest_compaction_index,
+                    estimated_input_tokens: trigger.estimated_input_tokens,
+                    trigger_input_tokens: Some(trigger.trigger_input_tokens),
                     encrypted_content_hashes: None,
                     encrypted_content_bytes: None,
                     request_shape_hash: Some(request_shape_hash),
@@ -1876,9 +1988,11 @@ async fn maybe_compact_openai_provider_window(
                 mark_compact_endpoint_unsupported(continuation, &compact_url, http_status);
                 return Some(openai_compact_unsupported_diagnostics(
                     "unsupported_endpoint",
-                    "provider_window_item_threshold",
+                    trigger.reason,
                     input_items,
                     candidate.latest_compaction_index,
+                    trigger.estimated_input_tokens,
+                    Some(trigger.trigger_input_tokens),
                     Some(request_shape_hash),
                     Some(window.generation),
                     http_status,
@@ -1887,13 +2001,15 @@ async fn maybe_compact_openai_provider_window(
             }
             return Some(ProviderOpenAiRemoteCompactionDiagnostics {
                 status: "failed".into(),
-                trigger_reason: Some("provider_window_item_threshold".into()),
+                trigger_reason: Some(trigger.reason.into()),
                 endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
                 http_status: error_status(&error),
                 input_items: Some(input_items),
                 output_items: None,
                 compaction_items: None,
                 latest_compaction_index: candidate.latest_compaction_index,
+                estimated_input_tokens: trigger.estimated_input_tokens,
+                trigger_input_tokens: Some(trigger.trigger_input_tokens),
                 encrypted_content_hashes: None,
                 encrypted_content_bytes: None,
                 request_shape_hash: Some(request_shape_hash),
@@ -1905,13 +2021,15 @@ async fn maybe_compact_openai_provider_window(
     if compacted.is_empty() {
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: "rejected_empty_output".into(),
-            trigger_reason: Some("provider_window_item_threshold".into()),
+            trigger_reason: Some(trigger.reason.into()),
             endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
             http_status: None,
             input_items: Some(input_items),
             output_items: Some(0),
             compaction_items: Some(0),
             latest_compaction_index: candidate.latest_compaction_index,
+            estimated_input_tokens: trigger.estimated_input_tokens,
+            trigger_input_tokens: Some(trigger.trigger_input_tokens),
             encrypted_content_hashes: Some(Vec::new()),
             encrypted_content_bytes: Some(Vec::new()),
             request_shape_hash: Some(request_shape_hash),
@@ -1927,13 +2045,15 @@ async fn maybe_compact_openai_provider_window(
     if compaction_items == 0 {
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: "rejected_missing_compaction_item".into(),
-            trigger_reason: Some("provider_window_item_threshold".into()),
+            trigger_reason: Some(trigger.reason.into()),
             endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
             http_status: None,
             input_items: Some(input_items),
             output_items: Some(compacted.len()),
             compaction_items: Some(0),
             latest_compaction_index: None,
+            estimated_input_tokens: trigger.estimated_input_tokens,
+            trigger_input_tokens: Some(trigger.trigger_input_tokens),
             encrypted_content_hashes: Some(Vec::new()),
             encrypted_content_bytes: Some(Vec::new()),
             request_shape_hash: Some(request_shape_hash),
@@ -1949,13 +2069,15 @@ async fn maybe_compact_openai_provider_window(
         if current_generation != Some(window.generation) {
             return Some(ProviderOpenAiRemoteCompactionDiagnostics {
                 status: "stale_generation".into(),
-                trigger_reason: Some("provider_window_item_threshold".into()),
+                trigger_reason: Some(trigger.reason.into()),
                 endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
                 http_status: None,
                 input_items: Some(input_items),
                 output_items: Some(output_items),
                 compaction_items: Some(compaction_items),
                 latest_compaction_index,
+                estimated_input_tokens: trigger.estimated_input_tokens,
+                trigger_input_tokens: Some(trigger.trigger_input_tokens),
                 encrypted_content_hashes: Some(encrypted_content_hashes),
                 encrypted_content_bytes: Some(encrypted_content_bytes),
                 request_shape_hash: Some(request_shape_hash),
@@ -1979,6 +2101,7 @@ async fn maybe_compact_openai_provider_window(
                 items,
                 append_match_items: window.append_match_items,
                 latest_compaction_index,
+                latest_input_tokens: 0,
                 generation,
             },
         );
@@ -1987,13 +2110,15 @@ async fn maybe_compact_openai_provider_window(
 
     Some(ProviderOpenAiRemoteCompactionDiagnostics {
         status: "compacted".into(),
-        trigger_reason: Some("provider_window_item_threshold".into()),
+        trigger_reason: Some(trigger.reason.into()),
         endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
         http_status: None,
         input_items: Some(input_items),
         output_items: Some(output_items),
         compaction_items: Some(compaction_items),
         latest_compaction_index,
+        estimated_input_tokens: trigger.estimated_input_tokens,
+        trigger_input_tokens: Some(trigger.trigger_input_tokens),
         encrypted_content_hashes: Some(encrypted_content_hashes),
         encrypted_content_bytes: Some(encrypted_content_bytes),
         request_shape_hash: Some(request_shape_hash),
@@ -2005,6 +2130,7 @@ async fn maybe_compact_openai_provider_window(
 async fn maybe_compact_openai_request_plan(
     continuation: &Arc<Mutex<OpenAiContinuationState>>,
     plan: &mut OpenAiRequestPlan,
+    compaction_policy: OpenAiCompactionPolicy,
     client: &Client,
     compact_url: String,
     headers: Vec<(&str, String)>,
@@ -2029,23 +2155,28 @@ async fn maybe_compact_openai_request_plan(
         latest_compaction_index: latest_openai_compaction_index(&compactable_items),
         items: compactable_items,
         append_match_items: plan.append_match_input.clone(),
+        latest_input_tokens: previous.latest_input_tokens,
         generation: previous.generation,
+    };
+    let Some(trigger) =
+        openai_compaction_trigger_for_request_plan(&previous, plan, compaction_policy)
+    else {
+        return None;
     };
     let candidate = match openai_provider_window_compaction_candidate(&compactable_window) {
         Ok(candidate) => candidate,
         Err(skip_reason) => {
-            if skip_reason == "below_item_threshold" {
-                return None;
-            }
             return Some(ProviderOpenAiRemoteCompactionDiagnostics {
                 status: format!("skipped_{skip_reason}"),
-                trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+                trigger_reason: Some(trigger.reason.into()),
                 endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
                 http_status: None,
                 input_items: Some(compactable_window.items.len()),
                 output_items: None,
                 compaction_items: None,
                 latest_compaction_index: compactable_window.latest_compaction_index,
+                estimated_input_tokens: trigger.estimated_input_tokens,
+                trigger_input_tokens: Some(trigger.trigger_input_tokens),
                 encrypted_content_hashes: None,
                 encrypted_content_bytes: None,
                 request_shape_hash: Some(request_shape_hash(&plan.request_shape)),
@@ -2060,9 +2191,11 @@ async fn maybe_compact_openai_request_plan(
     if let Some(http_status) = compact_endpoint_unsupported_status(continuation, &compact_url) {
         return Some(openai_compact_unsupported_diagnostics(
             "skipped_unsupported_endpoint",
-            "provider_window_item_threshold_before_request",
+            trigger.reason,
             input_items,
             candidate.latest_compaction_index,
+            trigger.estimated_input_tokens,
+            Some(trigger.trigger_input_tokens),
             Some(request_shape_hash),
             Some(previous.generation),
             http_status,
@@ -2085,13 +2218,15 @@ async fn maybe_compact_openai_request_plan(
             if is_non_persisted_compact_item_id_error(&error) {
                 return Some(ProviderOpenAiRemoteCompactionDiagnostics {
                     status: "invalid_non_persisted_item_id".into(),
-                    trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+                    trigger_reason: Some(trigger.reason.into()),
                     endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
                     http_status: error_status(&error),
                     input_items: Some(input_items),
                     output_items: None,
                     compaction_items: None,
                     latest_compaction_index: candidate.latest_compaction_index,
+                    estimated_input_tokens: trigger.estimated_input_tokens,
+                    trigger_input_tokens: Some(trigger.trigger_input_tokens),
                     encrypted_content_hashes: None,
                     encrypted_content_bytes: None,
                     request_shape_hash: Some(request_shape_hash),
@@ -2103,9 +2238,11 @@ async fn maybe_compact_openai_request_plan(
                 mark_compact_endpoint_unsupported(continuation, &compact_url, http_status);
                 return Some(openai_compact_unsupported_diagnostics(
                     "unsupported_endpoint",
-                    "provider_window_item_threshold_before_request",
+                    trigger.reason,
                     input_items,
                     candidate.latest_compaction_index,
+                    trigger.estimated_input_tokens,
+                    Some(trigger.trigger_input_tokens),
                     Some(request_shape_hash),
                     Some(previous.generation),
                     http_status,
@@ -2114,13 +2251,15 @@ async fn maybe_compact_openai_request_plan(
             }
             return Some(ProviderOpenAiRemoteCompactionDiagnostics {
                 status: "failed".into(),
-                trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+                trigger_reason: Some(trigger.reason.into()),
                 endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
                 http_status: error_status(&error),
                 input_items: Some(input_items),
                 output_items: None,
                 compaction_items: None,
                 latest_compaction_index: candidate.latest_compaction_index,
+                estimated_input_tokens: trigger.estimated_input_tokens,
+                trigger_input_tokens: Some(trigger.trigger_input_tokens),
                 encrypted_content_hashes: None,
                 encrypted_content_bytes: None,
                 request_shape_hash: Some(request_shape_hash),
@@ -2132,13 +2271,15 @@ async fn maybe_compact_openai_request_plan(
     if compacted.is_empty() {
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: "rejected_empty_output".into(),
-            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            trigger_reason: Some(trigger.reason.into()),
             endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
             http_status: None,
             input_items: Some(input_items),
             output_items: Some(0),
             compaction_items: Some(0),
             latest_compaction_index: candidate.latest_compaction_index,
+            estimated_input_tokens: trigger.estimated_input_tokens,
+            trigger_input_tokens: Some(trigger.trigger_input_tokens),
             encrypted_content_hashes: Some(Vec::new()),
             encrypted_content_bytes: Some(Vec::new()),
             request_shape_hash: Some(request_shape_hash),
@@ -2154,13 +2295,15 @@ async fn maybe_compact_openai_request_plan(
     if compaction_items == 0 {
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: "rejected_missing_compaction_item".into(),
-            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            trigger_reason: Some(trigger.reason.into()),
             endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
             http_status: None,
             input_items: Some(input_items),
             output_items: Some(compacted.len()),
             compaction_items: Some(0),
             latest_compaction_index: None,
+            estimated_input_tokens: trigger.estimated_input_tokens,
+            trigger_input_tokens: Some(trigger.trigger_input_tokens),
             encrypted_content_hashes: Some(Vec::new()),
             encrypted_content_bytes: Some(Vec::new()),
             request_shape_hash: Some(request_shape_hash),
@@ -2176,13 +2319,15 @@ async fn maybe_compact_openai_request_plan(
     if current_generation != Some(previous.generation) {
         return Some(ProviderOpenAiRemoteCompactionDiagnostics {
             status: "stale_generation".into(),
-            trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+            trigger_reason: Some(trigger.reason.into()),
             endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
             http_status: None,
             input_items: Some(input_items),
             output_items: Some(compacted.len()),
             compaction_items: Some(compaction_items),
             latest_compaction_index,
+            estimated_input_tokens: trigger.estimated_input_tokens,
+            trigger_input_tokens: Some(trigger.trigger_input_tokens),
             encrypted_content_hashes: Some(encrypted_content_hashes),
             encrypted_content_bytes: Some(encrypted_content_bytes),
             request_shape_hash: Some(request_shape_hash),
@@ -2206,13 +2351,15 @@ async fn maybe_compact_openai_request_plan(
 
     Some(ProviderOpenAiRemoteCompactionDiagnostics {
         status: "compacted".into(),
-        trigger_reason: Some("provider_window_item_threshold_before_request".into()),
+        trigger_reason: Some(trigger.reason.into()),
         endpoint_kind: Some(OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND.into()),
         http_status: None,
         input_items: Some(input_items),
         output_items: Some(output_items),
         compaction_items: Some(compaction_items),
         latest_compaction_index,
+        estimated_input_tokens: trigger.estimated_input_tokens,
+        trigger_input_tokens: Some(trigger.trigger_input_tokens),
         encrypted_content_hashes: Some(encrypted_content_hashes),
         encrypted_content_bytes: Some(encrypted_content_bytes),
         request_shape_hash: Some(request_shape_hash),
@@ -2272,6 +2419,8 @@ fn openai_compact_unsupported_diagnostics(
     trigger_reason: &str,
     input_items: usize,
     latest_compaction_index: Option<usize>,
+    estimated_input_tokens: Option<u64>,
+    trigger_input_tokens: Option<u64>,
     request_shape_hash: Option<String>,
     continuation_generation: Option<u64>,
     http_status: u16,
@@ -2286,6 +2435,8 @@ fn openai_compact_unsupported_diagnostics(
         output_items: None,
         compaction_items: None,
         latest_compaction_index,
+        estimated_input_tokens,
+        trigger_input_tokens,
         encrypted_content_hashes: None,
         encrypted_content_bytes: None,
         request_shape_hash,
@@ -2294,23 +2445,88 @@ fn openai_compact_unsupported_diagnostics(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct OpenAiCompactionTrigger {
+    reason: &'static str,
+    estimated_input_tokens: Option<u64>,
+    trigger_input_tokens: u64,
+}
+
+fn openai_compaction_trigger_for_window(
+    window: &OpenAiProviderWindow,
+    request_shape: &OpenAiRequestShape,
+    policy: OpenAiCompactionPolicy,
+) -> Option<OpenAiCompactionTrigger> {
+    if window.latest_input_tokens > 0 {
+        return (window.latest_input_tokens >= policy.trigger_input_tokens).then_some(
+            OpenAiCompactionTrigger {
+                reason: "token_budget_pressure",
+                estimated_input_tokens: None,
+                trigger_input_tokens: policy.trigger_input_tokens,
+            },
+        );
+    }
+
+    let estimated = estimate_openai_provider_payload_tokens(
+        request_shape,
+        openai_items_after_latest_compaction(&window.items),
+    );
+    (estimated >= policy.trigger_input_tokens).then_some(OpenAiCompactionTrigger {
+        reason: "estimated_window_pressure",
+        estimated_input_tokens: Some(estimated),
+        trigger_input_tokens: policy.trigger_input_tokens,
+    })
+}
+
+fn openai_compaction_trigger_for_request_plan(
+    previous: &OpenAiProviderWindow,
+    plan: &OpenAiRequestPlan,
+    policy: OpenAiCompactionPolicy,
+) -> Option<OpenAiCompactionTrigger> {
+    let mut compactable_items = previous.items.clone();
+    compactable_items.extend(plan.provider_input.clone());
+    if previous.latest_input_tokens == 0
+        && latest_openai_compaction_index(&compactable_items).is_some()
+    {
+        return None;
+    }
+    let estimated = estimate_openai_provider_payload_tokens(
+        &plan.request_shape,
+        openai_items_after_latest_compaction(&compactable_items),
+    );
+    (estimated >= policy.trigger_input_tokens).then_some(OpenAiCompactionTrigger {
+        reason: "estimated_window_pressure",
+        estimated_input_tokens: Some(estimated),
+        trigger_input_tokens: policy.trigger_input_tokens,
+    })
+}
+
+fn estimate_openai_provider_payload_tokens(
+    request_shape: &OpenAiRequestShape,
+    input_items: &[Value],
+) -> u64 {
+    let shape_tokens = estimate_json_tokens(&request_shape.wire_shape);
+    let input_tokens = input_items
+        .iter()
+        .map(estimate_json_tokens)
+        .fold(0usize, usize::saturating_add);
+    shape_tokens.saturating_add(input_tokens).saturating_add(1) as u64
+}
+
+fn openai_items_after_latest_compaction(items: &[Value]) -> &[Value] {
+    latest_openai_compaction_index(items)
+        .map(|index| &items[index.saturating_add(1)..])
+        .unwrap_or(items)
+}
+
 fn openai_provider_window_compaction_candidate(
     window: &OpenAiProviderWindow,
 ) -> std::result::Result<OpenAiCompactionCandidate, &'static str> {
-    if items_since_latest_openai_compaction(&window.items) < OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS
-    {
-        return Err("below_item_threshold");
-    }
-
     let boundary =
-        latest_complete_openai_tool_call_boundary(&window.items).ok_or("unpaired_tool_call")?;
+        latest_complete_openai_tool_call_boundary(&window.items).ok_or("no_safe_boundary")?;
     debug_assert!(boundary > 0);
 
     let compact_items = window.items[..boundary].to_vec();
-    if items_since_latest_openai_compaction(&compact_items) < OPENAI_REMOTE_COMPACTION_TRIGGER_ITEMS
-    {
-        return Err("unpaired_tool_call");
-    }
     if has_unpaired_openai_tool_call(&compact_items) {
         return Err("unpaired_tool_call");
     }
@@ -2326,12 +2542,6 @@ fn openai_compacted_replay_items(compacted: &[Value]) -> Vec<Value> {
     latest_openai_compaction_index(compacted)
         .map(|index| compacted[index..].to_vec())
         .unwrap_or_else(|| compacted.to_vec())
-}
-
-fn items_since_latest_openai_compaction(items: &[Value]) -> usize {
-    latest_openai_compaction_index(items)
-        .map(|index| items.len().saturating_sub(index + 1))
-        .unwrap_or(items.len())
 }
 
 fn latest_complete_openai_tool_call_boundary(items: &[Value]) -> Option<usize> {
@@ -4169,8 +4379,11 @@ fn unsupported_streaming_transport_error(provider_name: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_openai_responses_request, chat_completions_url, latest_openai_compaction_index,
+        build_openai_responses_request, chat_completions_url, incremental_diagnostics,
+        latest_openai_compaction_index, openai_compaction_trigger_for_request_plan,
+        openai_compaction_trigger_for_window, openai_provider_window_compaction_candidate,
         redact_headers, redact_json_secrets, redact_url, sanitize_trace_path_segment,
+        OpenAiCompactionPolicy, OpenAiProviderWindow, OpenAiRequestPlan, OpenAiRequestShape,
         OpenAiResponsesTransportContract, ToolSchemaContract,
     };
     use crate::provider::{
@@ -4248,6 +4461,135 @@ mod tests {
         ];
 
         assert_eq!(latest_openai_compaction_index(&items), Some(3));
+    }
+
+    #[test]
+    fn openai_compaction_trigger_skips_many_small_items_below_budget() {
+        let request_shape = test_request_shape();
+        let window = OpenAiProviderWindow {
+            response_id: Some("resp_1".into()),
+            request_shape: request_shape.clone(),
+            items: (0..24)
+                .map(|index| json!({ "type": "message", "content": format!("m{index}") }))
+                .collect(),
+            append_match_items: Vec::new(),
+            latest_compaction_index: None,
+            latest_input_tokens: 0,
+            generation: 1,
+        };
+
+        assert!(openai_compaction_trigger_for_window(
+            &window,
+            &request_shape,
+            OpenAiCompactionPolicy {
+                trigger_input_tokens: 10_000,
+            },
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn openai_compaction_candidate_allows_single_large_item() {
+        let request_shape = test_request_shape();
+        let window = OpenAiProviderWindow {
+            response_id: Some("resp_1".into()),
+            request_shape: request_shape.clone(),
+            items: vec![json!({
+                "type": "message",
+                "content": "x".repeat(4096),
+            })],
+            append_match_items: Vec::new(),
+            latest_compaction_index: None,
+            latest_input_tokens: 0,
+            generation: 1,
+        };
+
+        let trigger = openai_compaction_trigger_for_window(
+            &window,
+            &request_shape,
+            OpenAiCompactionPolicy {
+                trigger_input_tokens: 128,
+            },
+        )
+        .expect("large item should reach token pressure");
+        assert_eq!(trigger.reason, "estimated_window_pressure");
+
+        let candidate = openai_provider_window_compaction_candidate(&window)
+            .expect("single complete message should be compactable");
+        assert_eq!(candidate.items.len(), 1);
+    }
+
+    #[test]
+    fn openai_compaction_trigger_prefers_provider_usage_tokens() {
+        let request_shape = test_request_shape();
+        let window = OpenAiProviderWindow {
+            response_id: Some("resp_1".into()),
+            request_shape: request_shape.clone(),
+            items: vec![json!({ "type": "message", "content": "small" })],
+            append_match_items: Vec::new(),
+            latest_compaction_index: None,
+            latest_input_tokens: 512,
+            generation: 1,
+        };
+
+        let trigger = openai_compaction_trigger_for_window(
+            &window,
+            &request_shape,
+            OpenAiCompactionPolicy {
+                trigger_input_tokens: 128,
+            },
+        )
+        .expect("usage should reach token pressure");
+        assert_eq!(trigger.reason, "token_budget_pressure");
+        assert_eq!(trigger.estimated_input_tokens, None);
+    }
+
+    #[test]
+    fn openai_compaction_trigger_skips_immediate_compacted_replay_before_usage() {
+        let request_shape = test_request_shape();
+        let previous = OpenAiProviderWindow {
+            response_id: Some("resp_1".into()),
+            request_shape: request_shape.clone(),
+            items: vec![
+                json!({ "type": "compaction", "encrypted_content": "opaque" }),
+                json!({ "type": "message", "content": "recent" }),
+            ],
+            append_match_items: Vec::new(),
+            latest_compaction_index: Some(0),
+            latest_input_tokens: 0,
+            generation: 1,
+        };
+        let plan = OpenAiRequestPlan {
+            body: json!({ "model": "gpt-test", "input": [] }),
+            scope: None,
+            append_match_input: Vec::new(),
+            provider_input: vec![json!({ "type": "message", "content": "continue" })],
+            request_shape,
+            diagnostics: incremental_diagnostics(
+                "provider_window_compacted",
+                "test",
+                None,
+                0,
+                None,
+                None,
+            ),
+        };
+
+        assert!(openai_compaction_trigger_for_request_plan(
+            &previous,
+            &plan,
+            OpenAiCompactionPolicy {
+                trigger_input_tokens: 1,
+            },
+        )
+        .is_none());
+    }
+
+    fn test_request_shape() -> OpenAiRequestShape {
+        OpenAiRequestShape {
+            wire_shape: json!({ "model": "gpt-test" }),
+            prompt_frame: crate::provider::ProviderPromptFrame::plain("system"),
+        }
     }
 
     #[test]
