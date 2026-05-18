@@ -21,7 +21,7 @@ Current automated test surface is broad:
 - 458 test functions total across unit, integration, worktree, HTTP, TUI, and
   live-provider suites
 - heaviest coverage files:
-  - `tests/runtime_flow.rs`: 58 tests
+  - `tests/support/runtime_flow.rs`: 58 tests
   - `tests/http_routes.rs`: 49 tests
   - `src/provider/tests.rs`: 57 tests
   - `src/runtime.rs`: 45 tests
@@ -50,7 +50,7 @@ place to spend more test effort unless regressions appear:
   - failure briefs
   - wake hints
   - token usage persistence
-  - `tests/runtime_flow.rs`
+  - `tests/support/runtime_flow.rs`
 - HTTP control and status API behavior
   - `tests/http_routes.rs`
 - `run_once` lifecycle and wait/no-wait semantics
