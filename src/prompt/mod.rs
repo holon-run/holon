@@ -347,14 +347,14 @@ fn build_system_sections(
             "identity",
             PromptStability::Stable,
             format!(
-                "You are Holon, a headless coding-oriented runtime assistant. Keep edits and other mutating workspace actions inside the configured workspace root: {}. Use UseWorkspace to change the active workspace root; workspace-lifecycle operations are not restricted by this guard.",
+                "You are Holon, a headless coding-oriented runtime assistant. The active workspace root is the default long-lived project context: {}. It defines the default cwd, relative ApplyPatch targets, and scoped AGENTS.md guidance. Prefer keeping ordinary project edits in the active workspace, but explicit absolute paths from the operator or task context may target files outside it. Use UseWorkspace when you will work in another directory for more than a one-off explicit target.",
                 workspace_root.display()
             ),
         ),
         section(
             "core_contract",
             PromptStability::Stable,
-            "Read before changing. When analyzing a project, describe the current structure before recommending changes. When changing code, keep edits as small and local as possible, but use ApplyPatch as the default file-mutation primitive instead of shell rewrite tricks or whole-file rewrites. Avoid redundant tool calls once you already have enough evidence to act.".to_string(),
+            "Read before changing. When analyzing a project, describe the current structure before recommending changes. When changing code, keep edits as small and local as possible, but use ApplyPatch as the default file-mutation primitive instead of shell rewrite tricks or whole-file rewrites. Avoid redundant tool calls once you already have enough evidence to act. Do not re-read files, AGENTS guidance, or command output already present in the current context unless a concrete changed-state question requires it.".to_string(),
         ),
         section(
             "engineering_guardrails",
@@ -374,7 +374,7 @@ fn build_system_sections(
         section(
             "context_completion",
             PromptStability::Stable,
-            "When the operator provides an external reference or another indirect task entry point, resolve only the minimum context needed to identify the task scope, acceptance target, relevant files or systems, and local conventions before making high-commitment changes. If that missing context can be obtained with available local or network tools, do so proactively; a failed first lookup does not by itself mean the task is blocked. Once those concrete execution facts are known, stop expanding context and make the smallest viable change, run the relevant verification, or report the specific blocker. Continue exploring only when one concrete missing fact still blocks editing, verification, or a grounded answer.".to_string(),
+            "When the operator provides an external reference or another indirect task entry point, resolve only the minimum context needed to identify the task scope, acceptance target, relevant files or systems, and local conventions before making high-commitment changes. If that missing context can be obtained with available local or network tools, do so proactively; a failed first lookup does not by itself mean the task is blocked. Once those concrete execution facts are known, stop expanding context and make the smallest viable change, run the relevant verification, or report the specific blocker. Continue exploring only when one concrete missing fact still blocks editing, verification, or a grounded answer. If context may have changed because another command, patch, formatter, or user edit touched the file, refresh only the smallest relevant slice before the next edit.".to_string(),
         ),
         section(
             "progress_reporting",
@@ -384,7 +384,7 @@ fn build_system_sections(
         section(
             "exploration_discipline",
             PromptStability::Stable,
-            "Exploration must reduce uncertainty toward the operator's goal. Prefer bounded questions over broad scans. After related read or search commands, decide whether you can act, conclude, ask for clarification, or need one more specific fact. If continuing exploration, name the specific missing fact and the next bounded command or query. Do not continue broad exploration just because more files or references are available.".to_string(),
+            "Exploration must reduce uncertainty toward the operator's goal. Prefer bounded questions over broad scans. After related read or search commands, decide whether you can act, conclude, ask for clarification, or need one more specific fact. If continuing exploration, name the specific missing fact and the next bounded command or query. Do not continue broad exploration just because more files or references are available. Do not repeat the same read command or nearby one-line slice after the useful context is already present; use a targeted refresh only for diagnostics, suspected external edits, formatter/script changes, or other concrete changed-state questions.".to_string(),
         ),
         section(
             "planning_discipline",
@@ -890,6 +890,59 @@ mod tests {
     }
 
     #[test]
+    fn identity_section_describes_workspace_as_default_context() {
+        let sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("/repo"),
+            &LoadedAgentsMd::default(),
+            &SkillsRuntimeView::default(),
+            &[],
+        );
+        let section = sections
+            .iter()
+            .find(|section| section.name == "identity")
+            .expect("identity section");
+
+        assert!(section
+            .content
+            .contains("default long-lived project context"));
+        assert!(section.content.contains("default cwd"));
+        assert!(section.content.contains("relative ApplyPatch targets"));
+        assert!(section.content.contains("scoped AGENTS.md guidance"));
+        assert!(section
+            .content
+            .contains("explicit absolute paths from the operator or task context"));
+        assert!(section
+            .content
+            .contains("Use UseWorkspace when you will work in another directory"));
+        assert!(!section.content.contains("Keep edits"));
+    }
+
+    #[test]
+    fn core_contract_includes_stable_anti_reread_guidance() {
+        let sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("."),
+            &LoadedAgentsMd::default(),
+            &SkillsRuntimeView::default(),
+            &[],
+        );
+        let section = sections
+            .iter()
+            .find(|section| section.name == "core_contract")
+            .expect("core contract section");
+
+        assert!(section
+            .content
+            .contains("Do not re-read files, AGENTS guidance, or command output"));
+        assert!(section
+            .content
+            .contains("unless a concrete changed-state question requires it"));
+    }
+
+    #[test]
     fn system_prompt_includes_context_completion_principle() {
         let sections = build_system_sections(
             &sample_identity(),
@@ -911,6 +964,12 @@ mod tests {
         assert!(section.content.contains("minimum context needed"));
         assert!(section.content.contains("stop expanding context"));
         assert!(section.content.contains("one concrete missing fact"));
+        assert!(section
+            .content
+            .contains("refresh only the smallest relevant slice"));
+        assert!(section
+            .content
+            .contains("formatter, or user edit touched the file"));
     }
 
     #[test]
@@ -973,6 +1032,10 @@ mod tests {
         assert!(section
             .content
             .contains("just because more files or references are available"));
+        assert!(section
+            .content
+            .contains("Do not repeat the same read command"));
+        assert!(section.content.contains("concrete changed-state questions"));
     }
 
     #[test]

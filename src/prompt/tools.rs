@@ -97,7 +97,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_exec_command",
             PromptStability::Stable,
-            "Use ExecCommand as the primary repo-inspection and verification primitive. For code and docs, prefer shell-first inspection patterns such as `rg --files`, `rg -n`, `sed -n start,endp`, `head`, and `tail`. Startup input is only the command-start contract: `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `accepts_input`, `continue_on_result`, `yield_time_ms`, and `max_output_tokens`. `workdir` is optional and usually should be omitted because Holon defaults it to the current workspace cwd. Only set `workdir` when you truly need a different directory, and then prefer a short relative path inside the workspace instead of copying a long absolute worktree path. `yield_time_ms` is optional and defaults to 10_000 ms; omit it unless you intentionally want a shorter or longer foreground wait window. Before setting `yield_time_ms`, ask whether you are deliberately trying to change when the command returns or becomes a background task; if not, omit it. Narrow commands before repeating broad scans, and do not dump large files with `cat` unless no smaller slice can answer the current question. Keep command startup compact: prefer checked-in scripts, temp files, or path-based artifacts over huge inline heredocs when generating or transforming large content. When several bounded shell commands should run before the next decision and ExecCommandBatch is available, prefer it instead of shell separator scripts; otherwise keep one-off commands on ExecCommand.\n\nValid startup examples:\n- `{ \"cmd\": \"rg -n \\\"render_for_model\\\" src\" }`\n- `{ \"cmd\": \"sed -n '1,120p' src/runtime/turn.rs\", \"max_output_tokens\": 1200 }`\n- `{ \"cmd\": \"python -i\", \"tty\": true, \"accepts_input\": true }`\n\nInvalid startup shapes:\n- `{ \"command\": \"rg -n ...\" }` because the field is `cmd`, not `command`\n- `{ \"cmd\": \"cargo test\", \"status\": \"running\" }` because `status` is result/task metadata, not startup input\n- `{ \"cmd\": \"git status\", \"commentary\": \"checking repo\" }` because free-form commentary is not an ExecCommand field\n\nAfter a failed edit or verification command, inspect the relevant failure output once, then make one focused correction. Avoid repeated micro-commands that only move one line at a time or re-check the same nearby slice without new evidence.\n\nKeep startup, immediate result, and promoted-task semantics separate. ExecCommand keeps a structured canonical result with fields such as `disposition`, `exit_status`, bounded previews, truncation flags, artifact refs, and command cost diagnostics, but the command-family tool receipt shown back to the model is rendered as a readable text receipt instead of a raw JSON dump. Command output uses a bounded default budget and per-call `max_output_tokens` is only useful when the next decision truly needs more preview text; artifact refs remain the route for full output. If the command exceeds `yield_time_ms` (default 10_000 ms), Holon promotes it into a `command_task` and returns `disposition=promoted_to_task` plus `task_handle`, `initial_output_preview`, and `initial_output_truncated`. Those are result fields, not valid startup input. When output is truncated, refine the command instead of asking for more of the same wide dump. After promotion, pass `task_handle.task_id` to TaskOutput only when you need bounded output retrieval or an explicit current-turn check; for ordinary completion waiting, call Sleep and let the runtime wake you from the terminal TaskResult event. Use TaskStatus/TaskList for coordination metadata.".to_string(),
+            "Use ExecCommand as the primary repo-inspection and verification primitive. For code and docs, prefer shell-first inspection patterns such as `rg --files`, `rg -n`, `sed -n start,endp`, `head`, and `tail`. Startup input is only the command-start contract: `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `accepts_input`, `continue_on_result`, `yield_time_ms`, and `max_output_tokens`. `workdir` is optional and usually should be omitted because Holon defaults it to the current workspace cwd. Only set `workdir` when you truly need a different directory, and then prefer a short relative path inside the workspace instead of copying a long absolute worktree path. `yield_time_ms` is optional and defaults to 10_000 ms; omit it unless you intentionally want a shorter or longer foreground wait window. Before setting `yield_time_ms`, ask whether you are deliberately trying to change when the command returns or becomes a background task; if not, omit it. Narrow commands before repeating broad scans, and do not dump large files with `cat` unless no smaller slice can answer the current question. Do not repeat the same read command or adjacent one-line slices when the current context already contains the needed evidence; refresh only the smallest relevant slice when diagnostics, formatter/script output, suspected external edits, or another concrete changed-state question requires it. After a successful command creates, rewrites, formats, or generates files, rely on the command receipt first instead of re-reading just to confirm the write happened; use focused verification or a targeted slice only when the next decision depends on exact final content. Keep command startup compact: prefer checked-in scripts, temp files, or path-based artifacts over huge inline heredocs when generating or transforming large content. When several bounded shell commands should run before the next decision and ExecCommandBatch is available, prefer it instead of shell separator scripts; otherwise keep one-off commands on ExecCommand.\n\nValid startup examples:\n- `{ \"cmd\": \"rg -n \\\"render_for_model\\\" src\" }`\n- `{ \"cmd\": \"sed -n '1,120p' src/runtime/turn.rs\", \"max_output_tokens\": 1200 }`\n- `{ \"cmd\": \"python -i\", \"tty\": true, \"accepts_input\": true }`\n\nInvalid startup shapes:\n- `{ \"command\": \"rg -n ...\" }` because the field is `cmd`, not `command`\n- `{ \"cmd\": \"cargo test\", \"status\": \"running\" }` because `status` is result/task metadata, not startup input\n- `{ \"cmd\": \"git status\", \"commentary\": \"checking repo\" }` because free-form commentary is not an ExecCommand field\n\nAfter a failed edit or verification command, inspect the relevant failure output once, then make one focused correction. Avoid repeated micro-commands that only move one line at a time or re-check the same nearby slice without new evidence.\n\nKeep startup, immediate result, and promoted-task semantics separate. ExecCommand keeps a structured canonical result with fields such as `disposition`, `exit_status`, bounded previews, truncation flags, artifact refs, and command cost diagnostics, but the command-family tool receipt shown back to the model is rendered as a readable text receipt instead of a raw JSON dump. Command output uses a bounded default budget and per-call `max_output_tokens` is only useful when the next decision truly needs more preview text; artifact refs remain the route for full output. If the command exceeds `yield_time_ms` (default 10_000 ms), Holon promotes it into a `command_task` and returns `disposition=promoted_to_task` plus `task_handle`, `initial_output_preview`, and `initial_output_truncated`. Those are result fields, not valid startup input. When output is truncated, refine the command instead of asking for more of the same wide dump. After promotion, pass `task_handle.task_id` to TaskOutput only when you need bounded output retrieval or an explicit current-turn check; for ordinary completion waiting, call Sleep and let the runtime wake you from the terminal TaskResult event. Use TaskStatus/TaskList for coordination metadata.".to_string(),
         ));
     }
     if names.contains(&"ExecCommandBatch") {
@@ -136,14 +136,14 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_file_mutation",
             PromptStability::Stable,
-            format!("File mutation is workspace-scoped and centered on ApplyPatch. {format_guidance} Keep tool output bounded: do not paste enormous malformed patches, do not retry the same large failed patch unchanged, and split large refactors into smaller patch/application steps when that keeps failures recoverable. Avoid using ExecCommand with shell rewrite tricks like `sed -i` as the default editing path, but use a bounded script or heredoc when generating/replacing a large file is cheaper and safer than a huge diff. After a clean file mutation, rely on the ApplyPatch receipt first, then run focused verification with ExecCommand when correctness matters. If ApplyPatch reports diagnostics, warnings, partial application, context mismatch, or any non-clean receipt, inspect the exact affected region before continuing edits to that file and do not retry the same diagnostic-producing patch unchanged. Do not use file mutation tools for broad exploration; inspect with shell-first read commands through ExecCommand instead."),
+            format!("File mutation is centered on ApplyPatch. Relative patch paths resolve from the active workspace; explicit absolute paths are filesystem targets and should be used only when the operator or task context clearly identifies that target. {format_guidance} Keep tool output bounded: do not paste enormous malformed patches, do not retry the same large failed patch unchanged, and split large refactors into smaller patch/application steps when that keeps failures recoverable. Avoid using ExecCommand with shell rewrite tricks like `sed -i` as the default editing path, but use a bounded script or heredoc when generating/replacing a large file is cheaper and safer than a huge diff. After a clean file mutation, rely on the ApplyPatch receipt first and do not re-read the same file merely to confirm that the tool applied; run focused verification with ExecCommand when behavior matters. If exact final content affects the next edit, read only the smallest relevant slice. If ApplyPatch reports diagnostics, warnings, partial application, context mismatch, or any non-clean receipt, inspect the exact affected region before continuing edits to that file and do not retry the same diagnostic-producing patch unchanged. Also inspect the minimal affected slice when a formatter, script, command, or user edit may have changed the file after your last read. Do not use file mutation tools for broad exploration; inspect with shell-first read commands through ExecCommand instead."),
         ));
     }
     if names.contains(&"UseWorkspace") {
         sections.push(section(
             "tool_workspace",
             PromptStability::Stable,
-            "Workspace is explicit runtime state, not just a shell directory. The active workspace defines the instruction root, execution root, default cwd, workspace-scoped memory/policy boundary, and where ApplyPatch and future local tools operate. Every agent always has exactly one active workspace. `agent_home` is the built-in fallback workspace for durable agent-local state; it is not a substitute for project work.\n\nUse UseWorkspace to make the right workspace active before local file or command work. Call `UseWorkspace({\"path\":\"/repo/or/subdir\"})` when the operator gave you a project path or you need to discover/adopt a directory. Call `UseWorkspace({\"workspace_id\":\"agent_home\"})` to return to AgentHome, or `UseWorkspace({\"workspace_id\":\"ws-...\"})` to switch to a known workspace id from agent state. Provide exactly one of `path` or `workspace_id`. Use `mode=\"isolated\"` only when you need a runtime-managed isolated execution root, and provide an `isolation_label` as an intent/branch hint rather than inventing a worktree path.\n\nShell `cd` affects only that shell command process. It does not redefine the active workspace, instruction root, or ApplyPatch target root. Switching workspaces does not delete files, remove bindings, or clean up retained isolated roots; cleanup is a separate explicit lifecycle action.".to_string(),
+            "Workspace is explicit runtime state, not just a shell directory. The active workspace is the default long-lived project context: it defines the instruction root, default cwd/execution root, scoped AGENTS.md or CLAUDE.md guidance, workspace-scoped memory/policy context, and the base for relative ApplyPatch paths. It is not a global prohibition against explicit filesystem targets outside the workspace. Every agent always has exactly one active workspace. `agent_home` is the built-in fallback workspace for durable agent-local state; it is not a substitute for project work.\n\nUse UseWorkspace to make the right workspace active when you will inspect, edit, or verify a project over more than a one-off explicit path. Call `UseWorkspace({\"path\":\"/repo/or/subdir\"})` when the operator gave you a project path or you need to discover/adopt a directory. Call `UseWorkspace({\"workspace_id\":\"agent_home\"})` to return to AgentHome, or `UseWorkspace({\"workspace_id\":\"ws-...\"})` to switch to a known workspace id from agent state. Provide exactly one of `path` or `workspace_id`. Use `mode=\"isolated\"` only when you need a runtime-managed isolated execution root, and provide an `isolation_label` as an intent/branch hint rather than inventing a worktree path.\n\nShell `cd` affects only that shell command process. It does not redefine the active workspace, instruction root, AGENTS.md loading scope, or relative ApplyPatch base. Switching workspaces does not delete files, remove bindings, or clean up retained isolated roots; cleanup is a separate explicit lifecycle action.".to_string(),
         ));
     }
     sections
@@ -455,6 +455,18 @@ mod tests {
             .contains("do not dump large files with `cat`"));
         assert!(section
             .content
+            .contains("Do not repeat the same read command"));
+        assert!(section
+            .content
+            .contains("refresh only the smallest relevant slice"));
+        assert!(section
+            .content
+            .contains("After a successful command creates, rewrites, formats, or generates files"));
+        assert!(section
+            .content
+            .contains("rely on the command receipt first"));
+        assert!(section
+            .content
             .contains("and ExecCommandBatch is available, prefer it"));
         assert!(section.content.contains("Avoid repeated micro-commands"));
         assert!(section
@@ -565,15 +577,30 @@ mod tests {
             .find(|s| s.name == "tool_file_mutation")
             .expect("file mutation section");
         assert!(section.content.contains("centered on ApplyPatch"));
+        assert!(section
+            .content
+            .contains("Relative patch paths resolve from the active workspace"));
+        assert!(section
+            .content
+            .contains("explicit absolute paths are filesystem targets"));
         assert!(section.content.contains("sed -i"));
         assert!(section
             .content
             .contains("do not retry the same large failed patch unchanged"));
         assert!(section.content.contains("bounded script or heredoc"));
+        assert!(section
+            .content
+            .contains("do not re-read the same file merely to confirm"));
+        assert!(section
+            .content
+            .contains("read only the smallest relevant slice"));
         assert!(section.content.contains("non-clean receipt"));
         assert!(section
             .content
             .contains("inspect the exact affected region"));
+        assert!(section
+            .content
+            .contains("formatter, script, command, or user edit"));
     }
 
     #[test]
@@ -623,10 +650,21 @@ mod tests {
         assert!(section
             .content
             .contains("always has exactly one active workspace"));
+        assert!(section
+            .content
+            .contains("default long-lived project context"));
+        assert!(section
+            .content
+            .contains("the base for relative ApplyPatch paths"));
+        assert!(section
+            .content
+            .contains("not a global prohibition against explicit filesystem targets"));
         assert!(section.content.contains("agent_home"));
         assert!(section
             .content
             .contains("Shell `cd` affects only that shell command"));
+        assert!(section.content.contains("AGENTS.md loading scope"));
+        assert!(section.content.contains("relative ApplyPatch base"));
         assert!(section.content.contains("UseWorkspace"));
     }
 

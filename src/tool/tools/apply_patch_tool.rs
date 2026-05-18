@@ -185,7 +185,9 @@ fn render_apply_patch_error_for_model(error: &ToolError) -> String {
     if error.retryable {
         lines.push("- retryable: true".to_string());
     }
-    lines.push("Use the ApplyPatch format advertised for this turn, keep the patch smaller when possible, and inspect the target file before retrying.".to_string());
+    if error.kind != "truncated_mutation_tool_call" {
+        lines.push("Use the ApplyPatch format advertised for this turn, keep the patch smaller when possible, and inspect the target file before retrying.".to_string());
+    }
     format!("{}\n", lines.join("\n"))
 }
 
@@ -440,6 +442,26 @@ mod tests {
         let rendered = render_for_model(&result).unwrap();
         assert!(rendered.contains("ApplyPatch failed"));
         assert!(rendered.contains("patch exploded"));
+    }
+
+    #[test]
+    fn apply_patch_truncated_mutation_error_does_not_force_file_inspection() {
+        let result = ToolResult::error(
+            NAME,
+            ToolError::new(
+                "truncated_mutation_tool_call",
+                "ApplyPatch was not executed because the provider stopped with max_tokens",
+            )
+            .with_recovery_hint("Inspect only the necessary context")
+            .with_retryable(true),
+        );
+        let rendered = render_for_model(&result).unwrap();
+
+        assert!(rendered.contains("ApplyPatch failed"));
+        assert!(rendered.contains("truncated_mutation_tool_call"));
+        assert!(rendered.contains("Inspect only the necessary context"));
+        assert!(rendered.contains("retryable: true"));
+        assert!(!rendered.contains("inspect the target file before retrying"));
     }
 
     #[test]

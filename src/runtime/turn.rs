@@ -2443,7 +2443,7 @@ impl TurnExecution<'_> {
                     }
                     max_output_recovery_count += 1;
                     let continuation_text =
-                        "Output token limit hit. Continue exactly where you left off. Do not restart from the top. Finish the remaining report directly.".to_string();
+                        "Output token limit hit. Continue exactly where you left off. Do not restart from the top, repeat analysis, or re-read context already provided. Finish the remaining report directly.".to_string();
                     completed_rounds.push(TurnRoundRecord {
                         round,
                         estimated_tokens: build_round_estimated_tokens(
@@ -2609,9 +2609,7 @@ impl TurnExecution<'_> {
                         "stop_reason": stop_reason.clone(),
                         "round": round,
                     }))
-                    .with_recovery_hint(
-                        "retry the mutation as a complete, smaller tool call after inspecting any needed context",
-                    )
+                    .with_recovery_hint(truncated_mutation_recovery_hint(&tool_name))
                     .with_retryable(true);
                     let result = crate::tool::ToolResult::error(&tool_name, error.clone());
                     let result_content = crate::tool::tools::render_tool_result_for_model(&result)?;
@@ -3076,9 +3074,31 @@ fn rejects_truncated_mutation_tool_call(tool_name: &str) -> bool {
     )
 }
 
+fn truncated_mutation_recovery_hint(tool_name: &str) -> &'static str {
+    if tool_name == "ApplyPatch" {
+        "the previous ApplyPatch mutation was not executed because the provider stopped at the output limit; do not resend the same huge patch unchanged. Retry as a complete smaller patch, a sequence of smaller patches, or a bounded ExecCommand/scripted rewrite when cheaper to verify. Inspect only the necessary context, not broad surrounding files"
+    } else {
+        "the previous mutation was not executed because the provider stopped at the output limit; do not resend the same oversized tool call unchanged. Retry with a complete smaller tool call, or split the state update into a short sequence of complete tool calls after inspecting only the necessary context"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncated_mutation_recovery_hint_is_tool_specific() {
+        let apply_patch = truncated_mutation_recovery_hint("ApplyPatch");
+        assert!(apply_patch.contains("previous ApplyPatch mutation"));
+        assert!(apply_patch.contains("huge patch"));
+        assert!(apply_patch.contains("bounded ExecCommand/scripted rewrite"));
+
+        let work_item = truncated_mutation_recovery_hint("CreateWorkItem");
+        assert!(work_item.contains("oversized tool call"));
+        assert!(work_item.contains("complete smaller tool call"));
+        assert!(!work_item.contains("huge patch"));
+        assert!(!work_item.contains("ExecCommand/scripted rewrite"));
+    }
 
     fn fixture_round(round: usize, text: &str) -> TurnRoundRecord {
         let assistant_blocks = vec![ModelBlock::Text {

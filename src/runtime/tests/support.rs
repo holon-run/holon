@@ -367,7 +367,9 @@ impl AgentProvider for TruncatingProvider {
         assert!(request.conversation.iter().any(|message| match message {
             ConversationMessage::UserText(text) => {
                 text.contains("Output token limit hit")
-                    || text.contains("Continue exactly where you left off")
+                    && text.contains("Continue exactly where you left off")
+                    && text.contains("Do not restart from the top, repeat analysis")
+                    && text.contains("re-read context already provided")
             }
             _ => false,
         }));
