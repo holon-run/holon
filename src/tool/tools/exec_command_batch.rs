@@ -200,6 +200,7 @@ async fn execute_batch_item(
                 }
                 ExecCommandOutcome::Completed { .. } => ExecCommandBatchItemStatus::Failed,
                 ExecCommandOutcome::PromotedToTask { .. } => ExecCommandBatchItemStatus::Failed,
+                ExecCommandOutcome::AlreadyRunning { .. } => ExecCommandBatchItemStatus::Failed,
             };
             ExecCommandBatchItemResult {
                 index,
@@ -334,6 +335,10 @@ fn render_exec_item(lines: &mut Vec<String>, result: Option<&ExecCommandResult>)
         }
         ExecCommandOutcome::PromotedToTask { task_handle, .. } => {
             lines.push("failed=promoted_to_task".to_string());
+            lines.push(format!("task={}", task_handle.task_id));
+        }
+        ExecCommandOutcome::AlreadyRunning { task_handle, .. } => {
+            lines.push("failed=already_running".to_string());
             lines.push(format!("task={}", task_handle.task_id));
         }
     }

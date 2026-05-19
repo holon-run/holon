@@ -2314,3 +2314,267 @@ pub async fn exec_command_auto_promotes_long_running_command_task() -> Result<()
     }));
     Ok(())
 }
+
+pub async fn exec_command_reuses_equivalent_active_command_task_by_default() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+    let cmd = "printf start && sleep 2 && printf done";
+    let first_task = runtime
+        .schedule_command_task(
+            format!("Run command: {cmd}"),
+            CommandTaskSpec {
+                cmd: cmd.into(),
+                workdir: None,
+                shell: None,
+                login: false,
+                tty: false,
+                yield_time_ms: 10_000,
+                max_output_tokens: Some(8_000),
+                accepts_input: false,
+                terminal_reentry: false,
+            },
+            TrustLevel::TrustedOperator,
+        )
+        .await?;
+
+    let second = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-dup-second".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": cmd,
+                    "login": false,
+                    "yield_time_ms": 50
+                }),
+            },
+        )
+        .await?;
+
+    let second_value = parse_tool_result_payload(&second.0)?;
+    assert_eq!(second_value["disposition"], "already_running");
+    assert_eq!(second_value["task_handle"]["task_id"], first_task.id);
+
+    let active = runtime.storage().latest_task_records()?;
+    let command_task_ids = active
+        .into_iter()
+        .filter(|record| {
+            record.kind.as_str() == "command_task"
+                && record.summary
+                    == Some("Run command: printf start && sleep 2 && printf done".into())
+        })
+        .map(|record| record.id)
+        .collect::<Vec<_>>();
+    assert_eq!(command_task_ids.len(), 1);
+    assert_eq!(command_task_ids[0], first_task.id);
+    Ok(())
+}
+
+pub async fn exec_command_reuses_equivalent_scheduled_background_task() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+
+    runtime
+        .schedule_command_task(
+            "scheduled background".into(),
+            CommandTaskSpec {
+                cmd: "sleep 2 && printf scheduled".into(),
+                workdir: None,
+                shell: None,
+                login: false,
+                tty: false,
+                yield_time_ms: 10_000,
+                max_output_tokens: Some(8_000),
+                accepts_input: false,
+                terminal_reentry: false,
+            },
+            TrustLevel::TrustedOperator,
+        )
+        .await?;
+
+    let result = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-scheduled-background".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": "sleep 2 && printf scheduled",
+                    "login": false,
+                    "yield_time_ms": 50
+                }),
+            },
+        )
+        .await?;
+
+    let value = parse_tool_result_payload(&result.0)?;
+    assert_eq!(value["disposition"], "already_running");
+    Ok(())
+}
+
+pub async fn exec_command_terminal_tasks_do_not_block_new_run() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+    let cmd = "printf done";
+
+    let first = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-terminal-first".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": cmd,
+                    "login": false,
+                }),
+            },
+        )
+        .await?;
+
+    let first_value = parse_tool_result_payload(&first.0)?;
+    assert_eq!(first_value["disposition"], "completed");
+    assert_eq!(first_value["exit_status"], 0);
+
+    let second = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-terminal-second".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": cmd,
+                    "login": false,
+                }),
+            },
+        )
+        .await?;
+
+    let second_value = parse_tool_result_payload(&second.0)?;
+    assert_eq!(second_value["disposition"], "completed");
+    assert_eq!(second_value["exit_status"], 0);
+    Ok(())
+}
+
+pub async fn exec_command_can_start_new_with_duplicate_policy() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+    let cmd = "printf start && sleep 2 && printf done";
+
+    let first = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-start-new-first".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": cmd,
+                    "login": false,
+                    "yield_time_ms": 50
+                }),
+            },
+        )
+        .await?;
+    let first_value = parse_tool_result_payload(&first.0)?;
+    let first_task_id = first_value["task_handle"]["task_id"]
+        .as_str()
+        .expect("expected promoted task handle");
+
+    let second = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-start-new-second".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": cmd,
+                    "login": false,
+                    "yield_time_ms": 50,
+                    "duplicate_policy": "start_new"
+                }),
+            },
+        )
+        .await?;
+    let second_value = parse_tool_result_payload(&second.0)?;
+    assert_eq!(second_value["disposition"], "promoted_to_task");
+    assert_ne!(second_value["task_handle"]["task_id"], first_task_id);
+    Ok(())
+}
+
+pub async fn exec_command_non_equivalent_same_preview_does_not_reuse() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+    let shared = "x".repeat(300);
+    let first_cmd = format!("printf '{}'; sleep 2", shared);
+    let second_cmd = format!("printf '{}B'; sleep 2", shared);
+
+    let first = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-preview-first".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": first_cmd,
+                    "login": false,
+                    "yield_time_ms": 50
+                }),
+            },
+        )
+        .await?;
+    let first_value = parse_tool_result_payload(&first.0)?;
+    assert_eq!(first_value["disposition"], "promoted_to_task");
+    let first_task_id = first_value["task_handle"]["task_id"]
+        .as_str()
+        .expect("expected promoted task handle");
+
+    let second = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-preview-second".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": second_cmd,
+                    "login": false,
+                    "yield_time_ms": 50
+                }),
+            },
+        )
+        .await?;
+    let second_value = parse_tool_result_payload(&second.0)?;
+    assert_eq!(second_value["disposition"], "promoted_to_task");
+    assert_ne!(second_value["task_handle"]["task_id"], first_task_id);
+    Ok(())
+}

@@ -2,8 +2,9 @@ use anyhow::Result;
 
 use super::RuntimeHandle;
 use crate::types::{
-    AgentProfilePreset, CommandTaskSpec, ExecCommandResult, SpawnAgentResult, TaskInputResult,
-    TaskListEntry, TaskOutputResult, TaskRecord, TaskStatusSnapshot, TrustLevel,
+    AgentProfilePreset, CommandTaskSpec, ExecCommandDuplicatePolicy, ExecCommandResult,
+    SpawnAgentResult, TaskInputResult, TaskListEntry, TaskOutputResult, TaskRecord,
+    TaskStatusSnapshot, TrustLevel,
 };
 
 pub(crate) struct ManagedTaskSupervisor<'a> {
@@ -20,9 +21,12 @@ impl ManagedTaskSupervisor<'_> {
     pub(crate) async fn execute_exec_command(
         &self,
         spec: CommandTaskSpec,
+        duplicate_policy: ExecCommandDuplicatePolicy,
         trust: &TrustLevel,
     ) -> Result<ExecCommandResult> {
-        self.runtime.execute_exec_command(spec, trust).await
+        self.runtime
+            .execute_exec_command(spec, duplicate_policy, trust)
+            .await
     }
 
     pub(crate) async fn execute_exec_command_once(
