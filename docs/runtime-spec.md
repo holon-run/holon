@@ -2423,6 +2423,13 @@ Phase-1 envelope rules:
     - `task_handle`
     - `initial_output_preview`
     - `initial_output_truncated`
+  - duplicate active command startup behavior:
+    - `duplicate_policy` defaults to `reuse_running`
+    - `duplicate_policy = start_new` always starts an additional task
+    - with default policy, equivalent active commands return
+      `disposition = already_running` with the existing `task_handle` and command
+      metadata so operators can continue with `TaskStatus` / `TaskOutput`
+      against the same task id
   - `disposition` is the stable discriminant; completion-only fields and
     promotion-only fields should not be mixed in the same outcome
   - `tty = true` remains an explicit startup choice made by the agent; the

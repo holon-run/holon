@@ -551,6 +551,19 @@ fn summarize_exec_command_result(result: &Value) -> String {
                 .unwrap_or(false);
             format!("promoted_to_task task_id={task_id} initial_output_truncated={truncated}")
         }
+        "already_running" => {
+            let task_id = result
+                .get("task_handle")
+                .and_then(|handle| handle.get("task_id"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let status = result
+                .get("task_handle")
+                .and_then(|handle| handle.get("status"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            format!("already_running task_id={task_id} status={status}")
+        }
         _ => format!("disposition={disposition}"),
     }
 }

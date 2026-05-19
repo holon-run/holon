@@ -10,7 +10,8 @@ use crate::{
         ToolResult,
     },
     types::{
-        CommandTaskSpec, ExecCommandOutcome, ExecCommandResult, ToolCapabilityFamily, TrustLevel,
+        CommandTaskSpec, ExecCommandDuplicatePolicy, ExecCommandOutcome, ExecCommandResult,
+        ToolCapabilityFamily, TrustLevel,
     },
 };
 
@@ -27,6 +28,8 @@ pub(crate) struct ExecCommandArgs {
     pub(crate) shell: Option<String>,
     pub(crate) login: Option<bool>,
     pub(crate) tty: Option<bool>,
+    #[serde(default)]
+    pub(crate) duplicate_policy: ExecCommandDuplicatePolicy,
     pub(crate) accepts_input: Option<bool>,
     pub(crate) yield_time_ms: Option<u64>,
     pub(crate) max_output_tokens: Option<u64>,
@@ -37,7 +40,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::LocalEnvironment,
         spec: typed_spec::<ExecCommandArgs>(
             NAME,
-            "Start a shell command inside the workspace. Valid startup input uses `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `accepts_input`, `yield_time_ms`, and `max_output_tokens`; do not pass result or task metadata such as `status` or `task_handle`. `yield_time_ms` defaults to 10_000 ms when omitted; set it only when intentionally changing the foreground wait window. Short commands return immediately; long non-interactive commands become command_task automatically.",
+            "Start a shell command inside the workspace. Valid startup input uses `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `duplicate_policy`, `accepts_input`, `yield_time_ms`, and `max_output_tokens`; do not pass result or task metadata such as `status` or `task_handle`. `duplicate_policy` defaults to `reuse_running` and `yield_time_ms` defaults to 10_000 ms when omitted; set it only when intentionally changing the foreground wait window. Short commands return immediately; long non-interactive commands become command_task automatically.",
         )?,
     })
 }
@@ -50,6 +53,7 @@ pub(crate) async fn execute(
 ) -> Result<ToolResult> {
     let args: ExecCommandArgs = parse_tool_args(NAME, input)?;
     let tty = args.tty.unwrap_or(false);
+    let duplicate_policy = args.duplicate_policy;
     let spec = CommandTaskSpec {
         cmd: args.cmd,
         workdir: args.workdir,
@@ -63,7 +67,7 @@ pub(crate) async fn execute(
     };
     let result: ExecCommandResult = runtime
         .managed_tasks()
-        .execute_exec_command(spec, trust)
+        .execute_exec_command(spec, duplicate_policy, trust)
         .await?;
     serialize_success(NAME, &result)
 }
@@ -127,6 +131,42 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| "(none captured before promotion)".to_string()),
             );
+            Ok(lines.join("\n"))
+        }
+        ExecCommandOutcome::AlreadyRunning {
+            task_handle,
+            command,
+            summary,
+            instructions,
+            ..
+        } => {
+            let mut lines = vec![
+                "Command is already running".to_string(),
+                format!("Task: {}", task_handle.task_id),
+                format!("Status: {:?}", task_handle.status),
+            ];
+            if let Some(summary) = summary.filter(|value| !value.trim().is_empty()) {
+                lines.push(format!("Task summary: {summary}"));
+            }
+            if let Some(command) = command {
+                if let Some(cmd) = command
+                    .cmd
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    lines.push(format!("Command: {cmd}"));
+                }
+                if let Some(workdir) = command.workdir.as_deref() {
+                    lines.push(format!("workdir={workdir}"));
+                }
+                if let Some(shell) = command.shell.as_deref() {
+                    lines.push(format!("shell={shell}"));
+                }
+            }
+            if let Some(instructions) = instructions.filter(|value| !value.trim().is_empty()) {
+                lines.push(String::new());
+                lines.push(instructions);
+            }
             Ok(lines.join("\n"))
         }
     }
@@ -278,5 +318,27 @@ mod tests {
         let rendered = render_for_model(&result).unwrap();
         assert!(rendered.contains("Initial output:"));
         assert!(rendered.contains("(none captured before promotion)"));
+    }
+
+    #[test]
+    fn exec_command_default_duplicate_policy_is_reuse_running() {
+        let args = serde_json::from_value::<ExecCommandArgs>(serde_json::json!({
+            "cmd": "printf ok",
+        }))
+        .expect("default duplicate policy should parse");
+        assert_eq!(
+            args.duplicate_policy,
+            ExecCommandDuplicatePolicy::ReuseRunning
+        );
+    }
+
+    #[test]
+    fn exec_command_duplicate_policy_start_new_parses() {
+        let args = serde_json::from_value::<ExecCommandArgs>(serde_json::json!({
+            "cmd": "printf ok",
+            "duplicate_policy": "start_new",
+        }))
+        .expect("start_new duplicate policy should parse");
+        assert_eq!(args.duplicate_policy, ExecCommandDuplicatePolicy::StartNew);
     }
 }

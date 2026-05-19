@@ -22,10 +22,11 @@ use crate::{
     },
     tool::ToolError,
     types::{
-        CommandCostDiagnostics, CommandTaskSpec, ExecCommandOutcome, ExecCommandResult,
-        ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind,
-        MessageOrigin, Priority, TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus,
-        ToolArtifactRef, TrustLevel,
+        CommandCostDiagnostics, CommandTaskSpec, CommandTaskStatusSnapshot,
+        ExecCommandDuplicatePolicy, ExecCommandOutcome, ExecCommandResult, ExternalTriggerScope,
+        ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, ToolArtifactRef,
+        TrustLevel,
     },
 };
 
@@ -91,6 +92,14 @@ struct CapturedOutput {
     stdout: String,
     stderr: String,
     combined: String,
+}
+
+struct CommandTaskMatch {
+    id: String,
+    kind: String,
+    status: crate::types::TaskStatus,
+    summary: Option<String>,
+    command: Option<CommandTaskStatusSnapshot>,
 }
 
 impl CapturedOutput {
@@ -193,12 +202,40 @@ impl RuntimeHandle {
     pub(crate) async fn execute_exec_command(
         &self,
         mut spec: CommandTaskSpec,
+        duplicate_policy: ExecCommandDuplicatePolicy,
         trust: &TrustLevel,
     ) -> Result<ExecCommandResult> {
         self.ensure_process_execution_exposed("ExecCommand").await?;
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
+        if matches!(duplicate_policy, ExecCommandDuplicatePolicy::ReuseRunning) {
+            if let Some(existing) = self
+                .find_reusable_active_command_task(&resolved.spec, &resolved.workdir)
+                .await?
+            {
+                return Ok(ExecCommandResult {
+                    outcome: ExecCommandOutcome::AlreadyRunning {
+                        task_handle: TaskHandle::new(
+                            existing.id.clone(),
+                            existing.kind.clone(),
+                            existing.status.clone(),
+                            None,
+                        ),
+                        command: existing.command,
+                        summary: existing.summary,
+                        instructions: Some(
+                            "Set duplicate_policy=\"start_new\" to start another instance.".into(),
+                        ),
+                    },
+                    summary_text: Some(format!(
+                        "command already running as {} (status {:?})",
+                        existing.id, existing.status
+                    )),
+                    command_diagnostics: Some(diagnostics),
+                });
+            }
+        }
         self.append_audit_event(
             "process_execution_requested",
             serde_json::json!({
@@ -380,6 +417,43 @@ impl RuntimeHandle {
                 }
             }
         }
+    }
+
+    fn command_entry_matches_identity(
+        &self,
+        command: &CommandTaskStatusSnapshot,
+        spec: &CommandTaskSpec,
+        workdir: &PathBuf,
+    ) -> bool {
+        command.cmd.as_deref() == Some(spec.cmd.as_str())
+            && command.workdir.as_deref() == Some(workdir.to_string_lossy().as_ref())
+            && command.shell.as_deref() == spec.shell.as_deref()
+            && command.login == Some(spec.login)
+            && command.tty == Some(spec.tty)
+    }
+
+    async fn find_reusable_active_command_task(
+        &self,
+        spec: &CommandTaskSpec,
+        workdir: &PathBuf,
+    ) -> Result<Option<CommandTaskMatch>> {
+        let mut entries = self.managed_tasks().latest_task_list_entries().await?;
+        let found = entries
+            .drain(..)
+            .find(|entry| {
+                entry.kind == TaskKind::CommandTask.as_str()
+                    && entry.command.as_ref().is_some_and(|command| {
+                        self.command_entry_matches_identity(command, spec, workdir)
+                    })
+            })
+            .map(|entry| CommandTaskMatch {
+                id: entry.id,
+                kind: entry.kind,
+                status: entry.status,
+                summary: entry.summary,
+                command: entry.command,
+            });
+        Ok(found)
     }
 
     fn apply_command_output_policy(&self, spec: &mut CommandTaskSpec) {
