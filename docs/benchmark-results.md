@@ -1249,3 +1249,91 @@ Reasons:
 
 Close **Holon PR #1263** as superseded by #1262. Holon had the better token and
 runtime profile in this benchmark, but #1262 is the cleaner review artifact.
+
+## ExecCommand Duplicate Startup Policy (#1257)
+
+Run label:
+
+- `.benchmark-results/exec-command-duplicate-policy-2026-05-19-1257-r1`
+
+Task:
+
+- Issue: [#1257](https://github.com/holon-run/holon/issues/1257)
+- Goal: add `duplicate_policy` to `ExecCommand` so equivalent active
+  `command_task` runs are reused by default and `start_new` explicitly starts a
+  second process.
+- Model: `openai-codex/gpt-5.3-codex-spark`
+
+Raw benchmark results:
+
+| Runner | PR | Draft | GitHub CI | Changed Files | Additions | Deletions | Duration | Input Tokens | Cached/Read Input | Output Tokens | Rounds |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Holon | [#1266](https://github.com/holon-run/holon/pull/1266) | yes | Rust/Coverage pass | 9 | 467 | 10 | 1,228.9s | 11,328,636 | 8,380,416 | 48,285 | 178 provider rounds |
+| Codex | [#1265](https://github.com/holon-run/holon/pull/1265) | yes | Rust/Coverage pass | 9 | 519 | 36 | 1,140.5s | 12,729,590 | n/a | 73,114 | 1 CLI turn |
+
+Changed files:
+
+- Holon: `docs/runtime-spec.md`, `src/runtime/command_task.rs`,
+  `src/runtime/task_supervisor.rs`, `src/runtime/turn.rs`,
+  `src/tool/tools/exec_command.rs`, `src/tool/tools/exec_command_batch.rs`,
+  `src/types.rs`, `tests/runtime_tasks.rs`, `tests/support/runtime_tasks.rs`
+- Codex: `docs/rfcs/tool-result-envelope.md`, `docs/runtime-spec.md`,
+  `src/runtime/command_task.rs`, `src/runtime/task_supervisor.rs`,
+  `src/tool/tools/exec_command.rs`, `src/tool/tools/exec_command_batch.rs`,
+  `src/types.rs`, `tests/runtime_tasks.rs`, `tests/support/runtime_tasks.rs`
+
+### Implementation Comparison
+
+Both implementations add the core #1257 behavior:
+
+- `ExecCommand` accepts `duplicate_policy`
+- `reuse_running` is the default
+- `start_new` bypasses duplicate reuse
+- equivalent active command tasks return an `already_running` receipt
+- terminal command tasks do not block a new command run
+- runtime tests cover reuse, `start_new`, non-equivalent commands, and terminal
+  task behavior
+
+Holon is the stronger PR to keep:
+
+- lower input token cost: 11.33M versus Codex 12.73M
+- lower output token cost: 48.3K versus Codex 73.1K
+- fewer tool calls: 159 versus Codex 218
+- narrower scope: it does not touch `docs/rfcs/tool-result-envelope.md`
+- preserves the existing `exec_command_auto_promotes_long_running_command_task`
+  regression test; Codex rewrites that test while adding duplicate-policy tests
+- adds explicit runtime turn summarization for `already_running`, so compact
+  command receipts preserve the new disposition clearly
+
+Codex is slightly faster in wall time, but the PR has two review risks:
+
+- it broadens docs scope into the ToolResult RFC even though #1257 is a command
+  startup behavior issue
+- it rewrites an existing auto-promotion regression test, which makes the test
+  delta harder to review
+
+### Verification Notes
+
+The benchmark framework no longer runs local raw verification for real-repo PR
+benchmarks. It records GitHub CI instead.
+
+Live PR checks:
+
+- #1265: Rust passed, Coverage passed, Vercel passed
+- #1266: Rust passed, Coverage passed, Vercel passed
+- `Run Holon / solve` is a trigger workflow and may remain pending longer than
+  the code-quality checks; it was not used as the primary selection signal.
+
+### Recommendation
+
+Prefer keeping **Holon PR #1266** as the official PR.
+
+Reasons:
+
+- more focused diff
+- lower token and tool-call cost
+- keeps existing auto-promotion coverage intact
+- includes turn-summary handling for the new result disposition
+- GitHub Rust/Coverage checks are green
+
+Close **Codex PR #1265** as superseded by #1266.

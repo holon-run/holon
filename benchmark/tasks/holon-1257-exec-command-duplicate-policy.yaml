@@ -1,0 +1,37 @@
+schema_version: 1
+task_id: holon-1257-exec-command-duplicate-policy
+repo:
+  name: holon-run/holon
+  local_path: /Users/jolestar/opensource/src/github.com/holon-run/holon
+issue:
+  number: 1257
+  title: "Add ExecCommand duplicate_policy for active command tasks"
+base:
+  branch: main
+  sha: cfc103b1370a99aba161a5e5f61f0bddb5da083d
+benchmark:
+  mode: live
+task:
+  kind: implementation
+evaluation:
+  summary: |
+    ExecCommand should avoid accidentally starting duplicate active command
+    tasks. Add a duplicate_policy field with reuse_running as the default and
+    start_new as the explicit escape hatch. Equivalent active command tasks
+    should be matched by runtime-owned command identity, including full cmd,
+    resolved workdir, shell, login, and tty. The already-running receipt should
+    point to the existing task and explain TaskOutput/TaskStatus inspection,
+    while terminal tasks must not block a new command run. Do not apply this
+    policy to ExecCommandBatch in this issue.
+  expected_outcome: change_required
+  scope_policy: soft
+  allowed_paths: []
+  forbidden_paths: []
+budget:
+  max_minutes: 90
+  max_operator_followups: 0
+review:
+  mode: none
+metadata:
+  difficulty: medium
+  benchmark_group: command-task-coordination-2026-05-19
