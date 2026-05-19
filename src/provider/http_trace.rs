@@ -1,6 +1,7 @@
 use std::{
+    collections::VecDeque,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex},
@@ -57,7 +58,7 @@ struct ProviderHttpTraceRequestState {
     agent_id: String,
     sequence: u64,
     file_path: Option<PathBuf>,
-    events: Vec<Value>,
+    events: VecDeque<Value>,
 }
 
 impl ProviderHttpTrace {
@@ -106,7 +107,7 @@ impl ProviderHttpTrace {
                 agent_id,
                 sequence,
                 file_path: None,
-                events: Vec::new(),
+                events: VecDeque::new(),
             })),
         };
         request.write_event(json!({
@@ -186,9 +187,9 @@ impl ProviderHttpTraceRequest {
                 append_trace_event(&path, &event);
             }
             ProviderHttpTraceMode::FailureOnly => {
-                guard.events.push(event);
+                guard.events.push_back(event);
                 if guard.events.len() > PROVIDER_HTTP_FAILURE_TRACE_MAX_EVENTS {
-                    guard.events.remove(0);
+                    guard.events.pop_front();
                 }
             }
         }
@@ -210,24 +211,19 @@ fn ensure_trace_file(state: &mut ProviderHttpTraceRequestState) -> Option<PathBu
         "trace-{created_at_ms}-{sequence}.jsonl",
         sequence = state.sequence
     ));
-    if !state.events.is_empty() {
-        write_trace_events(&path, &state.events);
-        state.events.clear();
-    }
+    write_trace_events(&path, &state.events).ok()?;
+    state.events.clear();
     state.file_path = Some(path.clone());
     Some(path)
 }
 
-fn write_trace_events(path: &Path, events: &[Value]) {
-    let Ok(mut file) = File::create(path) else {
-        return;
-    };
+fn write_trace_events(path: &Path, events: &VecDeque<Value>) -> io::Result<()> {
+    let mut file = File::create(path)?;
     for event in events {
-        let Ok(line) = serde_json::to_string(event) else {
-            continue;
-        };
-        let _ = writeln!(file, "{line}");
+        let line = serde_json::to_string(event).map_err(io::Error::other)?;
+        writeln!(file, "{line}")?;
     }
+    Ok(())
 }
 
 fn append_trace_event(path: &Path, event: &Value) {
@@ -480,5 +476,63 @@ mod tests {
             .expect("failure diagnostics should write trace");
         assert_eq!(diagnostics.mode, "failure_only");
         assert!(std::path::Path::new(&diagnostics.path).exists());
+    }
+
+    #[test]
+    fn provider_http_failure_trace_keeps_buffer_when_trace_file_cannot_be_created() {
+        let home = tempfile::tempdir().unwrap();
+        let home_file = home.path().join("not-a-directory");
+        fs::write(&home_file, "occupied").unwrap();
+        let trace = ProviderHttpTrace {
+            home_dir: home_file,
+            mode: super::ProviderHttpTraceMode::FailureOnly,
+        };
+        let request = trace
+            .begin_request(
+                Some("agent/one"),
+                "anthropic",
+                Some("anthropic/claude"),
+                "https://api.anthropic.com/v1/messages",
+                "messages",
+                &[("authorization", "Bearer secret".into())],
+                &json!({ "model": "claude", "messages": [] }),
+            )
+            .expect("trace should be created");
+
+        assert!(request.diagnostics(Some(500)).is_none());
+        let state = request.inner.lock().unwrap();
+        assert_eq!(state.events.len(), 1);
+        assert!(state.file_path.is_none());
+    }
+
+    #[test]
+    fn provider_http_failure_trace_keeps_only_the_recent_event_window() {
+        let home = tempfile::tempdir().unwrap();
+        let trace = ProviderHttpTrace {
+            home_dir: home.path().to_path_buf(),
+            mode: super::ProviderHttpTraceMode::FailureOnly,
+        };
+        let request = trace
+            .begin_request(
+                Some("agent/one"),
+                "anthropic",
+                Some("anthropic/claude"),
+                "https://api.anthropic.com/v1/messages",
+                "messages",
+                &[("authorization", "Bearer secret".into())],
+                &json!({ "model": "claude", "messages": [] }),
+            )
+            .expect("trace should be created");
+
+        for index in 0..super::PROVIDER_HTTP_FAILURE_TRACE_MAX_EVENTS + 10 {
+            request.write_stream_terminal(&json!({ "index": index }));
+        }
+
+        let state = request.inner.lock().unwrap();
+        assert_eq!(
+            state.events.len(),
+            super::PROVIDER_HTTP_FAILURE_TRACE_MAX_EVENTS
+        );
+        assert_eq!(state.events.front().unwrap()["body"]["index"], 10);
     }
 }
