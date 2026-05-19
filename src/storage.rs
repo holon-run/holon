@@ -329,9 +329,12 @@ impl AppStorage {
     }
 
     pub fn mark_memory_index_dirty(&self) -> Result<()> {
+        let dirty_path = self.indexes_dir().join("memory.dirty");
+        if dirty_path.exists() {
+            return Ok(());
+        }
         fs::create_dir_all(self.indexes_dir())?;
-        fs::write(self.indexes_dir().join("memory.dirty"), b"dirty")
-            .with_context(|| "failed to mark memory index dirty")
+        fs::write(&dirty_path, b"dirty").with_context(|| "failed to mark memory index dirty")
     }
 
     pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
@@ -487,7 +490,11 @@ impl AppStorage {
     }
 
     pub fn latest_task_records(&self) -> Result<Vec<TaskRecord>> {
-        let records = self.read_recent_tasks(usize::MAX)?;
+        self.latest_task_records_from_recent(usize::MAX)
+    }
+
+    pub fn latest_task_records_from_recent(&self, history_limit: usize) -> Result<Vec<TaskRecord>> {
+        let records = self.read_recent_tasks(history_limit)?;
         let mut latest = std::collections::BTreeMap::<String, TaskRecord>::new();
         for record in records {
             if let Some(previous) = latest.get(&record.id) {
@@ -1431,6 +1438,71 @@ mod tests {
                 ("running", TaskStatus::Running)
             ]
         );
+    }
+
+    #[test]
+    fn latest_task_records_from_recent_reduces_only_bounded_history() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+        let task = |id: &str, summary: &str, offset: i64| TaskRecord {
+            id: id.into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now + chrono::Duration::seconds(offset),
+            updated_at: now + chrono::Duration::seconds(offset),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some(summary.into()),
+            detail: None,
+            recovery: None,
+        };
+
+        storage
+            .append_task(&task("bounded-old", "outside bounded history", 0))
+            .unwrap();
+        storage
+            .append_task(&task("bounded-repeat", "older repeat snapshot", 1))
+            .unwrap();
+        storage
+            .append_task(&task("bounded-other", "other recent snapshot", 2))
+            .unwrap();
+        storage
+            .append_task(&task("bounded-repeat", "latest repeat snapshot", 3))
+            .unwrap();
+
+        let latest = storage.latest_task_records_from_recent(3).unwrap();
+        let rendered = latest
+            .iter()
+            .map(|task| {
+                (
+                    task.id.as_str(),
+                    task.summary.as_deref().unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            vec![
+                ("bounded-other", "other recent snapshot"),
+                ("bounded-repeat", "latest repeat snapshot")
+            ]
+        );
+    }
+
+    #[test]
+    fn mark_memory_index_dirty_does_not_rewrite_existing_marker() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let dirty_path = storage.indexes_dir().join("memory.dirty");
+
+        storage.mark_memory_index_dirty().unwrap();
+        fs::write(&dirty_path, b"already dirty").unwrap();
+        storage.mark_memory_index_dirty().unwrap();
+
+        assert_eq!(fs::read(&dirty_path).unwrap(), b"already dirty");
     }
 
     #[test]

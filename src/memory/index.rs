@@ -17,7 +17,7 @@ use crate::{
     tool::helpers::{command_digest, command_preview, command_receipt_source_ref},
     types::{
         BriefRecord, CommandTaskStatusSnapshot, ContextEpisodeRecord, TaskRecord, TaskStatus,
-        TaskStatusSnapshot, ToolExecutionRecord, WorkItemRecord, WorkspaceEntry,
+        ToolExecutionRecord, WorkItemRecord, WorkspaceEntry,
     },
 };
 
@@ -30,6 +30,7 @@ const REBUILD_BRIEF_LIMIT: usize = 500;
 const REBUILD_EPISODE_LIMIT: usize = 500;
 const REBUILD_WORK_ITEM_LIMIT: usize = 500;
 const REBUILD_COMMAND_RECEIPT_LIMIT: usize = 500;
+const REBUILD_TASK_HISTORY_LIMIT: usize = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -723,7 +724,7 @@ fn work_item_document_body(item: &WorkItemRecord) -> String {
 
 fn task_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
     Ok(storage
-        .latest_task_records()?
+        .latest_task_records_from_recent(REBUILD_TASK_HISTORY_LIMIT)?
         .into_iter()
         .map(task_document)
         .collect())
@@ -731,15 +732,34 @@ fn task_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
 
 fn task_document(task: TaskRecord) -> MemoryDocument {
     let agent_id = task.agent_id.clone();
-    let snapshot = TaskStatusSnapshot::from_task_record(&task);
-    let command = snapshot.command.as_ref();
+    let task_kind = task.kind.as_str();
+    let command = CommandTaskStatusSnapshot::identity_from_task_record(&task);
+    let command = command.as_ref();
     let command_text = task
         .detail
         .as_ref()
         .and_then(|detail| detail.get("cmd"))
         .and_then(Value::as_str)
         .or_else(|| command.and_then(|entry| entry.cmd.as_deref()));
-    let mut body = task_document_body(&task, &snapshot, command, command_text);
+    let child_agent_id = task
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.get("child_agent_id"))
+        .and_then(Value::as_str);
+    let exit_status = task
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.get("exit_status"))
+        .and_then(Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok());
+    let mut body = task_document_body(
+        &task,
+        task_kind,
+        command,
+        command_text,
+        child_agent_id,
+        exit_status,
+    );
     if let Some(cmd) = command_text {
         body.push('\n');
         if cmd.contains('\n') {
@@ -750,7 +770,7 @@ fn task_document(task: TaskRecord) -> MemoryDocument {
         body.push_str(cmd);
     }
     MemoryDocument {
-        source_ref: format!("task:{}", snapshot.task_id),
+        source_ref: format!("task:{}", task.id),
         source_kind: "task".into(),
         scope_kind: "agent".into(),
         workspace_id: None,
@@ -759,12 +779,12 @@ fn task_document(task: TaskRecord) -> MemoryDocument {
         title: task
             .summary
             .clone()
-            .unwrap_or_else(|| format!("Task {}", snapshot.task_id)),
+            .unwrap_or_else(|| format!("Task {}", task.id)),
         sanitized_excerpt: excerpt(&body),
         body,
         metadata: json!({
-            "task_id": snapshot.task_id,
-            "kind": snapshot.kind,
+            "task_id": task.id,
+            "kind": task_kind,
             "status": task_status_label(&task.status),
             "summary": task.summary,
             "work_item_id": task.work_item_id,
@@ -773,7 +793,7 @@ fn task_document(task: TaskRecord) -> MemoryDocument {
                 .and_then(|entry| entry.cmd.as_deref())
                 .or(command_text)
                 .map(command_preview),
-            "exit_status": command.and_then(|entry| entry.exit_status),
+            "exit_status": exit_status,
             "agent_id": agent_id,
             "created_at": task.created_at.to_rfc3339(),
             "governance_surface": "runtime_evidence",
@@ -786,13 +806,15 @@ fn task_document(task: TaskRecord) -> MemoryDocument {
 
 fn task_document_body(
     task: &TaskRecord,
-    snapshot: &TaskStatusSnapshot,
+    task_kind: &str,
     command: Option<&CommandTaskStatusSnapshot>,
     command_text: Option<&str>,
+    child_agent_id: Option<&str>,
+    exit_status: Option<i32>,
 ) -> String {
     let mut lines = vec![
         format!("task_id: {}", task.id),
-        format!("kind: {}", snapshot.kind),
+        format!("kind: {task_kind}"),
         format!("status: {}", task_status_label(&task.status)),
         format!("summary: {}", task.summary.clone().unwrap_or_default()),
         format!("created_at: {}", task.created_at.to_rfc3339()),
@@ -811,10 +833,10 @@ fn task_document_body(
     {
         lines.push(format!("cmd_preview: {cmd_preview}"));
     }
-    if let Some(exit_status) = command.and_then(|entry| entry.exit_status) {
+    if let Some(exit_status) = exit_status {
         lines.push(format!("exit_status: {exit_status}"));
     }
-    if let Some(child_agent_id) = &snapshot.child_agent_id {
+    if let Some(child_agent_id) = child_agent_id {
         lines.push(format!("child_agent_id: {child_agent_id}"));
     }
     lines.join("\n")
@@ -1632,6 +1654,54 @@ mod tests {
             task_results[0].metadata["summary"].as_str(),
             Some("repeat task completed")
         );
+    }
+
+    #[test]
+    fn memory_search_task_index_uses_bounded_recent_task_history() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+
+        storage
+            .append_task(&task_record(
+                "task-outside-bound-1270",
+                "default",
+                TaskKind::CommandTask,
+                TaskStatus::Completed,
+                "outside bounded history sentinel 1270",
+                None,
+                Some(json!({"cmd": "echo outside_bound_1270"})),
+                0,
+                0,
+            ))
+            .unwrap();
+        for index in 0..REBUILD_TASK_HISTORY_LIMIT {
+            storage
+                .append_task(&task_record(
+                    &format!("task-recent-bound-{index}"),
+                    "default",
+                    TaskKind::CommandTask,
+                    TaskStatus::Completed,
+                    "recent bounded history task",
+                    None,
+                    Some(json!({"cmd": format!("echo recent_bound_{index}")})),
+                    index as i64 + 1,
+                    index as i64 + 1,
+                ))
+                .unwrap();
+        }
+
+        rebuild_memory_index(&storage, None).unwrap();
+
+        let old_results = search_memory(&storage, "outside_bound_1270", 10, None, false).unwrap();
+        assert!(old_results
+            .iter()
+            .all(|result| result.source_ref != "task:task-outside-bound-1270"));
+        let recent_results = search_memory(&storage, "recent_bound_499", 10, None, false).unwrap();
+        assert!(recent_results
+            .iter()
+            .any(|result| result.source_ref == "task:task-recent-bound-499"));
     }
 
     #[test]
