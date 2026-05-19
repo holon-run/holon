@@ -66,7 +66,6 @@ export function validateRealTaskManifest(manifest, { filePath = "<memory>" } = {
       "base",
       "benchmark",
       "task",
-      "verification",
       "evaluation",
       "budget",
       "review",
@@ -74,6 +73,9 @@ export function validateRealTaskManifest(manifest, { filePath = "<memory>" } = {
     ],
     `${filePath}`
   );
+  if (!("verification" in manifest)) {
+    manifest.verification = { commands: [] };
+  }
 
   ensureObject(manifest.repo, `${filePath}.repo`);
   ensureObject(manifest.issue, `${filePath}.issue`);

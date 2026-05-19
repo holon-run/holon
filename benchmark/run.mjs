@@ -199,6 +199,8 @@ async function compareSuites(args) {
       tool_calls_after: after.tool_calls,
       verify_success_before: before.verify_success,
       verify_success_after: after.verify_success,
+      github_ci_status_before: before.github_ci_status,
+      github_ci_status_after: after.github_ci_status,
       input_tokens_before: before.input_tokens ?? 0,
       input_tokens_after: after.input_tokens ?? 0,
       output_tokens_before: before.output_tokens ?? 0,
@@ -236,13 +238,16 @@ function renderSuiteSummary(entries) {
     const [taskName, repetition] = key.split("#");
     const byRunner = new Map(group.map((entry) => [entry.runner, entry]));
     lines.push(`## ${taskName} (run ${repetition})`, "");
+    const qualityHeader = group.some((entry) => entry.benchmark_type === "real_repo")
+      ? "GitHub CI"
+      : "Verify";
     lines.push(
-      "| Runner | Success | Verify | Scope | Duration | Tokens (in/out) | Token Opt | Turns | Tool Calls | Tool Latency |"
+      `| Runner | Success | ${qualityHeader} | Scope | Duration | Tokens (in/out) | Token Opt | Turns | Tool Calls | Tool Latency |`
     );
     lines.push("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for (const entry of group.sort((a, b) => a.runner.localeCompare(b.runner))) {
       lines.push(
-        `| ${entry.runner} | ${boolWord(entry.success)} | ${boolWord(entry.verify_success)} | ${entry.scope_violation ? "violation" : "ok"} | ${formatMs(entry.duration_ms)} | ${entry.input_tokens ?? 0}/${entry.output_tokens ?? 0} | ${formatTokenOptimization(entry)} | ${formatTurnMetric(entry)} | ${entry.tool_calls ?? 0} | ${formatMs(entry.total_tool_latency_ms ?? 0)} |`
+        `| ${entry.runner} | ${boolWord(entry.success)} | ${formatQualitySignal(entry)} | ${entry.scope_violation ? "violation" : "ok"} | ${formatMs(entry.duration_ms)} | ${entry.input_tokens ?? 0}/${entry.output_tokens ?? 0} | ${formatTokenOptimization(entry)} | ${formatTurnMetric(entry)} | ${entry.tool_calls ?? 0} | ${formatMs(entry.total_tool_latency_ms ?? 0)} |`
       );
     }
     const holon = byRunner.get("holon");
@@ -320,6 +325,13 @@ function formatTokenOptimization(entry) {
     parts.push(`ctx_mgmt=${diagnostics.summary.context_management_enabled_rounds}`);
   }
   return parts.length > 0 ? parts.join(" ") : "observed";
+}
+
+function formatQualitySignal(entry) {
+  if (entry.benchmark_type === "real_repo") {
+    return entry.github_ci_status ?? "not_collected";
+  }
+  return boolWord(entry.verify_success);
 }
 
 function compactTokenOptimization(diagnostics) {
@@ -642,14 +654,6 @@ async function runRealBenchmarkTask({
     };
   }
 
-  const verifyResult = await runVerificationCommands(
-    manifest.verification.commands,
-    worktreePath,
-    runnerEnv
-  );
-  await writeFile(path.join(taskDir, "verify.log"), verifyResult.log, "utf8");
-  await writeJson(path.join(taskDir, "verification.json"), verifyResult);
-  const verifyExitCode = verifyResult.exitCode;
   const changedFiles = await diffAgainstBase(repoPath, worktreePath, manifest.base.sha, taskDir);
   await writeJson(path.join(taskDir, "changed-files.json"), changedFiles);
   const scopeViolation = detectScopeViolation(changedFiles, manifest.evaluation);
@@ -677,6 +681,22 @@ async function runRealBenchmarkTask({
       });
     });
   }
+  prInfo = await withRepoSideEffectLock(repoPath, async () =>
+    resolveBenchmarkPrInfo({
+      repoPath,
+      repoName: manifest.repo.name,
+      branchName,
+      prInfo
+    })
+  );
+  const githubCi = await withRepoSideEffectLock(repoPath, async () =>
+    collectGithubCiSummary({
+      repoPath,
+      repoName: manifest.repo.name,
+      prNumber: prInfo.number
+    })
+  );
+  await writeJson(path.join(taskDir, "github-ci.json"), githubCi);
   await writeJson(path.join(taskDir, "pr.json"), prInfo);
   await writeFile(
     path.join(taskDir, "final-message.md"),
@@ -692,17 +712,16 @@ async function runRealBenchmarkTask({
     issue_title: manifest.issue.title,
     runner: runnerId,
     repetition: 1,
-    success: evaluateRealTaskSuccess({
-      verifyExitCode,
-      runnerResult,
-      changedFiles,
-      scopeViolation,
-      scopePolicy: manifest.evaluation.scope_policy,
-      expectedOutcome: manifest.evaluation.expected_outcome ?? "change_required"
-    }),
-    verify_success:
-      verifyResult.success || manifest.verification.commands.length === 0,
-    verify_status: verifyResult.status,
+    success:
+      evaluateRealTaskSuccess({
+        runnerResult,
+        changedFiles,
+        scopeViolation,
+        scopePolicy: manifest.evaluation.scope_policy,
+        expectedOutcome: manifest.evaluation.expected_outcome ?? "change_required"
+      }) && githubCi.success !== false,
+    verify_success: null,
+    verify_status: "not_run_github_ci_source",
     scope_violation: scopeViolation,
     scope_policy: manifest.evaluation.scope_policy,
     expected_outcome: manifest.evaluation.expected_outcome ?? "change_required",
@@ -716,7 +735,12 @@ async function runRealBenchmarkTask({
     error_kind: runnerResult.errorKind ?? null,
     completion_classification: runnerResult.completionClassification ?? null,
     completion_terminal_state: runnerResult.terminalState ?? null,
-    verify_exit_code: verifyExitCode,
+    verify_exit_code: null,
+    github_ci_status: githubCi.status,
+    github_ci_success: githubCi.success,
+    github_ci_pending: githubCi.pending,
+    github_ci_failed: githubCi.failed,
+    github_ci_checks: githubCi.checks,
     input_tokens: runnerResult.inputTokens ?? 0,
     output_tokens: runnerResult.outputTokens ?? 0,
     model_rounds: runnerResult.modelRounds ?? 0,
@@ -1493,14 +1517,12 @@ function pathMatches(file, prefix) {
 }
 
 export function evaluateRealTaskSuccess({
-  verifyExitCode,
   runnerResult,
   changedFiles = [],
   scopeViolation,
   scopePolicy = "soft",
   expectedOutcome = "change_required"
 }) {
-  const verifyOk = verifyExitCode === 0;
   const runnerOk = !runnerResult.errorKind && !runnerResult.timedOut;
   const hasChanges = changedFiles.length > 0;
   const scopeOk = scopePolicy === "hard" ? !scopeViolation : true;
@@ -1510,7 +1532,7 @@ export function evaluateRealTaskSuccess({
       : expectedOutcome === "no_change_expected"
         ? !hasChanges
         : true;
-  return verifyOk && runnerOk && scopeOk && outcomeOk;
+  return runnerOk && scopeOk && outcomeOk;
 }
 
 export function classifyBenchmarkFinalizationDecision(runnerResult) {
@@ -1791,6 +1813,113 @@ async function maybeCreateBenchmarkPr({
     url: prUrl,
     number: numberMatch ? Number(numberMatch[1]) : null,
     state: "OPEN"
+  };
+}
+
+async function resolveBenchmarkPrInfo({ repoPath, repoName, branchName, prInfo }) {
+  if (prInfo?.number) {
+    return prInfo;
+  }
+
+  const listed = await runCommand(
+    "gh",
+    [
+      "pr",
+      "list",
+      "--repo",
+      repoName,
+      "--head",
+      branchName,
+      "--state",
+      "all",
+      "--json",
+      "number,url,state,isDraft"
+    ],
+    repoPath,
+    process.env,
+    true
+  );
+  const matches = JSON.parse(listed.stdout || "[]");
+  if (matches.length === 0) {
+    return prInfo;
+  }
+
+  const current = matches[0];
+  return {
+    ...prInfo,
+    status:
+      prInfo?.status && !String(prInfo.status).startsWith("skipped")
+        ? prInfo.status
+        : "discovered",
+    number: current.number,
+    url: current.url,
+    state: current.state,
+    draft: current.isDraft
+  };
+}
+
+async function collectGithubCiSummary({ repoPath, repoName, prNumber }) {
+  if (!prNumber) {
+    return {
+      status: "no_pr",
+      success: null,
+      pending: 0,
+      failed: 0,
+      checks: []
+    };
+  }
+
+  try {
+    const output = await runCommand(
+      "gh",
+      [
+        "pr",
+        "checks",
+        String(prNumber),
+        "--repo",
+        repoName,
+        "--json",
+        "name,state,bucket,workflow,link,startedAt,completedAt"
+      ],
+      repoPath,
+      process.env,
+      true
+    );
+    const checks = JSON.parse(output.stdout || "[]");
+    return classifyGithubCiChecks(checks);
+  } catch (error) {
+    return {
+      status: "unavailable",
+      success: null,
+      pending: 0,
+      failed: 0,
+      checks: [],
+      error: String(error?.message ?? error)
+    };
+  }
+}
+
+export function classifyGithubCiChecks(checks) {
+  const normalized = Array.isArray(checks) ? checks : [];
+  const relevant = normalized.filter((check) => check?.bucket !== "skipping");
+  const failed = relevant.filter((check) => check?.bucket === "fail").length;
+  const pending = relevant.filter((check) => check?.bucket === "pending").length;
+  const passed = relevant.filter((check) => check?.bucket === "pass").length;
+  const status =
+    relevant.length === 0
+      ? "no_checks"
+      : failed > 0
+        ? "failed"
+        : pending > 0
+          ? "pending"
+          : "passed";
+  return {
+    status,
+    success: status === "passed" ? true : status === "failed" ? false : null,
+    pending,
+    failed,
+    passed,
+    checks: normalized
   };
 }
 

@@ -220,7 +220,8 @@ Minimum metrics:
 - `task_name`
 - `runner`
 - `success`
-- `verify_success`
+- `verify_success` for local fixture benchmarks
+- `github_ci_status` for real-repo PR benchmarks
 - `duration_ms`
 - `model_turns`
 - `tool_calls`
@@ -253,9 +254,18 @@ Minimum artifacts:
 - `metrics.json`
 - `final_message.md`
 - `git.diff`
-- `verify.log`
+- `verify.log` for local fixture benchmarks
+- `github-ci.json` for real-repo PR benchmarks
 
 The point is not only to score runs, but to make failures inspectable.
+
+For real-repo PR benchmarks, the harness should not run a second local raw
+verification pass after the agent finishes. That signal can diverge from the
+PR's real review surface and has repeatedly confused benchmark reports. The
+runner should record the GitHub PR/check status instead and use GitHub CI as the
+delivery-quality signal. Real-repo manifests may omit `verification.commands`;
+older manifests can keep the field as historical task guidance, but the
+post-run harness should not execute it.
 
 ## Fairness Rules
 

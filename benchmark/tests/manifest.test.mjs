@@ -15,6 +15,7 @@ import {
   buildOperatorPrompt,
   classifyVerificationResult,
   classifyBenchmarkFinalizationDecision,
+  classifyGithubCiChecks,
   classifyHolonBenchmarkCompletion,
   collectChangedFilesFromGitOutputs,
   copyHolonProviderHttpTraceArtifacts,
@@ -191,6 +192,31 @@ test("validateRealTaskManifest accepts structured verification commands", () => 
   });
 
   assert.equal(manifest.verification.commands.length, 2);
+});
+
+test("validateRealTaskManifest defaults absent verification for real PR benchmarks", () => {
+  const manifest = validateRealTaskManifest({
+    schema_version: 1,
+    task_id: "holon-0015-tool-guidance-registry",
+    repo: { name: "holon-run/holon", local_path: "." },
+    issue: { number: 15, title: "Dogfood task" },
+    base: { branch: "main", sha: "abc123" },
+    benchmark: { mode: "live" },
+    task: {
+      kind: "implementation"
+    },
+    evaluation: {
+      expected_outcome: "change_required",
+      scope_policy: "soft",
+      allowed_paths: [],
+      forbidden_paths: []
+    },
+    budget: { max_minutes: 90, max_operator_followups: 0 },
+    review: { mode: "none" },
+    metadata: { difficulty: "medium", benchmark_group: "prompt-system" }
+  });
+
+  assert.deepEqual(manifest.verification, { commands: [] });
 });
 
 test("buildOperatorPrompt uses an issue-driven template with PR policy", () => {
@@ -688,6 +714,40 @@ test("real task success honors expected outcome", () => {
       scopePolicy: "soft",
       expectedOutcome: "no_change_expected"
     }),
+    false
+  );
+});
+
+test("github ci summary classifies check buckets", () => {
+  assert.deepEqual(
+    classifyGithubCiChecks([
+      { name: "Rust", bucket: "pass" },
+      { name: "Coverage", bucket: "pass" }
+    ]),
+    {
+      status: "passed",
+      success: true,
+      pending: 0,
+      failed: 0,
+      passed: 2,
+      checks: [
+        { name: "Rust", bucket: "pass" },
+        { name: "Coverage", bucket: "pass" }
+      ]
+    }
+  );
+  assert.equal(
+    classifyGithubCiChecks([
+      { name: "Rust", bucket: "pass" },
+      { name: "Holon Trigger", bucket: "pending" }
+    ]).status,
+    "pending"
+  );
+  assert.equal(
+    classifyGithubCiChecks([
+      { name: "Rust", bucket: "fail" },
+      { name: "Coverage", bucket: "pass" }
+    ]).success,
     false
   );
 });
