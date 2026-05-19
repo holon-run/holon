@@ -230,7 +230,8 @@ impl AppStorage {
     }
 
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
-        self.append_jsonl(&self.tasks_path, task)
+        self.append_jsonl(&self.tasks_path, task)?;
+        self.mark_memory_index_dirty()
     }
 
     pub fn append_work_item(&self, record: &WorkItemRecord) -> Result<()> {

@@ -16,7 +16,8 @@ use crate::{
     storage::AppStorage,
     tool::helpers::{command_digest, command_preview, command_receipt_source_ref},
     types::{
-        BriefRecord, ContextEpisodeRecord, ToolExecutionRecord, WorkItemRecord, WorkspaceEntry,
+        BriefRecord, CommandTaskStatusSnapshot, ContextEpisodeRecord, TaskRecord,
+        ToolExecutionRecord, WorkItemRecord, WorkspaceEntry,
     },
 };
 
@@ -29,6 +30,7 @@ const REBUILD_BRIEF_LIMIT: usize = 500;
 const REBUILD_EPISODE_LIMIT: usize = 500;
 const REBUILD_WORK_ITEM_LIMIT: usize = 500;
 const REBUILD_COMMAND_RECEIPT_LIMIT: usize = 500;
+const REBUILD_TASK_LIMIT: usize = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -495,6 +497,7 @@ fn collect_documents(
     documents.extend(context_episode_documents(storage)?);
     documents.extend(work_item_documents(storage)?);
     documents.extend(command_execution_documents(storage)?);
+    documents.extend(task_documents(storage)?);
     Ok(documents)
 }
 
@@ -691,6 +694,81 @@ fn work_item_document(item: WorkItemRecord) -> MemoryDocument {
             "trust_class": "runtime_evidence",
         }),
         updated_at: item.updated_at,
+    }
+}
+
+fn task_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
+    let mut documents = Vec::new();
+    for task in storage
+        .latest_task_records()?
+        .into_iter()
+        .take(REBUILD_TASK_LIMIT)
+    {
+        documents.push(task_document(task));
+    }
+    Ok(documents)
+}
+
+fn task_document(task: TaskRecord) -> MemoryDocument {
+    let mut lines = vec![
+        format!("task_id: {}", task.id),
+        format!("kind: {}", task.kind),
+        format!("status: {:?}", task.status),
+        format!("summary: {}", task.summary.clone().unwrap_or_default()),
+    ];
+    if let Some(work_item_id) = task.work_item_id.as_deref() {
+        lines.push(format!("work_item_id: {work_item_id}"));
+    }
+    lines.push(format!("created_at: {}", task.created_at.to_rfc3339()));
+    lines.push(format!("updated_at: {}", task.updated_at.to_rfc3339()));
+
+    let command = CommandTaskStatusSnapshot::identity_from_task_record(&task);
+    if let Some(command) = &command {
+        if let Some(cmd) = command.cmd.as_deref() {
+            lines.push(format!("cmd: {cmd}"));
+            lines.push(format!(
+                "cmd_digest: {}",
+                command
+                    .cmd_digest
+                    .clone()
+                    .unwrap_or_else(|| command_digest(cmd))
+            ));
+            lines.push(format!("cmd_preview: {}", command_preview(cmd)));
+        }
+        if let Some(exit_status) = command.exit_status {
+            lines.push(format!("exit_status: {exit_status}"));
+        }
+    }
+
+    let body = lines.join("\n");
+    MemoryDocument {
+        source_ref: format!("task:{}", task.id),
+        source_kind: "task".into(),
+        scope_kind: "agent".into(),
+        workspace_id: None,
+        agent_id: task.agent_id,
+        source_path: None,
+        title: task
+            .summary
+            .clone()
+            .filter(|summary| !summary.trim().is_empty())
+            .unwrap_or_else(|| format!("Task {}", task.id)),
+        sanitized_excerpt: excerpt(&body),
+        body,
+        metadata: json!({
+            "task_id": task.id,
+            "kind": task.kind.as_str(),
+            "status": task.status,
+            "summary": task.summary,
+            "work_item_id": task.work_item_id,
+            "cmd_digest": command.as_ref().and_then(|entry| entry.cmd_digest.clone()),
+            "cmd_preview": command.as_ref().and_then(|entry| entry.cmd.as_deref()).map(command_preview),
+            "exit_status": command.as_ref().and_then(|entry| entry.exit_status),
+            "governance_surface": "runtime_evidence",
+            "provenance_class": "task_record",
+            "trust_class": "runtime_evidence",
+        }),
+        updated_at: task.updated_at,
     }
 }
 
@@ -912,8 +990,8 @@ mod tests {
     use crate::{
         agent_template::ensure_agent_home_layout,
         types::{
-            AgentState, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason, TodoItem,
-            TodoItemState, WorkItemPlanStatus, WorkItemState,
+            AgentState, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason, TaskKind,
+            TaskRecord, TaskStatus, TodoItem, TodoItemState, WorkItemPlanStatus, WorkItemState,
         },
     };
 
@@ -937,6 +1015,30 @@ mod tests {
         let mut work_item = WorkItemRecord::new(agent_id, objective, status);
         work_item.workspace_id = workspace_id.to_string();
         work_item
+    }
+
+    fn task_record(
+        id: &str,
+        status: TaskStatus,
+        summary: &str,
+        kind: TaskKind,
+        updated_at: DateTime<Utc>,
+        detail: Option<Value>,
+        work_item_id: Option<&str>,
+    ) -> TaskRecord {
+        TaskRecord {
+            id: id.into(),
+            agent_id: "default".into(),
+            kind,
+            status,
+            created_at: updated_at,
+            updated_at,
+            parent_message_id: None,
+            work_item_id: work_item_id.map(Into::into),
+            summary: Some(summary.into()),
+            detail,
+            recovery: None,
+        }
     }
 
     #[test]
@@ -1264,6 +1366,114 @@ mod tests {
         assert!(results
             .iter()
             .any(|result| result.kind == "context_episode"));
+    }
+
+    #[test]
+    fn memory_search_indexes_latest_reduced_task_records() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let now = Utc::now();
+        storage
+            .append_task(&task_record(
+                "task-1261-1",
+                TaskStatus::Running,
+                "initial task summary",
+                TaskKind::CommandTask,
+                now,
+                Some(json!({"cmd": "rg -n \"memory search\" src/memory/index.rs"})),
+                Some("work-1261"),
+            ))
+            .unwrap();
+        storage
+            .append_task(&task_record(
+                "task-1261-1",
+                TaskStatus::Completed,
+                "updated task summary",
+                TaskKind::CommandTask,
+                now + chrono::Duration::seconds(1),
+                Some(json!({"cmd": "rg -n \"memory search\" src/memory/index.rs"})),
+                Some("work-1261"),
+            ))
+            .unwrap();
+        storage
+            .append_task(&task_record(
+                "task-1261-2",
+                TaskStatus::Running,
+                "unrelated but searchable task summary",
+                TaskKind::SleepJob,
+                now + chrono::Duration::seconds(2),
+                None,
+                None,
+            ))
+            .unwrap();
+
+        rebuild_memory_index(&storage, Some("ws-holon")).unwrap();
+
+        let by_id = search_memory(&storage, "task-1261-1", 10, Some("ws-holon"), false).unwrap();
+        let matches = by_id
+            .iter()
+            .filter(|result| result.source_ref == "task:task-1261-1")
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].metadata["status"].as_str(), Some("completed"));
+
+        let by_summary = search_memory(
+            &storage,
+            "updated task summary",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        assert!(by_summary
+            .iter()
+            .any(|result| result.source_ref == "task:task-1261-1"));
+
+        let memory = get_memory(&storage, "task:task-1261-1", None, Some("ws-holon"))
+            .unwrap()
+            .expect("task memory document");
+        assert!(memory.content.contains("task_id: task-1261-1"));
+        assert!(memory.content.contains("status: Completed"));
+    }
+
+    #[test]
+    fn memory_search_task_documents_include_command_identity() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let command = "rg -n \"runtime evidence\" src/memory/index.rs";
+        storage
+            .append_task(&task_record(
+                "task-1261-cmd",
+                TaskStatus::Queued,
+                "command task for indexing",
+                TaskKind::CommandTask,
+                Utc::now(),
+                Some(json!({"cmd": command})),
+                None,
+            ))
+            .unwrap();
+
+        rebuild_memory_index(&storage, Some("ws-holon")).unwrap();
+
+        let by_fragment =
+            search_memory(&storage, "runtime evidence", 10, Some("ws-holon"), false).unwrap();
+        assert!(by_fragment
+            .iter()
+            .any(|result| result.source_ref == "task:task-1261-cmd"));
+        let digest = command_digest(command);
+        let by_digest = search_memory(&storage, &digest, 10, Some("ws-holon"), false).unwrap();
+        let by_digest = by_digest
+            .iter()
+            .find(|result| result.source_ref == "task:task-1261-cmd")
+            .expect("command task by cmd_digest");
+        assert_eq!(
+            by_digest.metadata["cmd_digest"].as_str(),
+            Some(digest.as_str())
+        );
+        assert_eq!(by_digest.metadata["kind"].as_str(), Some("command_task"));
+        assert_eq!(by_digest.metadata["status"].as_str(), Some("queued"));
     }
 
     #[test]
