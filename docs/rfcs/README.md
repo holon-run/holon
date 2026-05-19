@@ -10,6 +10,7 @@ For a short architecture map and reading path, see
 
 - [Agent Control Plane Model](./agent-control-plane-model.md)
 - [Agent Lifecycle Control Posture](./agent-lifecycle-control-posture.md)
+- [Agent State Model And Runtime Projection](./agent-state-model.md)
 - [Agent Profile Model](./agent-profile-model.md)
 - [Runtime Scheduler Contract](./runtime-scheduler-contract.md)
 - [Result Closure](./result-closure.md)
@@ -24,6 +25,7 @@ For a short architecture map and reading path, see
 - [Turn Model Lineage And Recovery](./turn-model-lineage-and-recovery.md)
 - [Operator Notification and Intervention](./operator-wait-and-intervention.md)
 - [Waiting Plane And Reactivation](./waiting-plane-and-reactivation.md)
+- [Scheduler Wait State And Recoverable Agent Continuation](./scheduler-wait-state.md)
 - [External Trigger Capability And Providerless Ingress](./external-trigger-capability.md)
 
 ## Provenance, Policy, And Execution
