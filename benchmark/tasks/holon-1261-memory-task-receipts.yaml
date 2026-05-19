@@ -1,0 +1,36 @@
+schema_version: 1
+task_id: holon-1261-memory-task-receipts
+repo:
+  name: holon-run/holon
+  local_path: /Users/jolestar/opensource/src/github.com/holon-run/holon
+issue:
+  number: 1261
+  title: "Index compact reduced task receipts for MemorySearch"
+base:
+  branch: main
+  sha: 646bbf37c459b325cf76443a9c74d80e433b702f
+benchmark:
+  mode: live
+task:
+  kind: implementation
+evaluation:
+  summary: |
+    Add historical task discovery to MemorySearch by indexing compact, reduced
+    task receipt documents. Use the latest reduced task record per task id
+    rather than raw tasks.jsonl ledger events, make terminal tasks discoverable
+    after TaskList becomes active-only, and allow MemoryGet to fetch the chosen
+    task source ref. Command task documents should include searchable command
+    identity such as task id, command fragment, digest, preview, summary, and
+    final status without indexing large command output.
+  expected_outcome: change_required
+  scope_policy: soft
+  allowed_paths: []
+  forbidden_paths: []
+budget:
+  max_minutes: 90
+  max_operator_followups: 0
+review:
+  mode: none
+metadata:
+  difficulty: medium
+  benchmark_group: memory-task-discovery-2026-05-19

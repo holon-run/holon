@@ -1337,3 +1337,88 @@ Reasons:
 - GitHub Rust/Coverage checks are green
 
 Close **Codex PR #1265** as superseded by #1266.
+
+## MemorySearch Task Receipt Discovery (#1261)
+
+Run label:
+
+- `.benchmark-results/memory-task-receipts-2026-05-19-1261-r1`
+
+Task:
+
+- Issue: [#1261](https://github.com/holon-run/holon/issues/1261)
+- Goal: index compact latest reduced task records for historical task
+  discovery through `MemorySearch`, and make the returned `task:<id>`
+  source refs retrievable through `MemoryGet`.
+- Model: `openai-codex/gpt-5.3-codex-spark`
+
+Raw benchmark results:
+
+| Runner | PR | Draft | GitHub CI | Changed Files | Additions | Deletions | Duration | Input Tokens | Cached/Read Input | Output Tokens | Rounds |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Holon | [#1268](https://github.com/holon-run/holon/pull/1268) | yes | all pass | 2 | 215 | 4 | 1,538.9s | 4,612,282 | 3,961,216 | 23,001 | 80 provider rounds |
+| Codex | [#1267](https://github.com/holon-run/holon/pull/1267) | yes | all pass | 3 | 412 | 5 | 2,265.7s | 16,663,093 | n/a | 60,202 | 1 CLI turn |
+
+Changed files:
+
+- Holon: `src/memory/index.rs`, `src/storage.rs`
+- Codex: `src/memory/index.rs`, `src/storage.rs`,
+  `src/tool/tools/memory_get.rs`
+
+### Implementation Comparison
+
+Both implementations add the core reduced-task indexing path:
+
+- task appends dirty the memory index
+- `MemorySearch` indexes one latest task document per task id
+- task documents include task id, kind, status, summary, work item metadata, and
+  command identity
+- tests cover latest-snapshot reduction and command identity search
+
+Codex is the stronger PR to keep despite higher token cost:
+
+- it updates `MemoryGet`'s model-facing `source_ref` allowlist to accept
+  `task:<id>`
+- it adds direct tool-level coverage for `MemoryGet` with a task source ref
+- it covers more acceptance paths: task id, summary, command fragment,
+  `cmd_digest`, work item metadata, latest snapshot, and `MemoryGet`
+- GitHub Rust, Coverage, and Holon trigger checks are green
+
+Holon is much cheaper and faster:
+
+- 4.61M input tokens versus Codex 16.66M
+- 23.0K output tokens versus Codex 60.2K
+- 71 tool calls versus Codex 151
+- about 25.6 minutes versus Codex about 37.8 minutes
+
+But #1268 misses an important acceptance boundary: it verifies the lower-level
+`get_memory()` path for `task:<id>`, while the actual model-facing
+`MemoryGet` tool still rejects `task:` because `src/tool/tools/memory_get.rs`
+is unchanged. That means an agent could receive a `task:<id>` search result
+and still fail to fetch it through the intended tool.
+
+### Verification Notes
+
+Both PRs have green GitHub checks:
+
+- #1267: Rust passed, Coverage passed, Run Holon / solve passed
+- #1268: Rust passed, Coverage passed, Run Holon / solve passed
+
+One benchmark-framework observation: Holon committed locally before framework
+finalization, so the artifact recorded `pr_status = skipped_no_changes` and no
+PR. I pushed the benchmark branch manually and created #1268 from the Holon
+commit so the run could be compared on GitHub.
+
+### Recommendation
+
+Prefer keeping **Codex PR #1267** as the official PR.
+
+Reasons:
+
+- complete model-facing `MemoryGet task:` support
+- broader acceptance coverage
+- all GitHub checks are green
+
+Close **Holon PR #1268** as superseded by #1267. Holon had a substantially
+better token/runtime profile, but the implementation misses the tool-entry
+acceptance criterion.
