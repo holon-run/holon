@@ -1,0 +1,40 @@
+schema_version: 1
+task_id: holon-1260-task-list-active-only
+repo:
+  name: holon-run/holon
+  local_path: /Users/jolestar/opensource/src/github.com/holon-run/holon
+issue:
+  number: 1260
+  title: "Make TaskList an active-only coordination view"
+base:
+  branch: main
+  sha: b82c1d30ff79701eeef705bbea87cc56b5b27bd2
+benchmark:
+  mode: live
+task:
+  kind: implementation
+verification:
+  commands:
+    - "cargo test --quiet task"
+    - "cargo test --quiet --workspace"
+evaluation:
+  summary: |
+    TaskList should be a current coordination view for active background work.
+    It should return only latest active task snapshots for queued, running, and
+    cancelling tasks, excluding completed, failed, cancelled, and interrupted
+    historical tasks. Do not add filtering parameters in this issue. Preserve
+    compact command identity behavior from issue #1256, update the model-facing
+    tool description and prompt guidance to say active tasks, and add tests for
+    the runtime/tool path, not only the HTTP route.
+  expected_outcome: change_required
+  scope_policy: soft
+  allowed_paths: []
+  forbidden_paths: []
+budget:
+  max_minutes: 90
+  max_operator_followups: 0
+review:
+  mode: none
+metadata:
+  difficulty: medium
+  benchmark_group: task-coordination-2026-05-19

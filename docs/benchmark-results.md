@@ -1161,3 +1161,91 @@ Reasons:
 Close **Holon PR #1258** as superseded by #1259. Holon had the better token and
 runtime profile in this benchmark, so this run is still a positive signal for
 Holon execution efficiency, but #1259 is the cleaner code review artifact.
+
+## TaskList Active-Only Coordination View (#1260)
+
+Run label:
+
+- `.benchmark-results/task-list-active-only-2026-05-19-1260-r1`
+
+Task:
+
+- Issue: [#1260](https://github.com/holon-run/holon/issues/1260)
+- Goal: make `TaskList` return only active task snapshots for the current
+  agent, without adding filter parameters, while preserving the compact command
+  identity projection from #1256.
+- Model: `openai-codex/gpt-5.3-codex-spark`
+
+Raw benchmark results:
+
+| Runner | PR | Draft | Verify | Changed Files | Additions | Deletions | Duration | Input Tokens | Cached/Read Input | Output Tokens | Rounds |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Holon | [#1263](https://github.com/holon-run/holon/pull/1263) | yes | fail | 4 | 117 | 4 | 560.5s | 2,207,796 | 1,795,968 | 11,556 | 48 provider rounds |
+| Codex | [#1262](https://github.com/holon-run/holon/pull/1262) | yes | fail | 4 | 132 | 4 | 688.5s | 3,463,674 | n/a | 20,054 | 1 CLI turn |
+
+Changed files:
+
+- Holon: `src/prompt/tools.rs`, `src/runtime/tasks.rs`,
+  `src/runtime/tests/agent_and_tools.rs`, `src/tool/tools/task_list.rs`
+- Codex: `src/prompt/tools.rs`, `src/runtime/tasks.rs`,
+  `src/runtime/tests/agent_and_tools.rs`, `src/tool/tools/task_list.rs`
+
+### Implementation Comparison
+
+Both implementations make `TaskList` active-only by switching the runtime path
+from historical latest records to `latest_active_task_records_for_agent`, and
+both update the model-facing tool description plus task-control prompt text.
+Both also add runtime tests covering terminal task exclusion and current-agent
+scoping.
+
+Holon is cheaper and faster in this run:
+
+- 2.21M input tokens versus Codex 3.46M
+- 11.6K output tokens versus Codex 20.1K
+- about 9.3 minutes versus about 11.5 minutes
+- 44 tool calls versus Codex 62
+
+Codex is the better PR to keep:
+
+- it extracts `latest_task_list_entries_for_agent`, making the current-agent
+  filtering boundary explicit and directly testable
+- its test keeps the active-only lookup separated from `RuntimeHandle`'s
+  current-agent resolution, which makes agent scoping easier to reason about
+- its PR body is already a normal implementation PR with `Closes #1260`
+- GitHub Rust and Coverage checks are green
+
+The Holon implementation is functionally close, but it keeps the agent-scoped
+active lookup inline inside `latest_task_list_entries`, so the test can only
+exercise scoping indirectly through the runtime's current agent.
+
+### Verification Notes
+
+Both raw benchmark artifacts report failed verification, but the targeted task
+tests passed in both runs. The failure was the same local full-workspace
+`runtime_compaction` test failure in both worktrees:
+
+- `preview_prompt_after_compaction_keeps_work_item_plan_and_pending_work_visible`
+- `contentful_wake_hint_after_compaction_keeps_active_work_truth`
+
+GitHub CI is the more useful signal for these PRs:
+
+- #1262: Rust passed, Coverage passed
+- #1263: Rust passed, Coverage passed
+
+One benchmark-framework observation remains: both run artifacts recorded
+`pr_status = skipped_no_changes`, but the agents had created draft PRs #1262
+and #1263. Treat the GitHub PRs as the real delivery artifacts for this run.
+
+### Recommendation
+
+Prefer keeping **Codex PR #1262** as the official PR.
+
+Reasons:
+
+- cleaner runtime boundary via `latest_task_list_entries_for_agent`
+- direct test coverage for the agent-scoped active-only helper
+- normal PR body with issue linkage
+- GitHub Rust/Coverage checks are green
+
+Close **Holon PR #1263** as superseded by #1262. Holon had the better token and
+runtime profile in this benchmark, but #1262 is the cleaner review artifact.
