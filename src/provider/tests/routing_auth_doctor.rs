@@ -859,6 +859,16 @@ async fn openai_provider_fails_fast_on_contract_errors() {
         timeline.attempts[0].outcome,
         ProviderAttemptOutcome::FailFastAborted
     );
+    let transport = timeline.attempts[0]
+        .transport_diagnostics
+        .as_ref()
+        .expect("status failures should carry transport diagnostics");
+    assert_eq!(transport.stage, "response_status");
+    assert_eq!(transport.provider.as_deref(), Some("openai"));
+    assert_eq!(transport.model_ref.as_deref(), Some("openai/gpt-5.4"));
+    assert_eq!(transport.status, Some(400));
+    assert_eq!(transport.reqwest, None);
+    assert_eq!(transport.http_trace, None);
     assert!(!timeline.attempts[0].advanced_to_fallback);
 }
 
@@ -1097,6 +1107,73 @@ async fn provider_fallback_defers_after_fail_fast_error() {
     );
     assert!(timeline.attempts[0].advanced_to_fallback);
     assert_eq!(timeline.attempts[0].attempt, 1);
+    let transport = timeline.attempts[0]
+        .transport_diagnostics
+        .as_ref()
+        .expect("fallback status failure should preserve diagnostics");
+    assert_eq!(transport.stage, "response_status");
+    assert_eq!(transport.provider.as_deref(), Some("openai"));
+    assert_eq!(transport.status, Some(400));
+}
+
+#[tokio::test]
+async fn anthropic_status_errors_preserve_transport_diagnostics() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let server_attempts = attempts.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move || {
+            let attempts = server_attempts.clone();
+            async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                (axum::http::StatusCode::UNAUTHORIZED, "bad token").into_response()
+            }
+        }),
+    ))
+    .await;
+
+    let mut fixture = test_config(
+        "anthropic/claude-sonnet-4-6",
+        &[],
+        None,
+        Some("anthropic-token"),
+        false,
+    );
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::anthropic())
+        .unwrap()
+        .base_url = base_url;
+    let provider = build_provider_from_config(&fixture.config).unwrap();
+    let error = provider
+        .complete_turn(provider_turn_request())
+        .await
+        .err()
+        .expect("401 should fail fast without retry");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    let timeline = provider_attempt_timeline(&error).expect("missing attempt timeline");
+    assert_eq!(timeline.attempts.len(), 1);
+    assert_eq!(
+        timeline.attempts[0].failure_kind.as_deref(),
+        Some("auth_error")
+    );
+    let transport = timeline.attempts[0]
+        .transport_diagnostics
+        .as_ref()
+        .expect("anthropic status failure should preserve diagnostics");
+    assert_eq!(transport.stage, "response_status");
+    assert_eq!(transport.provider.as_deref(), Some("anthropic"));
+    assert_eq!(
+        transport.model_ref.as_deref(),
+        Some("anthropic/claude-sonnet-4-6")
+    );
+    assert_eq!(transport.status, Some(401));
+    assert!(transport
+        .url
+        .as_deref()
+        .is_some_and(|url| url.ends_with("/v1/messages")));
 }
 
 #[tokio::test]

@@ -6,7 +6,9 @@ use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::time::Duration;
 
-use super::{ProviderTransportDiagnostics, ReqwestTransportDiagnostics};
+use super::{
+    http_trace::ProviderHttpTraceRequest, ProviderTransportDiagnostics, ReqwestTransportDiagnostics,
+};
 
 pub(crate) const PROVIDER_MAX_RETRIES: usize = 2;
 const PROVIDER_RETRY_BASE_BACKOFF_MS: u64 = 200;
@@ -126,13 +128,14 @@ pub(crate) fn provider_transport_error(
     .into()
 }
 
-pub(crate) fn classify_reqwest_transport_error(
+pub(crate) fn classify_reqwest_transport_error_with_trace(
     context: &str,
     stage: &str,
     provider: &str,
     model_ref: Option<&str>,
     url: Option<&str>,
     error: reqwest::Error,
+    trace: Option<&ProviderHttpTraceRequest>,
 ) -> anyhow::Error {
     let status = error.status().map(|status| status.as_u16());
     let source_chain = error_chain_messages(&error);
@@ -167,6 +170,7 @@ pub(crate) fn classify_reqwest_transport_error(
             url,
             &error,
             source_chain,
+            trace,
         )),
         format!("{context}: {error}"),
     )
@@ -199,10 +203,15 @@ fn is_retryable_response_body_read_interruption(
     })
 }
 
-pub(crate) fn classify_status_error(
+pub(crate) fn classify_status_error_with_trace(
     context: &str,
+    stage: &str,
+    provider: Option<&str>,
+    model_ref: Option<&str>,
+    url: Option<&str>,
     status: StatusCode,
     body: String,
+    trace: Option<&ProviderHttpTraceRequest>,
 ) -> anyhow::Error {
     let classification = match status {
         StatusCode::TOO_MANY_REQUESTS => ProviderFailureClassification {
@@ -229,7 +238,16 @@ pub(crate) fn classify_status_error(
     provider_transport_error(
         classification,
         Some(status.as_u16()),
-        None,
+        Some(ProviderTransportDiagnostics {
+            stage: stage.to_string(),
+            provider: provider.map(ToString::to_string),
+            model_ref: model_ref.map(ToString::to_string),
+            url: url.map(sanitize_transport_url),
+            status: Some(status.as_u16()),
+            reqwest: None,
+            http_trace: trace.and_then(|trace| trace.diagnostics(Some(status.as_u16()))),
+            source_chain: Vec::new(),
+        }),
         format!("{context} with status {status}: {body}"),
     )
 }
@@ -249,13 +267,14 @@ pub(crate) fn invalid_response_error(
     )
 }
 
-pub(crate) fn timeout_transport_error(
+pub(crate) fn timeout_transport_error_with_trace(
     context: &str,
     stage: &str,
     provider: &str,
     model_ref: Option<&str>,
     url: Option<&str>,
     reason: impl Into<String>,
+    trace: Option<&ProviderHttpTraceRequest>,
 ) -> anyhow::Error {
     provider_transport_error(
         ProviderFailureClassification {
@@ -270,13 +289,14 @@ pub(crate) fn timeout_transport_error(
             url: url.map(sanitize_transport_url),
             status: None,
             reqwest: None,
+            http_trace: trace.and_then(|trace| trace.diagnostics(None)),
             source_chain: vec![reason.into()],
         }),
         context.to_string(),
     )
 }
 
-fn sanitize_transport_url(raw: &str) -> String {
+pub(crate) fn sanitize_transport_url(raw: &str) -> String {
     let Ok(mut url) = reqwest::Url::parse(raw) else {
         return raw.to_string();
     };
@@ -296,7 +316,9 @@ fn reqwest_transport_diagnostics(
     url: Option<&str>,
     error: &reqwest::Error,
     source_chain: Vec<String>,
+    trace: Option<&ProviderHttpTraceRequest>,
 ) -> ProviderTransportDiagnostics {
+    let status = error.status().map(|status| status.as_u16());
     ProviderTransportDiagnostics {
         stage: stage.to_string(),
         provider: Some(provider.to_string()),
@@ -304,7 +326,7 @@ fn reqwest_transport_diagnostics(
         url: url
             .or_else(|| error.url().map(reqwest::Url::as_str))
             .map(sanitize_transport_url),
-        status: error.status().map(|status| status.as_u16()),
+        status,
         reqwest: Some(ReqwestTransportDiagnostics {
             is_timeout: error.is_timeout(),
             is_connect: error.is_connect(),
@@ -312,8 +334,9 @@ fn reqwest_transport_diagnostics(
             is_body: error.is_body(),
             is_decode: error.is_decode(),
             is_redirect: error.is_redirect(),
-            status: error.status().map(|status| status.as_u16()),
+            status,
         }),
+        http_trace: trace.and_then(|trace| trace.diagnostics(status)),
         source_chain,
     }
 }

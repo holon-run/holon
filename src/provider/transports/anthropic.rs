@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use twox_hash::XxHash64;
 
 use crate::{
@@ -15,16 +16,18 @@ use crate::{
     },
     prompt::PromptStability,
     provider::{
-        AgentProvider, AnthropicPromptCacheDiagnostics, CacheBreakpointInfo, ConversationMessage,
-        ModelBlock, PromptContentBlock, ProviderCacheUsage, ProviderContextManagementPolicy,
-        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind, ProviderPromptCapability,
-        ProviderTurnRequest, ProviderTurnResponse,
+        http_trace::ProviderHttpTrace, AgentProvider, AnthropicPromptCacheDiagnostics,
+        CacheBreakpointInfo, ConversationMessage, ModelBlock, PromptContentBlock,
+        ProviderCacheUsage, ProviderContextManagementPolicy, ProviderNativeWebSearchDiagnostics,
+        ProviderNativeWebSearchKind, ProviderPromptCapability, ProviderTurnRequest,
+        ProviderTurnResponse,
     },
 };
 
 use super::{build_http_client, request_send_timeout};
 use crate::provider::retry::{
-    classify_reqwest_transport_error, classify_status_error, invalid_response_error,
+    classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
+    invalid_response_error,
 };
 
 #[derive(Clone)]
@@ -35,6 +38,7 @@ pub struct AnthropicProvider {
     model: String,
     max_output_tokens: u32,
     context_management: AnthropicContextManagementConfig,
+    trace_home_dir: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -122,13 +126,19 @@ impl AnthropicProvider {
             .providers
             .get(&ProviderId::anthropic())
             .ok_or_else(|| anyhow!("missing anthropic provider config"))?;
-        Self::from_runtime_config(provider_config, model, config.runtime_max_output_tokens)
+        Self::from_runtime_config(
+            provider_config,
+            model,
+            config.runtime_max_output_tokens,
+            &config.home_dir,
+        )
     }
 
     pub fn from_runtime_config(
         provider_config: &ProviderRuntimeConfig,
         model: &str,
         max_output_tokens: u32,
+        trace_home_dir: &Path,
     ) -> Result<Self> {
         let client = build_http_client()?;
         let auth_token = provider_config
@@ -152,6 +162,7 @@ impl AnthropicProvider {
             model: model.to_string(),
             max_output_tokens,
             context_management: provider_config.context_management.clone(),
+            trace_home_dir: trace_home_dir.to_path_buf(),
         })
     }
 }
@@ -179,15 +190,36 @@ impl AgentProvider for AnthropicProvider {
         let request_payload = serde_json::to_value(&request_body)?;
 
         let url = format!("{}/v1/messages", self.base_url);
-        let mut request_builder = self
-            .client
-            .post(url)
-            .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {}", self.auth_token))
-            .header("anthropic-version", "2023-06-01");
+        let mut headers = vec![
+            ("content-type", "application/json".to_string()),
+            ("authorization", format!("Bearer {}", self.auth_token)),
+            ("anthropic-version", "2023-06-01".to_string()),
+        ];
         if self.context_management.enabled {
-            request_builder =
-                request_builder.header("anthropic-beta", "context-management-2025-06-27");
+            headers.push((
+                "anthropic-beta",
+                "context-management-2025-06-27".to_string(),
+            ));
+        }
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+        let request_trace = trace.and_then(|trace| {
+            trace.begin_request(
+                request
+                    .prompt_frame
+                    .cache
+                    .as_ref()
+                    .map(|cache| cache.agent_id.as_str()),
+                "anthropic",
+                Some(&format!("anthropic/{}", self.model)),
+                url.as_str(),
+                "messages",
+                &headers,
+                &request_payload,
+            )
+        });
+        let mut request_builder = self.client.post(&url);
+        for (name, value) in &headers {
+            request_builder = request_builder.header(*name, value);
         }
         let response = request_builder
             .timeout(request_send_timeout())
@@ -195,36 +227,52 @@ impl AgentProvider for AnthropicProvider {
             .send()
             .await
             .map_err(|error| {
-                classify_reqwest_transport_error(
+                classify_reqwest_transport_error_with_trace(
                     "Anthropic request failed",
                     "request_send",
                     "anthropic",
                     Some(&format!("anthropic/{}", self.model)),
                     Some(&format!("{}/v1/messages", self.base_url)),
                     error,
+                    request_trace.as_ref(),
                 )
             })?;
+        request_trace
+            .as_ref()
+            .map(|trace| trace.write_response_headers(response.status(), response.headers()));
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(classify_status_error(
+            request_trace
+                .as_ref()
+                .map(|trace| trace.write_response_body(&body));
+            return Err(classify_status_error_with_trace(
                 "Anthropic request failed",
+                "response_status",
+                Some("anthropic"),
+                Some(&format!("anthropic/{}", self.model)),
+                Some(url.as_str()),
                 status,
                 body,
+                request_trace.as_ref(),
             ));
         }
 
         let response_body = response.text().await.map_err(|error| {
-            classify_reqwest_transport_error(
+            classify_reqwest_transport_error_with_trace(
                 "Anthropic response body failed",
                 "response_body",
                 "anthropic",
                 Some(&format!("anthropic/{}", self.model)),
                 Some(&format!("{}/v1/messages", self.base_url)),
                 error,
+                request_trace.as_ref(),
             )
         })?;
+        request_trace
+            .as_ref()
+            .map(|trace| trace.write_response_body(&response_body));
         let parsed: MessagesResponse = serde_json::from_str(&response_body)
             .map_err(|error| invalid_response_error("invalid Anthropic JSON", error))?;
         let input_tokens = parsed

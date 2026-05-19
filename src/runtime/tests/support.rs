@@ -754,6 +754,7 @@ impl AgentProvider for FailingTimelineProvider {
                             is_redirect: false,
                             status: None,
                         }),
+                        http_trace: None,
                         source_chain: vec!["connection reset by peer".into()],
                     }),
                 }],

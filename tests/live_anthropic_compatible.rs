@@ -39,8 +39,13 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
     provider_config.context_management.trigger_input_tokens = 1;
     provider_config.context_management.keep_recent_tool_uses = 1;
 
-    let provider =
-        AnthropicProvider::from_runtime_config(provider_config, model, runtime_max_output_tokens)?;
+    let trace_home_dir = tempfile::tempdir()?.keep();
+    let provider = AnthropicProvider::from_runtime_config(
+        provider_config,
+        model,
+        runtime_max_output_tokens,
+        &trace_home_dir,
+    )?;
 
     let tool = ToolSpec {
         name: "ProbeTool".into(),

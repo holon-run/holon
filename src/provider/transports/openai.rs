@@ -5,13 +5,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs::{self, OpenOptions},
-    io::Write,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
-    time::SystemTime,
 };
 
 use crate::{
@@ -22,21 +18,22 @@ use crate::{
     context::ContextConfig,
     model_catalog::BuiltInModelCatalog,
     provider::{
-        emitted_tool_json_schema, AgentProvider, ConversationMessage, ModelBlock,
-        ProviderCacheUsage, ProviderIncrementalContinuationDiagnostics,
-        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
-        ProviderOpenAiRemoteCompactionDiagnostics, ProviderOpenAiRequestControlsDiagnostics,
-        ProviderPromptFrame, ProviderRequestDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
-        ToolSchemaContract,
+        emitted_tool_json_schema,
+        http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
+        AgentProvider, ConversationMessage, ModelBlock, ProviderCacheUsage,
+        ProviderIncrementalContinuationDiagnostics, ProviderNativeWebSearchDiagnostics,
+        ProviderNativeWebSearchKind, ProviderOpenAiRemoteCompactionDiagnostics,
+        ProviderOpenAiRequestControlsDiagnostics, ProviderPromptFrame, ProviderRequestDiagnostics,
+        ProviderTurnRequest, ProviderTurnResponse, ToolSchemaContract,
     },
     token_estimate::estimate_json_tokens,
 };
 
 use super::{build_http_client, request_send_timeout, stream_idle_timeout};
 use crate::provider::retry::{
-    classify_reqwest_transport_error, classify_status_error, invalid_response_error,
-    provider_transport_error, timeout_transport_error, ProviderFailureClassification,
-    ProviderFailureKind, ProviderTransportError, RetryDisposition,
+    classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
+    invalid_response_error, provider_transport_error, timeout_transport_error_with_trace,
+    ProviderFailureClassification, ProviderFailureKind, ProviderTransportError, RetryDisposition,
 };
 
 #[derive(Clone)]
@@ -83,265 +80,38 @@ pub(crate) enum OpenAiResponsesTransportContract {
 }
 
 const OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND: &str = "responses_compact";
-static OPENAI_HTTP_TRACE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OpenAiCompactionPolicy {
     pub(crate) trigger_input_tokens: u64,
 }
 
-#[derive(Clone, Debug)]
-struct OpenAiHttpTrace {
-    home_dir: PathBuf,
-}
-
-#[derive(Clone, Debug)]
-struct OpenAiHttpTraceRequest {
-    file_path: Arc<PathBuf>,
-}
-
-impl OpenAiHttpTrace {
-    fn from_env(home_dir: impl Into<PathBuf>) -> Option<Self> {
-        if std::env::var("HOLON_PROVIDER_HTTP_TRACE").ok().as_deref() != Some("1") {
-            return None;
-        }
-        Some(Self {
-            home_dir: home_dir.into(),
-        })
-    }
-
-    fn begin_request(
-        &self,
-        agent_id: Option<&str>,
-        provider: &str,
-        model_ref: Option<&str>,
-        url: &str,
-        endpoint_kind: &str,
-        headers: &[(&str, String)],
-        body: &Value,
-    ) -> Option<OpenAiHttpTraceRequest> {
-        let agent_id = agent_id
-            .filter(|value| !value.trim().is_empty())
-            .map(ToString::to_string)
-            .or_else(|| {
-                std::env::var("HOLON_AGENT_ID")
-                    .ok()
-                    .filter(|value| !value.trim().is_empty())
-            })
-            .unwrap_or_else(|| "unknown-agent".into());
-        let trace_dir = self
-            .home_dir
-            .join(".holon")
-            .join("http-trace")
-            .join(sanitize_trace_path_segment(&agent_id));
-        fs::create_dir_all(&trace_dir).ok()?;
-        let sequence = OPENAI_HTTP_TRACE_SEQ.fetch_add(1, Ordering::Relaxed);
-        let created_at_ms = current_time_millis();
-        let file_path = trace_dir.join(format!("trace-{created_at_ms}-{sequence}.jsonl"));
-        let trace = OpenAiHttpTraceRequest {
-            file_path: Arc::new(file_path),
-        };
-        trace.write_event(json!({
-            "type": "request",
-            "created_at_ms": created_at_ms,
-            "sequence": sequence,
-            "agent_id": agent_id,
-            "provider": provider,
-            "model_ref": model_ref,
-            "endpoint_kind": endpoint_kind,
-            "url": redact_url(url),
-            "headers": redact_headers(headers),
-            "body": redact_json_secrets(body),
-        }));
-        Some(trace)
-    }
-}
-
-impl OpenAiHttpTraceRequest {
-    fn write_event(&self, event: Value) {
-        let Ok(line) = serde_json::to_string(&event) else {
-            return;
-        };
-        let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.file_path.as_path())
-        else {
-            return;
-        };
-        let _ = writeln!(file, "{line}");
-    }
-}
-
-fn sanitize_trace_path_segment(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-fn redact_headers(headers: &[(&str, String)]) -> Value {
-    Value::Array(
-        headers
-            .iter()
-            .map(|(name, value)| {
-                json!({
-                    "name": *name,
-                    "value": redact_header_value(name, value),
-                })
-            })
-            .collect(),
-    )
-}
-
-fn redact_header_map(headers: &reqwest::header::HeaderMap) -> Value {
-    Value::Array(
-        headers
-            .iter()
-            .map(|(name, value)| {
-                let value = value.to_str().unwrap_or("<non-utf8>");
-                json!({
-                    "name": name.as_str(),
-                    "value": redact_header_value(name.as_str(), value),
-                })
-            })
-            .collect(),
-    )
-}
-
 fn trace_response_headers(
-    trace: Option<&OpenAiHttpTraceRequest>,
+    trace: Option<&ProviderHttpTraceRequest>,
     status: reqwest::StatusCode,
     headers: &reqwest::header::HeaderMap,
 ) {
     if let Some(trace) = trace {
-        trace.write_event(json!({
-            "type": "response_headers",
-            "created_at_ms": current_time_millis(),
-            "status": status.as_u16(),
-            "headers": redact_header_map(headers),
-        }));
+        trace.write_response_headers(status, headers);
     }
 }
 
-fn trace_response_body(trace: Option<&OpenAiHttpTraceRequest>, body: &str) {
+fn trace_response_body(trace: Option<&ProviderHttpTraceRequest>, body: &str) {
     if let Some(trace) = trace {
-        trace.write_event(json!({
-            "type": "response_body",
-            "created_at_ms": current_time_millis(),
-            "bytes": body.len(),
-            "body": body,
-        }));
+        trace.write_response_body(body);
     }
 }
 
-fn trace_stream_chunk(trace: Option<&OpenAiHttpTraceRequest>, chunk: &[u8]) {
+fn trace_stream_chunk(trace: Option<&ProviderHttpTraceRequest>, chunk: &[u8]) {
     if let Some(trace) = trace {
-        trace.write_event(json!({
-            "type": "stream_chunk",
-            "created_at_ms": current_time_millis(),
-            "bytes": chunk.len(),
-            "text": String::from_utf8_lossy(chunk),
-        }));
+        trace.write_stream_chunk(chunk);
     }
 }
 
-fn trace_stream_terminal(trace: Option<&OpenAiHttpTraceRequest>, body: &Value) {
+fn trace_stream_terminal(trace: Option<&ProviderHttpTraceRequest>, body: &Value) {
     if let Some(trace) = trace {
-        trace.write_event(json!({
-            "type": "stream_terminal_response",
-            "created_at_ms": current_time_millis(),
-            "body": body,
-        }));
+        trace.write_stream_terminal(body);
     }
-}
-
-fn current_time_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default()
-}
-
-fn redact_header_value(name: &str, value: &str) -> String {
-    let lowered = name.to_ascii_lowercase();
-    if matches!(
-        lowered.as_str(),
-        "authorization" | "proxy-authorization" | "cookie" | "set-cookie" | "x-api-key"
-    ) {
-        "[REDACTED]".into()
-    } else {
-        value.into()
-    }
-}
-
-fn redact_url(raw: &str) -> String {
-    let Ok(mut url) = reqwest::Url::parse(raw) else {
-        return raw.into();
-    };
-    if url.password().is_some() {
-        let _ = url.set_password(Some("[REDACTED]"));
-    }
-    if !url.username().is_empty() {
-        let _ = url.set_username("[REDACTED]");
-    }
-    let redacted_pairs = url
-        .query_pairs()
-        .map(|(key, value)| {
-            let lowered = key.to_ascii_lowercase();
-            let value = if lowered.contains("key")
-                || lowered.contains("token")
-                || lowered.contains("secret")
-            {
-                "[REDACTED]".into()
-            } else {
-                value.into_owned()
-            };
-            (key.into_owned(), value)
-        })
-        .collect::<Vec<_>>();
-    if !redacted_pairs.is_empty() {
-        url.query_pairs_mut().clear().extend_pairs(redacted_pairs);
-    }
-    url.to_string()
-}
-
-fn redact_json_secrets(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(key, value)| {
-                    let lowered = key.to_ascii_lowercase();
-                    let value = if is_secret_json_key(&lowered) {
-                        Value::String("[REDACTED]".into())
-                    } else {
-                        redact_json_secrets(value)
-                    };
-                    (key.clone(), value)
-                })
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(items.iter().map(redact_json_secrets).collect()),
-        other => other.clone(),
-    }
-}
-
-fn is_secret_json_key(lowered: &str) -> bool {
-    lowered.contains("api_key")
-        || lowered.contains("apikey")
-        || lowered.contains("secret")
-        || lowered == "authorization"
-        || lowered == "token"
-        || lowered.ends_with("_token")
-        || lowered.starts_with("token_")
-        || lowered.contains("_token_")
 }
 
 fn request_agent_id(request: &ProviderTurnRequest) -> Option<&str> {
@@ -698,7 +468,7 @@ impl AgentProvider for OpenAiProvider {
             .as_ref()
             .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
             .unwrap_or_default();
-        let trace = OpenAiHttpTrace::from_env(self.trace_home_dir.clone());
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         if let Some(remote_compaction) = maybe_compact_openai_request_plan(
             &self.continuation,
             &mut plan,
@@ -802,7 +572,7 @@ impl AgentProvider for OpenAiCodexProvider {
             ("OpenAI-Beta", "responses=experimental".to_string()),
             ("originator", self.originator.clone()),
         ];
-        let trace = OpenAiHttpTrace::from_env(self.trace_home_dir.clone());
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         if let Some(remote_compaction) = maybe_compact_openai_request_plan(
             &self.continuation,
             &mut plan,
@@ -895,7 +665,7 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             .as_ref()
             .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
             .unwrap_or_default();
-        let trace = OpenAiHttpTrace::from_env(self.trace_home_dir.clone());
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
 
         // Send to /v1/chat/completions endpoint
         let parsed = match send_chat_completion_request(
@@ -1898,7 +1668,7 @@ async fn maybe_compact_openai_provider_window(
     client: &Client,
     compact_url: String,
     headers: Vec<(&str, String)>,
-    trace: Option<&OpenAiHttpTrace>,
+    trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
 ) -> Option<ProviderOpenAiRemoteCompactionDiagnostics> {
     let Some(scope) = scope else {
@@ -2134,7 +1904,7 @@ async fn maybe_compact_openai_request_plan(
     client: &Client,
     compact_url: String,
     headers: Vec<(&str, String)>,
-    trace: Option<&OpenAiHttpTrace>,
+    trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
 ) -> Option<ProviderOpenAiRemoteCompactionDiagnostics> {
     if plan.diagnostics.request_lowering_mode != "incremental_continuation" {
@@ -2998,14 +2768,15 @@ async fn send_chat_completion_request(
     url: String,
     body: Value,
     headers: Vec<(&str, String)>,
-    trace: Option<&OpenAiHttpTrace>,
+    trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
 ) -> Result<ParsedOpenAiResponse> {
+    let model_ref = provider_model_ref("openai", &body);
     let request_trace = trace.and_then(|trace| {
         trace.begin_request(
             agent_id,
             "openai",
-            Some(&provider_model_ref("openai", &body)),
+            Some(&model_ref),
             url.as_str(),
             "chat_completions",
             &headers,
@@ -3022,9 +2793,10 @@ async fn send_chat_completion_request(
         "OpenAI Chat Completions request failed",
         "request_send",
         "openai",
-        Some(&provider_model_ref("openai", &body)),
+        Some(&model_ref),
         Some(url.as_str()),
         true,
+        request_trace.as_ref(),
     )
     .await?;
     trace_response_headers(
@@ -3041,17 +2813,21 @@ async fn send_chat_completion_request(
             "OpenAI Chat Completions request failed",
             status,
             body,
+            Some(&model_ref),
+            Some(url.as_str()),
+            request_trace.as_ref(),
         ));
     }
 
     let body = response.text().await.map_err(|error| {
-        classify_reqwest_transport_error(
+        classify_reqwest_transport_error_with_trace(
             "OpenAI Chat Completions response body failed",
             "response_body",
             "openai",
-            Some(&provider_model_ref("openai", &body)),
+            Some(&model_ref),
             Some(url.as_str()),
             error,
+            request_trace.as_ref(),
         )
     })?;
     trace_response_body(request_trace.as_ref(), &body);
@@ -3066,19 +2842,40 @@ fn classify_chat_completion_status_error(
     context: &str,
     status: reqwest::StatusCode,
     body: String,
+    model_ref: Option<&str>,
+    url: Option<&str>,
+    trace: Option<&ProviderHttpTraceRequest>,
 ) -> anyhow::Error {
     // Try to parse as OpenAI error response
     if let Ok(error_json) = serde_json::from_str::<Value>(&body) {
         if let Some(error_obj) = error_json.get("error") {
-            return classify_openai_chat_completion_error(context, error_obj);
+            return classify_openai_chat_completion_error(
+                context, error_obj, status, model_ref, url, trace,
+            );
         }
     }
 
     // Fallback to generic status error classification
-    classify_status_error(context, status, body)
+    classify_status_error_with_trace(
+        context,
+        "response_status",
+        Some("openai"),
+        model_ref,
+        url,
+        status,
+        body,
+        trace,
+    )
 }
 
-pub(crate) fn classify_openai_chat_completion_error(context: &str, error: &Value) -> anyhow::Error {
+pub(crate) fn classify_openai_chat_completion_error(
+    context: &str,
+    error: &Value,
+    status: reqwest::StatusCode,
+    model_ref: Option<&str>,
+    url: Option<&str>,
+    trace: Option<&ProviderHttpTraceRequest>,
+) -> anyhow::Error {
     let error_type = error
         .get("type")
         .and_then(Value::as_str)
@@ -3148,8 +2945,17 @@ pub(crate) fn classify_openai_chat_completion_error(context: &str, error: &Value
 
     provider_transport_error(
         classification,
-        None,
-        None,
+        Some(status.as_u16()),
+        Some(crate::provider::ProviderTransportDiagnostics {
+            stage: "response_status".into(),
+            provider: Some("openai".into()),
+            model_ref: model_ref.map(ToString::to_string),
+            url: url.map(crate::provider::retry::sanitize_transport_url),
+            status: Some(status.as_u16()),
+            reqwest: None,
+            http_trace: trace.and_then(|trace| trace.diagnostics(Some(status.as_u16()))),
+            source_chain: Vec::new(),
+        }),
         format!("{}: {}", context, detail),
     )
 }
@@ -3330,6 +3136,7 @@ pub(crate) async fn send_chat_completion_stream_request(
         Some(&provider_model_ref("openai", &body)),
         Some(url.as_str()),
         true,
+        None,
     )
     .await?;
 
@@ -3340,6 +3147,9 @@ pub(crate) async fn send_chat_completion_stream_request(
             "OpenAI Chat Completions streaming request failed",
             status,
             body,
+            None,
+            None,
+            None,
         ));
     }
 
@@ -3358,13 +3168,14 @@ async fn read_chat_completion_stream(response: Response) -> Result<Value> {
     let mut data_lines = Vec::new();
 
     while let Some(chunk) = response.chunk().await.map_err(|error| {
-        classify_reqwest_transport_error(
+        crate::provider::retry::classify_reqwest_transport_error_with_trace(
             "OpenAI Chat Completions streaming response failed",
             "streaming_response_body",
             "openai",
             None,
             None,
             error,
+            None,
         )
     })? {
         pending.push_str(&String::from_utf8_lossy(&chunk));
@@ -3645,14 +3456,15 @@ async fn send_openai_responses_request(
     url: String,
     body: Value,
     headers: Vec<(&str, String)>,
-    trace: Option<&OpenAiHttpTrace>,
+    trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
 ) -> Result<ParsedOpenAiResponse> {
+    let model_ref = provider_model_ref("openai", &body);
     let request_trace = trace.and_then(|trace| {
         trace.begin_request(
             agent_id,
             "openai",
-            Some(&provider_model_ref("openai", &body)),
+            Some(&model_ref),
             url.as_str(),
             "responses",
             &headers,
@@ -3669,9 +3481,10 @@ async fn send_openai_responses_request(
         "OpenAI-style request failed",
         "request_send",
         "openai",
-        Some(&provider_model_ref("openai", &body)),
+        Some(&model_ref),
         Some(url.as_str()),
         true,
+        request_trace.as_ref(),
     )
     .await?;
     trace_response_headers(
@@ -3684,21 +3497,27 @@ async fn send_openai_responses_request(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         trace_response_body(request_trace.as_ref(), &body);
-        return Err(classify_status_error(
+        return Err(classify_status_error_with_trace(
             "OpenAI-style request failed",
+            "response_status",
+            Some("openai"),
+            Some(&model_ref),
+            Some(url.as_str()),
             status,
             body,
+            request_trace.as_ref(),
         ));
     }
 
     let body = response.text().await.map_err(|error| {
-        classify_reqwest_transport_error(
+        classify_reqwest_transport_error_with_trace(
             "OpenAI-style response body failed",
             "response_body",
             "openai",
-            Some(&provider_model_ref("openai", &body)),
+            Some(&model_ref),
             Some(url.as_str()),
             error,
+            request_trace.as_ref(),
         )
     })?;
     trace_response_body(request_trace.as_ref(), &body);
@@ -3712,14 +3531,15 @@ async fn send_openai_compact_request(
     url: String,
     body: Value,
     headers: Vec<(&str, String)>,
-    trace: Option<&OpenAiHttpTrace>,
+    trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
 ) -> Result<Vec<Value>> {
+    let model_ref = provider_model_ref("openai", &body);
     let request_trace = trace.and_then(|trace| {
         trace.begin_request(
             agent_id,
             "openai",
-            Some(&provider_model_ref("openai", &body)),
+            Some(&model_ref),
             url.as_str(),
             OPENAI_RESPONSES_COMPACT_ENDPOINT_KIND,
             &headers,
@@ -3736,9 +3556,10 @@ async fn send_openai_compact_request(
         "OpenAI compact request failed",
         "request_send",
         "openai",
-        Some(&provider_model_ref("openai", &body)),
+        Some(&model_ref),
         Some(url.as_str()),
         true,
+        request_trace.as_ref(),
     )
     .await?;
     trace_response_headers(
@@ -3751,21 +3572,27 @@ async fn send_openai_compact_request(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         trace_response_body(request_trace.as_ref(), &body);
-        return Err(classify_status_error(
+        return Err(classify_status_error_with_trace(
             "OpenAI compact request failed",
+            "response_status",
+            Some("openai"),
+            Some(&model_ref),
+            Some(url.as_str()),
             status,
             body,
+            request_trace.as_ref(),
         ));
     }
 
     let response_body = response.text().await.map_err(|error| {
-        classify_reqwest_transport_error(
+        classify_reqwest_transport_error_with_trace(
             "OpenAI compact response body failed",
             "response_body",
             "openai",
-            Some(&provider_model_ref("openai", &body)),
+            Some(&model_ref),
             Some(url.as_str()),
             error,
+            request_trace.as_ref(),
         )
     })?;
     trace_response_body(request_trace.as_ref(), &response_body);
@@ -3792,14 +3619,15 @@ async fn send_openai_responses_streaming_request(
     url: String,
     body: Value,
     headers: Vec<(&str, String)>,
-    trace: Option<&OpenAiHttpTrace>,
+    trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
 ) -> Result<ParsedOpenAiResponse> {
+    let model_ref = provider_model_ref("openai-codex", &body);
     let request_trace = trace.and_then(|trace| {
         trace.begin_request(
             agent_id,
             "openai-codex",
-            Some(&provider_model_ref("openai-codex", &body)),
+            Some(&model_ref),
             url.as_str(),
             "responses_streaming",
             &headers,
@@ -3816,9 +3644,10 @@ async fn send_openai_responses_streaming_request(
         "OpenAI-style streaming request failed",
         "streaming_request_send",
         "openai-codex",
-        Some(&provider_model_ref("openai-codex", &body)),
+        Some(&model_ref),
         Some(url.as_str()),
         false,
+        request_trace.as_ref(),
     )
     .await?;
     trace_response_headers(
@@ -3831,10 +3660,15 @@ async fn send_openai_responses_streaming_request(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         trace_response_body(request_trace.as_ref(), &body);
-        return Err(classify_status_error(
+        return Err(classify_status_error_with_trace(
             "OpenAI-style streaming request failed",
+            "response_status",
+            Some("openai-codex"),
+            Some(&model_ref),
+            Some(url.as_str()),
             status,
             body,
+            request_trace.as_ref(),
         ));
     }
 
@@ -3851,34 +3685,40 @@ async fn send_openai_request(
     model_ref: Option<&str>,
     url: Option<&str>,
     enforce_full_request_deadline: bool,
+    trace: Option<&ProviderHttpTraceRequest>,
 ) -> Result<Response> {
     let timeout = request_send_timeout();
     if enforce_full_request_deadline {
         request = request.timeout(timeout);
         return request.send().await.map_err(|error| {
-            classify_reqwest_transport_error(context, stage, provider, model_ref, url, error)
+            classify_reqwest_transport_error_with_trace(
+                context, stage, provider, model_ref, url, error, trace,
+            )
         });
     }
     tokio::time::timeout(timeout, request.send())
         .await
         .map_err(|_| {
-            timeout_transport_error(
+            timeout_transport_error_with_trace(
                 context,
                 stage,
                 provider,
                 model_ref,
                 url,
                 format!("request_send_timeout_ms={}", timeout.as_millis()),
+                trace,
             )
         })?
         .map_err(|error| {
-            classify_reqwest_transport_error(context, stage, provider, model_ref, url, error)
+            classify_reqwest_transport_error_with_trace(
+                context, stage, provider, model_ref, url, error, trace,
+            )
         })
 }
 
 async fn read_openai_streaming_response(
     response: Response,
-    trace: Option<&OpenAiHttpTraceRequest>,
+    trace: Option<&ProviderHttpTraceRequest>,
 ) -> Result<Value> {
     let idle_timeout = stream_idle_timeout();
     read_openai_streaming_response_with_timeout(response, idle_timeout, trace).await
@@ -3887,7 +3727,7 @@ async fn read_openai_streaming_response(
 async fn read_openai_streaming_response_with_timeout(
     response: Response,
     idle_timeout: Duration,
-    trace: Option<&OpenAiHttpTraceRequest>,
+    trace: Option<&ProviderHttpTraceRequest>,
 ) -> Result<Value> {
     const MAX_STREAMED_OUTPUT_ITEMS: usize = 128;
 
@@ -3899,7 +3739,7 @@ async fn read_openai_streaming_response_with_timeout(
     while let Some(chunk) = tokio::time::timeout(idle_timeout, response.chunk())
         .await
         .map_err(|_| {
-            timeout_transport_error(
+            timeout_transport_error_with_trace(
                 "OpenAI-style streaming response body timed out",
                 "streaming_response_body",
                 "openai-codex",
@@ -3909,16 +3749,18 @@ async fn read_openai_streaming_response_with_timeout(
                     "timed out waiting for SSE chunk after {} ms",
                     idle_timeout.as_millis()
                 ),
+                trace,
             )
         })?
         .map_err(|error| {
-            classify_reqwest_transport_error(
+            classify_reqwest_transport_error_with_trace(
                 "OpenAI-style streaming response body failed",
                 "streaming_response_body",
                 "openai-codex",
                 None,
                 None,
                 error,
+                trace,
             )
         })?
     {
@@ -4382,7 +4224,6 @@ mod tests {
         build_openai_responses_request, chat_completions_url, incremental_diagnostics,
         latest_openai_compaction_index, openai_compaction_trigger_for_request_plan,
         openai_compaction_trigger_for_window, openai_provider_window_compaction_candidate,
-        redact_headers, redact_json_secrets, redact_url, sanitize_trace_path_segment,
         OpenAiCompactionPolicy, OpenAiProviderWindow, OpenAiRequestPlan, OpenAiRequestShape,
         OpenAiResponsesTransportContract, ToolSchemaContract,
     };
@@ -4391,7 +4232,6 @@ mod tests {
         ProviderTurnRequest,
     };
     use serde_json::json;
-    use std::fs;
 
     #[test]
     fn chat_completions_url_accepts_openai_compatible_base_urls() {
@@ -4590,83 +4430,5 @@ mod tests {
             wire_shape: json!({ "model": "gpt-test" }),
             prompt_frame: crate::provider::ProviderPromptFrame::plain("system"),
         }
-    }
-
-    #[test]
-    fn openai_http_trace_redacts_secrets() {
-        let headers = redact_headers(&[
-            ("authorization", "Bearer secret".into()),
-            ("openai-beta", "responses=experimental".into()),
-        ]);
-        assert_eq!(headers[0]["value"], "[REDACTED]");
-        assert_eq!(headers[1]["value"], "responses=experimental");
-
-        assert_eq!(
-            redact_url("https://user:pass@example.com/v1/responses?api_key=secret&debug=1"),
-            "https://%5BREDACTED%5D:%5BREDACTED%5D@example.com/v1/responses?api_key=%5BREDACTED%5D&debug=1"
-        );
-
-        let body = redact_json_secrets(&json!({
-            "model": "gpt-test",
-            "max_output_tokens": 4096,
-            "access_token": "secret",
-            "nested": {
-                "api_key": "secret",
-                "prompt_tokens": 123,
-                "reasoning_tokens": 45
-            }
-        }));
-        assert_eq!(body["access_token"], "[REDACTED]");
-        assert_eq!(body["nested"]["api_key"], "[REDACTED]");
-        assert_eq!(body["max_output_tokens"], 4096);
-        assert_eq!(body["nested"]["prompt_tokens"], 123);
-        assert_eq!(body["nested"]["reasoning_tokens"], 45);
-        assert_eq!(body["model"], "gpt-test");
-    }
-
-    #[test]
-    fn openai_http_trace_sanitizes_agent_path_segment() {
-        assert_eq!(
-            sanitize_trace_path_segment("agent/with spaces"),
-            "agent_with_spaces"
-        );
-    }
-
-    #[test]
-    fn openai_http_trace_writes_full_request_body_under_home() {
-        let home = tempfile::tempdir().unwrap();
-        let trace = super::OpenAiHttpTrace {
-            home_dir: home.path().to_path_buf(),
-        };
-        let body = json!({
-            "model": "gpt-test",
-            "input": [{ "type": "message", "content": "hello" }],
-            "tools": [{ "type": "function", "name": "ApplyPatch" }]
-        });
-
-        trace
-            .begin_request(
-                Some("agent/one"),
-                "openai",
-                Some("openai/gpt-test"),
-                "https://api.openai.com/v1/responses",
-                "responses",
-                &[("authorization", "Bearer secret".into())],
-                &body,
-            )
-            .expect("trace should be written");
-
-        let trace_dir = home.path().join(".holon/http-trace/agent_one");
-        let entries = fs::read_dir(trace_dir)
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert_eq!(entries.len(), 1);
-        let line = fs::read_to_string(entries[0].path()).unwrap();
-        let event: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-        assert_eq!(event["type"], "request");
-        assert_eq!(event["body"]["input"][0]["content"], "hello");
-        assert_eq!(event["body"]["tools"][0]["name"], "ApplyPatch");
-        assert_eq!(event["headers"][0]["value"], "[REDACTED]");
     }
 }
