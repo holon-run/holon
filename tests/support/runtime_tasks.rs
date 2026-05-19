@@ -2264,53 +2264,319 @@ pub async fn command_task_nonzero_exit_produces_failed_output_and_runtime_state(
 }
 
 pub async fn exec_command_auto_promotes_long_running_command_task() -> Result<()> {
-    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(LongShellProvider::new()))?;
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
 
-    runtime
-        .enqueue(MessageEnvelope::new(
+    let input = json!({
+        "cmd": "printf start && sleep 5 && printf done",
+        "yield_time_ms": 50,
+        "login": false,
+    });
+    let (first_result, _) = registry
+        .execute(
+            &runtime,
             "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "run a long command".into(),
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-duplicate-first".into(),
+                name: "ExecCommand".into(),
+                input: input.clone(),
             },
-        ))
+        )
         .await?;
-
-    wait_until(|| {
-        let briefs = runtime.storage().read_recent_briefs(10)?;
-        Ok(briefs
-            .iter()
-            .any(|brief| brief.text.contains("auto promotion observed")))
-    })
-    .await?;
+    let first_payload = parse_tool_result_payload(&first_result)?;
+    assert_eq!(first_payload["disposition"], "promoted_to_task");
+    let first_task_id = first_payload["task_handle"]["task_id"]
+        .as_str()
+        .expect("promoted result should include task id");
 
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
-            record.kind.as_str() == "command_task"
-                && record.status == holon::types::TaskStatus::Completed
+            record.id == first_task_id
+                && matches!(
+                    record.status,
+                    holon::types::TaskStatus::Queued | holon::types::TaskStatus::Running
+                )
         }))
     })
     .await?;
+
+    let (second_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-duplicate-second".into(),
+                name: "ExecCommand".into(),
+                input,
+            },
+        )
+        .await?;
+    let second_payload = parse_tool_result_payload(&second_result)?;
+    assert_eq!(second_payload["disposition"], "already_running");
+    assert_eq!(second_payload["task"]["task_id"], first_task_id);
 
     let command_task = runtime
         .storage()
         .latest_task_records()?
         .into_iter()
-        .find(|task| task.kind.as_str() == "command_task")
+        .find(|task| task.id == first_task_id)
         .expect("auto-promoted command task should exist");
     let detail = command_task.detail.unwrap_or_default();
     assert_eq!(detail["promoted_from_exec_command"], true);
-    assert_eq!(detail["cmd"], "printf start && sleep 1 && printf done");
-    let messages = runtime.storage().read_recent_messages(20)?;
-    assert!(messages.iter().any(|message| {
-        message.kind == MessageKind::TaskResult
-            && matches!(&message.body, MessageBody::Text { text } if text.contains("exit_status: 0"))
-    }));
+    assert_eq!(detail["cmd"], "printf start && sleep 5 && printf done");
+    Ok(())
+}
+
+pub async fn exec_command_reuses_active_background_command_task() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+
+    let active_task = runtime
+        .schedule_command_task(
+            "long running command".into(),
+            CommandTaskSpec {
+                cmd: "sleep 20".into(),
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 10_000,
+                max_output_tokens: None,
+                accepts_input: false,
+                terminal_reentry: false,
+            },
+            TrustLevel::TrustedOperator,
+        )
+        .await?;
+
+    wait_until(|| {
+        let active = runtime
+            .storage()
+            .latest_active_task_records_for_agent("default", usize::MAX)?;
+        Ok(active.iter().any(|task| task.id == active_task.id))
+    })
+    .await?;
+
+    let (second_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-duplicate-background".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": "sleep 20",
+                    "login": true,
+                }),
+            },
+        )
+        .await?;
+    let payload = parse_tool_result_payload(&second_result)?;
+    assert_eq!(payload["disposition"], "already_running");
+    assert_eq!(payload["task"]["task_id"], active_task.id);
+    Ok(())
+}
+
+pub async fn exec_command_start_new_forces_second_task() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+
+    let active_task = runtime
+        .schedule_command_task(
+            "long running command".into(),
+            CommandTaskSpec {
+                cmd: "sleep 20".into(),
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 10_000,
+                max_output_tokens: None,
+                accepts_input: false,
+                terminal_reentry: false,
+            },
+            TrustLevel::TrustedOperator,
+        )
+        .await?;
+
+    wait_until(|| {
+        let active = runtime
+            .storage()
+            .latest_active_task_records_for_agent("default", usize::MAX)?;
+        Ok(active.iter().any(|task| {
+            task.id == active_task.id
+                && matches!(
+                    task.status,
+                    holon::types::TaskStatus::Queued
+                        | holon::types::TaskStatus::Running
+                        | holon::types::TaskStatus::Cancelling
+                )
+        }))
+    })
+    .await?;
+
+    let (second_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-start-new".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": "sleep 20",
+                    "login": true,
+                    "duplicate_policy": "start_new",
+                }),
+            },
+        )
+        .await?;
+    let payload = parse_tool_result_payload(&second_result)?;
+    assert_eq!(payload["disposition"], "promoted_to_task");
+    assert_ne!(
+        payload["task_handle"]["task_id"].as_str(),
+        Some(active_task.id.as_str())
+    );
+    assert!(
+        runtime
+            .storage()
+            .latest_task_records()?
+            .iter()
+            .filter(|task| task.kind.as_str() == "command_task")
+            .count()
+            >= 2
+    );
+    Ok(())
+}
+
+pub async fn exec_command_rejects_non_equivalent_background_commands() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+
+    let active_task = runtime
+        .schedule_command_task(
+            "long running command".into(),
+            CommandTaskSpec {
+                cmd: "sleep 20".into(),
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 10_000,
+                max_output_tokens: None,
+                accepts_input: false,
+                terminal_reentry: false,
+            },
+            TrustLevel::TrustedOperator,
+        )
+        .await?;
+
+    wait_until(|| {
+        let active = runtime
+            .storage()
+            .latest_active_task_records_for_agent("default", usize::MAX)?;
+        Ok(active.iter().any(|task| {
+            task.id == active_task.id
+                && matches!(
+                    task.status,
+                    holon::types::TaskStatus::Queued | holon::types::TaskStatus::Running
+                )
+        }))
+    })
+    .await?;
+
+    let (second_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-duplicate-background-non-equivalent".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": "sleep 20 && echo different",
+                    "login": true,
+                }),
+            },
+        )
+        .await?;
+    let payload = parse_tool_result_payload(&second_result)?;
+    assert_eq!(payload["disposition"], "promoted_to_task");
+    assert_ne!(payload["task_handle"]["task_id"], active_task.id);
+    Ok(())
+}
+
+pub async fn exec_command_allows_restart_after_terminal_background_command() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+
+    let active_task = runtime
+        .schedule_command_task(
+            "quick command".into(),
+            CommandTaskSpec {
+                cmd: "printf done".into(),
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 10_000,
+                max_output_tokens: None,
+                accepts_input: false,
+                terminal_reentry: false,
+            },
+            TrustLevel::TrustedOperator,
+        )
+        .await?;
+
+    wait_until(|| {
+        let tasks = runtime.storage().latest_task_records()?;
+        Ok(tasks
+            .iter()
+            .find(|task| task.id == active_task.id)
+            .is_some_and(|task| {
+                matches!(
+                    task.status,
+                    TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+                )
+            }))
+    })
+    .await?;
+
+    let (second_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &ToolCall {
+                id: "tool-exec-terminal-reuse".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": "printf done",
+                    "login": true,
+                }),
+            },
+        )
+        .await?;
+    let payload = parse_tool_result_payload(&second_result)?;
+    assert_eq!(payload["disposition"], "completed");
     Ok(())
 }

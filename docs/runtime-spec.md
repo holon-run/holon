@@ -2418,6 +2418,25 @@ Phase-1 envelope rules:
     - `artifacts`
     - `stdout_artifact`
     - `stderr_artifact`
+  - startup accepts `duplicate_policy` with:
+    - `reuse_running` (default): if an equivalent active `command_task` exists, return
+      `disposition = already_running` with the live task handle instead of spawning a
+      second process
+    - `start_new`: always spawn a second process even if an equivalent active command
+      already exists
+  - `disposition = already_running` returns:
+    - `task`
+    - `task.status`
+    - command identity fields from task-level command snapshot for explicit inspection
+    - this path is a successful coordination receipt, not a spawn failure
+  - equivalence is command identity comparison, not preview-based comparison:
+    - full `cmd`
+    - resolved `workdir`
+    - `shell`
+    - `login`
+    - `tty`
+  - reuse is limited to active non-terminal command tasks (`queued`, `running`,
+    `cancelling`) and ignores terminal tasks
   - promotion to managed execution uses fields such as:
     - `disposition = promoted_to_task`
     - `task_handle`

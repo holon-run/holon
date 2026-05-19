@@ -22,9 +22,10 @@ use crate::{
     },
     tool::ToolError,
     types::{
-        CommandCostDiagnostics, CommandTaskSpec, ExecCommandOutcome, ExecCommandResult,
-        ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind,
-        MessageOrigin, Priority, TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus,
+        CommandCostDiagnostics, CommandTaskSpec, CommandTaskStatusSnapshot,
+        ExecCommandDuplicatePolicy, ExecCommandOutcome, ExecCommandResult, ExternalTriggerScope,
+        ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TaskStatusSnapshot,
         ToolArtifactRef, TrustLevel,
     },
 };
@@ -193,12 +194,24 @@ impl RuntimeHandle {
     pub(crate) async fn execute_exec_command(
         &self,
         mut spec: CommandTaskSpec,
+        duplicate_policy: &ExecCommandDuplicatePolicy,
         trust: &TrustLevel,
     ) -> Result<ExecCommandResult> {
         self.ensure_process_execution_exposed("ExecCommand").await?;
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
+        if matches!(duplicate_policy, ExecCommandDuplicatePolicy::ReuseRunning) {
+            if let Some(task) = self.find_active_equivalent_command_task(&resolved).await? {
+                return Ok(ExecCommandResult {
+                    outcome: ExecCommandOutcome::AlreadyRunning {
+                        task: TaskStatusSnapshot::from_task_record(&task),
+                    },
+                    summary_text: Some("command is already running".to_string()),
+                    command_diagnostics: Some(diagnostics),
+                });
+            }
+        }
         self.append_audit_event(
             "process_execution_requested",
             serde_json::json!({
@@ -302,6 +315,43 @@ impl RuntimeHandle {
                 }
             }
         }
+    }
+
+    async fn find_active_equivalent_command_task(
+        &self,
+        resolved: &ResolvedCommandTask,
+    ) -> Result<Option<TaskRecord>> {
+        let agent_id = self.agent_id().await?;
+        let tasks = self
+            .inner
+            .storage
+            .latest_active_task_records_for_agent(&agent_id, usize::MAX)?;
+        let resolved_workdir = resolved.workdir.to_string_lossy().into_owned();
+        Ok(tasks
+            .into_iter()
+            .filter(|task| task.kind == TaskKind::CommandTask)
+            .find_map(|task| {
+                CommandTaskStatusSnapshot::identity_from_task_record(&task).and_then(|identity| {
+                    if self.command_task_matches_identity(resolved, &identity, &resolved_workdir) {
+                        Some(task)
+                    } else {
+                        None
+                    }
+                })
+            }))
+    }
+
+    fn command_task_matches_identity(
+        &self,
+        resolved: &ResolvedCommandTask,
+        identity: &CommandTaskStatusSnapshot,
+        resolved_workdir: &str,
+    ) -> bool {
+        identity.cmd == Some(resolved.spec.cmd.clone())
+            && identity.workdir == Some(resolved_workdir.to_string())
+            && identity.shell == resolved.spec.shell
+            && identity.login == Some(resolved.spec.login)
+            && identity.tty == Some(resolved.spec.tty)
     }
 
     pub(crate) async fn execute_exec_command_once(

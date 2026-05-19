@@ -52,4 +52,8 @@ runtime_async_tests!(
     command_task_runner_failure_marks_task_failed_and_cleans_up,
     command_task_nonzero_exit_produces_failed_output_and_runtime_state,
     exec_command_auto_promotes_long_running_command_task,
+    exec_command_reuses_active_background_command_task,
+    exec_command_start_new_forces_second_task,
+    exec_command_rejects_non_equivalent_background_commands,
+    exec_command_allows_restart_after_terminal_background_command,
 );

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -2415,6 +2416,9 @@ pub struct CommandCostDiagnostics {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "disposition", rename_all = "snake_case")]
 pub enum ExecCommandOutcome {
+    AlreadyRunning {
+        task: TaskStatusSnapshot,
+    },
     Completed {
         exit_status: Option<i32>,
         stdout_preview: Option<String>,
@@ -2433,6 +2437,19 @@ pub enum ExecCommandOutcome {
         initial_output_preview: Option<String>,
         initial_output_truncated: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecCommandDuplicatePolicy {
+    ReuseRunning,
+    StartNew,
+}
+
+impl Default for ExecCommandDuplicatePolicy {
+    fn default() -> Self {
+        Self::ReuseRunning
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

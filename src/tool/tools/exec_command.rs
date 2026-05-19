@@ -10,7 +10,8 @@ use crate::{
         ToolResult,
     },
     types::{
-        CommandTaskSpec, ExecCommandOutcome, ExecCommandResult, ToolCapabilityFamily, TrustLevel,
+        CommandTaskSpec, ExecCommandDuplicatePolicy, ExecCommandOutcome, ExecCommandResult,
+        TaskStatus, ToolCapabilityFamily, TrustLevel,
     },
 };
 
@@ -27,6 +28,7 @@ pub(crate) struct ExecCommandArgs {
     pub(crate) shell: Option<String>,
     pub(crate) login: Option<bool>,
     pub(crate) tty: Option<bool>,
+    pub(crate) duplicate_policy: Option<ExecCommandDuplicatePolicy>,
     pub(crate) accepts_input: Option<bool>,
     pub(crate) yield_time_ms: Option<u64>,
     pub(crate) max_output_tokens: Option<u64>,
@@ -37,7 +39,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::LocalEnvironment,
         spec: typed_spec::<ExecCommandArgs>(
             NAME,
-            "Start a shell command inside the workspace. Valid startup input uses `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `accepts_input`, `yield_time_ms`, and `max_output_tokens`; do not pass result or task metadata such as `status` or `task_handle`. `yield_time_ms` defaults to 10_000 ms when omitted; set it only when intentionally changing the foreground wait window. Short commands return immediately; long non-interactive commands become command_task automatically.",
+            "Start a shell command inside the workspace. Valid startup input uses `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `accepts_input`, `yield_time_ms`, `max_output_tokens`, and `duplicate_policy`; do not pass result or task metadata such as `status` or `task_handle`. `yield_time_ms` defaults to 10_000 ms when omitted; set it only when intentionally changing the foreground wait window. `duplicate_policy` controls active task reuse (`reuse_running` default, `start_new` to force a second process). Short commands return immediately; long non-interactive commands become command_task automatically.",
         )?,
     })
 }
@@ -50,6 +52,7 @@ pub(crate) async fn execute(
 ) -> Result<ToolResult> {
     let args: ExecCommandArgs = parse_tool_args(NAME, input)?;
     let tty = args.tty.unwrap_or(false);
+    let duplicate_policy = args.duplicate_policy.unwrap_or_default();
     let spec = CommandTaskSpec {
         cmd: args.cmd,
         workdir: args.workdir,
@@ -63,7 +66,7 @@ pub(crate) async fn execute(
     };
     let result: ExecCommandResult = runtime
         .managed_tasks()
-        .execute_exec_command(spec, trust)
+        .execute_exec_command(spec, &duplicate_policy, trust)
         .await?;
     serialize_success(NAME, &result)
 }
@@ -129,6 +132,35 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
             );
             Ok(lines.join("\n"))
         }
+        ExecCommandOutcome::AlreadyRunning { task } => {
+            let status = match task.status {
+                TaskStatus::Queued => "queued",
+                TaskStatus::Running => "running",
+                TaskStatus::Cancelling => "cancelling",
+                TaskStatus::Completed => "completed",
+                TaskStatus::Failed => "failed",
+                TaskStatus::Cancelled => "cancelled",
+                TaskStatus::Interrupted => "interrupted",
+            };
+            let mut lines = vec![
+                "Command is already running".to_string(),
+                format!("Existing task: {}", task.task_id),
+                format!("Status: {status}"),
+            ];
+            if let Some(command) = &task.command {
+                if let Some(cmd) = &command.cmd {
+                    lines.push(format!("Command: {cmd}"));
+                }
+                if let Some(workdir) = &command.workdir {
+                    lines.push(format!("Workdir: {workdir}"));
+                }
+            }
+            lines.push("Inspect with TaskStatus and TaskOutput using this task id.".to_string());
+            lines.push(
+                "To start a second instance, set duplicate_policy to \"start_new\".".to_string(),
+            );
+            Ok(lines.join("\n"))
+        }
     }
 }
 
@@ -137,6 +169,7 @@ mod tests {
     use super::*;
     use crate::tool::tools::serialize_success;
     use crate::tool::ToolError;
+    use crate::types::TaskStatusSnapshot;
     use serde_json::json;
 
     #[test]
@@ -176,6 +209,53 @@ mod tests {
         assert!(rendered.contains("Process exited with code 0"));
         assert!(rendered.contains("stdout:"));
         assert!(rendered.contains("line one"));
+    }
+
+    #[test]
+    fn exec_command_renders_already_running_receipt() {
+        let result = serialize_success(
+            NAME,
+            &ExecCommandResult {
+                outcome: ExecCommandOutcome::AlreadyRunning {
+                    task: TaskStatusSnapshot {
+                        task_id: "task_123".into(),
+                        kind: "command_task".into(),
+                        status: TaskStatus::Running,
+                        summary: Some("long command".into()),
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                        wait_policy: crate::types::TaskWaitPolicy::Background,
+                        parent_message_id: None,
+                        command: Some(crate::types::CommandTaskStatusSnapshot {
+                            cmd: Some("printf hi".into()),
+                            cmd_digest: Some("digest".into()),
+                            workdir: Some("/workspace".into()),
+                            shell: Some("bash".into()),
+                            login: Some(true),
+                            tty: Some(false),
+                            output_path: None,
+                            result_summary: None,
+                            exit_status: None,
+                            terminal_reentry: None,
+                            promoted_from_exec_command: None,
+                            accepts_input: None,
+                            input_target: None,
+                        }),
+                        child_agent_id: None,
+                        child_observability: None,
+                        child_supervision: None,
+                    },
+                },
+                command_diagnostics: None,
+                summary_text: Some("command already running".into()),
+            },
+        )
+        .unwrap();
+
+        let rendered = render_for_model(&result).unwrap();
+        assert!(rendered.contains("Command is already running"));
+        assert!(rendered.contains("Existing task: task_123"));
+        assert!(rendered.contains("To start a second instance"));
     }
 
     #[test]

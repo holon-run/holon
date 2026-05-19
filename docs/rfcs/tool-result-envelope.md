@@ -707,6 +707,33 @@ An execution-root violation should look like:
 }
 ```
 
+When `duplicate_policy = "reuse_running"` finds a matching active command task, the
+result should look like:
+
+```json
+{
+  "tool_name": "ExecCommand",
+  "status": "success",
+  "summary_text": "command is already running",
+  "result": {
+    "disposition": "already_running",
+    "task": {
+      "task_id": "task_123",
+      "kind": "command_task",
+      "status": "running",
+      "command": {
+        "cmd": "cargo test",
+        "workdir": "/workspace",
+        "shell": "bash",
+        "login": true,
+        "tty": false
+      }
+    }
+  },
+  "error": null
+}
+```
+
 ## Command Tool Rendered Example
 
 The command-family model-visible rendering should usually be a textual receipt
@@ -729,6 +756,17 @@ Task: task_123
 
 Initial output:
 short output preview
+```
+
+An already-running coordination receipt may render as:
+
+```text
+Command is already running
+Existing task: task_123
+Status: running
+
+Inspect with TaskStatus and TaskOutput using this task id.
+To start a second instance, set duplicate_policy to "start_new".
 ```
 
 The exact wording may evolve, but the family contract should stay stable:
