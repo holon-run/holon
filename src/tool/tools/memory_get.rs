@@ -21,6 +21,7 @@ const ALLOWED_SOURCE_REF_PREFIXES: &[&str] = &[
     "episode:",
     "work_item:",
     "tool_execution:",
+    "task:",
 ];
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -200,7 +201,9 @@ mod tests {
         context::ContextConfig,
         provider::StubProvider,
         runtime::RuntimeHandle,
-        types::{ToolExecutionRecord, ToolExecutionStatus, TrustLevel},
+        types::{
+            TaskKind, TaskRecord, TaskStatus, ToolExecutionRecord, ToolExecutionStatus, TrustLevel,
+        },
     };
 
     fn tool_error(error: anyhow::Error) -> crate::tool::ToolError {
@@ -218,6 +221,7 @@ mod tests {
             "brief:abc",
             "episode:ep_123",
             "work_item:work_123",
+            "task:task_123",
             "tool_execution:tool-123:cmd",
             "tool_execution:tool-123:batch_item:2:cmd",
         ] {
@@ -356,5 +360,58 @@ mod tests {
         assert!(content.contains("\"workdir\": \"src\""));
         assert!(content.contains("\"yield_time_ms\": 1000"));
         assert!(content.contains("\"max_output_tokens\": 1200"));
+    }
+
+    #[tokio::test]
+    async fn memory_get_tool_accepts_task_source_refs() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("done")),
+            "default".into(),
+            ContextConfig::default(),
+        )
+        .unwrap();
+
+        runtime
+            .storage()
+            .append_task(&TaskRecord {
+                id: "task-get-1246".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: Some("wi-get-1246".into()),
+                summary: Some("task get memory source ref".into()),
+                detail: Some(serde_json::json!({"cmd": "echo task-get-1246"})),
+                recovery: None,
+            })
+            .unwrap();
+
+        let result = execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &json!({
+                "source_ref": "task:task-get-1246"
+            }),
+        )
+        .await
+        .unwrap();
+        let content = result.envelope.result.unwrap()["memory"]["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert!(content.contains("task_id: task-get-1246"));
+        assert!(content.contains("summary: task get memory source ref"));
+        assert!(content.contains("cmd: echo task-get-1246"));
+        assert!(content.contains("work_item_id: wi-get-1246"));
     }
 }
