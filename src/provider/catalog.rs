@@ -101,6 +101,7 @@ pub(crate) fn build_candidate(
                 provider_config,
                 &model_ref.model,
                 config.runtime_max_output_tokens,
+                &config.home_dir,
             )?)
         }
         ProviderTransportKind::OpenAiChatCompletions => {

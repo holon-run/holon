@@ -3,6 +3,7 @@
 use super::support::*;
 use super::*;
 use crate::config::{ModelRef, ProviderId, ProviderTransportKind};
+use crate::provider::provider_transport_diagnostics;
 use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
 use crate::provider::transports::build_chat_completion_messages;
 use crate::tool::ToolSpec;
@@ -664,11 +665,28 @@ fn chat_completion_provider_classifies_rate_limit_errors() {
         }
     });
 
-    let error = classify_openai_chat_completion_error("test context", &error_json["error"]);
+    let error = classify_openai_chat_completion_error(
+        "test context",
+        &error_json["error"],
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+        Some("openai/gpt-test"),
+        Some("https://example.com/v1/chat/completions"),
+        None,
+    );
     let classification = classify_provider_error(&error);
 
     assert_eq!(classification.kind, ProviderFailureKind::RateLimited);
     assert_eq!(classification.disposition, RetryDisposition::Retryable);
+    assert_eq!(
+        provider_transport_diagnostics(&error).and_then(|diag| diag.status),
+        Some(429)
+    );
+    let diagnostics = provider_transport_diagnostics(&error).unwrap();
+    assert_eq!(diagnostics.model_ref.as_deref(), Some("openai/gpt-test"));
+    assert_eq!(
+        diagnostics.url.as_deref(),
+        Some("https://example.com/v1/chat/completions")
+    );
 }
 
 #[test]
@@ -684,7 +702,14 @@ fn chat_completion_provider_classifies_auth_errors() {
         }
     });
 
-    let error = classify_openai_chat_completion_error("test context", &error_json["error"]);
+    let error = classify_openai_chat_completion_error(
+        "test context",
+        &error_json["error"],
+        reqwest::StatusCode::UNAUTHORIZED,
+        None,
+        None,
+        None,
+    );
     let classification = classify_provider_error(&error);
 
     assert_eq!(classification.kind, ProviderFailureKind::AuthError);
@@ -704,7 +729,14 @@ fn chat_completion_provider_classifies_context_length_errors() {
         }
     });
 
-    let error = classify_openai_chat_completion_error("test context", &error_json["error"]);
+    let error = classify_openai_chat_completion_error(
+        "test context",
+        &error_json["error"],
+        reqwest::StatusCode::BAD_REQUEST,
+        None,
+        None,
+        None,
+    );
     let classification = classify_provider_error(&error);
 
     assert_eq!(classification.kind, ProviderFailureKind::ContractError);
@@ -724,7 +756,14 @@ fn chat_completion_provider_classifies_server_errors() {
         }
     });
 
-    let error = classify_openai_chat_completion_error("test context", &error_json["error"]);
+    let error = classify_openai_chat_completion_error(
+        "test context",
+        &error_json["error"],
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        None,
+        None,
+        None,
+    );
     let classification = classify_provider_error(&error);
 
     assert_eq!(classification.kind, ProviderFailureKind::ServerError);
@@ -744,7 +783,14 @@ fn chat_completion_provider_classifies_unknown_errors_as_contract_errors() {
         }
     });
 
-    let error = classify_openai_chat_completion_error("test context", &error_json["error"]);
+    let error = classify_openai_chat_completion_error(
+        "test context",
+        &error_json["error"],
+        reqwest::StatusCode::BAD_REQUEST,
+        None,
+        None,
+        None,
+    );
     let classification = classify_provider_error(&error);
 
     // Unknown errors should default to contract errors

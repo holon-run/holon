@@ -66,6 +66,10 @@ impl RuntimeHandle {
             if let Some(url) = diag.url.clone() {
                 metadata.insert("url".into(), Self::sanitize_failure_artifact_url(&url));
             }
+            if let Some(http_trace) = diag.http_trace.as_ref() {
+                metadata.insert("http_trace_mode".into(), http_trace.mode.clone());
+                metadata.insert("http_trace_path".into(), http_trace.path.clone());
+            }
             metadata.insert(
                 "reqwest_is_timeout".into(),
                 diag.reqwest

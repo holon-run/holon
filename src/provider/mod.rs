@@ -9,6 +9,7 @@ use crate::{prompt::PromptStability, tool::ToolError, tool::ToolSpec, types::Tok
 mod catalog;
 mod diagnostics;
 mod fallback;
+mod http_trace;
 mod retry;
 pub mod test_support;
 mod tool_schema;
@@ -16,6 +17,7 @@ mod transports;
 
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
 pub use diagnostics::{provider_doctor, resolved_model_availability};
+pub use http_trace::ProviderHttpTraceDiagnostics;
 pub use transports::{
     AnthropicProvider, OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiProvider,
 };
@@ -478,6 +480,8 @@ pub struct ProviderTransportDiagnostics {
     pub status: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reqwest: Option<ReqwestTransportDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_trace: Option<ProviderHttpTraceDiagnostics>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_chain: Vec<String>,
 }
