@@ -23,7 +23,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<TaskListArgs>(
             NAME,
-            "List known tasks for the current agent as compact digest entries.",
+            "List active tasks for the current agent as compact digest entries.",
         )?,
     })
 }
