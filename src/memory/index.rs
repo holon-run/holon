@@ -16,7 +16,8 @@ use crate::{
     storage::AppStorage,
     tool::helpers::{command_digest, command_preview, command_receipt_source_ref},
     types::{
-        BriefRecord, ContextEpisodeRecord, ToolExecutionRecord, WorkItemRecord, WorkspaceEntry,
+        BriefRecord, CommandTaskStatusSnapshot, ContextEpisodeRecord, TaskRecord, TaskStatus,
+        TaskStatusSnapshot, ToolExecutionRecord, WorkItemRecord, WorkspaceEntry,
     },
 };
 
@@ -494,6 +495,7 @@ fn collect_documents(
     documents.extend(brief_documents(storage)?);
     documents.extend(context_episode_documents(storage)?);
     documents.extend(work_item_documents(storage)?);
+    documents.extend(task_documents(storage)?);
     documents.extend(command_execution_documents(storage)?);
     Ok(documents)
 }
@@ -719,6 +721,131 @@ fn work_item_document_body(item: &WorkItemRecord) -> String {
     lines.join("\n")
 }
 
+fn task_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
+    Ok(storage
+        .latest_task_records()?
+        .into_iter()
+        .map(task_document)
+        .collect())
+}
+
+fn task_document(task: TaskRecord) -> MemoryDocument {
+    let agent_id = task.agent_id.clone();
+    let snapshot = TaskStatusSnapshot::from_task_record(&task);
+    let command = snapshot.command.as_ref();
+    let command_text = task
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.get("cmd"))
+        .and_then(Value::as_str)
+        .or_else(|| command.and_then(|entry| entry.cmd.as_deref()));
+    let mut body = task_document_body(&task, &snapshot, command, command_text);
+    if let Some(cmd) = command_text {
+        body.push('\n');
+        if cmd.contains('\n') {
+            body.push_str("cmd:\n");
+        } else {
+            body.push_str("cmd: ");
+        }
+        body.push_str(cmd);
+    }
+    MemoryDocument {
+        source_ref: format!("task:{}", snapshot.task_id),
+        source_kind: "task".into(),
+        scope_kind: "agent".into(),
+        workspace_id: None,
+        agent_id: agent_id.clone(),
+        source_path: None,
+        title: task
+            .summary
+            .clone()
+            .unwrap_or_else(|| format!("Task {}", snapshot.task_id)),
+        sanitized_excerpt: excerpt(&body),
+        body,
+        metadata: json!({
+            "task_id": snapshot.task_id,
+            "kind": snapshot.kind,
+            "status": task_status_label(&task.status),
+            "summary": task.summary,
+            "work_item_id": task.work_item_id,
+            "cmd_digest": task_command_digest(command, command_text),
+            "cmd_preview": command
+                .and_then(|entry| entry.cmd.as_deref())
+                .or(command_text)
+                .map(command_preview),
+            "exit_status": command.and_then(|entry| entry.exit_status),
+            "agent_id": agent_id,
+            "created_at": task.created_at.to_rfc3339(),
+            "governance_surface": "runtime_evidence",
+            "provenance_class": "task_record",
+            "trust_class": "runtime_evidence",
+        }),
+        updated_at: task.updated_at,
+    }
+}
+
+fn task_document_body(
+    task: &TaskRecord,
+    snapshot: &TaskStatusSnapshot,
+    command: Option<&CommandTaskStatusSnapshot>,
+    command_text: Option<&str>,
+) -> String {
+    let mut lines = vec![
+        format!("task_id: {}", task.id),
+        format!("kind: {}", snapshot.kind),
+        format!("status: {}", task_status_label(&task.status)),
+        format!("summary: {}", task.summary.clone().unwrap_or_default()),
+        format!("created_at: {}", task.created_at.to_rfc3339()),
+        format!("updated_at: {}", task.updated_at.to_rfc3339()),
+    ];
+    if let Some(work_item_id) = task.work_item_id.as_deref() {
+        lines.push(format!("work_item_id: {work_item_id}"));
+    }
+    if let Some(cmd_digest) = task_command_digest(command, command_text) {
+        lines.push(format!("cmd_digest: {cmd_digest}"));
+    }
+    if let Some(cmd_preview) = command
+        .and_then(|entry| entry.cmd.as_deref())
+        .or(command_text)
+        .map(command_preview)
+    {
+        lines.push(format!("cmd_preview: {cmd_preview}"));
+    }
+    if let Some(exit_status) = command.and_then(|entry| entry.exit_status) {
+        lines.push(format!("exit_status: {exit_status}"));
+    }
+    if let Some(child_agent_id) = &snapshot.child_agent_id {
+        lines.push(format!("child_agent_id: {child_agent_id}"));
+    }
+    lines.join("\n")
+}
+
+fn task_command_digest(
+    command: Option<&CommandTaskStatusSnapshot>,
+    command_text: Option<&str>,
+) -> Option<String> {
+    command
+        .and_then(|entry| {
+            entry
+                .cmd_digest
+                .clone()
+                .or_else(|| entry.cmd.as_ref().map(|cmd| command_digest(cmd)))
+        })
+        .or_else(|| command_text.map(command_digest))
+}
+
+fn task_status_label(status: &TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Queued => "queued",
+        TaskStatus::Running => "running",
+        TaskStatus::Cancelling => "cancelling",
+        TaskStatus::Completed => "completed",
+        TaskStatus::Failed => "failed",
+        TaskStatus::Cancelled => "cancelled",
+        TaskStatus::Interrupted => "interrupted",
+    }
+}
+
 fn command_execution_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
     let mut documents = Vec::new();
     for record in storage.read_recent_tool_executions(REBUILD_COMMAND_RECEIPT_LIMIT)? {
@@ -912,10 +1039,11 @@ mod tests {
     use crate::{
         agent_template::ensure_agent_home_layout,
         types::{
-            AgentState, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason, TodoItem,
-            TodoItemState, WorkItemPlanStatus, WorkItemState,
+            AgentState, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason, TaskKind,
+            TaskRecord, TaskStatus, TodoItem, TodoItemState, WorkItemPlanStatus, WorkItemState,
         },
     };
+    use serde_json::json;
 
     fn brief_with_workspace(
         agent_id: &str,
@@ -937,6 +1065,33 @@ mod tests {
         let mut work_item = WorkItemRecord::new(agent_id, objective, status);
         work_item.workspace_id = workspace_id.to_string();
         work_item
+    }
+
+    fn task_record(
+        id: &str,
+        agent_id: &str,
+        kind: TaskKind,
+        status: TaskStatus,
+        summary: &str,
+        work_item_id: Option<String>,
+        detail: Option<Value>,
+        created_offset_seconds: i64,
+        updated_offset_seconds: i64,
+    ) -> TaskRecord {
+        let now = Utc::now();
+        TaskRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            kind,
+            status,
+            created_at: now + chrono::Duration::seconds(created_offset_seconds),
+            updated_at: now + chrono::Duration::seconds(updated_offset_seconds),
+            parent_message_id: None,
+            work_item_id,
+            summary: Some(summary.into()),
+            detail,
+            recovery: None,
+        }
     }
 
     #[test]
@@ -1325,6 +1480,199 @@ mod tests {
             results.is_empty(),
             "workspace README marker must not be searchable as Holon memory: {results:?}"
         );
+    }
+
+    #[test]
+    fn memory_search_indexes_task_records_with_summary_and_work_item_lookup() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+
+        storage
+            .append_task(&task_record(
+                "task-lookup-1246",
+                "default",
+                TaskKind::CommandTask,
+                TaskStatus::Completed,
+                "lookup task command summary",
+                Some("wi-lookup-1246".into()),
+                Some(json!({"cmd": "echo task lookup evidence"})),
+                0,
+                0,
+            ))
+            .unwrap();
+        storage
+            .append_task(&task_record(
+                "task-work-item-1246",
+                "default",
+                TaskKind::ChildAgentTask,
+                TaskStatus::Completed,
+                "work item specific task summary",
+                None,
+                None,
+                1,
+                1,
+            ))
+            .unwrap();
+
+        rebuild_memory_index(&storage, None).unwrap();
+
+        let task_id_results = search_memory(&storage, "task-lookup-1246", 10, None, false).unwrap();
+        assert!(task_id_results
+            .iter()
+            .any(|result| result.source_ref == "task:task-lookup-1246"));
+
+        let summary_results =
+            search_memory(&storage, "lookup task command summary", 10, None, false).unwrap();
+        assert!(summary_results
+            .iter()
+            .any(|result| result.source_ref == "task:task-lookup-1246"));
+        let work_item_lookup_results =
+            search_memory(&storage, "work item specific task summary", 10, None, false).unwrap();
+        assert!(work_item_lookup_results
+            .iter()
+            .any(|result| result.source_ref == "task:task-work-item-1246"));
+        let work_item_results = search_memory(&storage, "wi-lookup-1246", 10, None, false).unwrap();
+        assert!(work_item_results
+            .iter()
+            .any(|result| result.metadata["work_item_id"].as_str() == Some("wi-lookup-1246")));
+        assert!(work_item_results
+            .iter()
+            .any(|result| result.source_ref == "task:task-lookup-1246"));
+    }
+
+    #[test]
+    fn memory_search_indexes_task_records_by_command_fragment_and_digest() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+
+        let command = "rg -n \"memory\" src/memory/index.rs && echo task_digest_1246";
+        let digest = command_digest(command);
+
+        storage
+            .append_task(&task_record(
+                "task-command-1246",
+                "default",
+                TaskKind::CommandTask,
+                TaskStatus::Completed,
+                "command task command digest check",
+                None,
+                Some(json!({"cmd": command})),
+                0,
+                0,
+            ))
+            .unwrap();
+
+        rebuild_memory_index(&storage, None).unwrap();
+
+        let fragment_results =
+            search_memory(&storage, "task_digest_1246", 10, None, false).unwrap();
+        assert!(fragment_results
+            .iter()
+            .any(|result| result.source_ref == "task:task-command-1246"));
+        let digest_results = search_memory(&storage, &digest, 10, None, false).unwrap();
+        assert!(digest_results
+            .iter()
+            .any(|result| result.source_ref == "task:task-command-1246"));
+        assert!(digest_results
+            .iter()
+            .any(|result| result.metadata["cmd_digest"].as_str() == Some(digest.as_str())));
+        assert!(digest_results.iter().all(|result| result.kind == "task"));
+    }
+
+    #[test]
+    fn memory_search_task_index_uses_latest_snapshot_only() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+
+        storage
+            .append_task(&task_record(
+                "task-repeat-1246",
+                "default",
+                TaskKind::CommandTask,
+                TaskStatus::Running,
+                "repeat task running",
+                None,
+                Some(json!({"cmd": "echo task repeat"})),
+                0,
+                0,
+            ))
+            .unwrap();
+        storage
+            .append_task(&task_record(
+                "task-repeat-1246",
+                "default",
+                TaskKind::CommandTask,
+                TaskStatus::Completed,
+                "repeat task completed",
+                None,
+                Some(json!({"cmd": "echo task repeat"})),
+                1,
+                1,
+            ))
+            .unwrap();
+
+        rebuild_memory_index(&storage, None).unwrap();
+        let results = search_memory(&storage, "repeat task", 10, None, false).unwrap();
+        let task_results: Vec<_> = results
+            .iter()
+            .filter(|result| result.source_ref == "task:task-repeat-1246")
+            .collect();
+        assert_eq!(task_results.len(), 1);
+        assert_eq!(
+            task_results[0].metadata["status"].as_str(),
+            Some("completed")
+        );
+        assert_eq!(
+            task_results[0].metadata["summary"].as_str(),
+            Some("repeat task completed")
+        );
+    }
+
+    #[test]
+    fn memory_get_returns_latest_task_record_for_task_source_ref() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+
+        storage
+            .append_task(&task_record(
+                "task-get-1246",
+                "default",
+                TaskKind::CommandTask,
+                TaskStatus::Completed,
+                "get compact task receipt",
+                Some("wi-get-1246".into()),
+                Some(json!({"cmd": "echo task_get"})),
+                0,
+                0,
+            ))
+            .unwrap();
+
+        rebuild_memory_index(&storage, None).unwrap();
+        let results = search_memory(&storage, "task-get-1246", 10, None, false).unwrap();
+        let source_ref = results
+            .iter()
+            .find(|result| result.source_ref == "task:task-get-1246")
+            .expect("task source should be searchable")
+            .source_ref
+            .clone();
+        let memory = get_memory(&storage, &source_ref, None, None)
+            .unwrap()
+            .expect("task memory source should be gettable");
+        assert_eq!(memory.kind, "task");
+        assert!(memory.content.contains("task_id: task-get-1246"));
+        assert!(memory.content.contains("status: completed"));
+        assert!(memory.content.contains("get compact task receipt"));
+        assert!(memory.content.contains("work_item_id: wi-get-1246"));
+        assert!(memory.content.contains("cmd: echo task_get"));
+        assert!(!memory.truncated);
     }
 
     #[test]
