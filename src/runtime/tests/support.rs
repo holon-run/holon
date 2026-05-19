@@ -16,8 +16,8 @@ pub(crate) use crate::{
     provider::{
         provider_turn_error, AgentProvider, ConversationMessage, ModelBlock,
         ProviderAttemptOutcome, ProviderAttemptRecord, ProviderAttemptTimeline,
-        ProviderTransportDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
-        ReqwestTransportDiagnostics, StubProvider,
+        ProviderHttpTraceDiagnostics, ProviderTransportDiagnostics, ProviderTurnRequest,
+        ProviderTurnResponse, ReqwestTransportDiagnostics, StubProvider,
     },
     storage::AppStorage,
     system::{ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind},
@@ -754,7 +754,12 @@ impl AgentProvider for FailingTimelineProvider {
                             is_redirect: false,
                             status: None,
                         }),
-                        http_trace: None,
+                        http_trace: Some(ProviderHttpTraceDiagnostics {
+                            mode: "failure_only".into(),
+                            path: "/Users/example/.holon/http-trace/default/trace-1-1.jsonl"
+                                .into(),
+                            status: None,
+                        }),
                         source_chain: vec!["connection reset by peer".into()],
                     }),
                 }],
