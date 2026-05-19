@@ -898,6 +898,125 @@ async fn latest_task_list_entries_return_compact_projection() {
 }
 
 #[tokio::test]
+async fn latest_task_list_entries_filters_to_active_statuses_only() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "task-active-1".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("active task".into()),
+            detail: Some(serde_json::json!({
+                "task_status": "running",
+                "wait_policy": "background"
+            })),
+            recovery: None,
+        })
+        .unwrap();
+
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "task-historical".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("historical active".into()),
+            detail: Some(serde_json::json!({
+                "task_status": "running",
+                "wait_policy": "background"
+            })),
+            recovery: None,
+        })
+        .unwrap();
+
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "task-historical".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Completed,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("historical active".into()),
+            detail: Some(serde_json::json!({
+                "task_status": "completed",
+                "wait_policy": "background"
+            })),
+            recovery: Some(TaskRecoverySpec::CommandTask {
+                summary: "historical active".into(),
+                spec: crate::types::CommandTaskSpec {
+                    cmd: "true".into(),
+                    workdir: None,
+                    shell: None,
+                    login: true,
+                    tty: false,
+                    yield_time_ms: 100,
+                    max_output_tokens: None,
+                    accepts_input: false,
+                    terminal_reentry: true,
+                },
+                trust: TrustLevel::TrustedOperator,
+                promoted_from_exec_command: false,
+            }),
+        })
+        .unwrap();
+
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "other-agent-task".into(),
+            agent_id: "other".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("other agent".into()),
+            detail: Some(serde_json::json!({
+                "task_status": "running",
+                "wait_policy": "background"
+            })),
+            recovery: None,
+        })
+        .unwrap();
+
+    let entries = runtime
+        .latest_task_list_entries_for_agent("default")
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, "task-active-1");
+    assert_eq!(entries[0].status, TaskStatus::Running);
+}
+
+#[tokio::test]
 async fn enter_git_worktree_root_rejects_when_managed_worktrees_disabled() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
