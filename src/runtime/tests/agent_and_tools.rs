@@ -898,6 +898,117 @@ async fn latest_task_list_entries_return_compact_projection() {
 }
 
 #[tokio::test]
+async fn latest_task_list_entries_returns_active_only_by_id() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "active-task".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("active task".into()),
+            detail: None,
+            recovery: None,
+        })
+        .unwrap();
+
+    // Newer terminal record should exclude this id from TaskList.
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "active-task".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Completed,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("active task".into()),
+            detail: None,
+            recovery: None,
+        })
+        .unwrap();
+
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "other-agent-task".into(),
+            agent_id: "other".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Queued,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("other agent queued".into()),
+            detail: None,
+            recovery: None,
+        })
+        .unwrap();
+
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "cancelled-task".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Cancelled,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("cancelled".into()),
+            detail: None,
+            recovery: None,
+        })
+        .unwrap();
+
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "active-task-2".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Cancelling,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("still active".into()),
+            detail: None,
+            recovery: None,
+        })
+        .unwrap();
+
+    let entries = runtime.latest_task_list_entries().await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, "active-task-2");
+    assert!(entries.iter().all(|entry| {
+        entry.status == TaskStatus::Queued
+            || entry.status == TaskStatus::Running
+            || entry.status == TaskStatus::Cancelling
+    }));
+}
+
+#[tokio::test]
 async fn enter_git_worktree_root_rejects_when_managed_worktrees_disabled() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

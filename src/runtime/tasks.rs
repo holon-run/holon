@@ -1142,9 +1142,11 @@ impl RuntimeHandle {
     }
 
     pub async fn latest_task_list_entries(&self) -> Result<Vec<TaskListEntry>> {
+        let agent_id = self.agent_id().await?;
         Ok(self
-            .latest_task_records()
-            .await?
+            .inner
+            .storage
+            .latest_active_task_records_for_agent(&agent_id, usize::MAX)?
             .into_iter()
             .map(|task| {
                 let wait_policy = task.wait_policy();
