@@ -39,12 +39,12 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
     provider_config.context_management.trigger_input_tokens = 1;
     provider_config.context_management.keep_recent_tool_uses = 1;
 
-    let trace_home_dir = tempfile::tempdir()?.keep();
+    let trace_home_dir = tempfile::tempdir()?;
     let provider = AnthropicProvider::from_runtime_config(
         provider_config,
         model,
         runtime_max_output_tokens,
-        &trace_home_dir,
+        trace_home_dir.path(),
     )?;
 
     let tool = ToolSpec {

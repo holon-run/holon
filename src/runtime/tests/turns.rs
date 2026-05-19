@@ -1166,6 +1166,10 @@ async fn runtime_failure_artifacts_preserve_provider_attempt_timeline() {
         failure.data["failure_artifact"]["metadata"]["url"],
         "https://example.com/v1/responses"
     );
+    assert_eq!(
+        failure.data["failure_artifact"]["metadata"]["http_trace_path"],
+        ".holon/http-trace/default/trace-1-1.jsonl"
+    );
     assert!(failure.data["token_usage"].is_null());
     assert!(failure.data["provider_attempt_timeline"]["winning_model_ref"].is_null());
     assert!(!failure.data["error_chain"].as_array().unwrap().is_empty());

@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -14,6 +14,7 @@ static PROVIDER_HTTP_TRACE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 const PROVIDER_HTTP_TRACE_ENV: &str = "HOLON_PROVIDER_HTTP_TRACE";
 const PROVIDER_HTTP_FAILURE_TRACE_ENV: &str = "HOLON_PROVIDER_HTTP_FAILURE_TRACE";
+const PROVIDER_HTTP_FAILURE_TRACE_MAX_EVENTS: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderHttpTraceDiagnostics {
@@ -177,14 +178,18 @@ impl ProviderHttpTraceRequest {
         let Ok(mut guard) = self.inner.lock() else {
             return;
         };
-        guard.events.push(event.clone());
-        if guard.mode == ProviderHttpTraceMode::All {
-            let already_open = guard.file_path.is_some();
-            let Some(path) = ensure_trace_file(&mut guard) else {
-                return;
-            };
-            if already_open {
+        match guard.mode {
+            ProviderHttpTraceMode::All => {
+                let Some(path) = ensure_trace_file(&mut guard) else {
+                    return;
+                };
                 append_trace_event(&path, &event);
+            }
+            ProviderHttpTraceMode::FailureOnly => {
+                guard.events.push(event);
+                if guard.events.len() > PROVIDER_HTTP_FAILURE_TRACE_MAX_EVENTS {
+                    guard.events.remove(0);
+                }
             }
         }
     }
@@ -205,11 +210,24 @@ fn ensure_trace_file(state: &mut ProviderHttpTraceRequestState) -> Option<PathBu
         "trace-{created_at_ms}-{sequence}.jsonl",
         sequence = state.sequence
     ));
-    for event in &state.events {
-        append_trace_event(&path, event);
+    if !state.events.is_empty() {
+        write_trace_events(&path, &state.events);
+        state.events.clear();
     }
     state.file_path = Some(path.clone());
     Some(path)
+}
+
+fn write_trace_events(path: &Path, events: &[Value]) {
+    let Ok(mut file) = File::create(path) else {
+        return;
+    };
+    for event in events {
+        let Ok(line) = serde_json::to_string(event) else {
+            continue;
+        };
+        let _ = writeln!(file, "{line}");
+    }
 }
 
 fn append_trace_event(path: &Path, event: &Value) {

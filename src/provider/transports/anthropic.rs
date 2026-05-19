@@ -190,6 +190,7 @@ impl AgentProvider for AnthropicProvider {
         let request_payload = serde_json::to_value(&request_body)?;
 
         let url = format!("{}/v1/messages", self.base_url);
+        let model_ref = format!("anthropic/{}", self.model);
         let mut headers = vec![
             ("content-type", "application/json".to_string()),
             ("authorization", format!("Bearer {}", self.auth_token)),
@@ -210,7 +211,7 @@ impl AgentProvider for AnthropicProvider {
                     .as_ref()
                     .map(|cache| cache.agent_id.as_str()),
                 "anthropic",
-                Some(&format!("anthropic/{}", self.model)),
+                Some(&model_ref),
                 url.as_str(),
                 "messages",
                 &headers,
@@ -231,27 +232,27 @@ impl AgentProvider for AnthropicProvider {
                     "Anthropic request failed",
                     "request_send",
                     "anthropic",
-                    Some(&format!("anthropic/{}", self.model)),
-                    Some(&format!("{}/v1/messages", self.base_url)),
+                    Some(&model_ref),
+                    Some(url.as_str()),
                     error,
                     request_trace.as_ref(),
                 )
             })?;
-        request_trace
-            .as_ref()
-            .map(|trace| trace.write_response_headers(response.status(), response.headers()));
+        if let Some(trace) = request_trace.as_ref() {
+            trace.write_response_headers(response.status(), response.headers());
+        }
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            request_trace
-                .as_ref()
-                .map(|trace| trace.write_response_body(&body));
+            if let Some(trace) = request_trace.as_ref() {
+                trace.write_response_body(&body);
+            }
             return Err(classify_status_error_with_trace(
                 "Anthropic request failed",
                 "response_status",
                 Some("anthropic"),
-                Some(&format!("anthropic/{}", self.model)),
+                Some(&model_ref),
                 Some(url.as_str()),
                 status,
                 body,
@@ -264,15 +265,15 @@ impl AgentProvider for AnthropicProvider {
                 "Anthropic response body failed",
                 "response_body",
                 "anthropic",
-                Some(&format!("anthropic/{}", self.model)),
-                Some(&format!("{}/v1/messages", self.base_url)),
+                Some(&model_ref),
+                Some(url.as_str()),
                 error,
                 request_trace.as_ref(),
             )
         })?;
-        request_trace
-            .as_ref()
-            .map(|trace| trace.write_response_body(&response_body));
+        if let Some(trace) = request_trace.as_ref() {
+            trace.write_response_body(&response_body);
+        }
         let parsed: MessagesResponse = serde_json::from_str(&response_body)
             .map_err(|error| invalid_response_error("invalid Anthropic JSON", error))?;
         let input_tokens = parsed

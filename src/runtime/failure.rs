@@ -14,6 +14,19 @@ impl RuntimeHandle {
         url.to_string()
     }
 
+    fn sanitize_failure_artifact_path(raw: &str) -> String {
+        const TRACE_MARKER: &str = ".holon/http-trace/";
+        raw.find(TRACE_MARKER)
+            .map(|index| raw[index..].to_string())
+            .unwrap_or_else(|| {
+                std::path::Path::new(raw)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("<redacted-path>")
+                    .to_string()
+            })
+    }
+
     fn metadata_enum_value<T: serde::Serialize>(value: &T) -> String {
         let json = to_json_value(value);
         json.as_str()
@@ -68,7 +81,10 @@ impl RuntimeHandle {
             }
             if let Some(http_trace) = diag.http_trace.as_ref() {
                 metadata.insert("http_trace_mode".into(), http_trace.mode.clone());
-                metadata.insert("http_trace_path".into(), http_trace.path.clone());
+                metadata.insert(
+                    "http_trace_path".into(),
+                    Self::sanitize_failure_artifact_path(&http_trace.path),
+                );
             }
             metadata.insert(
                 "reqwest_is_timeout".into(),
