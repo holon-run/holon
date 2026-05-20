@@ -425,6 +425,42 @@ pub async fn control_runtime_status_is_open_over_unix_socket_when_auth_required(
     Ok(())
 }
 
+#[cfg(unix)]
+pub async fn control_runtime_readiness_is_open_over_unix_socket_when_auth_required() -> Result<()> {
+    let config = test_config_with_paths(
+        tempdir().unwrap().keep(),
+        tempdir().unwrap().keep(),
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Required,
+    );
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    if let Some(parent) = config.socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let host = RuntimeHost::new_with_provider(config.clone(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    let runtime_service = RuntimeServiceHandle::new(&config)?;
+    let router: Router = http::router(AppState::for_unix_with_runtime_service(
+        host.clone(),
+        Some(runtime_service),
+    ));
+    let listener = UnixListener::bind(&config.socket_path)?;
+    let socket_path = config.socket_path.clone();
+    let server = tokio::spawn(async move {
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        http::serve_unix(listener, router, rx).await?;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let response =
+        unix_request(&socket_path, "GET", "/control/runtime/readiness", &[], None).await?;
+    assert_eq!(response.status, 200);
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<()> {
     let config = test_config_with_paths(
         tempdir().unwrap().keep(),

@@ -39,4 +39,5 @@ http_async_tests!(
 http_async_tests!(
     control_prompt_is_open_over_unix_socket_auto,
     control_runtime_status_is_open_over_unix_socket_when_auth_required,
+    control_runtime_readiness_is_open_over_unix_socket_when_auth_required,
 );

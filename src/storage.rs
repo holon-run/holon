@@ -1149,35 +1149,10 @@ fn migrate_events_ledger(path: &Path) -> Result<u64> {
 }
 
 fn read_tail_event_seq(path: &Path) -> Result<Option<u64>> {
-    let mut file =
-        fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut cursor = file.seek(SeekFrom::End(0))?;
-    if cursor == 0 {
+    let Some(value) = read_latest_jsonl_matching::<Value, _>(path, |_| true)? else {
         return Ok(Some(0));
-    }
-
-    let mut suffix = Vec::new();
-    let mut buffer = [0_u8; 8192];
-    while cursor > 0 {
-        let read_len = usize::try_from(cursor.min(buffer.len() as u64)).unwrap_or(buffer.len());
-        cursor -= read_len as u64;
-        file.seek(SeekFrom::Start(cursor))?;
-        file.read_exact(&mut buffer[..read_len])?;
-        suffix.splice(0..0, buffer[..read_len].iter().copied());
-        if suffix[..suffix.len().saturating_sub(1)].contains(&b'\n') {
-            break;
-        }
-    }
-
-    for line in suffix.split(|byte| *byte == b'\n').rev() {
-        if line.iter().all(|byte| byte.is_ascii_whitespace()) {
-            continue;
-        }
-        let value: Value = serde_json::from_slice(line)
-            .with_context(|| format!("failed to parse tail event in {}", path.display()))?;
-        return Ok(value.get("event_seq").and_then(Value::as_u64));
-    }
-    Ok(Some(0))
+    };
+    Ok(value.get("event_seq").and_then(Value::as_u64))
 }
 
 fn append_jsonl_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
