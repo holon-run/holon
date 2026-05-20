@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::compression::CompressionLayer;
-use tracing::error;
+use tracing::{error, warn};
 use uuid::Uuid;
 
 #[cfg(unix)]
@@ -2979,7 +2979,21 @@ pub async fn serve_unix(
                     Err(_) => return Ok(()),
                 }
             }
-            accepted = listener.accept() => accepted?,
+            accepted = listener.accept() => {
+                match accepted {
+                    Ok(accepted) => accepted,
+                    Err(err) if crate::fd_limit::is_fd_exhaustion_error(&err) => {
+                        warn!(
+                            error = %err,
+                            backoff_ms = 100,
+                            "unix control server accept hit file descriptor limit; backing off"
+                        );
+                        sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
         };
         let router = router.clone();
         tokio::spawn(async move {
