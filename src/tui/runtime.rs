@@ -1,27 +1,36 @@
-use super::projection::{ProjectionSlice, EVENT_LOG_LIMIT};
+use super::projection::ProjectionSlice;
 use super::state::TuiClientState;
 use super::*;
 use crate::client::{
     AgentStateSnapshot, AgentStreamEvent, EventPageRequest, EventPageResponse, EventStreamRequest,
-    LocalEventStream, LocalHttpError, StreamEventEnvelope, TUI_TIMEOUTS,
+    LocalEventStream, LocalHttpError, StreamEventEnvelope,
 };
 use tokio::sync::mpsc;
 
-const STREAM_RECONNECT_DELAY: Duration = TUI_TIMEOUTS.reconnect;
 const REFRESH_RETRY_DELAY: Duration = Duration::from_secs(1);
 const AGENT_LIST_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const TASK_LIMIT: usize = 40;
 const OPTIMISTIC_OPERATOR_MESSAGE_LIMIT: usize = 64;
+pub(super) const BOOTSTRAP_EVENT_TAIL_LIMIT: usize = 50;
 const EVENT_HISTORY_PAGE_LIMIT: usize = 128;
+const STREAM_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) enum TuiConnectionState {
     Bootstrapping,
     Streaming,
-    Reconnecting { attempt: u32, last_error: String },
-    RefreshRequired { reason: String },
-    Disconnected { reason: String },
+    Reconnecting {
+        attempt: u32,
+        retry_after: Duration,
+        last_error: String,
+    },
+    RefreshRequired {
+        reason: String,
+    },
+    Disconnected {
+        reason: String,
+    },
 }
 
 pub(super) enum TuiRuntimeMessage {
@@ -37,6 +46,11 @@ pub(super) enum TuiRuntimeMessage {
         agent_id: String,
         checkpoint: Option<TuiRuntimeCheckpoint>,
         result: Result<SnapshotBootstrapResult, String>,
+    },
+    SnapshotBootstrapStatus {
+        request_id: u64,
+        agent_id: String,
+        status_line: String,
     },
     EventHistoryPageLoaded {
         request_id: u64,
@@ -61,6 +75,26 @@ type SnapshotBootstrapResult = (
 pub(super) struct EventStreamOpenError {
     message: String,
     cursor_not_found: bool,
+}
+
+pub(super) fn reconnect_delay_for_attempt(attempt: u32) -> Duration {
+    let delay_secs = match attempt {
+        0 | 1 => 1,
+        2 => 2,
+        3 => 4,
+        4 => 8,
+        5 => 15,
+        _ => STREAM_RECONNECT_MAX_DELAY.as_secs(),
+    };
+    Duration::from_secs(delay_secs).min(STREAM_RECONNECT_MAX_DELAY)
+}
+
+fn format_duration(duration: Duration) -> String {
+    if duration.as_secs() > 0 && duration.subsec_millis() == 0 {
+        format!("{}s", duration.as_secs())
+    } else {
+        format!("{}ms", duration.as_millis())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,7 +407,7 @@ impl TuiApp {
         self.event_history_request_id = self.event_history_request_id.saturating_add(1);
         let request_id = self.snapshot_refresh_request_id;
         self.connection_state = TuiConnectionState::Bootstrapping;
-        self.status_line = format!("Bootstrapping agent {agent_id} from /state");
+        self.status_line = format!("Loading agent state for {agent_id}");
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
         tokio::spawn({
@@ -381,11 +415,16 @@ impl TuiApp {
             async move {
                 let result = async {
                     let snapshot = client.agent_state_snapshot(&agent_id).await?;
+                    let _ = tx.send(TuiRuntimeMessage::SnapshotBootstrapStatus {
+                        request_id,
+                        agent_id: agent_id.clone(),
+                        status_line: format!("Loading recent events for {agent_id}"),
+                    });
                     let mut events_page = client
                         .agent_events_page(
                             &agent_id,
                             EventPageRequest {
-                                limit: Some(EVENT_LOG_LIMIT),
+                                limit: Some(BOOTSTRAP_EVENT_TAIL_LIMIT),
                                 order: Some("desc".into()),
                                 ..Default::default()
                             },
@@ -474,6 +513,22 @@ impl TuiApp {
         self.status_line = format!("Bootstrapped agent {agent_id} from /state");
 
         self.begin_connect_event_stream_for(agent_id, cursor);
+    }
+
+    pub(super) fn apply_snapshot_bootstrap_status(
+        &mut self,
+        request_id: u64,
+        agent_id: String,
+        status_line: String,
+    ) {
+        if request_id != self.snapshot_refresh_request_id {
+            return;
+        }
+        if !matches!(self.connection_state, TuiConnectionState::Bootstrapping) {
+            return;
+        }
+        let _ = agent_id;
+        self.status_line = status_line;
     }
 
     pub(super) fn begin_connect_event_stream(&mut self) {
@@ -649,6 +704,11 @@ impl TuiApp {
                     checkpoint,
                     result,
                 ),
+                TuiRuntimeMessage::SnapshotBootstrapStatus {
+                    request_id,
+                    agent_id,
+                    status_line,
+                } => self.apply_snapshot_bootstrap_status(request_id, agent_id, status_line),
                 TuiRuntimeMessage::EventHistoryPageLoaded {
                     request_id,
                     agent_id,
@@ -831,10 +891,12 @@ impl TuiApp {
 
     pub(super) fn schedule_reconnect(&mut self, error: String) {
         self.reconnect_attempt = self.reconnect_attempt.saturating_add(1);
-        self.reconnect_deadline = Some(Instant::now() + STREAM_RECONNECT_DELAY);
+        let retry_after = reconnect_delay_for_attempt(self.reconnect_attempt);
+        self.reconnect_deadline = Some(Instant::now() + retry_after);
         self.refresh_deadline = None;
         self.connection_state = TuiConnectionState::Reconnecting {
             attempt: self.reconnect_attempt,
+            retry_after,
             last_error: error,
         };
     }
@@ -903,8 +965,15 @@ impl TuiApp {
         let state = match &self.connection_state {
             TuiConnectionState::Bootstrapping => "bootstrapping".into(),
             TuiConnectionState::Streaming => "streaming".into(),
-            TuiConnectionState::Reconnecting { attempt, .. } => {
-                format!("reconnecting (attempt {attempt})")
+            TuiConnectionState::Reconnecting {
+                attempt,
+                retry_after,
+                ..
+            } => {
+                format!(
+                    "reconnecting in {} (attempt {attempt})",
+                    format_duration(*retry_after)
+                )
             }
             TuiConnectionState::RefreshRequired { .. } => "refresh-required".into(),
             TuiConnectionState::Disconnected { .. } => "disconnected".into(),

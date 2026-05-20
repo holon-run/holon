@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
 use tokio_stream::wrappers::ReceiverStream;
+use tower_http::compression::CompressionLayer;
 use tracing::error;
 use uuid::Uuid;
 
@@ -213,6 +214,7 @@ pub fn router(state: AppState) -> Router {
         .route("/state", get(state_default))
         .route("/transcript", get(transcript_default))
         .route("/worktree-summary", get(worktree_summary_default))
+        .layer(CompressionLayer::new())
         .with_state(Arc::new(state))
 }
 
