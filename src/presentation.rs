@@ -560,6 +560,7 @@ impl Renderable for PresentationItem {
 pub(crate) struct PresentationReducer {
     live_group: Option<LiveGroup>,
     last_ts: Option<DateTime<Utc>>,
+    observed_assistant_text_keys: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -576,7 +577,6 @@ impl PresentationReducer {
     pub(crate) fn reduce(&mut self, events: &[ProjectionEventRecord]) -> Vec<TimedItem> {
         let mut items: Vec<TimedItem> = Vec::new();
         let final_brief_texts = final_brief_texts(events);
-        let mut observed_assistant_text_keys = HashSet::new();
 
         let mut i = 0;
         while i < events.len() {
@@ -676,7 +676,7 @@ impl PresentationReducer {
                         let text_key = normalized_event_text_key(event, &text);
                         if !text.trim().is_empty()
                             && !matches_final_brief_text(event, &text, &final_brief_texts)
-                            && observed_assistant_text_keys.insert(text_key)
+                            && self.observed_assistant_text_keys.insert(text_key)
                         {
                             items.push(TimedItem {
                                 item: PresentationItem::AssistantProgress {
@@ -970,12 +970,14 @@ fn matches_final_brief_text(
 }
 
 fn normalized_event_text_key(event: &ProjectionEventRecord, text: &str) -> String {
-    let agent_id = event.payload.get("agent_id").and_then(Value::as_str);
-    normalized_text_key(agent_id, text)
-}
-
-fn normalized_text_key(agent_id: Option<&str>, text: &str) -> String {
-    format!("{}::{}", agent_id.unwrap_or(""), normalized_text(text))
+    let normalized = normalized_text(text);
+    match (
+        event.payload.get("turn_index").and_then(Value::as_u64),
+        event.payload.get("round").and_then(Value::as_u64),
+    ) {
+        (Some(turn_index), Some(round)) => format!("turn:{turn_index}:round:{round}::{normalized}"),
+        _ => normalized,
+    }
 }
 
 fn normalized_text(text: &str) -> String {
@@ -1485,6 +1487,71 @@ mod tests {
             }
             other => panic!("expected AssistantProgress, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn reducer_deduplicates_same_round_text_despite_agent_id_mismatch() {
+        let assistant = make_event(
+            "assistant_round_recorded",
+            "assistant round",
+            json!({
+                "agent_id": "default",
+                "turn_index": 12,
+                "round": 3,
+                "text_preview": "Rendering once"
+            }),
+        );
+        let text_only = make_event(
+            "text_only_round_observed",
+            "text only round",
+            json!({
+                "turn_index": 12,
+                "round": 3,
+                "text_preview": "Rendering once"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[assistant, text_only]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::AssistantProgress { text, .. } => {
+                assert_eq!(text, "Rendering once");
+            }
+            other => panic!("expected AssistantProgress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_deduplicates_same_round_text_across_incremental_reductions() {
+        let assistant = make_event(
+            "assistant_round_recorded",
+            "assistant round",
+            json!({
+                "agent_id": "default",
+                "turn_index": 12,
+                "round": 3,
+                "text_preview": "Rendering once"
+            }),
+        );
+        let text_only = make_event(
+            "text_only_round_observed",
+            "text only round",
+            json!({
+                "agent_id": "default",
+                "turn_index": 12,
+                "round": 3,
+                "text_preview": "Rendering once"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let first = reducer.reduce(&[assistant]);
+        let second = reducer.reduce(&[text_only]);
+
+        assert_eq!(first.len(), 1);
+        assert!(second.is_empty());
     }
 
     #[test]
