@@ -2862,6 +2862,59 @@ impl WorkItemRecord {
     pub fn is_waiting_for_operator(&self) -> bool {
         self.readiness() == WorkItemReadiness::WaitingForOperator
     }
+
+    /// Derive the scheduling state for this WorkItem, considering optional active wait conditions.
+    ///
+    /// This implements the RFC 1294 scheduling state derivation model:
+    /// - Runnable: open, ready, not blocked, no active wait
+    /// - WaitingOperator: plan_status == needs_input
+    /// - WaitingTask: active wait with task wake source
+    /// - WaitingExternal: active external wait
+    /// - Blocked: has unstructured blocker
+    /// - Completed: work item is complete
+    ///
+    /// The `active_waits` parameter should contain only active (not resolved, cancelled, or expired)
+    /// wait conditions for this work item.
+    pub fn scheduling_state(
+        &self,
+        active_waits: &[WaitCondition],
+    ) -> WorkItemSchedulingState {
+        // Completed work items are always completed
+        if self.state == WorkItemState::Completed {
+            return WorkItemSchedulingState::Completed;
+        }
+
+        // Operator input takes precedence over wait conditions
+        if self.plan_status == WorkItemPlanStatus::NeedsInput {
+            return WorkItemSchedulingState::WaitingOperator;
+        }
+
+        // Check for active wait conditions
+        if let Some(wait) = active_waits.first() {
+            return match wait.kind {
+                WaitConditionKind::Task => WorkItemSchedulingState::WaitingTask,
+                WaitConditionKind::External => WorkItemSchedulingState::WaitingExternal,
+                WaitConditionKind::Operator => WorkItemSchedulingState::WaitingOperator,
+                WaitConditionKind::Timer => {
+                    // Timer waits are treated like task waits (internal runtime wake)
+                    WorkItemSchedulingState::WaitingTask
+                }
+            };
+        }
+
+        // Unstructured blocker
+        if self.blocked_by.is_some() {
+            return WorkItemSchedulingState::Blocked;
+        }
+
+        // Default: runnable
+        WorkItemSchedulingState::Runnable
+    }
+
+    /// Check if this WorkItem is in the Runnable scheduling state.
+    pub fn is_scheduling_runnable(&self, active_waits: &[WaitCondition]) -> bool {
+        self.scheduling_state(active_waits) == WorkItemSchedulingState::Runnable
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2905,6 +2958,216 @@ impl WorkItemDelegationRecord {
             updated_at: now,
         }
     }
+}
+
+// ============================================================================
+// RFC 1294: Scheduler Wait State and Recoverable Agent Continuation
+// ============================================================================
+
+/// Wake sources that can reactivate an agent waiting on a condition.
+///
+/// These are the scheduler-executable parts of wait conditions. The runtime
+/// can observe and route these wake sources without understanding provider-
+/// specific business logic.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeSource {
+    /// A task result will wake the agent.
+    ///
+    /// Used when the runtime owns the executing task.
+    TaskResult { task_id: String },
+
+    /// External ingress through a providerless trigger or other callback path.
+    ///
+    /// The `external_trigger_id` is optional to support both explicit triggers
+    /// and generic ingress during migration.
+    ExternalIngress { external_trigger_id: Option<String> },
+
+    /// A timer will wake the agent for reconciliation.
+    ///
+    /// Used to make a wait recoverable even if another wake source fails or
+    /// never arrives. The timer wake should enqueue a reconciliation
+    /// continuation, not assume success or failure.
+    Timer { wake_at: DateTime<Utc> },
+
+    /// Operator input is required.
+    OperatorInput,
+
+    /// A system tick for maintenance, audit, or soft recovery.
+    ///
+    /// A system tick is not a provider-specific fallback policy. It is
+    /// runtime safety, not business policy.
+    SystemTick,
+}
+
+/// Wait condition records that a WorkItem is waiting for a recoverable or
+/// operator-visible condition.
+///
+/// The fields `source`, `subject_ref`, and `waiting_for` are intentionally
+/// opaque to the core scheduler. They are for display, correlation, and
+/// handoff to the agent, skill, provider, or operator.
+///
+/// The scheduler should not mark an external wait as resolved simply because
+/// a wake source fired. A wake source means "reconcile this wait now". The
+/// agent, skill, provider, or operator-facing workflow decides whether the
+/// external condition is actually resolved.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WaitCondition {
+    /// Unique identifier for this wait condition.
+    pub id: String,
+
+    /// The WorkItem this wait condition is associated with.
+    pub work_item_id: String,
+
+    /// Current status of this wait condition.
+    pub status: WaitConditionStatus,
+
+    /// Kind of wait condition.
+    pub kind: WaitConditionKind,
+
+    /// Optional opaque source label (e.g., "github", "ci", "deployment").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+
+    /// Optional opaque subject reference for correlation (e.g., "repo=holon-run/holon,pr=123").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_ref: Option<String>,
+
+    /// Human-readable description of what is being waited for.
+    pub waiting_for: String,
+
+    /// Wake sources that can reactivate the agent for this wait.
+    pub wake_sources: Vec<WakeSource>,
+
+    /// When this wait condition was created.
+    pub created_at: DateTime<Utc>,
+
+    /// When this wait condition was last updated.
+    pub updated_at: DateTime<Utc>,
+
+    /// Optional expiration time for this wait condition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl WaitCondition {
+    pub fn new(
+        work_item_id: impl Into<String>,
+        kind: WaitConditionKind,
+        waiting_for: impl Into<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: format!("wait_{}", Uuid::new_v4().simple()),
+            work_item_id: work_item_id.into(),
+            status: WaitConditionStatus::Active,
+            kind,
+            source: None,
+            subject_ref: None,
+            waiting_for: waiting_for.into(),
+            wake_sources: Vec::new(),
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+        }
+    }
+
+    /// Classify the recoverability of an external wait.
+    ///
+    /// This is used for auditing and warnings. The core scheduler does not
+    /// choose provider-specific fallback durations, but it can surface
+    /// weak or non-recoverable waits.
+    pub fn recoverability(&self) -> ExternalWaitRecoverability {
+        if self.kind != WaitConditionKind::External {
+            return ExternalWaitRecoverability::Recoverable;
+        }
+
+        let has_timer = self
+            .wake_sources
+            .iter()
+            .any(|ws| matches!(ws, WakeSource::Timer { .. }));
+        let has_external_ingress = self
+            .wake_sources
+            .iter()
+            .any(|ws| matches!(ws, WakeSource::ExternalIngress { .. }));
+
+        if has_timer {
+            // Timer alone or with external ingress is recoverable
+            return ExternalWaitRecoverability::Recoverable;
+        }
+
+        if has_external_ingress {
+            // External ingress without timer is weak (may strand the agent)
+            return ExternalWaitRecoverability::Weak;
+        }
+
+        // No wake sources at all is explicitly non-recoverable
+        ExternalWaitRecoverability::ExplicitNoFallback
+    }
+}
+
+/// Status of a wait condition.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitConditionStatus {
+    Active,
+    Resolved,
+    Cancelled,
+    Expired,
+}
+
+/// Kind of wait condition.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitConditionKind {
+    Task,
+    External,
+    Operator,
+    Timer,
+}
+
+/// Scheduling state derived from WorkItem and WaitCondition records.
+///
+/// This is the scheduler-facing state model that determines whether an agent
+/// should continue now, wait, ask the operator, remain blocked, or become idle.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemSchedulingState {
+    /// The WorkItem is open, ready, not blocked, and not waiting.
+    Runnable,
+
+    /// The WorkItem is waiting for operator input (plan_status == needs_input).
+    WaitingOperator,
+
+    /// The WorkItem has an active wait condition with task wake sources.
+    WaitingTask,
+
+    /// The WorkItem has an active external wait condition.
+    WaitingExternal,
+
+    /// The WorkItem has an unstructured blocker.
+    Blocked,
+
+    /// The WorkItem is completed.
+    Completed,
+}
+
+/// Recoverability classification for external waits.
+///
+/// Used for auditing and warnings. The core scheduler does not choose
+/// provider-specific fallback durations, but it can surface weak or
+/// non-recoverable waits.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalWaitRecoverability {
+    /// The wait has a timer or other recoverable wake source.
+    Recoverable,
+
+    /// The wait has only external ingress (may strand the agent if callback never arrives).
+    Weak,
+
+    /// The wait has no recovery path with a recorded reason.
+    ExplicitNoFallback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4069,5 +4332,129 @@ mod tests {
         }
         assert!(!AgentProfilePreset::PublicNamed
             .allows_tool_capability_family(ToolCapabilityFamily::OperatorNotification));
+    }
+
+    // ========================================================================
+    // RFC 1294: WaitCondition and scheduling state tests
+    // ========================================================================
+
+    #[test]
+    fn wait_condition_recoverability_classifies_external_waits() {
+        // External wait with timer is recoverable
+        let wait_with_timer = WaitCondition {
+            id: "wait_1".into(),
+            work_item_id: "work_1".into(),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("repo=holon-run/holon,pr=123".into()),
+            waiting_for: "checks_success".into(),
+            wake_sources: vec![
+                WakeSource::ExternalIngress { external_trigger_id: Some("trigger_1".into()) },
+                WakeSource::Timer { wake_at: Utc::now() + chrono::Duration::hours(24) },
+            ],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+        };
+        assert_eq!(
+            wait_with_timer.recoverability(),
+            ExternalWaitRecoverability::Recoverable
+        );
+
+        // External wait with only external ingress is weak
+        let wait_weak = WaitCondition {
+            wake_sources: vec![WakeSource::ExternalIngress { external_trigger_id: Some("trigger_1".into()) }],
+            ..wait_with_timer.clone()
+        };
+        assert_eq!(
+            wait_weak.recoverability(),
+            ExternalWaitRecoverability::Weak
+        );
+
+        // External wait with no wake sources is explicit no fallback
+        let wait_no_fallback = WaitCondition {
+            wake_sources: vec![],
+            ..wait_with_timer.clone()
+        };
+        assert_eq!(
+            wait_no_fallback.recoverability(),
+            ExternalWaitRecoverability::ExplicitNoFallback
+        );
+    }
+
+    #[test]
+    fn work_item_scheduling_state_derivation() {
+        // Completed work item
+        let completed = WorkItemRecord::new("agent_1", "done", WorkItemState::Completed);
+        assert_eq!(
+            completed.scheduling_state(&[]),
+            WorkItemSchedulingState::Completed
+        );
+
+        // Waiting for operator
+        let mut needs_input = WorkItemRecord::new("agent_1", "need input", WorkItemState::Open);
+        needs_input.plan_status = WorkItemPlanStatus::NeedsInput;
+        assert_eq!(
+            needs_input.scheduling_state(&[]),
+            WorkItemSchedulingState::WaitingOperator
+        );
+
+        // Blocked
+        let mut blocked = WorkItemRecord::new("agent_1", "blocked", WorkItemState::Open);
+        blocked.blocked_by = Some("dependency".into());
+        assert_eq!(
+            blocked.scheduling_state(&[]),
+            WorkItemSchedulingState::Blocked
+        );
+
+        // Runnable (default)
+        let runnable = WorkItemRecord::new("agent_1", "runnable", WorkItemState::Open);
+        assert_eq!(
+            runnable.scheduling_state(&[]),
+            WorkItemSchedulingState::Runnable
+        );
+    }
+
+    #[test]
+    fn work_item_scheduling_state_with_active_waits() {
+        let work_item = WorkItemRecord::new("agent_1", "waiting", WorkItemState::Open);
+
+        // Task wait
+        let task_wait = WaitCondition {
+            id: "wait_1".into(),
+            work_item_id: work_item.id.clone(),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Task,
+            source: None,
+            subject_ref: None,
+            waiting_for: "task completion".into(),
+            wake_sources: vec![WakeSource::TaskResult { task_id: "task_1".into() }],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+        };
+        assert_eq!(
+            work_item.scheduling_state(&[task_wait.clone()]),
+            WorkItemSchedulingState::WaitingTask
+        );
+
+        // External wait
+        let external_wait = WaitCondition {
+            kind: WaitConditionKind::External,
+            ..task_wait
+        };
+        assert_eq!(
+            work_item.scheduling_state(&[external_wait]),
+            WorkItemSchedulingState::WaitingExternal
+        );
+    }
+
+    #[test]
+    fn wake_source_serialization_roundtrip() {
+        let ws = WakeSource::TaskResult { task_id: "task_123".into() };
+        let json = serde_json::to_value(&ws).unwrap();
+        let deserialized: WakeSource = serde_json::from_value(json).unwrap();
+        assert_eq!(ws, deserialized);
     }
 }

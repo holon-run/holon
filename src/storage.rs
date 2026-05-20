@@ -19,7 +19,8 @@ use crate::types::{
     TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
     TranscriptEntry, WaitingIntentRecord, WaitingIntentStatus, WorkItemDelegationRecord,
     WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemState, WorkingMemoryDelta,
-    WorkspaceEntry, WorkspaceOccupancyRecord,
+    WorkspaceEntry, WorkspaceOccupancyRecord, WaitCondition, WaitConditionStatus,
+    WaitConditionKind, ExternalWaitRecoverability,
 };
 
 const RUNTIME_DIR: &str = ".holon";
@@ -116,6 +117,7 @@ pub struct AppStorage {
     workspaces_path: PathBuf,
     occupancies_path: PathBuf,
     agent_identities_path: PathBuf,
+    wait_conditions_path: PathBuf,
     agent_path: PathBuf,
     append_mutex: Arc<Mutex<()>>,
     event_seq_counter: Arc<Mutex<u64>>,
@@ -180,6 +182,7 @@ impl AppStorage {
             workspaces_path: ledger_dir.join("workspaces.jsonl"),
             occupancies_path: ledger_dir.join("workspace_occupancies.jsonl"),
             agent_identities_path: ledger_dir.join("agent_identities.jsonl"),
+            wait_conditions_path: ledger_dir.join("wait_conditions.jsonl"),
             agent_path: state_dir.join("agent.json"),
             append_mutex: Arc::new(Mutex::new(())),
             event_seq_counter: Arc::new(Mutex::new(event_seq_counter)),
@@ -266,6 +269,76 @@ impl AppStorage {
 
     pub fn append_work_item_delegation(&self, record: &WorkItemDelegationRecord) -> Result<()> {
         self.append_jsonl(&self.work_item_delegations_path, record)
+    }
+
+    // ========================================================================
+    // RFC 1294: WaitCondition support
+    // ========================================================================
+
+    pub fn append_wait_condition(&self, record: &WaitCondition) -> Result<()> {
+        self.append_jsonl(&self.wait_conditions_path, record)
+    }
+
+    pub fn read_wait_conditions(
+        &self,
+        work_item_id: Option<&str>,
+        status: Option<WaitConditionStatus>,
+    ) -> Result<Vec<WaitCondition>> {
+        let all: Vec<WaitCondition> = read_recent_jsonl(&self.wait_conditions_path, usize::MAX)?;
+        Ok(all
+            .into_iter()
+            .filter(|wc| {
+                if let Some(id) = work_item_id {
+                    if &wc.work_item_id != id {
+                        return false;
+                    }
+                }
+                if let Some(s) = status {
+                    if wc.status != s {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect())
+    }
+
+    /// Audit active external waits and return any that are weak (no timer recovery).
+    ///
+    /// This implements the RFC 1294 Phase 1 audit warning for external waits
+    /// that may strand the agent if the callback never arrives.
+    pub fn audit_weak_external_waits(&self) -> Result<Vec<(WaitCondition, String)>> {
+        let all_waits: Vec<WaitCondition> = read_recent_jsonl(&self.wait_conditions_path, usize::MAX)?;
+        Ok(all_waits
+            .into_iter()
+            .filter(|wc| wc.status == WaitConditionStatus::Active)
+            .filter(|wc| wc.kind == WaitConditionKind::External)
+            .filter_map(|wc| {
+                let recoverability = wc.recoverability();
+                match recoverability {
+                    ExternalWaitRecoverability::Weak => Some((
+                        wc,
+                        "external_wait_without_recovery".to_string(),
+                    )),
+                    ExternalWaitRecoverability::ExplicitNoFallback => Some((
+                        wc,
+                        "external_wait_no_fallback".to_string(),
+                    )),
+                    ExternalWaitRecoverability::Recoverable => None,
+                }
+            })
+            .collect())
+    }
+
+    /// Get active wait conditions for a specific work item.
+    pub fn active_wait_conditions_for_work_item(
+        &self,
+        work_item_id: &str,
+    ) -> Result<Vec<WaitCondition>> {
+        self.read_wait_conditions(
+            Some(work_item_id),
+            Some(WaitConditionStatus::Active),
+        )
     }
 
     pub fn append_timer(&self, timer: &TimerRecord) -> Result<()> {
