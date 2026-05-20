@@ -229,7 +229,7 @@ condition is actually resolved.
 ```text
 WakeSource =
   TaskResult { task_id }
-  ExternalIngress { external_trigger_id?: String }
+  ExternalIngress { external_trigger_id: Option<String> }
   Timer { wake_at }
   OperatorInput
   SystemTick
