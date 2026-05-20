@@ -1,6 +1,8 @@
+use crate::runtime::scheduler::SchedulerBoundary;
+use crate::runtime::scheduler::SchedulerProjection;
 use super::super::*;
 use super::support::*;
-use crate::types::{ToolExecutionStatus, WorkItemPlanStatus};
+use crate::types::{ToolExecutionStatus, WorkItemPlanStatus, WorkItemSchedulingState, WorkItemState};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -391,7 +393,7 @@ fn assert_scheduler_fixture(name: &str) {
     let expected: ExpectedFixture = read_scheduler_fixture(name, "expected.json");
     let (_dir, storage, agent) = build_scheduler_fixture(name);
 
-    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
     assert_eq!(
         projection
             .current_work_item
@@ -474,6 +476,7 @@ fn assert_scheduler_fixture(name: &str) {
             scheduler::SchedulerBoundary::RunLoopIdle,
             scheduler::SchedulerInput::Idle,
         );
+
         assert_eq!(
             decision.kind.as_str(),
             expected_decision,
@@ -532,7 +535,7 @@ fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
         })
         .unwrap();
 
-    let before = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let before = SchedulerProjection::from_state(&storage, &agent).unwrap();
     storage
         .append_event(&AuditEvent::new(
             "turn_local_compaction_completed",
@@ -562,7 +565,7 @@ fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
         ))
         .unwrap();
 
-    let after = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let after = SchedulerProjection::from_state(&storage, &agent).unwrap();
     assert_eq!(
         before, after,
         "compaction artifacts must not become scheduler truth"
@@ -605,7 +608,7 @@ fn scheduler_projection_breaks_down_waiting_intent_scopes() {
     agent.pending_wake_hint = None;
     storage.write_agent(&agent).unwrap();
 
-    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
     assert_eq!(projection.active_waiting_intents, 2);
     assert_eq!(projection.active_work_item_waiting_intents, 1);
     assert_eq!(projection.active_agent_waiting_intents, 1);
@@ -677,7 +680,7 @@ fn scheduler_projection_filters_tasks_waiting_intents_and_timers_by_agent() {
             .unwrap();
     }
 
-    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
     assert_eq!(projection.active_tasks.len(), 1);
     assert_eq!(projection.active_tasks[0].id, "task-current");
     assert_eq!(projection.active_waiting_intents, 1);
@@ -714,7 +717,7 @@ fn idle_boundary_decision_prefers_controlled_status_over_wait_facts() {
         })
         .unwrap();
 
-    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
     let decision = scheduler::idle_boundary_decision(&projection, "fixture");
     assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::Stop);
     assert_eq!(decision.reason, "stopped");
@@ -748,7 +751,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
     agent.pending_wake_hint = Some(pending.clone());
     storage.write_agent(&agent).unwrap();
 
-    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
     let wake_decision = scheduler::decide_next_action(
         &projection,
         scheduler::SchedulerBoundary::IdleTick,
@@ -778,7 +781,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
             recovery: None,
         })
         .unwrap();
-    let blocked_projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let blocked_projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
     let work_queue_decision = scheduler::decide_next_action(
         &blocked_projection,
         scheduler::SchedulerBoundary::IdleTick,
@@ -805,7 +808,7 @@ fn decide_next_action_records_duplicate_tick_evidence() {
     let mut work_item = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
     work_item.id = "work-queued".into();
     work_item.revision = 3;
-    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
 
     let decision = scheduler::decide_next_action(
         &projection,
@@ -907,7 +910,7 @@ fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
             .unwrap();
     }
 
-    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
     assert_eq!(projection.active_tasks.len(), 2);
     assert!(!projection.has_blocking_active_tasks);
 
@@ -986,4 +989,290 @@ fn operator_interjection_classifier_requires_trusted_operator_interjection_promp
     assert!(!scheduler::is_operator_interjection_message(
         &webhook_interjection
     ));
+}
+
+// RFC #1293: Sleep must not strand runnable WorkItems
+
+#[test]
+fn idle_boundary_decision_with_current_runnable_work_item_starts_turn() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let now = Utc::now();
+
+    // Create a current runnable WorkItem
+    storage
+        .append_work_item(&WorkItemRecord {
+            id: "work_1".into(),
+            agent_id: "default".into(),
+            workspace_id: "agent_home".into(),
+            revision: 1,
+            objective: "Test task".into(),
+            state: WorkItemState::Open,
+            plan_status: WorkItemPlanStatus::Ready,
+            plan: None,
+            plan_artifact: None,
+            todo_list: vec![],
+            blocked_by: None,
+            result_summary: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap();
+
+    let agent = AgentState::new("default");
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
+
+    let decision = scheduler::idle_boundary_decision(
+        &projection,
+        "fixture",
+    );
+
+    // Should NOT sleep - should start a turn for the runnable WorkItem
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::StartModelTurn);
+    assert_eq!(decision.reason, "runnable_work_items_exist");
+    assert!(decision.evidence.iter().any(|e| e.contains("total_runnable=1")));
+}
+
+#[test]
+fn idle_boundary_decision_with_queued_runnable_work_items_starts_turn() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let now = Utc::now();
+
+    // Create two queued runnable WorkItems
+    for i in 1..=2 {
+        storage
+            .append_work_item(&WorkItemRecord {
+                id: format!("work_{}", i),
+                agent_id: "default".into(),
+                workspace_id: "agent_home".into(),
+                revision: 1,
+                objective: format!("Test task {}", i),
+                state: WorkItemState::Open,
+                plan_status: WorkItemPlanStatus::Ready,
+                plan: None,
+                plan_artifact: None,
+                todo_list: vec![],
+                blocked_by: None,
+                result_summary: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+    }
+
+    let agent = AgentState::new("default");
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
+
+    let decision = scheduler::idle_boundary_decision(
+        &projection,
+        "fixture",
+    );
+
+    // Should NOT sleep - should start a turn for the queued runnable WorkItems
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::StartModelTurn);
+    assert_eq!(decision.reason, "runnable_work_items_exist");
+    assert!(decision.evidence.iter().any(|e| e.contains("queued_runnable_count=2")));
+}
+
+#[test]
+fn idle_boundary_decision_with_waiting_operator_work_item_allows_sleep() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let now = Utc::now();
+
+    // Create a WorkItem waiting for operator input
+    storage
+        .append_work_item(&WorkItemRecord {
+            id: "work_1".into(),
+            agent_id: "default".into(),
+            workspace_id: "agent_home".into(),
+            revision: 1,
+            objective: "Test task".into(),
+            state: WorkItemState::Open,
+            plan_status: WorkItemPlanStatus::NeedsInput,
+            plan: None,
+            plan_artifact: None,
+            todo_list: vec![],
+            blocked_by: None,
+            result_summary: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap();
+
+    let agent = AgentState::new("default");
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
+
+    let decision = scheduler::idle_boundary_decision(
+        &projection,
+        "fixture",
+    );
+
+    // Should allow sleep when work is waiting for operator input (not current)
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::Sleep);
+}
+
+#[test]
+fn idle_boundary_decision_with_blocked_work_item_allows_sleep() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let now = Utc::now();
+
+    // Create a blocked WorkItem
+    storage
+        .append_work_item(&WorkItemRecord {
+            id: "work_1".into(),
+            agent_id: "default".into(),
+            workspace_id: "agent_home".into(),
+            revision: 1,
+            objective: "Test task".into(),
+            state: WorkItemState::Open,
+            plan_status: WorkItemPlanStatus::Ready,
+            plan: None,
+            plan_artifact: None,
+            todo_list: vec![],
+            blocked_by: Some("External dependency".into()),
+            result_summary: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap();
+
+    let agent = AgentState::new("default");
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
+
+    let decision = scheduler::idle_boundary_decision(
+        &projection,
+        "fixture",
+    );
+
+    // Should allow sleep (blocked work is not runnable)
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::Sleep);
+}
+
+#[test]
+fn idle_boundary_decision_with_no_work_items_allows_sleep() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+
+    let agent = AgentState::new("default");
+    let projection = SchedulerProjection::from_state(&storage, &agent).unwrap();
+
+    let decision = scheduler::idle_boundary_decision(
+        &projection,
+        "fixture",
+    );
+
+    // Should allow sleep when no work exists
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::Sleep);
+    assert_eq!(decision.reason, "no_pending_scheduler_facts");
+}
+
+#[test]
+fn work_item_scheduling_state_for_completed_item() {
+    let now = Utc::now();
+    let item = WorkItemRecord {
+        id: "work_1".into(),
+        agent_id: "default".into(),
+        workspace_id: "agent_home".into(),
+        revision: 1,
+        objective: "Completed task".into(),
+        state: WorkItemState::Completed,
+        plan_status: WorkItemPlanStatus::Ready,
+        plan: None,
+        plan_artifact: None,
+        todo_list: vec![],
+        blocked_by: None,
+        result_summary: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    assert_eq!(
+        item.scheduling_state(),
+        WorkItemSchedulingState::Completed
+    );
+    assert!(!item.is_runnable());
+}
+
+#[test]
+fn work_item_scheduling_state_for_blocked_item() {
+    let now = Utc::now();
+    let item = WorkItemRecord {
+        id: "work_1".into(),
+        agent_id: "default".into(),
+        workspace_id: "agent_home".into(),
+        revision: 1,
+        objective: "Blocked task".into(),
+        state: WorkItemState::Open,
+        plan_status: WorkItemPlanStatus::Ready,
+        plan: None,
+        plan_artifact: None,
+        todo_list: vec![],
+        blocked_by: Some("Dependency".into()),
+        result_summary: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    assert_eq!(
+        item.scheduling_state(),
+        WorkItemSchedulingState::Blocked
+    );
+    assert!(!item.is_runnable());
+}
+
+#[test]
+fn work_item_scheduling_state_for_waiting_operator_item() {
+    let now = Utc::now();
+    let item = WorkItemRecord {
+        id: "work_1".into(),
+        agent_id: "default".into(),
+        workspace_id: "agent_home".into(),
+        revision: 1,
+        objective: "Task needing input".into(),
+        state: WorkItemState::Open,
+        plan_status: WorkItemPlanStatus::NeedsInput,
+        plan: None,
+        plan_artifact: None,
+        todo_list: vec![],
+        blocked_by: None,
+        result_summary: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    assert_eq!(
+        item.scheduling_state(),
+        WorkItemSchedulingState::WaitingOperator
+    );
+    assert!(!item.is_runnable());
+}
+
+#[test]
+fn work_item_scheduling_state_for_runnable_item() {
+    let now = Utc::now();
+    let item = WorkItemRecord {
+        id: "work_1".into(),
+        agent_id: "default".into(),
+        workspace_id: "agent_home".into(),
+        revision: 1,
+        objective: "Ready task".into(),
+        state: WorkItemState::Open,
+        plan_status: WorkItemPlanStatus::Ready,
+        plan: None,
+        plan_artifact: None,
+        todo_list: vec![],
+        blocked_by: None,
+        result_summary: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    assert_eq!(
+        item.scheduling_state(),
+        WorkItemSchedulingState::Runnable
+    );
+    assert!(item.is_runnable());
 }

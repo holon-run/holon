@@ -2764,12 +2764,31 @@ pub enum WorkItemState {
     Completed,
 }
 
+/// Derived scheduling state for WorkItems used by the scheduler
+/// to decide whether to continue, wait, or allow indefinite sleep.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemSchedulingState {
+    Runnable,
+    WaitingOperator,
+    WaitingTask,
+    WaitingExternal,
+    Blocked,
+    Completed,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemPlanStatus {
     Draft,
     Ready,
     NeedsInput,
+}
+
+impl WorkItemPlanStatus {
+    pub fn is_needs_input(&self) -> bool {
+        matches!(self, WorkItemPlanStatus::NeedsInput)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2853,6 +2872,22 @@ impl WorkItemRecord {
             return WorkItemReadiness::WaitingForOperator;
         }
         WorkItemReadiness::Runnable
+    }
+
+    /// Derive scheduler-facing scheduling state based on WorkItem properties.
+    pub fn scheduling_state(&self) -> WorkItemSchedulingState {
+        if self.state == WorkItemState::Completed {
+            return WorkItemSchedulingState::Completed;
+        }
+        if self.blocked_by.is_some() {
+            return WorkItemSchedulingState::Blocked;
+        }
+        if self.plan_status == WorkItemPlanStatus::NeedsInput {
+            return WorkItemSchedulingState::WaitingOperator;
+        }
+        // Note: Future enhancement will incorporate WaitingTask and WaitingExternal
+        // based on active wait conditions, external triggers, and task dependencies.
+        WorkItemSchedulingState::Runnable
     }
 
     pub fn is_runnable(&self) -> bool {

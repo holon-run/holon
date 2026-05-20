@@ -574,15 +574,39 @@ pub(crate) fn idle_boundary_decision(
     projection: &SchedulerProjection,
     boundary: impl Into<String>,
 ) -> SchedulerDecision {
+    // RFC #1293: Do not allow indefinite Sleep when runnable WorkItems exist.
+    // Check for runnable work before deciding to sleep.
+    let has_runnable_work_items = projection
+        .current_work_item
+        .as_ref()
+        .map(|item| item.is_runnable())
+        .unwrap_or(false)
+        || !projection.queued_runnable_work_items.is_empty();
+
+    if has_runnable_work_items {
+        let runnable_count = projection.queued_runnable_work_items.len()
+            + projection.current_work_item.as_ref().map(|_| 1).unwrap_or(0);
+        return SchedulerDecision::new(
+            SchedulerDecisionKind::StartModelTurn,
+            "runnable_work_items_exist",
+        )
+        .boundary(boundary)
+        .evidence(format!("current_runnable={}", projection.current_work_item.as_ref().map(|i| i.is_runnable()).unwrap_or(false)))
+        .evidence(format!("queued_runnable_count={}", projection.queued_runnable_work_items.len()))
+        .evidence(format!("total_runnable={}", runnable_count));
+    }
+
     if matches!(
         projection.status,
         AgentStatus::Stopped | AgentStatus::Paused | AgentStatus::Asleep
     ) {
         return idle_noop_decision(projection).boundary(boundary);
     }
+
     if let Some(decision) = wait_decision_for_projection(projection) {
         return decision.boundary(boundary);
     }
+
     idle_noop_decision(projection).boundary(boundary)
 }
 
