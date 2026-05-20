@@ -282,7 +282,7 @@ impl RuntimeHandle {
         };
         let available_tools = self.filter_native_web_search_tools(
             self.filtered_tool_specs_for_apply_patch_surface(identity, apply_patch_surface)?,
-            native_search_provider.is_some(),
+            native_web_search.is_some(),
         );
         Ok((provider, available_tools, native_web_search))
     }

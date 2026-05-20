@@ -1545,9 +1545,9 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "web.providers.<name>.kind",
             kind: "string",
-            description: "Web search provider kind: duck_duck_go, searxng, brave, tavily, exa, perplexity, firecrawl, open_ai_native, anthropic_native, gemini_native.",
+            description: "Web search provider kind: duck_duck_go, searxng, brave, tavily, exa, perplexity, firecrawl, open_ai_native, anthropic_native, gemini_native, command.",
             default: Value::Null,
-            allowed_values: vec!["duck_duck_go", "searxng", "brave", "tavily", "exa", "perplexity", "firecrawl", "open_ai_native", "anthropic_native", "gemini_native"],
+            allowed_values: vec!["duck_duck_go", "searxng", "brave", "tavily", "exa", "perplexity", "firecrawl", "open_ai_native", "anthropic_native", "gemini_native", "command"],
         },
         ConfigSchemaEntry {
             key: "web.providers.<name>.base_url",
@@ -1568,6 +1568,62 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             kind: "string",
             description: "Named credential profile to load the API key from. The profile must be of kind api_key.",
             default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.command.argv",
+            kind: "string_list",
+            description: "Fixed command argv template for kind=command WebSearch providers. Supports {{query}} and {{max_results}} substitutions.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.output.format",
+            kind: "enum",
+            description: "Command provider stdout format.",
+            default: json!("json"),
+            allowed_values: vec!["json"],
+        },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.output.mapping.title",
+            kind: "string",
+            description: "JSON path used to map each command result title.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.output.mapping.url",
+            kind: "string",
+            description: "JSON path used to map each command result URL.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.output.mapping.snippet",
+            kind: "string",
+            description: "Optional JSON path used to map each command result snippet.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.output.mapping.published_at",
+            kind: "string",
+            description: "Optional JSON path used to map each command result publication timestamp.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.limits.timeout_ms",
+            kind: "positive_integer",
+            description: "Command provider execution timeout in milliseconds.",
+            default: json!(crate::web::WebProviderLimitsConfig::default().timeout_ms),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.limits.max_output_bytes",
+            kind: "positive_integer",
+            description: "Command provider stdout byte limit.",
+            default: json!(crate::web::WebProviderLimitsConfig::default().max_output_bytes),
             allowed_values: vec![],
         },
     ]
@@ -1762,6 +1818,52 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
                     .get(provider_name)
                     .and_then(|p| p.credential_profile.as_ref())
                     .map(|v| Value::String(v.clone()))
+                    .unwrap_or(Value::Null));
+            }
+            if let Some(provider_name) = name.strip_suffix(".command.argv") {
+                return Ok(config
+                    .web
+                    .providers
+                    .get(provider_name)
+                    .and_then(|p| p.command.as_ref())
+                    .map(|command| json!(command.argv))
+                    .unwrap_or(Value::Null));
+            }
+            if let Some(provider_name) = name.strip_suffix(".output.format") {
+                return Ok(config
+                    .web
+                    .providers
+                    .get(provider_name)
+                    .and_then(|p| p.output.as_ref())
+                    .map(|output| json!(output.format))
+                    .unwrap_or(Value::Null));
+            }
+            if let Some((provider_name, field)) = web_provider_output_mapping_key(name) {
+                return Ok(config
+                    .web
+                    .providers
+                    .get(provider_name)
+                    .and_then(|p| p.output.as_ref())
+                    .and_then(|output| output_mapping_field(&output.mapping, field))
+                    .map(|value| Value::String(value.to_string()))
+                    .unwrap_or(Value::Null));
+            }
+            if let Some(provider_name) = name.strip_suffix(".limits.timeout_ms") {
+                return Ok(config
+                    .web
+                    .providers
+                    .get(provider_name)
+                    .and_then(|p| p.limits.timeout_ms)
+                    .map(|value| json!(value))
+                    .unwrap_or(Value::Null));
+            }
+            if let Some(provider_name) = name.strip_suffix(".limits.max_output_bytes") {
+                return Ok(config
+                    .web
+                    .providers
+                    .get(provider_name)
+                    .and_then(|p| p.limits.max_output_bytes)
+                    .map(|value| json!(value))
                     .unwrap_or(Value::Null));
             }
             if name.is_empty() {
@@ -1959,6 +2061,46 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 Some(value.to_string())
             };
         }
+        key if key.starts_with("web.providers.") && key.ends_with(".command.argv") => {
+            let provider = web_provider_config_mut(config, key, ".command.argv")?;
+            provider.command = Some(WebCommandProviderConfigFile {
+                argv: parse_string_list(raw_value)?,
+            });
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".output.format") => {
+            let provider = web_provider_config_mut(config, key, ".output.format")?;
+            let output = provider
+                .output
+                .get_or_insert_with(default_web_command_output);
+            output.format =
+                serde_json::from_value(serde_json::Value::String(raw_value.trim().to_string()))
+                    .with_context(|| format!("invalid web command output format: {}", raw_value))?;
+        }
+        key if key.starts_with("web.providers.") && key.contains(".output.mapping.") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let (name, field) =
+                web_provider_output_mapping_key(rest).ok_or_else(|| unknown_config_key(key))?;
+            if name.is_empty() {
+                return Err(anyhow!(
+                    "web.providers.<name>.output.mapping requires a non-empty provider name"
+                ));
+            }
+            let provider = config.web.providers.get_mut(name).ok_or_else(|| {
+                anyhow!("web provider {name} not found; set web.providers.{name}.kind first")
+            })?;
+            let output = provider
+                .output
+                .get_or_insert_with(default_web_command_output);
+            set_output_mapping_field(&mut output.mapping, field, raw_value.trim());
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".limits.timeout_ms") => {
+            let provider = web_provider_config_mut(config, key, ".limits.timeout_ms")?;
+            provider.limits.timeout_ms = Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".limits.max_output_bytes") => {
+            let provider = web_provider_config_mut(config, key, ".limits.max_output_bytes")?;
+            provider.limits.max_output_bytes = Some(parse_positive_usize_key(key, raw_value)?);
+        }
         _ => return Err(unknown_config_key(key)),
     }
     Ok(())
@@ -2045,6 +2187,37 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
             } else {
                 return Err(anyhow!("web provider {name} not found"));
             }
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".command.argv") => {
+            let provider = web_provider_config_mut(config, key, ".command.argv")?;
+            provider.command = None;
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".output.format") => {
+            let provider = web_provider_config_mut(config, key, ".output.format")?;
+            if let Some(output) = provider.output.as_mut() {
+                output.format = WebCommandOutputFormatFile::Json;
+            }
+        }
+        key if key.starts_with("web.providers.") && key.contains(".output.mapping.") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let (name, field) =
+                web_provider_output_mapping_key(rest).ok_or_else(|| unknown_config_key(key))?;
+            let provider = config
+                .web
+                .providers
+                .get_mut(name)
+                .ok_or_else(|| anyhow!("web provider {name} not found"))?;
+            if let Some(output) = provider.output.as_mut() {
+                unset_output_mapping_field(&mut output.mapping, field);
+            }
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".limits.timeout_ms") => {
+            let provider = web_provider_config_mut(config, key, ".limits.timeout_ms")?;
+            provider.limits.timeout_ms = None;
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".limits.max_output_bytes") => {
+            let provider = web_provider_config_mut(config, key, ".limits.max_output_bytes")?;
+            provider.limits.max_output_bytes = None;
         }
         key if key.starts_with("web.providers.") => {
             let name = key.strip_prefix("web.providers.").unwrap();
@@ -3066,6 +3239,77 @@ fn parse_string_list(raw_value: &str) -> Result<Vec<String>> {
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
         .collect())
+}
+
+fn web_provider_config_mut<'a>(
+    config: &'a mut HolonConfigFile,
+    key: &str,
+    suffix: &str,
+) -> Result<&'a mut WebProviderConfigFile> {
+    let rest = key.strip_prefix("web.providers.").unwrap();
+    let name = rest.strip_suffix(suffix).unwrap();
+    if name.is_empty() {
+        return Err(anyhow!(
+            "web.providers.<name>{suffix} requires a non-empty provider name"
+        ));
+    }
+    config.web.providers.get_mut(name).ok_or_else(|| {
+        anyhow!("web provider {name} not found; set web.providers.{name}.kind first")
+    })
+}
+
+fn default_web_command_output() -> WebCommandOutputConfigFile {
+    WebCommandOutputConfigFile {
+        format: WebCommandOutputFormatFile::Json,
+        mapping: WebCommandResultMappingFile {
+            title: String::new(),
+            url: String::new(),
+            snippet: None,
+            published_at: None,
+        },
+    }
+}
+
+fn web_provider_output_mapping_key(rest: &str) -> Option<(&str, &str)> {
+    let (name, field) = rest.split_once(".output.mapping.")?;
+    matches!(field, "title" | "url" | "snippet" | "published_at").then_some((name, field))
+}
+
+fn output_mapping_field<'a>(
+    mapping: &'a WebCommandResultMappingFile,
+    field: &str,
+) -> Option<&'a str> {
+    match field {
+        "title" => (!mapping.title.is_empty()).then_some(mapping.title.as_str()),
+        "url" => (!mapping.url.is_empty()).then_some(mapping.url.as_str()),
+        "snippet" => mapping.snippet.as_deref(),
+        "published_at" => mapping.published_at.as_deref(),
+        _ => None,
+    }
+}
+
+fn set_output_mapping_field(mapping: &mut WebCommandResultMappingFile, field: &str, value: &str) {
+    match field {
+        "title" => mapping.title = value.to_string(),
+        "url" => mapping.url = value.to_string(),
+        "snippet" => {
+            mapping.snippet = (!value.is_empty()).then(|| value.to_string());
+        }
+        "published_at" => {
+            mapping.published_at = (!value.is_empty()).then(|| value.to_string());
+        }
+        _ => {}
+    }
+}
+
+fn unset_output_mapping_field(mapping: &mut WebCommandResultMappingFile, field: &str) {
+    match field {
+        "title" => mapping.title.clear(),
+        "url" => mapping.url.clear(),
+        "snippet" => mapping.snippet = None,
+        "published_at" => mapping.published_at = None,
+        _ => {}
+    }
 }
 
 fn parse_model_catalog_value(raw_value: &str) -> Result<BTreeMap<String, ModelRuntimeOverride>> {
