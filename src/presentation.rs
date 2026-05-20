@@ -561,6 +561,7 @@ pub(crate) struct PresentationReducer {
     live_group: Option<LiveGroup>,
     last_ts: Option<DateTime<Utc>>,
     observed_assistant_text_keys: HashSet<String>,
+    observed_brief_keys: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -630,8 +631,10 @@ impl PresentationReducer {
                 }
 
                 "brief_created" => {
-                    if let Some(item) = brief_result_item(event) {
-                        items.push(TimedItem { item, ts: event.ts });
+                    if let Some((key, item)) = brief_result_item(event) {
+                        if self.observed_brief_keys.insert(key) {
+                            items.push(TimedItem { item, ts: event.ts });
+                        }
                     }
                 }
 
@@ -889,24 +892,37 @@ impl PresentationReducer {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-fn brief_result_item(event: &ProjectionEventRecord) -> Option<PresentationItem> {
+fn brief_result_item(event: &ProjectionEventRecord) -> Option<(String, PresentationItem)> {
     match serde_json::from_value::<BriefRecord>(event.payload.clone()) {
         Ok(brief) if is_operator_queue_ack(&brief) => None,
-        Ok(brief) => Some(PresentationItem::AssistantResult {
-            brief_id: Some(brief.id),
-            body: brief.text,
-            outcome: match brief.kind {
-                BriefKind::Failure => Outcome::Failure,
-                BriefKind::Result => Outcome::Success,
-                BriefKind::Ack => Outcome::Neutral,
+        Ok(brief) => {
+            let key = format!("id:{}", brief.id);
+            Some((
+                key,
+                PresentationItem::AssistantResult {
+                    brief_id: Some(brief.id),
+                    body: brief.text,
+                    outcome: match brief.kind {
+                        BriefKind::Failure => Outcome::Failure,
+                        BriefKind::Result => Outcome::Success,
+                        BriefKind::Ack => Outcome::Neutral,
+                    },
+                },
+            ))
+        }
+        Err(_) => Some((
+            format!("summary:{}", normalize_text_key(&event.summary)),
+            PresentationItem::AssistantResult {
+                brief_id: None,
+                body: event.summary.clone(),
+                outcome: Outcome::Neutral,
             },
-        }),
-        Err(_) => Some(PresentationItem::AssistantResult {
-            brief_id: None,
-            body: event.summary.clone(),
-            outcome: Outcome::Neutral,
-        }),
+        )),
     }
+}
+
+fn normalize_text_key(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn operator_message_text(event: &ProjectionEventRecord) -> Option<String> {
@@ -1388,6 +1404,33 @@ mod tests {
                 assert_eq!(body, "completed the task");
                 assert_eq!(*outcome, Outcome::Success);
                 assert!(!body.contains("Brief:"));
+            }
+            other => panic!("expected AssistantResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_deduplicates_repeated_brief_created_by_brief_id() {
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "completed the task",
+            None,
+            None,
+        );
+        let first = make_event("brief_created", "Brief: completed the task", json!(brief));
+        let mut second = first.clone();
+        second.id = "evt-2".into();
+        second.event_seq = 2;
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[first, second]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::AssistantResult { brief_id, body, .. } => {
+                assert!(brief_id.is_some());
+                assert_eq!(body, "completed the task");
             }
             other => panic!("expected AssistantResult, got {:?}", other),
         }
