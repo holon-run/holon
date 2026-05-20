@@ -23,6 +23,7 @@ For a short architecture map and reading path, see
 - [Turn-Local Context Compaction](./turn-local-context-compaction.md)
 - [OpenAI Remote Compaction Boundary](./openai-remote-compaction.md)
 - [Turn Model Lineage And Recovery](./turn-model-lineage-and-recovery.md)
+- [Operator Interjection Safe Points](./operator-interjection-safe-points.md)
 - [Operator Notification and Intervention](./operator-wait-and-intervention.md)
 - [Waiting Plane And Reactivation](./waiting-plane-and-reactivation.md)
 - [Scheduler Wait State And Recoverable Agent Continuation](./scheduler-wait-state.md)
