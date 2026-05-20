@@ -2464,38 +2464,11 @@ impl TurnExecution<'_> {
                 }
             }
 
+            let mut before_tool_execution_interjections = Vec::new();
             if !tool_calls.is_empty() {
-                let interjections = runtime
+                before_tool_execution_interjections = runtime
                     .drain_operator_interjections(agent_id, round, "before_tool_execution")
                     .await?;
-                if !interjections.is_empty() {
-                    let text_only_assistant_blocks = text_blocks
-                        .iter()
-                        .cloned()
-                        .map(|text| ModelBlock::Text { text })
-                        .collect::<Vec<_>>();
-                    let mut round_record = TurnRoundRecord {
-                        round,
-                        estimated_tokens: build_round_estimated_tokens(
-                            &text_only_assistant_blocks,
-                            &[],
-                            &[],
-                        ),
-                        assistant_blocks: text_only_assistant_blocks,
-                        text_blocks,
-                        tool_calls: Vec::new(),
-                        tool_results: Vec::new(),
-                        tool_result_envelopes: Vec::new(),
-                        follow_up_user_texts: Vec::new(),
-                    };
-                    append_follow_up_user_texts(&mut round_record, interjections);
-                    if round_invalidates_checkpoint_anchor(&round_record) {
-                        checkpoint_state.anchor_generation =
-                            checkpoint_state.anchor_generation.saturating_add(1);
-                    }
-                    completed_rounds.push(round_record);
-                    continue;
-                }
             }
 
             if tool_calls.is_empty() && is_max_output_stop_reason(stop_reason.as_deref()) {
@@ -2859,9 +2832,11 @@ impl TurnExecution<'_> {
                         "results": tool_results.clone(),
                     }),
                 ))?;
-            let interjections = runtime
+            let after_tool_results_interjections = runtime
                 .drain_operator_interjections(agent_id, round, "after_tool_results")
                 .await?;
+            let mut interjections = before_tool_execution_interjections;
+            interjections.extend(after_tool_results_interjections);
             let has_operator_interjections = !interjections.is_empty();
             let round_record = TurnRoundRecord {
                 round,
@@ -3278,6 +3253,70 @@ mod tests {
             tool_results,
             tool_result_envelopes: Vec::new(),
             follow_up_user_texts: Vec::new(),
+        }
+    }
+
+    fn fixture_tool_only_round_with_result(round: usize, follow_up: &str) -> TurnRoundRecord {
+        let call = ToolCall {
+            id: format!("call_{round}"),
+            name: "ExecCommand".to_string(),
+            input: serde_json::json!({ "cmd": "printf ok" }),
+        };
+        let assistant_blocks = vec![ModelBlock::ToolUse {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            input: call.input.clone(),
+        }];
+        let tool_results = vec![ToolResultBlock {
+            tool_use_id: call.id.clone(),
+            content: "ok".to_string(),
+            is_error: false,
+            error: None,
+        }];
+        let follow_up_user_texts = vec![follow_up.to_string()];
+        TurnRoundRecord {
+            round,
+            estimated_tokens: build_round_estimated_tokens(
+                &assistant_blocks,
+                &tool_results,
+                &follow_up_user_texts,
+            ),
+            assistant_blocks,
+            text_blocks: Vec::new(),
+            tool_calls: vec![call],
+            tool_results,
+            tool_result_envelopes: Vec::new(),
+            follow_up_user_texts,
+        }
+    }
+
+    #[test]
+    fn exact_round_messages_preserves_tool_only_round_before_interjection_text() {
+        let round = fixture_tool_only_round_with_result(
+            7,
+            "[Operator message received while this turn was in progress]\ncontinue",
+        );
+
+        let messages = exact_round_messages(&round);
+
+        assert_eq!(messages.len(), 3);
+        match &messages[0] {
+            ConversationMessage::AssistantBlocks(blocks) => {
+                assert!(matches!(blocks.as_slice(), [ModelBlock::ToolUse { .. }]));
+            }
+            other => panic!("expected assistant tool-use message, got {other:?}"),
+        }
+        match &messages[1] {
+            ConversationMessage::UserToolResults(results) => {
+                assert_eq!(results[0].tool_use_id, "call_7");
+            }
+            other => panic!("expected tool result message, got {other:?}"),
+        }
+        match &messages[2] {
+            ConversationMessage::UserText(text) => {
+                assert!(text.contains("Operator message received"));
+            }
+            other => panic!("expected follow-up user text, got {other:?}"),
         }
     }
 
