@@ -631,6 +631,7 @@ fn build_anthropic_messages(
     conversation
         .iter()
         .enumerate()
+        .filter(|(_, message)| conversation_message_has_content(message))
         .map(|(message_index, message)| {
             conversation_message_to_api(
                 message,
@@ -640,6 +641,15 @@ fn build_anthropic_messages(
             )
         })
         .collect()
+}
+
+fn conversation_message_has_content(message: &ConversationMessage) -> bool {
+    match message {
+        ConversationMessage::UserText(text) => !text.trim().is_empty(),
+        ConversationMessage::UserBlocks(blocks) => !blocks.is_empty(),
+        ConversationMessage::AssistantBlocks(blocks) => !blocks.is_empty(),
+        ConversationMessage::UserToolResults(results) => !results.is_empty(),
+    }
 }
 
 fn conversation_message_to_api(
@@ -1435,6 +1445,75 @@ mod tests {
             json!({ "type": "ephemeral" })
         );
         assert!(messages[0].content[0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn build_anthropic_messages_skips_empty_provider_visible_messages() {
+        let conversation = vec![
+            ConversationMessage::UserText("inspect".to_string()),
+            ConversationMessage::AssistantBlocks(Vec::new()),
+            ConversationMessage::UserText("continue".to_string()),
+        ];
+
+        let messages = build_anthropic_messages(
+            &conversation,
+            rolling_conversation_cache_marker(
+                &conversation,
+                AnthropicCacheStrategy::MessagesNative,
+            ),
+        );
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content[0]["text"], "inspect");
+        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[1].content[0]["text"], "continue");
+        assert!(messages.iter().all(|message| {
+            message
+                .content
+                .as_array()
+                .is_some_and(|content| !content.is_empty())
+        }));
+    }
+
+    #[test]
+    fn build_anthropic_messages_preserves_tool_only_round_before_interjection() {
+        let conversation = vec![
+            ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+                id: "toolu_1".to_string(),
+                name: "ExecCommand".to_string(),
+                input: json!({ "cmd": "printf ok" }),
+            }]),
+            ConversationMessage::UserToolResults(vec![ToolResultBlock {
+                tool_use_id: "toolu_1".to_string(),
+                content: "ok".to_string(),
+                is_error: false,
+                error: None,
+            }]),
+            ConversationMessage::UserText(
+                "[Operator message received while this turn was in progress]\ncontinue".to_string(),
+            ),
+        ];
+
+        let messages = build_anthropic_messages(
+            &conversation,
+            rolling_conversation_cache_marker(
+                &conversation,
+                AnthropicCacheStrategy::MessagesNative,
+            ),
+        );
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, "assistant");
+        assert_eq!(messages[0].content[0]["type"], "tool_use");
+        assert_eq!(messages[0].content[0]["id"], "toolu_1");
+        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[1].content[0]["type"], "tool_result");
+        assert_eq!(messages[1].content[0]["tool_use_id"], "toolu_1");
+        assert_eq!(messages[2].role, "user");
+        assert!(messages[2].content[0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Operator message received")));
     }
 
     #[test]
