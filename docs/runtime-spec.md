@@ -455,10 +455,12 @@ Event replay is a separate authorization/projection boundary. A replayed event
 is historical state recovery, not re-ingress, re-execution, or a new operator
 instruction. The stream envelope carries provenance independently of the event
 payload so clients can index and recover replayed records consistently.
-Required replay provenance includes the event cursor/id, sequence, timestamp,
-event kind, agent id, and any available origin, trust, authority class,
-delivery surface, admission context, transport/source, reply route, message id,
-task id, work item id, correlation id, and causation id.
+Required replay provenance includes the event id, per-agent durable
+`event_seq`, timestamp, event kind, agent id, and any available origin, trust,
+authority class, delivery surface, admission context, transport/source, reply
+route, message id, task id, work item id, correlation id, and causation id.
+Replay cursors use `event_seq`; transport-local sequence numbers are diagnostic
+only and must not determine replay order.
 
 Operator replay is the default projection and includes the canonical standard
 event payload. Event payloads should be explicit, schema-stable runtime

@@ -117,7 +117,7 @@ impl TuiLogWriter {
 struct PersistedTuiEventLogRecord<'a> {
     ts: DateTime<Utc>,
     event_id: &'a str,
-    seq: u64,
+    event_seq: u64,
     kind: &'a str,
     summary: &'a str,
     payload: &'a Value,
@@ -128,7 +128,7 @@ impl<'a> PersistedTuiEventLogRecord<'a> {
         Self {
             ts: event.ts,
             event_id: &event.id,
-            seq: event.seq,
+            event_seq: event.event_seq,
             kind: &event.kind,
             summary: &event.summary,
             payload: &event.payload,
@@ -180,7 +180,7 @@ impl<'a> PersistedPresentationLogRecord<'a> {
                 reducer_events
                     .iter()
                     .take(MAX_REDUCER_EVENT_SUMMARIES)
-                    .map(|e| e.seq)
+                    .map(|e| e.event_seq)
                     .collect()
             },
             reducer_event_summaries: if MAX_REDUCER_EVENT_SUMMARIES == 0 {
@@ -413,7 +413,7 @@ mod tests {
         let writer = TuiLogWriter::new_temp().unwrap();
         let event = ProjectionEventRecord {
             id: "evt_1".into(),
-            seq: 7,
+            event_seq: 7,
             ts: Utc::now(),
             kind: "brief_created".into(),
             lane: ProjectionEventLane::Timeline,
@@ -453,7 +453,7 @@ mod tests {
         let writer = TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
         let event = ProjectionEventRecord {
             id: "evt_1".into(),
-            seq: 7,
+            event_seq: 7,
             ts: Utc::now(),
             kind: "brief_created".into(),
             lane: ProjectionEventLane::Timeline,
@@ -506,7 +506,7 @@ mod tests {
         let writer = TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
         let event = ProjectionEventRecord {
             id: "evt_debug".into(),
-            seq: 9,
+            event_seq: 9,
             ts: Utc::now(),
             kind: "provider_round_completed".into(),
             lane: ProjectionEventLane::Debug,
@@ -546,7 +546,7 @@ mod tests {
         let writer = TuiLogWriter::new_temp_with_presentation_logging(1800).unwrap();
         let event = ProjectionEventRecord {
             id: "evt_debug".into(),
-            seq: 9,
+            event_seq: 9,
             ts: Utc::now(),
             kind: "provider_round_completed".into(),
             lane: ProjectionEventLane::Debug,
@@ -588,7 +588,7 @@ mod tests {
         let writer = TuiLogWriter::new_temp_with_presentation_logging(128).unwrap();
         let event = ProjectionEventRecord {
             id: "evt_large".into(),
-            seq: 9,
+            event_seq: 9,
             ts: Utc::now(),
             kind: "provider_round_completed".into(),
             lane: ProjectionEventLane::Debug,
@@ -623,7 +623,7 @@ mod tests {
         let writer = TuiLogWriter::new_temp().unwrap();
         let event = ProjectionEventRecord {
             id: "evt_terminal".into(),
-            seq: 10,
+            event_seq: 10,
             ts: Utc::now(),
             kind: "turn_terminal".into(),
             lane: ProjectionEventLane::Debug,
@@ -652,7 +652,7 @@ mod tests {
         let writer = TuiLogWriter::new_temp().unwrap();
         let event = ProjectionEventRecord {
             id: "evt_error".into(),
-            seq: 11,
+            event_seq: 11,
             ts: Utc::now(),
             kind: "runtime_error".into(),
             lane: ProjectionEventLane::Debug,

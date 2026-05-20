@@ -193,7 +193,7 @@ fn draw_events_overlay(
             format!(
                 "Id: {}\nSeq: {}\nTime: {}\nLane: {:?}\nType: {}\nSummary: {}\n\nPayload:\n{}",
                 event.id,
-                event.seq,
+                event.event_seq,
                 event.ts.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S"),
                 event.lane,
                 event.kind,

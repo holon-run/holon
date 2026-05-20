@@ -61,7 +61,7 @@ pub(crate) enum ProjectionEventLane {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ProjectionEventRecord {
     pub(crate) id: String,
-    pub(crate) seq: u64,
+    pub(crate) event_seq: u64,
     pub(crate) ts: DateTime<Utc>,
     pub(crate) kind: String,
     pub(crate) lane: ProjectionEventLane,
@@ -82,8 +82,8 @@ pub(crate) struct TuiProjection {
     pub(crate) external_triggers: Vec<ExternalTriggerStateSnapshot>,
     pub(crate) operator_notifications: Vec<crate::types::OperatorNotificationRecord>,
     pub(crate) workspace: StateWorkspaceSnapshot,
-    pub(crate) cursor: Option<String>,
-    pub(crate) history_oldest_cursor: Option<String>,
+    pub(crate) cursor: Option<u64>,
+    pub(crate) history_oldest_cursor: Option<u64>,
     pub(crate) history_has_older: bool,
     history_paging_active: bool,
     pub(crate) stale_slices: BTreeSet<ProjectionSlice>,
@@ -141,7 +141,7 @@ impl TuiProjection {
     pub(crate) fn replace_event_window(
         &mut self,
         events_tail: Vec<StreamEventEnvelope>,
-        cursor: Option<String>,
+        cursor: Option<u64>,
     ) {
         self.event_log.clear();
         self.durable_conversation_log.clear();
@@ -152,7 +152,7 @@ impl TuiProjection {
     pub(crate) fn merge_event_tail(
         &mut self,
         events_tail: Vec<StreamEventEnvelope>,
-        cursor: Option<String>,
+        cursor: Option<u64>,
     ) {
         self.cursor = cursor.or_else(|| self.cursor.clone());
         let event_log_limit = if self.history_paging_active {
@@ -173,8 +173,8 @@ impl TuiProjection {
             self.event_log.push(record);
         }
         self.event_log.sort_by(|left, right| {
-            left.seq
-                .cmp(&right.seq)
+            left.event_seq
+                .cmp(&right.event_seq)
                 .then_with(|| left.ts.cmp(&right.ts))
                 .then_with(|| left.id.cmp(&right.id))
         });
@@ -184,22 +184,18 @@ impl TuiProjection {
         }
         self.rebuild_durable_conversation_log();
         if self.cursor.is_none() {
-            self.cursor = self.event_log.last().map(|event| event.id.clone());
+            self.cursor = self.event_log.last().map(|event| event.event_seq);
         }
     }
 
-    pub(crate) fn set_event_history_state(
-        &mut self,
-        oldest_cursor: Option<String>,
-        has_older: bool,
-    ) {
+    pub(crate) fn set_event_history_state(&mut self, oldest_cursor: Option<u64>, has_older: bool) {
         self.history_oldest_cursor = oldest_cursor;
         self.history_has_older = has_older;
     }
 
     pub(crate) fn set_event_history_state_from_tail(
         &mut self,
-        oldest_cursor: Option<String>,
+        oldest_cursor: Option<u64>,
         has_older: bool,
     ) {
         if self.history_paging_active && self.history_oldest_cursor.is_some() {
@@ -212,7 +208,7 @@ impl TuiProjection {
     pub(crate) fn prepend_event_history_page(
         &mut self,
         mut events: Vec<StreamEventEnvelope>,
-        oldest_cursor: Option<String>,
+        oldest_cursor: Option<u64>,
         has_older: bool,
     ) -> usize {
         self.history_paging_active = true;
@@ -253,7 +249,7 @@ impl TuiProjection {
             return 0;
         }
 
-        self.history_oldest_cursor = prepended.first().map(|event| event.id.clone());
+        self.history_oldest_cursor = prepended.first().map(|event| event.event_seq);
         self.history_has_older = has_older
             && !capped
             && self.event_log.len().saturating_add(added) < EVENT_HISTORY_LOG_LIMIT;
@@ -301,7 +297,7 @@ impl TuiProjection {
                 }
             }
         }
-        self.cursor = Some(event.id.clone());
+        self.cursor = Some(event.data.event_seq);
 
         match event.data.event_type.as_str() {
             "agent_state_changed" | "session_state_changed" => {
@@ -498,7 +494,7 @@ impl TuiProjection {
         self.rebuild_durable_conversation_log();
         if let Some(last_event) = self.event_log.last() {
             if self.cursor.is_none() {
-                self.cursor = Some(last_event.id.clone());
+                self.cursor = Some(last_event.event_seq);
             }
         }
     }
@@ -571,7 +567,7 @@ impl TuiProjection {
         events.sort_by(|left, right| {
             left.ts
                 .cmp(&right.ts)
-                .then_with(|| left.seq.cmp(&right.seq))
+                .then_with(|| left.event_seq.cmp(&right.event_seq))
                 .then_with(|| left.id.cmp(&right.id))
         });
         events
@@ -1215,7 +1211,7 @@ fn projection_event_record_from_stream_event(
     );
     ProjectionEventRecord {
         id: event.id.clone(),
-        seq: event.data.seq,
+        event_seq: event.data.event_seq,
         ts: event.data.ts,
         kind: event.data.event_type.clone(),
         lane: classify_event_lane(&presentation),
@@ -1483,7 +1479,7 @@ mod tests {
         let snapshot = sample_snapshot();
         let events_tail = vec![StreamEventEnvelope {
             id: "evt-tail-1".into(),
-            seq: 0,
+            event_seq: 0,
             ts: Utc::now(),
             agent_id: "default".into(),
             event_type: "assistant_round_recorded".into(),
@@ -1502,7 +1498,7 @@ mod tests {
             }),
         }];
         let mut projection = TuiProjection::from_snapshot(snapshot);
-        projection.replace_event_window(events_tail, Some("evt-tail-1".into()));
+        projection.replace_event_window(events_tail, Some(0));
 
         assert_eq!(projection.event_log().len(), 1);
         assert_eq!(
@@ -1512,7 +1508,7 @@ mod tests {
                 .map(|event| event.summary.as_str()),
             Some("Assistant requested tools: ExecCommand")
         );
-        assert_eq!(projection.cursor.as_deref(), Some("evt-tail-1"));
+        assert_eq!(projection.cursor, Some(0));
         assert!(projection.durable_conversation_events().next().is_none());
     }
 
@@ -1596,14 +1592,14 @@ mod tests {
         let snapshot = sample_snapshot();
         let events_tail = vec![sample_event_envelope("evt-newer", 3)];
         let mut projection = TuiProjection::from_snapshot(snapshot);
-        projection.replace_event_window(events_tail, Some("evt-newer".into()));
+        projection.replace_event_window(events_tail, Some(3));
 
         let added = projection.prepend_event_history_page(
             vec![
                 sample_event_envelope("evt-older-2", 2),
                 sample_event_envelope("evt-older-1", 1),
             ],
-            Some("evt-older-1".into()),
+            Some(1),
             true,
         );
 
@@ -1614,10 +1610,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(added, 2);
         assert_eq!(ids, vec!["evt-older-1", "evt-older-2", "evt-newer"]);
-        assert_eq!(
-            projection.history_oldest_cursor.as_deref(),
-            Some("evt-older-1")
-        );
+        assert_eq!(projection.history_oldest_cursor, Some(1));
         assert!(projection.history_has_older);
     }
 
@@ -1626,15 +1619,15 @@ mod tests {
         let snapshot = sample_snapshot();
         let events_tail = vec![sample_event_envelope("evt-newer", 3)];
         let mut projection = TuiProjection::from_snapshot(snapshot);
-        projection.replace_event_window(events_tail, Some("evt-newer".into()));
-        projection.set_event_history_state(Some("evt-newer".into()), true);
+        projection.replace_event_window(events_tail, Some(3));
+        projection.set_event_history_state(Some(3), true);
 
         let added = projection.prepend_event_history_page(
             vec![
                 sample_event_envelope("evt-older-2", 2),
                 sample_event_envelope("evt-older-1", 1),
             ],
-            Some("evt-older-1".into()),
+            Some(1),
             true,
         );
         assert_eq!(added, 2);
@@ -1644,7 +1637,7 @@ mod tests {
                 sample_event_envelope("evt-newer", 3),
                 sample_event_envelope("evt-live", 4),
             ],
-            Some("evt-live".into()),
+            Some(4),
         );
 
         let ids = projection
@@ -1656,7 +1649,7 @@ mod tests {
             ids,
             vec!["evt-older-1", "evt-older-2", "evt-newer", "evt-live"]
         );
-        assert_eq!(projection.cursor.as_deref(), Some("evt-live"));
+        assert_eq!(projection.cursor, Some(4));
     }
 
     #[test]
@@ -1667,10 +1660,7 @@ mod tests {
                 sample_event_envelope(&format!("evt-existing-{index}"), (index + 100) as u64)
             })
             .collect::<Vec<_>>();
-        projection.replace_event_window(
-            events_tail,
-            Some(format!("evt-existing-{}", EVENT_LOG_LIMIT - 1)),
-        );
+        projection.replace_event_window(events_tail, Some((EVENT_LOG_LIMIT + 99) as u64));
 
         projection.merge_event_tail(vec![sample_event_envelope("evt-old-refresh", 1)], None);
 
@@ -1687,18 +1677,46 @@ mod tests {
     }
 
     #[test]
+    fn projection_refresh_keeps_latest_live_event_at_log_cap() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let events_tail = (1..=EVENT_LOG_LIMIT as u64)
+            .map(|seq| sample_event_envelope(&format!("evt-existing-{seq}"), seq))
+            .collect::<Vec<_>>();
+        projection.replace_event_window(events_tail, Some(EVENT_LOG_LIMIT as u64));
+
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "evt-live".into(),
+                event: "assistant_round_recorded".into(),
+                data: sample_event_envelope("evt-live", EVENT_LOG_LIMIT as u64 + 1),
+            },
+            &test_log_writer(),
+        );
+        projection.merge_event_tail(vec![sample_event_envelope("evt-old-refresh", 1)], None);
+
+        let ids = projection
+            .event_log()
+            .iter()
+            .map(|event| event.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(projection.event_log().len(), EVENT_LOG_LIMIT);
+        assert!(ids.contains(&"evt-live"));
+        assert!(!ids.contains(&"evt-old-refresh"));
+        assert_eq!(projection.cursor, Some(EVENT_LOG_LIMIT as u64 + 1));
+    }
+
+    #[test]
     fn projection_caps_prepended_history_and_keeps_cursor_on_retained_oldest() {
         let snapshot = sample_snapshot();
         let events_tail = vec![sample_event_envelope("evt-live", 5000)];
         let mut projection = TuiProjection::from_snapshot(snapshot);
-        projection.replace_event_window(events_tail, Some("evt-live".into()));
+        projection.replace_event_window(events_tail, Some(5000));
 
         let first_page = (0..16_378)
             .rev()
             .map(|seq| sample_event_envelope(&format!("evt-page-a-{seq}"), seq))
             .collect::<Vec<_>>();
-        let first_added =
-            projection.prepend_event_history_page(first_page, Some("evt-page-a-0".into()), true);
+        let first_added = projection.prepend_event_history_page(first_page, Some(0), true);
         assert_eq!(first_added, 16_378);
         assert_eq!(projection.event_log().len(), 16_379);
         assert!(projection.history_has_older);
@@ -1707,11 +1725,7 @@ mod tests {
             .rev()
             .map(|seq| sample_event_envelope(&format!("evt-page-b-{seq}"), seq))
             .collect::<Vec<_>>();
-        let second_added = projection.prepend_event_history_page(
-            second_page,
-            Some("evt-page-b-16378".into()),
-            true,
-        );
+        let second_added = projection.prepend_event_history_page(second_page, Some(16_378), true);
 
         assert_eq!(second_added, 5);
         assert_eq!(projection.event_log().len(), 16_384);
@@ -1722,10 +1736,7 @@ mod tests {
                 .map(|event| event.id.as_str()),
             Some("evt-page-b-16393")
         );
-        assert_eq!(
-            projection.history_oldest_cursor.as_deref(),
-            Some("evt-page-b-16393")
-        );
+        assert_eq!(projection.history_oldest_cursor, Some(16_393));
         assert!(!projection.history_has_older);
         assert!(projection.event_history_at_local_cap());
     }
@@ -2157,7 +2168,7 @@ mod tests {
                     event: "provider_round_completed".into(),
                     data: StreamEventEnvelope {
                         id: format!("evt-debug-{index}"),
-                        seq: (index + 2) as u64,
+                        event_seq: (index + 2) as u64,
                         ts: Utc::now(),
                         agent_id: "default".into(),
                         event_type: "provider_round_completed".into(),
@@ -2485,10 +2496,10 @@ mod tests {
         }
     }
 
-    fn sample_event_envelope(id: &str, seq: u64) -> StreamEventEnvelope {
+    fn sample_event_envelope(id: &str, event_seq: u64) -> StreamEventEnvelope {
         sample_event_envelope_with_payload(
             id,
-            seq,
+            event_seq,
             "tool_executed",
             json!({ "tool_name": "ExecCommand" }),
         )
@@ -2496,13 +2507,13 @@ mod tests {
 
     fn sample_event_envelope_with_payload(
         id: &str,
-        seq: u64,
+        event_seq: u64,
         kind: &str,
         payload: Value,
     ) -> StreamEventEnvelope {
         StreamEventEnvelope {
             id: id.into(),
-            seq,
+            event_seq,
             ts: Utc::now(),
             agent_id: "default".into(),
             event_type: kind.into(),
@@ -2521,7 +2532,7 @@ mod tests {
         );
         super::ProjectionEventRecord {
             id: format!("evt-{kind}"),
-            seq: 1,
+            event_seq: 1,
             ts: Utc::now(),
             kind: kind.to_string(),
             lane: super::classify_event_lane(&presentation),

@@ -326,7 +326,7 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
             },
         )
         .await?;
-    assert!(events_page.newest_cursor.is_some());
+    assert!(events_page.newest_seq.is_some());
 
     let raw_state: serde_json::Value = reqwest::Client::new()
         .get(format!("{base}/agents/default/state"))
@@ -364,7 +364,7 @@ pub async fn local_client_over_http_can_stream_events_with_cursor_query() -> Res
         .control_prompt("default", "http stream bootstrap")
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
-    let cursor = client
+    let after_seq = client
         .agent_events_page(
             "default",
             EventPageRequest {
@@ -374,8 +374,8 @@ pub async fn local_client_over_http_can_stream_events_with_cursor_query() -> Res
             },
         )
         .await?
-        .newest_cursor
-        .expect("cursor should be present");
+        .newest_seq
+        .expect("event seq should be present");
 
     client
         .control_prompt("default", "http stream replay")
@@ -384,7 +384,7 @@ pub async fn local_client_over_http_can_stream_events_with_cursor_query() -> Res
         .stream_agent_events(
             "default",
             EventStreamRequest {
-                cursor: Some(cursor),
+                after_seq: Some(after_seq),
                 ..Default::default()
             },
         )
@@ -464,7 +464,7 @@ pub async fn local_client_over_unix_socket_can_stream_events_with_cursor_query()
         .control_prompt("default", "unix stream bootstrap")
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
-    let cursor = client
+    let after_seq = client
         .agent_events_page(
             "default",
             EventPageRequest {
@@ -474,8 +474,8 @@ pub async fn local_client_over_unix_socket_can_stream_events_with_cursor_query()
             },
         )
         .await?
-        .newest_cursor
-        .expect("cursor should be present");
+        .newest_seq
+        .expect("event seq should be present");
 
     client
         .control_prompt("default", "unix stream replay")
@@ -484,7 +484,7 @@ pub async fn local_client_over_unix_socket_can_stream_events_with_cursor_query()
         .stream_agent_events(
             "default",
             EventStreamRequest {
-                cursor: Some(cursor),
+                after_seq: Some(after_seq),
                 ..Default::default()
             },
         )

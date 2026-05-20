@@ -26,10 +26,13 @@ The v0.14 replay/projection minimum is:
 
 - `/events` is a recent replay projection surface, not the raw append-only log
   as a public API.
-- replay preserves safe provenance outside the event payload: cursor/id,
-  sequence, timestamp, event kind, agent id, origin, trust, authority class,
-  delivery surface, admission context, transport/source, reply route, message
-  id, task id, work item id, correlation id, and causation id when available.
+- replay preserves safe provenance outside the event payload: event id,
+  per-agent durable `event_seq`, timestamp, event kind, agent id, origin, trust,
+  authority class, delivery surface, admission context, transport/source, reply
+  route, message id, task id, work item id, correlation id, and causation id
+  when available.
+- replay and SSE cursors use ledger-assigned `event_seq`; response-local
+  sequence numbers must not drive ordering, paging, or TUI truncation.
 - operator replay is the default projection and includes canonical standard
   event payloads.
 - client display density is handled by presentation policy, not by clipping the

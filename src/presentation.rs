@@ -1245,7 +1245,7 @@ mod tests {
         );
         ProjectionEventRecord {
             id: "evt-1".into(),
-            seq: 1,
+            event_seq: 1,
             ts: Utc::now(),
             lane: crate::tui::projection::ProjectionEventLane::Debug,
             kind: kind.into(),

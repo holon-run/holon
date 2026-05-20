@@ -334,16 +334,19 @@ pub struct LimitQuery {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventsQuery {
-    cursor: Option<String>,
+    before_seq: Option<u64>,
+    after_seq: Option<u64>,
     limit: Option<usize>,
     order: Option<EventPageOrder>,
     projection: Option<EventReplayProjection>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventStreamQuery {
-    cursor: Option<String>,
+    after_seq: Option<u64>,
     limit: Option<usize>,
     projection: Option<EventReplayProjection>,
 }
@@ -372,8 +375,8 @@ struct EventReplayProjectionRecord {
 #[derive(Debug, Serialize)]
 struct EventsPageResponse {
     events: Vec<StreamEventEnvelope>,
-    oldest_cursor: Option<String>,
-    newest_cursor: Option<String>,
+    oldest_seq: Option<u64>,
+    newest_seq: Option<u64>,
     has_older: bool,
     has_newer: bool,
     order: EventPageOrder,
@@ -443,7 +446,7 @@ struct AgentStateSnapshot {
 #[derive(Debug, Serialize)]
 struct StreamEventEnvelope {
     id: String,
-    seq: u64,
+    event_seq: u64,
     ts: chrono::DateTime<Utc>,
     agent_id: String,
     #[serde(rename = "type")]
@@ -459,8 +462,7 @@ struct EventStreamState {
     event_window_limit: usize,
     projection: EventReplayProjection,
     event_marker: FileActivityMarker,
-    last_seen_cursor: Option<String>,
-    next_seq: u64,
+    last_seen_seq: u64,
     buffered: VecDeque<AuditEvent>,
 }
 
@@ -1248,38 +1250,38 @@ pub async fn events(
         authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     }
 
-    let cursor = query.cursor.filter(|value| !value.is_empty());
-    let page = if cursor.is_none() && order == EventPageOrder::Desc {
-        let mut tail = runtime
-            .storage()
-            .read_recent_events(limit.saturating_add(1))
-            .map_err(error_response)?;
-        let has_older = tail.len() > limit;
-        if has_older {
-            tail.remove(0);
-        }
-        tail.reverse();
-        EventPage {
-            events: tail,
-            has_older,
-            has_newer: false,
-        }
-    } else {
-        let all_events = runtime.all_events().map_err(error_response)?;
-        event_page(&all_events, cursor.as_deref(), limit, order)?
-    };
-    let oldest_cursor = oldest_cursor(&page.events, order);
-    let newest_cursor = newest_cursor(&page.events, order);
+    let page =
+        if query.before_seq.is_none() && query.after_seq.is_none() && order == EventPageOrder::Desc
+        {
+            let mut tail = runtime
+                .storage()
+                .read_recent_events(limit.saturating_add(1))
+                .map_err(error_response)?;
+            let has_older = tail.len() > limit;
+            if has_older {
+                tail.remove(0);
+            }
+            tail.reverse();
+            EventPage {
+                events: tail,
+                has_older,
+                has_newer: false,
+            }
+        } else {
+            let all_events = runtime.all_events().map_err(error_response)?;
+            event_page(&all_events, query.before_seq, query.after_seq, limit, order)
+        };
+    let oldest_seq = oldest_seq(&page.events, order);
+    let newest_seq = newest_seq(&page.events, order);
     let events = page
         .events
         .iter()
-        .enumerate()
-        .map(|(seq, event)| stream_event_envelope(seq as u64, &agent_id, event, projection))
+        .map(|event| stream_event_envelope(&agent_id, event, projection))
         .collect();
     Ok(Json(EventsPageResponse {
         events,
-        oldest_cursor,
-        newest_cursor,
+        oldest_seq,
+        newest_seq,
         has_older: page.has_older,
         has_newer: page.has_newer,
         order,
@@ -1297,7 +1299,7 @@ pub async fn events_stream(
         .limit
         .unwrap_or(DEFAULT_EVENT_STREAM_WINDOW)
         .clamp(1, MAX_EVENT_STREAM_WINDOW);
-    let cursor = query.cursor.filter(|value| !value.is_empty());
+    let after_seq = query.after_seq;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -1316,8 +1318,9 @@ pub async fn events_stream(
         .storage()
         .read_recent_events(event_window_limit.saturating_add(1))
         .map_err(error_response)?;
-    let buffered = initial_buffered_events(&events, cursor.as_deref())?;
-    let last_seen_cursor = cursor.or_else(|| events.last().map(|event| event.id.clone()));
+    let buffered = initial_buffered_events(&events, after_seq)?;
+    let last_seen_seq =
+        after_seq.unwrap_or_else(|| events.last().map_or(0, |event| event.event_seq));
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
     tokio::spawn(async move {
         let mut state = EventStreamState {
@@ -1326,24 +1329,17 @@ pub async fn events_stream(
             event_window_limit,
             projection,
             event_marker: initial_event_marker,
-            last_seen_cursor,
-            next_seq: 0,
+            last_seen_seq,
             buffered,
         };
         loop {
             if let Some(event) = state.buffered.pop_front() {
-                let envelope = stream_event_envelope(
-                    state.next_seq,
-                    &state.runtime_id,
-                    &event,
-                    state.projection,
-                );
-                state.next_seq += 1;
-                state.last_seen_cursor = Some(event.id.clone());
+                let envelope = stream_event_envelope(&state.runtime_id, &event, state.projection);
+                state.last_seen_seq = event.event_seq;
                 let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
                 if tx
                     .send(Ok(Event::default()
-                        .id(envelope.id)
+                        .id(envelope.event_seq.to_string())
                         .event(envelope.event_type)
                         .data(payload)))
                     .await
@@ -1384,8 +1380,8 @@ pub async fn events_stream(
                         continue;
                     }
                 }
-                Err(cursor) => {
-                    error!("event stream cursor fell out of replay window: {cursor}");
+                Err(seq) => {
+                    error!("event stream cursor fell out of replay window: {seq}");
                     break;
                 }
             }
@@ -1401,12 +1397,16 @@ pub async fn events_stream(
 
 fn initial_buffered_events(
     events: &[AuditEvent],
-    cursor: Option<&str>,
+    after_seq: Option<u64>,
 ) -> std::result::Result<VecDeque<AuditEvent>, (StatusCode, Json<Value>)> {
-    let start_index = if let Some(cursor) = cursor {
-        match events.iter().position(|event| event.id == cursor) {
-            Some(position) => position + 1,
-            None => return Err(cursor_not_found(cursor.to_string())),
+    let start_index = if let Some(after_seq) = after_seq {
+        if after_seq == 0 {
+            0
+        } else {
+            match events.iter().position(|event| event.event_seq == after_seq) {
+                Some(position) => position + 1,
+                None => return Err(event_seq_not_found(after_seq)),
+            }
         }
     } else {
         events.len()
@@ -1417,15 +1417,15 @@ fn initial_buffered_events(
 fn refresh_buffered_events(
     state: &mut EventStreamState,
     latest_events: Vec<AuditEvent>,
-) -> std::result::Result<(), String> {
-    let start_index = if let Some(cursor) = state.last_seen_cursor.as_deref() {
+) -> std::result::Result<(), u64> {
+    let start_index = if state.last_seen_seq == 0 {
+        0
+    } else {
         latest_events
             .iter()
-            .position(|event| event.id == cursor)
+            .position(|event| event.event_seq == state.last_seen_seq)
             .map(|position| position + 1)
-            .ok_or_else(|| cursor.to_string())?
-    } else {
-        0
+            .ok_or(state.last_seen_seq)?
     };
     state
         .buffered
@@ -1442,62 +1442,57 @@ struct EventPage {
 
 fn event_page(
     events: &[AuditEvent],
-    cursor: Option<&str>,
+    before_seq: Option<u64>,
+    after_seq: Option<u64>,
     limit: usize,
     order: EventPageOrder,
-) -> std::result::Result<EventPage, (StatusCode, Json<Value>)> {
-    let cursor_index = match cursor {
-        Some(cursor) => Some(
-            events
-                .iter()
-                .position(|event| event.id == cursor)
-                .ok_or_else(|| cursor_not_found(cursor.to_string()))?,
-        ),
-        None => None,
-    };
-    let page = match order {
+) -> EventPage {
+    let lower = after_seq.unwrap_or(0);
+    let upper = before_seq.unwrap_or(u64::MAX);
+    let mut filtered = events
+        .iter()
+        .filter(|event| event.event_seq > lower && event.event_seq < upper)
+        .cloned()
+        .collect::<Vec<_>>();
+    let has_more = filtered.len() > limit;
+    match order {
         EventPageOrder::Asc => {
-            let start = cursor_index.map_or(0, |index| index + 1);
-            let end = (start + limit).min(events.len());
+            filtered.truncate(limit);
             EventPage {
-                events: events[start..end].to_vec(),
-                has_older: start > 0,
-                has_newer: end < events.len(),
+                events: filtered,
+                has_older: false,
+                has_newer: has_more,
             }
         }
         EventPageOrder::Desc => {
-            let end = cursor_index.unwrap_or(events.len());
-            let start = end.saturating_sub(limit);
-            let mut page_events = events[start..end].to_vec();
-            page_events.reverse();
+            filtered.reverse();
+            filtered.truncate(limit);
             EventPage {
-                events: page_events,
-                has_older: start > 0,
-                has_newer: end < events.len(),
+                events: filtered,
+                has_older: has_more,
+                has_newer: false,
             }
         }
-    };
-    Ok(page)
+    }
 }
 
-fn oldest_cursor(events: &[AuditEvent], order: EventPageOrder) -> Option<String> {
+fn oldest_seq(events: &[AuditEvent], order: EventPageOrder) -> Option<u64> {
     match order {
         EventPageOrder::Asc => events.first(),
         EventPageOrder::Desc => events.last(),
     }
-    .map(|event| event.id.clone())
+    .map(|event| event.event_seq)
 }
 
-fn newest_cursor(events: &[AuditEvent], order: EventPageOrder) -> Option<String> {
+fn newest_seq(events: &[AuditEvent], order: EventPageOrder) -> Option<u64> {
     match order {
         EventPageOrder::Asc => events.last(),
         EventPageOrder::Desc => events.first(),
     }
-    .map(|event| event.id.clone())
+    .map(|event| event.event_seq)
 }
 
 fn stream_event_envelope(
-    seq: u64,
     agent_id: &str,
     event: &AuditEvent,
     projection: EventReplayProjection,
@@ -1505,7 +1500,7 @@ fn stream_event_envelope(
     let projected = project_event_payload_for_replay(event, projection);
     StreamEventEnvelope {
         id: event.id.clone(),
-        seq,
+        event_seq: event.event_seq,
         ts: event.created_at,
         agent_id: agent_id.to_string(),
         event_type: event.kind.clone(),
@@ -1570,14 +1565,15 @@ fn clone_payload_field(payload: &Value, field: &str) -> Option<Value> {
     payload.get(field).filter(|value| !value.is_null()).cloned()
 }
 
-fn cursor_not_found(cursor: String) -> (StatusCode, Json<Value>) {
+fn event_seq_not_found(event_seq: u64) -> (StatusCode, Json<Value>) {
     (
         StatusCode::NOT_FOUND,
         Json(json!({
             "ok": false,
-            "error": format!("cursor {cursor} was not found"),
+            "error": format!("after_seq {event_seq} was not found in the replay window"),
             "code": "cursor_not_found",
-            "cursor": cursor,
+            "after_seq": event_seq,
+            "event_seq": event_seq,
         })),
     )
 }

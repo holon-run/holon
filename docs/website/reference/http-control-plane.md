@@ -103,15 +103,17 @@ Returns recent runtime events (turn entries, system events). Query parameters:
 
 | Param | Description |
 |-------|-------------|
-| `cursor` | Cursor for pagination |
+| `before_seq` | Return events with durable `event_seq` lower than this value |
+| `after_seq` | Return events with durable `event_seq` higher than this value |
 | `limit` | Max events to return (default 128) |
 | `order` | `asc` or `desc` (default) |
 | `projection` | `local_debug` (control token required) or `operator` (default) |
 
 **`GET /agents/:id/events/stream`** — Server-sent events
 
-SSE stream of agent events. Supports `cursor`, `limit`, and `projection` query params. The
-SSE `type` field is set to the raw audit event kind (e.g. `turn_entry`,
+SSE stream of agent events. Supports `after_seq`, `limit`, and `projection`
+query params. The SSE `id` field is the per-agent durable `event_seq`, and the
+SSE `event` field is set to the raw audit event kind (e.g. `turn_entry`,
 `wake_requested`, `task_create_requested`), not a limited set of names.
 
 **`GET /agents/:id/transcript`** — Turn transcript

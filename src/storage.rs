@@ -118,6 +118,7 @@ pub struct AppStorage {
     agent_identities_path: PathBuf,
     agent_path: PathBuf,
     append_mutex: Arc<Mutex<()>>,
+    event_seq_counter: Arc<Mutex<u64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,8 +155,11 @@ impl AppStorage {
                 .with_context(|| format!("failed to create {}", dir.display()))?;
         }
 
+        let events_path = ledger_dir.join("events.jsonl");
+        let event_seq_counter = migrate_events_ledger(&events_path)?;
+
         Ok(Self {
-            events_path: ledger_dir.join("events.jsonl"),
+            events_path,
             briefs_path: ledger_dir.join("briefs.jsonl"),
             messages_path: ledger_dir.join("messages.jsonl"),
             tasks_path: ledger_dir.join("tasks.jsonl"),
@@ -178,6 +182,7 @@ impl AppStorage {
             agent_identities_path: ledger_dir.join("agent_identities.jsonl"),
             agent_path: state_dir.join("agent.json"),
             append_mutex: Arc::new(Mutex::new(())),
+            event_seq_counter: Arc::new(Mutex::new(event_seq_counter)),
             data_dir,
         })
     }
@@ -217,7 +222,23 @@ impl AppStorage {
     }
 
     pub fn append_event(&self, event: &AuditEvent) -> Result<()> {
-        self.append_jsonl(&self.events_path, event)
+        let mut event = event.clone();
+        let _guard = self
+            .append_mutex
+            .lock()
+            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+        let mut counter = self
+            .event_seq_counter
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event sequence counter mutex poisoned"))?;
+        *counter += 1;
+        event.event_seq = *counter;
+        let line = serde_json::to_string(&event)?;
+        let mut bytes = Vec::with_capacity(line.len() + 1);
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+        append_jsonl_bytes(&self.events_path, &bytes)?;
+        Ok(())
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
@@ -1060,6 +1081,70 @@ impl AppStorage {
     }
 }
 
+fn migrate_events_ledger(path: &Path) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f");
+    let tmp_path = path.with_file_name(format!(".events.jsonl.{timestamp}.tmp"));
+    let file =
+        fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut tmp = fs::File::create(&tmp_path)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    let mut max_seq = 0;
+    let mut changed = false;
+
+    for line in BufReader::new(file).lines() {
+        let line = line.with_context(|| format!("failed to read {}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut value: Value = serde_json::from_str(&line)?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("event ledger line is not a JSON object"))?;
+        match object.get("event_seq").and_then(Value::as_u64) {
+            Some(seq) if seq > max_seq => {
+                max_seq = seq;
+            }
+            Some(seq) => {
+                anyhow::bail!(
+                    "event ledger sequence must be strictly increasing; found {seq} after {max_seq}"
+                );
+            }
+            None => {
+                max_seq += 1;
+                object.insert("event_seq".to_string(), Value::from(max_seq));
+                changed = true;
+            }
+        }
+        writeln!(tmp, "{}", serde_json::to_string(&value)?)?;
+    }
+
+    if !changed {
+        let _ = fs::remove_file(&tmp_path);
+        return Ok(max_seq);
+    }
+
+    let backup_path = path.with_file_name(format!("events.jsonl.bak.{timestamp}"));
+    fs::copy(path, &backup_path).with_context(|| {
+        format!(
+            "failed to back up {} to {}",
+            path.display(),
+            backup_path.display()
+        )
+    })?;
+    fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "failed to replace {} with {}",
+            path.display(),
+            tmp_path.display()
+        )
+    })?;
+    Ok(max_seq)
+}
+
 fn append_jsonl_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -1378,6 +1463,97 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn append_event_assigns_monotonic_event_seq() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        storage
+            .append_event(&AuditEvent::new(
+                "test_event",
+                serde_json::json!({ "n": 1 }),
+            ))
+            .unwrap();
+        storage
+            .append_event(&AuditEvent::new(
+                "test_event",
+                serde_json::json!({ "n": 2 }),
+            ))
+            .unwrap();
+
+        let events = storage.read_recent_events(10).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.event_seq)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        let reopened = AppStorage::new(dir.path()).unwrap();
+        reopened
+            .append_event(&AuditEvent::new(
+                "test_event",
+                serde_json::json!({ "n": 3 }),
+            ))
+            .unwrap();
+        let events = reopened.read_recent_events(10).unwrap();
+        assert_eq!(events.last().map(|event| event.event_seq), Some(3));
+    }
+
+    #[test]
+    fn storage_backfills_legacy_events_jsonl_on_open() {
+        let dir = tempdir().unwrap();
+        let ledger_dir = dir.path().join(".holon/ledger");
+        std::fs::create_dir_all(&ledger_dir).unwrap();
+        let events_path = ledger_dir.join("events.jsonl");
+        std::fs::write(
+            &events_path,
+            [
+                serde_json::json!({
+                    "id": "evt-old-1",
+                    "created_at": "2026-05-20T00:00:00Z",
+                    "kind": "test_event",
+                    "data": { "n": 1 }
+                })
+                .to_string(),
+                serde_json::json!({
+                    "id": "evt-old-2",
+                    "created_at": "2026-05-20T00:00:01Z",
+                    "kind": "test_event",
+                    "data": { "n": 2 }
+                })
+                .to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let events = storage.read_recent_events(10).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (event.id.as_str(), event.event_seq))
+                .collect::<Vec<_>>(),
+            vec![("evt-old-1", 1), ("evt-old-2", 2)]
+        );
+        assert!(std::fs::read_dir(&ledger_dir).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("events.jsonl.bak.")));
+
+        storage
+            .append_event(&AuditEvent::new(
+                "test_event",
+                serde_json::json!({ "n": 3 }),
+            ))
+            .unwrap();
+        let events = storage.read_recent_events(10).unwrap();
+        assert_eq!(events.last().map(|event| event.event_seq), Some(3));
+    }
 
     #[test]
     fn storage_round_trip_agent() {
