@@ -24,65 +24,32 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TuiTimeoutKind {
-    Connect,
-    Request,
-    Bootstrap,
-    StreamOpen,
-    StreamIdle,
-    Reconnect,
+pub struct TuiNetworkPolicy {
+    pub connect_timeout: Duration,
+    /// Maximum quiet interval while waiting for response headers or body chunks.
+    pub read_idle_timeout: Duration,
+    /// Maximum quiet interval between parsed SSE events after the stream is open.
+    pub stream_idle_timeout: Duration,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TuiTimeouts {
-    pub connect: Duration,
-    pub request: Duration,
-    pub bootstrap: Duration,
-    pub stream_open: Duration,
-    pub stream_idle: Duration,
-    pub reconnect: Duration,
-}
-
-pub const TUI_TIMEOUTS: TuiTimeouts = TuiTimeouts {
-    connect: Duration::from_secs(2),
-    request: Duration::from_secs(10),
-    bootstrap: Duration::from_secs(30),
-    stream_open: Duration::from_secs(10),
-    stream_idle: Duration::from_secs(45),
-    reconnect: Duration::from_secs(1),
+pub const TUI_LOCAL_NETWORK_POLICY: TuiNetworkPolicy = TuiNetworkPolicy {
+    connect_timeout: Duration::from_secs(2),
+    read_idle_timeout: Duration::from_secs(10),
+    stream_idle_timeout: Duration::from_secs(45),
 };
 
-impl TuiTimeouts {
-    pub fn get(self, kind: TuiTimeoutKind) -> Duration {
-        match kind {
-            TuiTimeoutKind::Connect => self.connect,
-            TuiTimeoutKind::Request => self.request,
-            TuiTimeoutKind::Bootstrap => self.bootstrap,
-            TuiTimeoutKind::StreamOpen => self.stream_open,
-            TuiTimeoutKind::StreamIdle => self.stream_idle,
-            TuiTimeoutKind::Reconnect => self.reconnect,
-        }
-    }
-
-    fn request_timeout(self, kind: TuiTimeoutKind) -> Duration {
-        debug_assert!(matches!(
-            kind,
-            TuiTimeoutKind::Request | TuiTimeoutKind::Bootstrap
-        ));
-        self.get(kind)
-    }
-}
-
-#[cfg(unix)]
-fn unix_response_timeout(kind: TuiTimeoutKind) -> Duration {
-    TUI_TIMEOUTS.request_timeout(kind)
-}
+pub const TUI_REMOTE_NETWORK_POLICY: TuiNetworkPolicy = TuiNetworkPolicy {
+    connect_timeout: Duration::from_secs(5),
+    read_idle_timeout: Duration::from_secs(10),
+    stream_idle_timeout: Duration::from_secs(45),
+};
 
 #[derive(Clone)]
 pub struct LocalClient {
     config: AppConfig,
     http: reqwest::Client,
     remote: Option<RemoteConnection>,
+    network: TuiNetworkPolicy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -288,16 +255,69 @@ struct UnixEventStream {
     eof: bool,
 }
 
+async fn read_http_response_body(
+    mut response: reqwest::Response,
+    path: &str,
+    network: TuiNetworkPolicy,
+) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        let chunk = tokio::time::timeout(network.read_idle_timeout, response.chunk())
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "read idle timeout after {} for {}",
+                    format_duration(network.read_idle_timeout),
+                    path
+                )
+            })?
+            .with_context(|| format!("failed to read response body for {path}"))?;
+        let Some(chunk) = chunk else {
+            return Ok(body);
+        };
+        body.extend_from_slice(&chunk);
+    }
+}
+
+#[cfg(unix)]
+async fn read_unix_response_body(
+    stream: &mut tokio::net::UnixStream,
+    path: &str,
+    network: TuiNetworkPolicy,
+) -> Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let mut body = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = tokio::time::timeout(network.read_idle_timeout, stream.read(&mut buffer))
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "read idle timeout after {} for unix-socket response {}",
+                    format_duration(network.read_idle_timeout),
+                    path
+                )
+            })?
+            .with_context(|| format!("failed to read unix-socket response for {path}"))?;
+        if read == 0 {
+            return Ok(body);
+        }
+        body.extend_from_slice(&buffer[..read]);
+    }
+}
+
 impl LocalClient {
     pub fn new(config: AppConfig) -> Result<Self> {
         let http = reqwest::Client::builder()
-            .connect_timeout(TUI_TIMEOUTS.get(TuiTimeoutKind::Connect))
+            .connect_timeout(TUI_LOCAL_NETWORK_POLICY.connect_timeout)
             .build()
             .context("failed to build local control client")?;
         Ok(Self {
             config,
             http,
             remote: None,
+            network: TUI_LOCAL_NETWORK_POLICY,
         })
     }
 
@@ -312,13 +332,14 @@ impl LocalClient {
             return Err(anyhow!("remote TUI token must not be empty"));
         }
         let http = reqwest::Client::builder()
-            .connect_timeout(TUI_TIMEOUTS.get(TuiTimeoutKind::Connect))
+            .connect_timeout(TUI_REMOTE_NETWORK_POLICY.connect_timeout)
             .build()
             .context("failed to build remote control client")?;
         Ok(Self {
             config,
             http,
             remote: Some(RemoteConnection { base_url, token }),
+            network: TUI_REMOTE_NETWORK_POLICY,
         })
     }
 
@@ -360,11 +381,7 @@ impl LocalClient {
     #[cfg(unix)]
     pub async fn runtime_status_unix_only(&self) -> Result<RuntimeStatusResponse> {
         let body = self
-            .send_unix(
-                RequestSpec::get("/control/runtime/status"),
-                true,
-                TuiTimeoutKind::Request,
-            )
+            .send_unix(RequestSpec::get("/control/runtime/status"), true)
             .await?;
         serde_json::from_slice(&body).with_context(|| {
             "failed to decode response body for GET /control/runtime/status over unix socket"
@@ -381,11 +398,7 @@ impl LocalClient {
     }
 
     pub async fn agent_state_snapshot(&self, agent_id: &str) -> Result<AgentStateSnapshot> {
-        self.get_json_with_timeout(
-            &format!("/agents/{agent_id}/state"),
-            TuiTimeoutKind::Bootstrap,
-        )
-        .await
+        self.get_json(&format!("/agents/{agent_id}/state")).await
     }
 
     pub async fn agent_briefs(&self, agent_id: &str, limit: usize) -> Result<Vec<BriefRecord>> {
@@ -547,7 +560,6 @@ impl LocalClient {
             .send(
                 RequestSpec::get(&format!("/agents/{}/skills", agent_id)),
                 false,
-                TuiTimeoutKind::Request,
             )
             .await?;
         serde_json::from_slice(&body).with_context(|| {
@@ -590,7 +602,7 @@ impl LocalClient {
         #[cfg(unix)]
         if self.remote.is_none() && self.config.socket_path.exists() {
             let socket_error = match tokio::time::timeout(
-                TUI_TIMEOUTS.get(TuiTimeoutKind::StreamOpen),
+                self.network.connect_timeout,
                 self.stream_unix_events(&path, false),
             )
             .await
@@ -599,7 +611,7 @@ impl LocalClient {
                     return Ok(LocalEventStream {
                         transport: EventStreamTransport::Unix(stream),
                         frame_buffer: Vec::new(),
-                        idle_timeout: TUI_TIMEOUTS.get(TuiTimeoutKind::StreamIdle),
+                        idle_timeout: self.network.stream_idle_timeout,
                     });
                 }
                 Ok(Err(err)) => err,
@@ -626,26 +638,13 @@ impl LocalClient {
     }
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.get_json_with_timeout(path, TuiTimeoutKind::Request)
-            .await
-    }
-
-    async fn get_json_with_timeout<T: DeserializeOwned>(
-        &self,
-        path: &str,
-        timeout_kind: TuiTimeoutKind,
-    ) -> Result<T> {
-        let body = self
-            .send(RequestSpec::get(path), false, timeout_kind)
-            .await?;
+        let body = self.send(RequestSpec::get(path), false).await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for GET {}", path))
     }
 
     async fn get_control_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let body = self
-            .send(RequestSpec::get(path), true, TuiTimeoutKind::Request)
-            .await?;
+        let body = self.send(RequestSpec::get(path), true).await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for GET {}", path))
     }
@@ -656,61 +655,46 @@ impl LocalClient {
         payload: &B,
     ) -> Result<T> {
         let body = self
-            .send(
-                RequestSpec::post_json(path, payload)?,
-                true,
-                TuiTimeoutKind::Request,
-            )
+            .send(RequestSpec::post_json(path, payload)?, true)
             .await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for POST {}", path))
     }
 
-    async fn send(
-        &self,
-        request: RequestSpec,
-        include_control_auth: bool,
-        timeout_kind: TuiTimeoutKind,
-    ) -> Result<Vec<u8>> {
+    async fn send(&self, request: RequestSpec, include_control_auth: bool) -> Result<Vec<u8>> {
         #[cfg(unix)]
         if self.remote.is_none() && self.config.socket_path.exists() {
-            let socket_error = match self
-                .send_unix(request.clone(), include_control_auth, timeout_kind)
-                .await
-            {
+            let socket_error = match self.send_unix(request.clone(), include_control_auth).await {
                 Ok(body) => return Ok(body),
                 Err(err) => err,
             };
             return self
-                .send_http(request, include_control_auth, timeout_kind)
+                .send_http(request, include_control_auth)
                 .await
                 .with_context(|| {
                     format!("unix socket request failed before HTTP fallback: {socket_error}")
                 });
         }
 
-        self.send_http(request, include_control_auth, timeout_kind)
-            .await
+        self.send_http(request, include_control_auth).await
     }
 
-    async fn send_http(
-        &self,
-        request: RequestSpec,
-        include_control_auth: bool,
-        timeout_kind: TuiTimeoutKind,
-    ) -> Result<Vec<u8>> {
-        let response = self
-            .build_http_request(&request, include_control_auth)
-            .timeout(TUI_TIMEOUTS.request_timeout(timeout_kind))
-            .send()
-            .await
-            .with_context(|| format!("failed to send {}", request.path))?;
+    async fn send_http(&self, request: RequestSpec, include_control_auth: bool) -> Result<Vec<u8>> {
+        let response = tokio::time::timeout(
+            self.network.read_idle_timeout,
+            self.build_http_request(&request, include_control_auth)
+                .send(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "timed out waiting for response headers for {}",
+                request.path
+            )
+        })?
+        .with_context(|| format!("failed to send {}", request.path))?;
         let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .with_context(|| format!("failed to read response body for {}", request.path))?
-            .to_vec();
+        let bytes = read_http_response_body(response, &request.path, self.network).await?;
         decode_or_error(status.as_u16(), bytes, &request.path)
     }
 
@@ -723,21 +707,20 @@ impl LocalClient {
         let builder = self
             .build_http_request(&request, include_control_auth)
             .header(reqwest::header::ACCEPT, "text/event-stream");
-        let response =
-            tokio::time::timeout(TUI_TIMEOUTS.get(TuiTimeoutKind::StreamOpen), builder.send())
-                .await
-                .map_err(|_| anyhow!("timed out opening event stream {}", path))?
-                .with_context(|| format!("failed to open event stream {}", path))?;
+        let response = tokio::time::timeout(self.network.read_idle_timeout, builder.send())
+            .await
+            .map_err(|_| anyhow!("timed out opening event stream {}", path))?
+            .with_context(|| format!("failed to open event stream {}", path))?;
         let status = response.status();
         if !status.is_success() {
-            let bytes = response.bytes().await?.to_vec();
+            let bytes = read_http_response_body(response, path, self.network).await?;
             decode_or_error(status.as_u16(), bytes, path)?;
             unreachable!("decode_or_error returns Ok only for successful responses");
         }
         Ok(LocalEventStream {
             transport: EventStreamTransport::Http(response),
             frame_buffer: Vec::new(),
-            idle_timeout: TUI_TIMEOUTS.get(TuiTimeoutKind::StreamIdle),
+            idle_timeout: self.network.stream_idle_timeout,
         })
     }
 
@@ -774,23 +757,27 @@ impl LocalClient {
     }
 
     #[cfg(unix)]
-    async fn send_unix(
-        &self,
-        request: RequestSpec,
-        include_control_auth: bool,
-        timeout_kind: TuiTimeoutKind,
-    ) -> Result<Vec<u8>> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn send_unix(&self, request: RequestSpec, include_control_auth: bool) -> Result<Vec<u8>> {
+        use tokio::io::AsyncWriteExt;
         use tokio::net::UnixStream;
 
-        let mut stream = UnixStream::connect(&self.config.socket_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to connect to Holon control socket {}",
-                    self.config.socket_path.display()
-                )
-            })?;
+        let mut stream = tokio::time::timeout(
+            self.network.connect_timeout,
+            UnixStream::connect(&self.config.socket_path),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "timed out connecting to Holon control socket {}",
+                self.config.socket_path.display()
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "failed to connect to Holon control socket {}",
+                self.config.socket_path.display()
+            )
+        })?;
 
         let method = match request.method {
             HttpMethod::Get => "GET",
@@ -815,24 +802,17 @@ impl LocalClient {
         }
         raw.push_str("\r\n");
 
-        let response = tokio::time::timeout(unix_response_timeout(timeout_kind), async {
+        tokio::time::timeout(self.network.read_idle_timeout, async {
             stream.write_all(raw.as_bytes()).await?;
             if let Some(body) = request.body.as_ref() {
                 stream.write_all(body).await?;
             }
-            stream.flush().await?;
-
-            let mut response = Vec::new();
-            stream.read_to_end(&mut response).await?;
-            Ok::<Vec<u8>, anyhow::Error>(response)
+            stream.flush().await
         })
         .await
-        .map_err(|_| {
-            anyhow!(
-                "timed out waiting for unix-socket response for {}",
-                request.path
-            )
-        })??;
+        .map_err(|_| anyhow!("timed out writing unix-socket request for {}", request.path))??;
+
+        let response = read_unix_response_body(&mut stream, &request.path, self.network).await?;
         let parsed = parse_http_response(&response).with_context(|| {
             format!("failed to parse unix-socket response for {}", request.path)
         })?;
@@ -850,14 +830,23 @@ impl LocalClient {
 
         validate_unix_request_target(path)?;
 
-        let mut stream = UnixStream::connect(&self.config.socket_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to connect to Holon control socket {}",
-                    self.config.socket_path.display()
-                )
-            })?;
+        let mut stream = tokio::time::timeout(
+            self.network.connect_timeout,
+            UnixStream::connect(&self.config.socket_path),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "timed out connecting to Holon control socket {}",
+                self.config.socket_path.display()
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "failed to connect to Holon control socket {}",
+                self.config.socket_path.display()
+            )
+        })?;
 
         let mut raw = format!(
             "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\nAccept: text/event-stream\r\n",
@@ -1414,10 +1403,10 @@ fn decode_chunked_body(body: &[u8]) -> Result<Vec<u8>> {
 mod tests {
     use super::{
         authorization_header_value, decode_chunked_body, decode_or_error, event_stream_path,
-        normalize_remote_base_url, parse_http_response, parse_sse_frame, take_next_sse_frame,
-        validate_header_value, validate_unix_request_target, EventStreamRequest,
-        EventStreamTransport, LocalEventStream, LocalHttpError, StreamEventEnvelope,
-        TuiTimeoutKind, TUI_TIMEOUTS,
+        normalize_remote_base_url, parse_http_response, parse_sse_frame, read_http_response_body,
+        take_next_sse_frame, validate_header_value, validate_unix_request_target,
+        EventStreamRequest, EventStreamTransport, LocalEventStream, LocalHttpError,
+        StreamEventEnvelope, TuiNetworkPolicy, TUI_LOCAL_NETWORK_POLICY, TUI_REMOTE_NETWORK_POLICY,
     };
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1439,21 +1428,13 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_uses_longer_timeout_than_lightweight_calls() {
-        assert!(TUI_TIMEOUTS.bootstrap > TUI_TIMEOUTS.request);
-        assert!(TUI_TIMEOUTS.stream_open <= TUI_TIMEOUTS.request);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unix_send_path_uses_timeout_kind_for_response_wait() {
-        assert_eq!(
-            super::unix_response_timeout(TuiTimeoutKind::Request),
-            TUI_TIMEOUTS.request
+    fn remote_policy_has_longer_connect_timeout_than_local_policy() {
+        assert!(
+            TUI_REMOTE_NETWORK_POLICY.connect_timeout > TUI_LOCAL_NETWORK_POLICY.connect_timeout
         );
         assert_eq!(
-            super::unix_response_timeout(TuiTimeoutKind::Bootstrap),
-            TUI_TIMEOUTS.bootstrap
+            TUI_REMOTE_NETWORK_POLICY.read_idle_timeout,
+            TUI_LOCAL_NETWORK_POLICY.read_idle_timeout
         );
     }
 
@@ -1595,6 +1576,48 @@ mod tests {
         server.abort();
 
         assert!(err.contains("event stream idle timeout after 25ms"));
+    }
+
+    #[tokio::test]
+    async fn http_body_reader_allows_slow_continuous_chunks() {
+        let (response, server) = open_test_event_stream(
+            vec![
+                ("hello ".into(), Duration::ZERO),
+                ("world".into(), Duration::from_millis(20)),
+            ],
+            false,
+        )
+        .await;
+        let network = TuiNetworkPolicy {
+            connect_timeout: Duration::from_millis(50),
+            read_idle_timeout: Duration::from_millis(50),
+            stream_idle_timeout: Duration::from_millis(50),
+        };
+
+        let body = read_http_response_body(response, "/slow-json", network)
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        assert_eq!(body, b"hello world");
+    }
+
+    #[tokio::test]
+    async fn http_body_reader_times_out_on_idle_gap() {
+        let (response, server) = open_test_event_stream(Vec::new(), true).await;
+        let network = TuiNetworkPolicy {
+            connect_timeout: Duration::from_millis(50),
+            read_idle_timeout: Duration::from_millis(25),
+            stream_idle_timeout: Duration::from_millis(50),
+        };
+
+        let err = read_http_response_body(response, "/idle-json", network)
+            .await
+            .unwrap_err()
+            .to_string();
+        server.abort();
+
+        assert!(err.contains("read idle timeout after 25ms for /idle-json"));
     }
 
     #[tokio::test]

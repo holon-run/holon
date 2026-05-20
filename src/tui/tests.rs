@@ -9,14 +9,17 @@ use super::{
     overlay::{centered_rect_rows, conversation_events_overlay_lines, OverlayState},
     projection::{OperatorDisplayMode, TuiProjection},
     render::draw,
-    runtime::{is_cursor_not_found_error, AgentListChange, TuiConnectionState, TuiRuntimeMessage},
+    runtime::{
+        is_cursor_not_found_error, reconnect_delay_for_attempt, AgentListChange,
+        TuiConnectionState, TuiRuntimeMessage, BOOTSTRAP_EVENT_TAIL_LIMIT,
+    },
     state::{tui_state_path, TuiClientState},
     view_model::{HeaderViewModel, StatusbarViewModel},
 };
 use crate::{
     client::{
         AgentStateSnapshot, AgentStreamEvent, LocalClient, StateSessionSnapshot,
-        StateWorkspaceSnapshot, StreamEventEnvelope,
+        StateWorkspaceSnapshot, StreamEventEnvelope, TUI_LOCAL_NETWORK_POLICY,
     },
     config::{AltScreenMode, AppConfig},
     system::{ExecutionProfile, ExecutionSnapshot},
@@ -901,7 +904,7 @@ async fn agent_overlay_enter_starts_switch_without_awaiting_snapshot() {
         .unwrap();
 
     assert_eq!(app.overlay, OverlayState::None);
-    assert_eq!(app.status_line, "Bootstrapping agent beta from /state");
+    assert_eq!(app.status_line, "Loading agent state for beta");
     assert!(app.snapshot_refresh_in_flight);
 }
 
@@ -922,7 +925,7 @@ async fn agent_overlay_enter_clamps_stale_selection() {
         .unwrap();
 
     assert_eq!(app.overlay, OverlayState::None);
-    assert_eq!(app.status_line, "Bootstrapping agent beta from /state");
+    assert_eq!(app.status_line, "Loading agent state for beta");
     assert_eq!(app.selected_agent_id(), Some("alpha"));
     assert!(app.snapshot_refresh_in_flight);
 }
@@ -2575,9 +2578,45 @@ fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
 #[test]
 fn heartbeat_interval_is_less_than_client_stream_idle_timeout() {
     assert!(
-        crate::http::EVENT_STREAM_HEARTBEAT_INTERVAL
-            < crate::client::TUI_TIMEOUTS.get(crate::client::TuiTimeoutKind::StreamIdle)
+        crate::http::EVENT_STREAM_HEARTBEAT_INTERVAL < TUI_LOCAL_NETWORK_POLICY.stream_idle_timeout
     );
+}
+
+#[test]
+fn reconnect_backoff_increases_and_caps() {
+    assert_eq!(
+        reconnect_delay_for_attempt(1),
+        std::time::Duration::from_secs(1)
+    );
+    assert_eq!(
+        reconnect_delay_for_attempt(2),
+        std::time::Duration::from_secs(2)
+    );
+    assert_eq!(
+        reconnect_delay_for_attempt(3),
+        std::time::Duration::from_secs(4)
+    );
+    assert_eq!(
+        reconnect_delay_for_attempt(4),
+        std::time::Duration::from_secs(8)
+    );
+    assert_eq!(
+        reconnect_delay_for_attempt(5),
+        std::time::Duration::from_secs(15)
+    );
+    assert_eq!(
+        reconnect_delay_for_attempt(6),
+        std::time::Duration::from_secs(30)
+    );
+    assert_eq!(
+        reconnect_delay_for_attempt(9),
+        std::time::Duration::from_secs(30)
+    );
+}
+
+#[test]
+fn bootstrap_event_tail_limit_stays_small_for_remote_startup() {
+    assert_eq!(BOOTSTRAP_EVENT_TAIL_LIMIT, 50);
 }
 
 #[test]
@@ -2816,7 +2855,7 @@ async fn agent_switch_starts_snapshot_refresh_without_awaiting_network() {
         TuiConnectionState::Bootstrapping
     ));
     assert!(app.snapshot_refresh_in_flight);
-    assert_eq!(app.status_line, "Bootstrapping agent beta from /state");
+    assert_eq!(app.status_line, "Loading agent state for beta");
 }
 
 #[tokio::test]

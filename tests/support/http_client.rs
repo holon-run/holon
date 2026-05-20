@@ -4,7 +4,7 @@
 
 use std::{
     fs::OpenOptions,
-    io::Write,
+    io::{Read, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Command,
@@ -172,6 +172,48 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
         .active_workspace_entry
         .as_ref()
         .is_some_and(|entry| entry.projection_metadata.is_none()));
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn json_responses_support_gzip_without_compressing_sse() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::builder().no_gzip().build()?;
+
+    let response = client
+        .get(format!("{base}/agents/list"))
+        .header(reqwest::header::ACCEPT_ENCODING, "gzip")
+        .send()
+        .await?;
+    assert_eq!(
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok()),
+        Some("gzip")
+    );
+    let compressed = response.bytes().await?;
+    let mut decoder = flate2::read::GzDecoder::new(&compressed[..]);
+    let mut decoded = String::new();
+    decoder.read_to_string(&mut decoded)?;
+    let payload: serde_json::Value = serde_json::from_str(&decoded)?;
+    assert!(payload.as_array().is_some());
+
+    let stream_response = client
+        .get(format!("{base}/agents/default/events/stream"))
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .header(reqwest::header::ACCEPT_ENCODING, "gzip")
+        .send()
+        .await?;
+    assert_eq!(stream_response.status(), reqwest::StatusCode::OK);
+    assert!(
+        stream_response
+            .headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .is_none(),
+        "SSE responses must remain uncompressed"
+    );
 
     server.abort();
     Ok(())
