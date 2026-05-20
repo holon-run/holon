@@ -24,6 +24,7 @@ use holon::{
         daemon_logs, daemon_restart, daemon_start, daemon_status, daemon_stop,
         ensure_serve_preflight, RuntimeServiceHandle,
     },
+    fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
     http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
     provider::{provider_doctor, resolved_model_availability},
@@ -1039,6 +1040,10 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         .with_context(|| format!("failed to create {}", config.agent_root_dir().display()))?;
     std::fs::create_dir_all(config.run_dir())
         .with_context(|| format!("failed to create {}", config.run_dir().display()))?;
+    println!(
+        "{}",
+        apply_nofile_limit_policy(DEFAULT_NOFILE_TARGET).startup_summary()
+    );
     ensure_serve_preflight(&config).await?;
 
     let host = RuntimeHost::new(config.clone())?;
