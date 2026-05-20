@@ -18,9 +18,11 @@ use crate::types::{
     OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord,
     TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
     TranscriptEntry, WaitingIntentRecord, WaitingIntentStatus, WorkItemDelegationRecord,
-    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemState, WorkingMemoryDelta,
+    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemState,
+    WorkItemSchedulingState, WorkingMemoryDelta,
     WorkspaceEntry, WorkspaceOccupancyRecord,
 };
+
 
 const RUNTIME_DIR: &str = ".holon";
 const RUNTIME_STATE_DIR: &str = "state";
@@ -59,6 +61,7 @@ pub struct WorkItemReadinessProjection {
     pub work_item: WorkItemRecord,
     pub readiness: WorkItemReadiness,
     pub candidate_class: WorkItemCandidateClass,
+    pub scheduling_state: WorkItemSchedulingState,
     pub is_current: bool,
     pub has_active_waits: bool,
     pub has_triggered_waits: bool,
@@ -754,11 +757,19 @@ impl AppStorage {
                 } else {
                     WorkItemCandidateClass::Blocked
                 };
+
+                // Derive scheduling state using active waits and tasks
+                let has_active_tasks = self
+                    .work_item_has_active_tasks(&item.id)
+                    .unwrap_or(false);
+                let scheduling_state = item.scheduling_state(has_active_waits, has_active_tasks);
+
                 WorkItemReadinessProjection {
                     current_todo: current_todo(&item),
                     work_item: item,
                     readiness,
                     candidate_class,
+                    scheduling_state,
                     is_current,
                     has_active_waits,
                     has_triggered_waits,
@@ -950,6 +961,50 @@ impl AppStorage {
             |record: &WaitingIntentRecord| {
                 record.agent_id == agent_id && record.id == waiting_intent_id
             },
+        )
+    }
+
+    /// Get active waiting intents for a specific work item.
+    /// Returns only active intents bound to the given work_item_id.
+    pub fn active_waiting_intents_for_work_item(
+        &self,
+        work_item_id: &str,
+    ) -> Result<Vec<WaitingIntentRecord>> {
+        Ok(self
+            .latest_waiting_intents()?
+            .into_iter()
+            .filter(|intent| intent.status == WaitingIntentStatus::Active)
+            .filter(|intent| intent.work_item_id.as_deref() == Some(work_item_id))
+            .collect())
+    }
+
+    /// Get active tasks for a specific work item.
+    /// Returns only active (non-terminal) tasks bound to the given work_item_id.
+    pub fn active_tasks_for_work_item(&self, work_item_id: &str) -> Result<Vec<TaskRecord>> {
+        Ok(self
+            .latest_active_task_records(usize::MAX)?
+            .into_iter()
+            .filter(|task| task.work_item_id.as_deref() == Some(work_item_id))
+            .collect())
+    }
+
+    /// Check if a work item has active waiting intents.
+    pub fn work_item_has_active_waits(&self, work_item_id: &str) -> Result<bool> {
+        Ok(self
+            .latest_waiting_intents()?
+            .iter()
+            .any(|intent| {
+                intent.status == WaitingIntentStatus::Active
+                    && intent.work_item_id.as_deref() == Some(work_item_id)
+            }))
+    }
+
+    /// Check if a work item has active tasks.
+    pub fn work_item_has_active_tasks(&self, work_item_id: &str) -> Result<bool> {
+        Ok(self
+            .latest_active_task_records(usize::MAX)?
+            .iter()
+            .any(|task| task.work_item_id.as_deref() == Some(work_item_id))
         )
     }
 
@@ -2424,5 +2479,168 @@ mod tests {
             ]
         );
         assert!(projection.current.is_none());
+    }
+
+    #[test]
+    fn storage_work_queue_projection_derives_scheduling_state() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+
+        // Create work items with different states
+        let runnable = WorkItemRecord::new("default", "runnable task", WorkItemState::Open);
+        let mut needs_input = WorkItemRecord::new("default", "needs input", WorkItemState::Open);
+        needs_input.plan_status = WorkItemPlanStatus::NeedsInput;
+        let mut blocked = WorkItemRecord::new("default", "blocked task", WorkItemState::Open);
+        blocked.blocked_by = Some("external dependency".into());
+        let completed = WorkItemRecord::new("default", "completed task", WorkItemState::Completed);
+
+        storage.append_work_item(&runnable).unwrap();
+        storage.append_work_item(&needs_input).unwrap();
+        storage.append_work_item(&blocked).unwrap();
+        storage.append_work_item(&completed).unwrap();
+
+        // Add active waiting intent for external wait
+        let wait = WaitingIntentRecord {
+            id: "wait-1".into(),
+            agent_id: "default".into(),
+            scope: ExternalTriggerScope::WorkItem,
+            work_item_id: Some(runnable.id.clone()),
+            description: "external wait".into(),
+            source: "test".into(),
+            resource: None,
+            condition: None,
+            delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "trigger-1".into(),
+            created_at: now,
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        };
+        storage.append_waiting_intent(&wait).unwrap();
+
+        // Add active task for task wait
+        let task = TaskRecord {
+            id: "task-1".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: Some(needs_input.id.clone()),
+            summary: Some("active task".into()),
+            detail: None,
+            recovery: None,
+        };
+        storage.append_task(&task).unwrap();
+
+        let projection = storage.work_queue_prompt_projection().unwrap();
+
+        // Verify scheduling states are derived correctly
+        let runnable_item = projection
+            .readiness
+            .iter()
+            .find(|item| item.work_item.id == runnable.id)
+            .expect("runnable item should be in readiness");
+        // runnable has active wait, so it's WaitingExternal
+        assert_eq!(
+            runnable_item.scheduling_state,
+            WorkItemSchedulingState::WaitingExternal
+        );
+
+        let needs_input_item = projection
+            .readiness
+            .iter()
+            .find(|item| item.work_item.id == needs_input.id)
+            .expect("needs_input item should be in readiness");
+        // needs_input has active task, but plan_status takes precedence
+        assert_eq!(
+            needs_input_item.scheduling_state,
+            WorkItemSchedulingState::WaitingOperator
+        );
+
+        let blocked_item = projection
+            .readiness
+            .iter()
+            .find(|item| item.work_item.id == blocked.id)
+            .expect("blocked item should be in readiness");
+        assert_eq!(
+            blocked_item.scheduling_state,
+            WorkItemSchedulingState::Blocked
+        );
+
+        let completed_item = projection
+            .readiness
+            .iter()
+            .find(|item| item.work_item.id == completed.id)
+            .expect("completed item should be in readiness");
+        assert_eq!(
+            completed_item.scheduling_state,
+            WorkItemSchedulingState::Completed
+        );
+    }
+
+    #[test]
+    fn storage_work_queue_projection_isolated_waits_do_not_affect_other_items() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+
+        // Create two work items
+        let waiting = WorkItemRecord::new("default", "waiting task", WorkItemState::Open);
+        let runnable = WorkItemRecord::new("default", "runnable task", WorkItemState::Open);
+
+        storage.append_work_item(&waiting).unwrap();
+        storage.append_work_item(&runnable).unwrap();
+
+        // Add active waiting intent only for the first work item
+        let wait = WaitingIntentRecord {
+            id: "wait-1".into(),
+           agent_id: "default".into(),
+            scope: ExternalTriggerScope::WorkItem,
+            work_item_id: Some(waiting.id.clone()),
+            description: "external wait".into(),
+            source: "test".into(),
+            resource: None,
+            condition: None,
+            delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "trigger-1".into(),
+            created_at: now,
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        };
+        storage.append_waiting_intent(&wait).unwrap();
+
+        let projection = storage.work_queue_prompt_projection().unwrap();
+
+        // Verify that the waiting work item is marked as WaitingExternal
+        let waiting_item = projection
+            .readiness
+            .iter()
+            .find(|item| item.work_item.id == waiting.id)
+            .expect("waiting item should be in readiness");
+        assert_eq!(
+            waiting_item.scheduling_state,
+            WorkItemSchedulingState::WaitingExternal
+        );
+
+        // Verify that the other work item remains Runnable
+        let runnable_item = projection
+            .readiness
+            .iter()
+            .find(|item| item.work_item.id == runnable.id)
+            .expect("runnable item should be in readiness");
+        assert_eq!(
+            runnable_item.scheduling_state,
+            WorkItemSchedulingState::Runnable
+        );
     }
 }

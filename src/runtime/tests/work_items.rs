@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::*;
-use crate::types::{WorkItemPlanStatus, WorkItemReadiness};
+use crate::types::{WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState};
 
 fn blocking_task_for_work_item(task_id: &str, work_item_id: Option<&str>) -> TaskRecord {
     TaskRecord {
@@ -3609,4 +3609,306 @@ async fn pick_without_reason_warns_when_switching_from_runnable_current_work() {
         event.data["warnings"][0]["code"].as_str(),
         Some("missing_pick_reason_for_runnable_focus_switch")
     );
+}
+
+#[test]
+fn scheduling_state_ready_work_item_is_runnable() {
+    let work_item = WorkItemRecord::new("default", "ready task", WorkItemState::Open);
+    assert_eq!(
+        work_item.scheduling_state(false, false),
+        WorkItemSchedulingState::Runnable
+    );
+}
+
+#[test]
+fn scheduling_state_needs_input_is_waiting_operator() {
+    let mut work_item = WorkItemRecord::new("default", "needs input", WorkItemState::Open);
+    work_item.plan_status = WorkItemPlanStatus::NeedsInput;
+    assert_eq!(
+        work_item.scheduling_state(false, false),
+        WorkItemSchedulingState::WaitingOperator
+    );
+}
+
+#[test]
+fn scheduling_state_blocked_by_is_blocked() {
+    let mut work_item = WorkItemRecord::new("default", "blocked task", WorkItemState::Open);
+    work_item.blocked_by = Some("external dependency".into());
+    assert_eq!(
+        work_item.scheduling_state(false, false),
+        WorkItemSchedulingState::Blocked
+    );
+}
+
+#[test]
+fn scheduling_state_completed_is_completed() {
+    let work_item = WorkItemRecord::new("default", "completed task", WorkItemState::Completed);
+    assert_eq!(
+        work_item.scheduling_state(false, false),
+        WorkItemSchedulingState::Completed
+    );
+}
+
+#[test]
+fn scheduling_state_active_wait_is_waiting_external() {
+    let work_item = WorkItemRecord::new("default", "waiting task", WorkItemState::Open);
+    assert_eq!(
+        work_item.scheduling_state(true, false),
+        WorkItemSchedulingState::WaitingExternal
+    );
+}
+
+#[test]
+fn scheduling_state_active_task_is_waiting_task() {
+    let work_item = WorkItemRecord::new("default", "with task", WorkItemState::Open);
+    assert_eq!(
+        work_item.scheduling_state(false, true),
+        WorkItemSchedulingState::WaitingTask
+    );
+}
+
+#[test]
+fn scheduling_state_blocked_takes_precedence_over_waits() {
+    let mut work_item = WorkItemRecord::new("default", "blocked with waits", WorkItemState::Open);
+    work_item.blocked_by = Some("external dependency".into());
+    // Even with active waits and tasks, blocked_by takes precedence
+    assert_eq!(
+        work_item.scheduling_state(true, true),
+        WorkItemSchedulingState::Blocked
+    );
+}
+
+#[test]
+fn scheduling_state_needs_input_takes_precedence_over_waits() {
+    let mut work_item = WorkItemRecord::new("default", "needs input", WorkItemState::Open);
+    work_item.plan_status = WorkItemPlanStatus::NeedsInput;
+    // plan_status=needs_input takes precedence over waits
+    assert_eq!(
+        work_item.scheduling_state(true, true),
+        WorkItemSchedulingState::WaitingOperator
+    );
+}
+
+#[test]
+fn scheduling_state_task_takes_precedence_over_external_wait() {
+    let work_item = WorkItemRecord::new("default", "with both waits", WorkItemState::Open);
+    // When both task and external waits are present, task takes precedence
+    assert_eq!(
+        work_item.scheduling_state(true, true),
+        WorkItemSchedulingState::WaitingTask
+    );
+}
+
+#[test]
+fn scheduling_state_is_runnable_helper() {
+    let work_item = WorkItemRecord::new("default", "runnable", WorkItemState::Open);
+    assert!(work_item.scheduling_state(false, false).is_runnable());
+    assert!(!work_item.scheduling_state(true, false).is_runnable());
+    assert!(!work_item.scheduling_state(false, true).is_runnable());
+}
+
+#[test]
+fn scheduling_state_is_waiting_helper() {
+    let mut work_item = WorkItemRecord::new("default", "waiting", WorkItemState::Open);
+    work_item.plan_status = WorkItemPlanStatus::NeedsInput;
+    assert!(work_item.scheduling_state(false, false).is_waiting());
+    assert!(work_item.scheduling_state(false, true).is_waiting());
+    assert!(work_item.scheduling_state(true, false).is_waiting());
+    
+    // A runnable work item is not waiting
+    let runnable = WorkItemRecord::new("default", "runnable", WorkItemState::Open);
+    assert!(!runnable.scheduling_state(false, false).is_waiting());
+}
+
+#[test]
+fn storage_active_waiting_intents_for_work_item_filters_by_status() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let now = Utc::now();
+
+    let active = WaitingIntentRecord {
+        id: "wait-1".into(),
+        agent_id: "default".into(),
+        scope: ExternalTriggerScope::WorkItem,
+        work_item_id: Some("work-a".into()),
+        description: "active wait".into(),
+        source: "test".into(),
+        resource: None,
+        condition: None,
+        delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+        status: WaitingIntentStatus::Active,
+        external_trigger_id: "trigger-1".into(),
+        created_at: now,
+        cancelled_at: None,
+        last_triggered_at: None,
+        trigger_count: 0,
+        correlation_id: None,
+        causation_id: None,
+    };
+
+    let cancelled = WaitingIntentRecord {
+        id: "wait-2".into(),
+        status: WaitingIntentStatus::Cancelled,
+        cancelled_at: Some(now),
+        ..active.clone()
+    };
+
+    storage.append_waiting_intent(&active).unwrap();
+    storage.append_waiting_intent(&cancelled).unwrap();
+
+    let intents = storage
+        .active_waiting_intents_for_work_item("work-a")
+        .unwrap();
+    assert_eq!(intents.len(), 1);
+    assert_eq!(intents[0].id, "wait-1");
+}
+
+#[test]
+fn storage_active_waiting_intents_for_work_item_filters_by_work_item_id() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let now = Utc::now();
+
+    let for_a = WaitingIntentRecord {
+        id: "wait-a".into(),
+        agent_id: "default".into(),
+        scope: ExternalTriggerScope::WorkItem,
+        work_item_id: Some("work-a".into()),
+        description: "wait for a".into(),
+        source: "test".into(),
+        resource: None,
+        condition: None,
+        delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+        status: WaitingIntentStatus::Active,
+        external_trigger_id: "trigger-1".into(),
+        created_at: now,
+        cancelled_at: None,
+        last_triggered_at: None,
+        trigger_count: 0,
+        correlation_id: None,
+        causation_id: None,
+    };
+
+    let for_b = WaitingIntentRecord {
+        id: "wait-b".into(),
+        work_item_id: Some("work-b".into()),
+        ..for_a.clone()
+    };
+
+    storage.append_waiting_intent(&for_a).unwrap();
+    storage.append_waiting_intent(&for_b).unwrap();
+
+    let intents_a = storage
+        .active_waiting_intents_for_work_item("work-a")
+        .unwrap();
+    assert_eq!(intents_a.len(), 1);
+    assert_eq!(intents_a[0].id, "wait-a");
+
+    let intents_b = storage
+        .active_waiting_intents_for_work_item("work-b")
+        .unwrap();
+    assert_eq!(intents_b.len(), 1);
+    assert_eq!(intents_b[0].id, "wait-b");
+}
+
+#[test]
+fn storage_active_tasks_for_work_item_filters_by_work_item_id() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let now = Utc::now();
+
+    let for_a = TaskRecord {
+        id: "task-a".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Running,
+        created_at: now,
+        updated_at: now,
+        parent_message_id: None,
+        work_item_id: Some("work-a".into()),
+        summary: Some("task for a".into()),
+        detail: None,
+        recovery: None,
+    };
+
+    let for_b = TaskRecord {
+        id: "task-b".into(),
+        work_item_id: Some("work-b".into()),
+        ..for_a.clone()
+    };
+
+    let completed = TaskRecord {
+        id: "task-c".into(),
+        status: TaskStatus::Completed,
+        ..for_a.clone()
+    };
+
+    storage.append_task(&for_a).unwrap();
+    storage.append_task(&for_b).unwrap();
+    storage.append_task(&completed).unwrap();
+
+    let tasks_a = storage.active_tasks_for_work_item("work-a").unwrap();
+    assert_eq!(tasks_a.len(), 1);
+    assert_eq!(tasks_a[0].id, "task-a");
+
+    let tasks_b = storage.active_tasks_for_work_item("work-b").unwrap();
+    assert_eq!(tasks_b.len(), 1);
+    assert_eq!(tasks_b[0].id, "task-b");
+}
+
+#[test]
+fn storage_work_item_has_active_waits_and_tasks_helpers() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let now = Utc::now();
+
+    // Create work item
+    let work_item = WorkItemRecord::new("default", "test work", WorkItemState::Open);
+    storage.append_work_item(&work_item).unwrap();
+
+    // Initially no waits or tasks
+    assert!(!storage.work_item_has_active_waits(&work_item.id).unwrap());
+    assert!(!storage.work_item_has_active_tasks(&work_item.id).unwrap());
+
+    // Add active waiting intent
+    let wait = WaitingIntentRecord {
+        id: "wait-1".into(),
+        agent_id: "default".into(),
+        scope: ExternalTriggerScope::WorkItem,
+        work_item_id: Some(work_item.id.clone()),
+        description: "active wait".into(),
+        source: "test".into(),
+        resource: None,
+        condition: None,
+        delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+        status: WaitingIntentStatus::Active,
+        external_trigger_id: "trigger-1".into(),
+        created_at: now,
+        cancelled_at: None,
+        last_triggered_at: None,
+        trigger_count: 0,
+        correlation_id: None,
+        causation_id: None,
+    };
+    storage.append_waiting_intent(&wait).unwrap();
+
+    assert!(storage.work_item_has_active_waits(&work_item.id).unwrap());
+
+    // Add active task
+    let task = TaskRecord {
+        id: "task-1".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Running,
+        created_at: now,
+        updated_at: now,
+        parent_message_id: None,
+        work_item_id: Some(work_item.id.clone()),
+        summary: Some("active task".into()),
+        detail: None,
+        recovery: None,
+    };
+    storage.append_task(&task).unwrap();
+
+    assert!(storage.work_item_has_active_tasks(&work_item.id).unwrap());
 }

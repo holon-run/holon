@@ -2781,6 +2781,37 @@ pub enum WorkItemReadiness {
     Completed,
 }
 
+/// Internal scheduling state derived from WorkItem lifecycle, active waits,
+/// task dependencies, and blockers. Used for scheduler decisions.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemSchedulingState {
+    /// WorkItem is open, ready for execution, not blocked, and not covered by
+    /// an active wait condition.
+    Runnable,
+    /// WorkItem explicitly requires operator input.
+    WaitingOperator,
+    /// WorkItem has an active wait condition whose wake source is a task result.
+    WaitingTask,
+    /// WorkItem has an active external wait condition.
+    WaitingExternal,
+    /// WorkItem has an explicit blocker that is not represented as a
+    /// structured active wait.
+    Blocked,
+    /// WorkItem is completed and does not participate in scheduling.
+    Completed,
+}
+
+impl WorkItemSchedulingState {
+    pub fn is_runnable(&self) -> bool {
+        matches!(self, WorkItemSchedulingState::Runnable)
+    }
+
+    pub fn is_waiting(&self) -> bool {
+        matches!(self, WorkItemSchedulingState::WaitingOperator | WorkItemSchedulingState::WaitingTask | WorkItemSchedulingState::WaitingExternal)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkItemPlanArtifact {
     pub path: PathBuf,
@@ -2861,6 +2892,39 @@ impl WorkItemRecord {
 
     pub fn is_waiting_for_operator(&self) -> bool {
         self.readiness() == WorkItemReadiness::WaitingForOperator
+    }
+
+    /// Derive scheduling state from lifecycle state, blockers, plan status,
+    /// and any active waits or tasks. This method requires storage context
+    /// to check for active waiting intents and tasks bound to this work item.
+    pub fn scheduling_state(&self, has_active_waits: bool, has_active_tasks: bool) -> WorkItemSchedulingState {
+        // Completed work items do not participate in scheduling
+        if self.state == WorkItemState::Completed {
+            return WorkItemSchedulingState::Completed;
+        }
+
+        // Plan status needs input means waiting for operator
+        if self.plan_status == WorkItemPlanStatus::NeedsInput {
+            return WorkItemSchedulingState::WaitingOperator;
+        }
+
+        // Unstructured blocker takes precedence over waits
+        if self.blocked_by.is_some() {
+            return WorkItemSchedulingState::Blocked;
+        }
+
+        // Active tasks bound to this work item mean waiting for task completion
+        if has_active_tasks {
+            return WorkItemSchedulingState::WaitingTask;
+        }
+
+        // Active external waits bound to this work item
+        if has_active_waits {
+            return WorkItemSchedulingState::WaitingExternal;
+        }
+
+        // Default: open, no blocker, no waits = runnable
+        WorkItemSchedulingState::Runnable
     }
 }
 
