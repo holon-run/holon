@@ -561,6 +561,7 @@ pub(crate) struct PresentationReducer {
     live_group: Option<LiveGroup>,
     last_ts: Option<DateTime<Utc>>,
     observed_assistant_text_keys: HashSet<String>,
+    observed_user_message_keys: HashSet<String>,
     observed_brief_keys: HashSet<String>,
 }
 
@@ -622,11 +623,13 @@ impl PresentationReducer {
                 }
 
                 "message_enqueued" => {
-                    if let Some(text) = operator_message_text(event) {
-                        items.push(TimedItem {
-                            item: PresentationItem::UserMessage { text },
-                            ts: event.ts,
-                        });
+                    if let Some((key, text)) = operator_message_item(event) {
+                        if self.observed_user_message_keys.insert(key) {
+                            items.push(TimedItem {
+                                item: PresentationItem::UserMessage { text },
+                                ts: event.ts,
+                            });
+                        }
                     }
                 }
 
@@ -925,15 +928,21 @@ fn normalize_text_key(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn operator_message_text(event: &ProjectionEventRecord) -> Option<String> {
+fn operator_message_item(event: &ProjectionEventRecord) -> Option<(String, String)> {
     let message = serde_json::from_value::<MessageEnvelope>(event.payload.clone()).ok()?;
     if !matches!(message.origin, MessageOrigin::Operator { .. }) {
         return None;
     }
-    match message.body {
+    let text = match message.body {
         MessageBody::Text { text } | MessageBody::Brief { text, .. } => Some(text),
         MessageBody::Json { value } => serde_json::to_string(&value).ok(),
-    }
+    }?;
+    let key = if message.id.is_empty() {
+        format!("text:{}", normalize_text_key(&text))
+    } else {
+        format!("message:{}", message.id)
+    };
+    Some((key, text))
 }
 
 fn is_operator_queue_ack(brief: &BriefRecord) -> bool {
@@ -1433,6 +1442,36 @@ mod tests {
                 assert_eq!(body, "completed the task");
             }
             other => panic!("expected AssistantResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_deduplicates_repeated_operator_message_by_message_id() {
+        let mut message = MessageEnvelope::new(
+            "default",
+            crate::types::MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            crate::types::TrustLevel::TrustedOperator,
+            crate::types::Priority::Normal,
+            MessageBody::Text {
+                text: "same operator input".into(),
+            },
+        );
+        message.id = "message-1".into();
+        let first = make_event("message_enqueued", "message enqueued", json!(message));
+        let mut second = first.clone();
+        second.id = "evt-2".into();
+        second.event_seq = 2;
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[first, second]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::UserMessage { text } => {
+                assert_eq!(text, "same operator input");
+            }
+            other => panic!("expected UserMessage, got {:?}", other),
         }
     }
 

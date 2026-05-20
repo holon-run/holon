@@ -145,18 +145,14 @@ pub(super) struct CachedChatText {
 
 pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     let mut cells = Vec::new();
+    let mut durable_operator_message_bodies = std::collections::BTreeMap::new();
     let mut visible_operator_message_ids = std::collections::BTreeSet::new();
     let durable_operator_message_ids = app
         .projection
         .as_ref()
         .map(|projection| projection.durable_operator_message_ids())
         .unwrap_or_default();
-    for message in &app.optimistic_operator_messages {
-        if durable_operator_message_ids.contains(&message.message_id) {
-            continue;
-        }
-        push_pending_operator_message_cell(&mut cells, &mut visible_operator_message_ids, message);
-    }
+    let selected_agent_id = app.selected_agent_id();
 
     if let Some(projection) = app.projection.as_ref() {
         let level = app.display_mode.display_level();
@@ -173,10 +169,29 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         for timed in &timed_items {
             if timed.item.is_visible_at(level) {
                 for rendered in timed.item.render(level) {
-                    cells.push(rendered_to_conversation_cell(&rendered, timed.ts));
+                    push_projected_conversation_cell(
+                        &mut cells,
+                        &mut durable_operator_message_bodies,
+                        rendered_to_conversation_cell(&rendered, timed.ts),
+                    );
                 }
             }
         }
+    }
+
+    for message in &app.optimistic_operator_messages {
+        if Some(message.agent_id.as_str()) != selected_agent_id {
+            continue;
+        }
+        if durable_operator_message_ids.contains(&message.message_id) {
+            continue;
+        }
+        push_pending_operator_message_cell(
+            &mut cells,
+            &mut visible_operator_message_ids,
+            &mut durable_operator_message_bodies,
+            message,
+        );
     }
 
     cells.sort_by(|left, right| {
@@ -196,6 +211,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
 fn push_pending_operator_message_cell(
     cells: &mut Vec<ConversationCell>,
     visible_operator_message_ids: &mut std::collections::BTreeSet<String>,
+    durable_operator_message_bodies: &mut std::collections::BTreeMap<String, usize>,
     message: &OperatorMessageRecord,
 ) {
     if !visible_operator_message_ids.insert(message.message_id.clone()) {
@@ -203,11 +219,35 @@ fn push_pending_operator_message_cell(
     }
     let body = render_operator_message_body(&message.body)
         .unwrap_or_else(|| compact_json(&serde_json::to_value(&message.body).unwrap_or_default()));
+    let body_key = normalized_operator_message_body_key(&body);
+    if let Some(count) = durable_operator_message_bodies.get_mut(&body_key) {
+        if *count > 0 {
+            *count -= 1;
+            return;
+        }
+    }
     cells.push(ConversationCell::UserMessage {
         created_at: message.created_at,
         body,
         status: Some(message.status.clone()),
     });
+}
+
+fn push_projected_conversation_cell(
+    cells: &mut Vec<ConversationCell>,
+    durable_operator_message_bodies: &mut std::collections::BTreeMap<String, usize>,
+    cell: ConversationCell,
+) {
+    if let ConversationCell::UserMessage { body, .. } = &cell {
+        *durable_operator_message_bodies
+            .entry(normalized_operator_message_body_key(body))
+            .or_insert(0) += 1;
+    }
+    cells.push(cell);
+}
+
+fn normalized_operator_message_body_key(body: &str) -> String {
+    body.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 impl ConversationCell {
