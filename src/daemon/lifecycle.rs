@@ -793,7 +793,7 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
                 }
             }
         };
-        match tokio::time::timeout(UNIX_PROBE_TIMEOUT, client.runtime_status_unix_only()).await {
+        match tokio::time::timeout(UNIX_PROBE_TIMEOUT, client.runtime_readiness_unix_only()).await {
             Ok(Ok(status)) => return ProbeRuntime::Running(Box::new(status)),
             Ok(Err(err)) => {
                 let occupied_socket = unix_probe_indicates_foreign_process(err.root_cause());
@@ -821,7 +821,7 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
             }
         }
     };
-    match client.runtime_status().await {
+    match client.runtime_readiness().await {
         Ok(status) => ProbeRuntime::Running(Box::new(status)),
         Err(_) => ProbeRuntime::Stopped {
             occupied_socket: false,

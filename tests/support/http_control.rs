@@ -1011,6 +1011,49 @@ pub async fn runtime_status_route_reports_runtime_metadata() -> Result<()> {
     Ok(())
 }
 
+pub async fn runtime_readiness_route_omits_activity_summary() -> Result<()> {
+    let config = test_config();
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    let host = RuntimeHost::new_with_provider(config.clone(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    let runtime_service = RuntimeServiceHandle::new(&config)?;
+    let router: Router = http::router(AppState::for_tcp_with_runtime_service(
+        host.clone(),
+        Some(runtime_service.clone()),
+    ));
+    let listener = TcpListener::bind(&config.http_addr).await?;
+    let addr = connect_addr(listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await?;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://{addr}/control/runtime/readiness"))
+        .bearer_auth("secret")
+        .send()
+        .await?;
+    assert!(response.status().is_success());
+    let payload: serde_json::Value = response.json().await?;
+    assert_eq!(payload["healthy"], true);
+    assert_eq!(payload["home_dir"], config.home_dir.display().to_string());
+    assert_eq!(
+        payload["startup_surface"]["default_agent_id"],
+        config.default_agent_id
+    );
+    assert_eq!(
+        payload["runtime_surface"]["model_default"],
+        config.default_model.as_string()
+    );
+    assert!(payload.get("activity").is_none());
+    assert!(payload.get("last_failure").is_none());
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn runtime_status_route_reports_waiting_activity_summary() -> Result<()> {
     let config = test_config();
     std::fs::create_dir_all(&config.workspace_dir)?;
