@@ -18,8 +18,8 @@ use crate::types::{
     OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord,
     TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
     TranscriptEntry, WaitingIntentRecord, WaitingIntentStatus, WorkItemDelegationRecord,
-    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemState, WorkingMemoryDelta,
-    WorkspaceEntry, WorkspaceOccupancyRecord,
+    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState,
+    WorkItemState, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 const RUNTIME_DIR: &str = ".holon";
@@ -58,9 +58,11 @@ impl WorkQueuePromptProjection {
 pub struct WorkItemReadinessProjection {
     pub work_item: WorkItemRecord,
     pub readiness: WorkItemReadiness,
+    pub scheduling_state: WorkItemSchedulingState,
     pub candidate_class: WorkItemCandidateClass,
     pub is_current: bool,
     pub has_active_waits: bool,
+    pub has_active_task_waits: bool,
     pub has_triggered_waits: bool,
     pub last_triggered_at: Option<DateTime<Utc>>,
     pub current_todo: Option<TodoItem>,
@@ -731,6 +733,11 @@ impl AppStorage {
                     acc
                 },
             );
+        let active_task_waits = self
+            .latest_active_task_records(usize::MAX)?
+            .into_iter()
+            .filter_map(|task| task.effective_work_item_id().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
         let mut readiness = latest
             .values()
             .cloned()
@@ -739,28 +746,36 @@ impl AppStorage {
                     && item.state == WorkItemState::Open;
                 let last_triggered_at = active_waits.get(&item.id).copied().flatten();
                 let has_active_waits = active_waits.contains_key(&item.id);
+                let has_active_task_waits = active_task_waits.contains(&item.id);
                 let has_triggered_waits = last_triggered_at.is_some();
                 let readiness = item.readiness();
-                let candidate_class = if is_current && readiness == WorkItemReadiness::Runnable {
-                    WorkItemCandidateClass::CurrentRunnable
-                } else if item.state == WorkItemState::Completed {
-                    WorkItemCandidateClass::CompletedRecent
-                } else if has_triggered_waits && item.blocked_by.is_some() {
-                    WorkItemCandidateClass::TriggeredBlocked
-                } else if readiness == WorkItemReadiness::Runnable {
-                    WorkItemCandidateClass::QueuedRunnable
-                } else if readiness == WorkItemReadiness::WaitingForOperator {
-                    WorkItemCandidateClass::WaitingForOperator
-                } else {
-                    WorkItemCandidateClass::Blocked
-                };
+                let scheduling_state =
+                    item.scheduling_state(has_active_waits, has_active_task_waits);
+                let candidate_class =
+                    if is_current && scheduling_state == WorkItemSchedulingState::Runnable {
+                        WorkItemCandidateClass::CurrentRunnable
+                    } else if scheduling_state == WorkItemSchedulingState::Completed {
+                        WorkItemCandidateClass::CompletedRecent
+                    } else if has_triggered_waits
+                        && scheduling_state == WorkItemSchedulingState::Blocked
+                    {
+                        WorkItemCandidateClass::TriggeredBlocked
+                    } else if scheduling_state == WorkItemSchedulingState::Runnable {
+                        WorkItemCandidateClass::QueuedRunnable
+                    } else if scheduling_state == WorkItemSchedulingState::WaitingOperator {
+                        WorkItemCandidateClass::WaitingForOperator
+                    } else {
+                        WorkItemCandidateClass::Blocked
+                    };
                 WorkItemReadinessProjection {
                     current_todo: current_todo(&item),
                     work_item: item,
                     readiness,
+                    scheduling_state,
                     candidate_class,
                     is_current,
                     has_active_waits,
+                    has_active_task_waits,
                     has_triggered_waits,
                     last_triggered_at,
                 }
@@ -2285,6 +2300,11 @@ mod tests {
         let mut waiting = WorkItemRecord::new("default", "operator decision", WorkItemState::Open);
         waiting.plan_status = WorkItemPlanStatus::NeedsInput;
         waiting.updated_at = now - chrono::Duration::minutes(2);
+        let mut external_wait =
+            WorkItemRecord::new("default", "external wait", WorkItemState::Open);
+        external_wait.updated_at = now - chrono::Duration::minutes(6);
+        let mut task_wait = WorkItemRecord::new("default", "task wait", WorkItemState::Open);
+        task_wait.updated_at = now - chrono::Duration::minutes(7);
         let mut blocked = WorkItemRecord::new("default", "plain blocked", WorkItemState::Open);
         blocked.blocked_by = Some("external review".into());
         blocked.updated_at = now - chrono::Duration::minutes(4);
@@ -2293,7 +2313,14 @@ mod tests {
         completed.updated_at = now - chrono::Duration::minutes(5);
 
         for item in [
-            &current, &triggered, &queued, &waiting, &blocked, &completed,
+            &current,
+            &triggered,
+            &queued,
+            &waiting,
+            &external_wait,
+            &task_wait,
+            &blocked,
+            &completed,
         ] {
             storage.append_work_item(item).unwrap();
         }
@@ -2316,6 +2343,42 @@ mod tests {
                 trigger_count: 1,
                 correlation_id: None,
                 causation_id: None,
+            })
+            .unwrap();
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: "wait-external".into(),
+                agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
+                work_item_id: Some(external_wait.id.clone()),
+                description: "external wait".into(),
+                source: "test".into(),
+                resource: None,
+                condition: None,
+                delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: "trigger-2".into(),
+                created_at: now,
+                cancelled_at: None,
+                last_triggered_at: None,
+                trigger_count: 0,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+        storage
+            .append_task(&TaskRecord {
+                id: "task-wait".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: Some(task_wait.id.clone()),
+                summary: Some("running task".into()),
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: None,
             })
             .unwrap();
         let mut agent = AgentState::new("default");
@@ -2355,6 +2418,54 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["queued runnable"]
         );
+        let scheduling_states = projection
+            .readiness
+            .iter()
+            .map(|item| {
+                (
+                    item.work_item.objective.as_str(),
+                    item.scheduling_state,
+                    item.has_active_waits,
+                    item.has_active_task_waits,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(scheduling_states.contains(&(
+            "current runnable",
+            WorkItemSchedulingState::Runnable,
+            false,
+            false
+        )));
+        assert!(scheduling_states.contains(&(
+            "operator decision",
+            WorkItemSchedulingState::WaitingOperator,
+            false,
+            false
+        )));
+        assert!(scheduling_states.contains(&(
+            "triggered blocked",
+            WorkItemSchedulingState::Blocked,
+            true,
+            false
+        )));
+        assert!(scheduling_states.contains(&(
+            "external wait",
+            WorkItemSchedulingState::WaitingExternal,
+            true,
+            false
+        )));
+        assert!(scheduling_states.contains(&(
+            "task wait",
+            WorkItemSchedulingState::WaitingTask,
+            false,
+            true
+        )));
+        assert!(scheduling_states.contains(&(
+            "recently completed",
+            WorkItemSchedulingState::Completed,
+            false,
+            false
+        )));
         assert_eq!(
             projection
                 .waiting_for_operator
@@ -2369,7 +2480,7 @@ mod tests {
                 .iter()
                 .map(|item| item.work_item.objective.as_str())
                 .collect::<Vec<_>>(),
-            vec!["plain blocked"]
+            vec!["plain blocked", "external wait", "task wait"]
         );
         assert_eq!(
             projection

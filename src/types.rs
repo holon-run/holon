@@ -2781,6 +2781,17 @@ pub enum WorkItemReadiness {
     Completed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemSchedulingState {
+    Runnable,
+    WaitingOperator,
+    WaitingTask,
+    WaitingExternal,
+    Blocked,
+    Completed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkItemPlanArtifact {
     pub path: PathBuf,
@@ -2853,6 +2864,29 @@ impl WorkItemRecord {
             return WorkItemReadiness::WaitingForOperator;
         }
         WorkItemReadiness::Runnable
+    }
+
+    pub fn scheduling_state(
+        &self,
+        has_active_external_wait: bool,
+        has_active_task_wait: bool,
+    ) -> WorkItemSchedulingState {
+        if self.state == WorkItemState::Completed {
+            return WorkItemSchedulingState::Completed;
+        }
+        if self.blocked_by.is_some() {
+            return WorkItemSchedulingState::Blocked;
+        }
+        if self.plan_status == WorkItemPlanStatus::NeedsInput {
+            return WorkItemSchedulingState::WaitingOperator;
+        }
+        if has_active_task_wait {
+            return WorkItemSchedulingState::WaitingTask;
+        }
+        if has_active_external_wait {
+            return WorkItemSchedulingState::WaitingExternal;
+        }
+        WorkItemSchedulingState::Runnable
     }
 
     pub fn is_runnable(&self) -> bool {
