@@ -112,7 +112,7 @@ fn minimal_snapshot(agent_id: &str, _cursor: &str) -> AgentStateSnapshot {
 /// Convert an `AuditEvent` from storage into an `AgentStreamEvent` for the TUI projection.
 fn audit_to_stream_event(
     event: &crate::types::AuditEvent,
-    seq: u64,
+    event_seq: u64,
     agent_id: &str,
 ) -> AgentStreamEvent {
     AgentStreamEvent {
@@ -120,7 +120,7 @@ fn audit_to_stream_event(
         event: event.kind.clone(),
         data: StreamEventEnvelope {
             id: event.id.clone(),
-            seq,
+            event_seq,
             ts: event.created_at,
             agent_id: agent_id.into(),
             event_type: event.kind.clone(),

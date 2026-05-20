@@ -102,12 +102,12 @@ projection.
 
 Use Server-Sent Events:
 
-`GET /agents/:id/events?since=<cursor>`
+`GET /agents/:id/events/stream?after_seq=<event_seq>`
 
 with:
 
 - `Content-Type: text/event-stream`
-- standard SSE `id:` field for cursor replay
+- standard SSE `id:` field set to the durable `event_seq`
 - optional `Last-Event-ID` support
 
 SSE is the preferred first transport because Holon's immediate problem is a
@@ -170,7 +170,7 @@ replaying arbitrary historical events.
 
 ### Endpoint
 
-`GET /agents/:id/events?since=<cursor>`
+`GET /agents/:id/events/stream?after_seq=<event_seq>`
 
 ### Purpose
 
@@ -182,10 +182,11 @@ append-only internal log as a public API.
 
 ### Replay Behavior
 
-- if `since` is present and still available in the recent-event buffer, replay
-  events after that cursor
-- if `since` is missing, stream only new events after connection establishment
-- if `since` is too old and no longer replayable, the server should explicitly
+- if `after_seq` is present and still available in the recent-event buffer,
+  replay events with larger `event_seq`
+- if `after_seq` is missing, stream only new events after connection
+  establishment
+- if `after_seq` is too old and no longer replayable, the server should explicitly
   require a snapshot refresh
 
 Replay failure must be explicit and deterministic. A client must know when it
@@ -206,10 +207,12 @@ and replay authorization are related but separate concerns:
   raw standard event payload was included.
 
 Every replay envelope should preserve safe provenance needed for recovery and
-audit, including event cursor/id, sequence, timestamp, event kind, agent id,
-and any available origin, trust, authority class, delivery surface, admission
-context, transport/source, reply route, message id, task id, work item id,
-correlation id, and causation id.
+audit, including event id, per-agent durable `event_seq`, timestamp, event
+kind, agent id, and any available origin, trust, authority class, delivery
+surface, admission context, transport/source, reply route, message id, task id,
+work item id, correlation id, and causation id. Replay cursors are
+`event_seq` values assigned by the append-only ledger, not event UUIDs or
+transport-local response sequence numbers.
 
 Runtime events should have clear, standard payload schemas that first-party
 clients and integrations can consume directly. The default replay projection is
@@ -228,7 +231,7 @@ Every stream event should use one canonical envelope.
 ```json
 {
   "id": "evt_12346",
-  "seq": 12,
+  "event_seq": 12,
   "ts": "2026-04-18T14:00:00Z",
   "agent_id": "default",
   "type": "task_status_updated",
@@ -250,10 +253,10 @@ Every stream event should use one canonical envelope.
 ### Fields
 
 - `id`
-  - stable event cursor used for replay and SSE `id:`
-- `seq`
-  - stream ordering hint
-  - clients must not depend on this field for replay correctness
+  - stable event UUID used for deduplication and references
+- `event_seq`
+  - per-agent durable ledger sequence used for replay, paging, ordering, and
+    SSE `id:`
 - `ts`
   - event timestamp
 - `agent_id`
@@ -274,9 +277,9 @@ Every stream event should use one canonical envelope.
 The envelope should be projected to SSE as:
 
 ```text
-id: evt_12346
+id: 12
 event: task_status_updated
-data: {"id":"evt_12346","seq":12,"ts":"2026-04-18T14:00:00Z","agent_id":"default","type":"task_status_updated","payload":{}}
+data: {"id":"evt_12346","event_seq":12,"ts":"2026-04-18T14:00:00Z","agent_id":"default","type":"task_status_updated","payload":{}}
 ```
 
 ## Raw Event Families
@@ -733,7 +736,7 @@ bootstrap from a single request.
   "waiting_intents": [],
   "external_triggers": [],
   "workspace": null,
-  "cursor": "evt_12345"
+  "newest_seq": 12345
 }
 ```
 
@@ -760,7 +763,7 @@ bootstrap from a single request.
   - current callback delivery state
 - `workspace`
   - current workspace/worktree summary needed by the TUI
-- `cursor`
+- `newest_seq`
   - replay cursor for the subsequent event stream
 
 Explicit brief record retrieval remains available through

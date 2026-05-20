@@ -256,7 +256,7 @@ fn sample_snapshot(agent_id: &str, _cursor: &str) -> AgentStateSnapshot {
 
 fn operator_message_event_envelope(
     id: &str,
-    seq: u64,
+    event_seq: u64,
     agent_id: &str,
     text: &str,
 ) -> StreamEventEnvelope {
@@ -271,7 +271,7 @@ fn operator_message_event_envelope(
     message.id = id.into();
     pipeline_event_envelope(
         id,
-        seq,
+        event_seq,
         agent_id,
         "message_enqueued",
         serde_json::to_value(message).unwrap(),
@@ -289,7 +289,7 @@ fn apply_brief_event(app: &mut TuiApp, brief: BriefRecord) {
             event: "brief_created".into(),
             data: StreamEventEnvelope {
                 id: event_id,
-                seq: 0,
+                event_seq: 0,
                 ts: brief.created_at,
                 agent_id: brief.agent_id.clone(),
                 event_type: "brief_created".into(),
@@ -343,7 +343,7 @@ fn collect_chat_items_does_not_write_presentation_debug_log() {
     let snapshot = sample_snapshot("default", "evt-assistant");
     let events_tail = vec![StreamEventEnvelope {
         id: "evt-assistant".into(),
-        seq: 1,
+        event_seq: 1,
         ts: Utc::now(),
         agent_id: "default".into(),
         event_type: "assistant_round_recorded".into(),
@@ -352,7 +352,7 @@ fn collect_chat_items_does_not_write_presentation_debug_log() {
         payload: json!({ "round": 1, "text_preview": "history progress" }),
     }];
     let mut projection = TuiProjection::from_snapshot(snapshot);
-    projection.replace_event_window(events_tail, Some("evt-assistant".into()));
+    projection.replace_event_window(events_tail, Some(1));
     app.projection = Some(projection);
 
     let first = collect_chat_items(&app);
@@ -1545,7 +1545,7 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
             event: "work_item_written".into(),
             data: StreamEventEnvelope {
                 id: "evt-work".into(),
-                seq: 2,
+                event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "work_item_written".into(),
@@ -1575,7 +1575,7 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
             event: "assistant_round_recorded".into(),
             data: StreamEventEnvelope {
                 id: "evt-assistant".into(),
-                seq: 3,
+                event_seq: 3,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "assistant_round_recorded".into(),
@@ -1615,7 +1615,7 @@ fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 id: "evt-tool".into(),
-                seq: 2,
+                event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
@@ -1635,7 +1635,7 @@ fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
             event: "agent_state_changed".into(),
             data: StreamEventEnvelope {
                 id: "evt-state".into(),
-                seq: 3,
+                event_seq: 3,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "agent_state_changed".into(),
@@ -1678,7 +1678,7 @@ fn chat_text_omits_task_system_events() {
             event: "task_result_received".into(),
             data: StreamEventEnvelope {
                 id: "evt-task".into(),
-                seq: 2,
+                event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "task_result_received".into(),
@@ -1732,7 +1732,7 @@ fn chat_text_keeps_active_activity_after_brief_event() {
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 id: "evt-tool".into(),
-                seq: 2,
+                event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
@@ -1752,7 +1752,7 @@ fn chat_text_keeps_active_activity_after_brief_event() {
             event: "brief_created".into(),
             data: StreamEventEnvelope {
                 id: "evt-brief".into(),
-                seq: 3,
+                event_seq: 3,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "brief_created".into(),
@@ -1808,7 +1808,7 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 id: "evt-tool".into(),
-                seq: 2,
+                event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
@@ -1849,7 +1849,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 id: "evt-a-tool".into(),
-                seq: 2,
+                event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "agent-a".into(),
                 event_type: "tool_executed".into(),
@@ -1875,7 +1875,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
     switched_snapshot.agent.agent.status = AgentStatus::AwakeRunning;
     let events_tail = vec![StreamEventEnvelope {
         id: "evt-b-tool".into(),
-        seq: 0,
+        event_seq: 0,
         ts: Utc::now(),
         agent_id: "agent-b".into(),
         event_type: "tool_executed".into(),
@@ -1893,7 +1893,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
     // Switching agents must use the selected agent's event page rather
     // than inheriting the previous agent's event log.
     let mut switched_projection = TuiProjection::from_snapshot(switched_snapshot);
-    switched_projection.replace_event_window(events_tail, Some("evt-b-tool".into()));
+    switched_projection.replace_event_window(events_tail, Some(0));
     app.projection = Some(switched_projection);
 
     let rendered: String = build_chat_text(&collect_chat_items(&app))
@@ -1923,7 +1923,7 @@ fn chat_text_does_not_show_stale_activity_when_agent_is_idle() {
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 id: "evt-tool".into(),
-                seq: 2,
+                event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
@@ -2004,7 +2004,7 @@ fn active_activity_timestamp_does_not_sort_before_tail_history() {
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 id: "evt-tool".into(),
-                seq: 2,
+                event_seq: 2,
                 ts,
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
@@ -2203,7 +2203,7 @@ fn chat_includes_pending_operator_message_from_snapshot() {
             "default",
             "please stop soon",
         )],
-        Some("evt-message-queued".into()),
+        Some(0),
     );
     app.projection = Some(projection);
 
@@ -2240,7 +2240,7 @@ fn conversation_events_overlay_uses_event_projection() {
             "default",
             "event sourced transcript",
         )],
-        Some("evt-message-1".into()),
+        Some(0),
     );
     app.projection = Some(projection);
 
@@ -2267,7 +2267,7 @@ fn chat_dedupes_pending_operator_message_when_event_log_contains_it() {
             "default",
             "persisted operator text",
         )],
-        Some("evt-message-1".into()),
+        Some(0),
     );
     app.projection = Some(projection);
     app.apply_projection_view();
@@ -2309,7 +2309,7 @@ fn chat_text_omits_processing_and_processed_operator_status_labels() {
                 "default",
                 "operator text",
             )],
-            Some("evt-message-1".into()),
+            Some(0),
         );
         app.projection = Some(projection);
         app.apply_projection_view();
@@ -2354,7 +2354,7 @@ fn projection_operator_message_prunes_reconciled_optimistic_entry() {
             "default",
             "durable text",
         )],
-        Some("message-1".into()),
+        Some(0),
     );
     app.projection = Some(projection);
     app.apply_projection_view();
@@ -2390,7 +2390,7 @@ fn events_overlay_selection_stays_pinned_to_same_event_id() {
             event: "provider_round_completed".into(),
             data: StreamEventEnvelope {
                 id: "evt-old".into(),
-                seq: 2,
+                event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "provider_round_completed".into(),
@@ -2414,7 +2414,7 @@ fn events_overlay_selection_stays_pinned_to_same_event_id() {
                 event: "provider_round_completed".into(),
                 data: StreamEventEnvelope {
                     id: "evt-new".into(),
-                    seq: 3,
+                    event_seq: 3,
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "provider_round_completed".into(),
@@ -2723,7 +2723,7 @@ fn stale_projection_event_schedules_refresh() {
         event: "waiting_intent_created".into(),
         data: StreamEventEnvelope {
             id: "evt-stale".into(),
-            seq: 2,
+            event_seq: 2,
             ts: Utc::now(),
             agent_id: "default".into(),
             event_type: "waiting_intent_created".into(),
@@ -2977,14 +2977,14 @@ fn history_navigation_browses_multiple_entries() {
 /// Helper: build a `StreamEventEnvelope` with the given fields.
 fn pipeline_event_envelope(
     id: &str,
-    seq: u64,
+    event_seq: u64,
     agent_id: &str,
     event_type: &str,
     payload: serde_json::Value,
 ) -> StreamEventEnvelope {
     StreamEventEnvelope {
         id: id.into(),
-        seq,
+        event_seq,
         ts: Utc::now(),
         agent_id: agent_id.into(),
         event_type: event_type.into(),
@@ -2997,7 +2997,7 @@ fn pipeline_event_envelope(
 /// Helper: build an `AgentStreamEvent` for a known kind.
 fn pipeline_event(
     id: &str,
-    seq: u64,
+    event_seq: u64,
     agent_id: &str,
     kind: &str,
     payload: serde_json::Value,
@@ -3005,7 +3005,7 @@ fn pipeline_event(
     AgentStreamEvent {
         id: id.into(),
         event: kind.into(),
-        data: pipeline_event_envelope(id, seq, agent_id, kind, payload),
+        data: pipeline_event_envelope(id, event_seq, agent_id, kind, payload),
     }
 }
 
@@ -4067,9 +4067,9 @@ fn pipeline_stress_50_tool_calls() {
     let start = std::time::Instant::now();
 
     // Feed 55 pairs of process_execution_requested + tool_executed.
-    let mut seq: u64 = 0;
+    let mut event_seq: u64 = 0;
     for step in 1..=TOOL_COUNT {
-        seq += 1;
+        event_seq += 1;
         let cmd = format!("echo step {step}");
         let stdout = format!("step {step}");
         let req_id = format!("evt-req-{step}");
@@ -4078,7 +4078,7 @@ fn pipeline_stress_50_tool_calls() {
         projection.apply_event(
             pipeline_event(
                 &req_id,
-                seq,
+                event_seq,
                 "default",
                 "process_execution_requested",
                 json!({ "exec_command_cmd": cmd }),
@@ -4086,11 +4086,11 @@ fn pipeline_stress_50_tool_calls() {
             &app.log_writer,
         );
 
-        seq += 1;
+        event_seq += 1;
         projection.apply_event(
             pipeline_event(
                 &tool_id,
-                seq,
+                event_seq,
                 "default",
                 "tool_executed",
                 json!({
@@ -4106,11 +4106,11 @@ fn pipeline_stress_50_tool_calls() {
     }
 
     // End the turn.
-    seq += 1;
+    event_seq += 1;
     projection.apply_event(
         pipeline_event(
             "evt-assistant",
-            seq,
+            event_seq,
             "default",
             "assistant_round_recorded",
             json!({ "round": 1, "text_preview": "All 55 steps completed." }),

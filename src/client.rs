@@ -143,14 +143,15 @@ pub struct ControlPromptResponse {
 
 #[derive(Debug, Clone, Default)]
 pub struct EventStreamRequest {
-    pub cursor: Option<String>,
+    pub after_seq: Option<u64>,
     pub limit: Option<usize>,
     pub projection: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct EventPageRequest {
-    pub cursor: Option<String>,
+    pub before_seq: Option<u64>,
+    pub after_seq: Option<u64>,
     pub limit: Option<usize>,
     pub order: Option<String>,
     pub projection: Option<String>,
@@ -159,8 +160,8 @@ pub struct EventPageRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventPageResponse {
     pub events: Vec<StreamEventEnvelope>,
-    pub oldest_cursor: Option<String>,
-    pub newest_cursor: Option<String>,
+    pub oldest_seq: Option<u64>,
+    pub newest_seq: Option<u64>,
     pub has_older: bool,
     pub has_newer: bool,
     pub order: String,
@@ -170,7 +171,7 @@ pub struct EventPageResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StreamEventEnvelope {
     pub id: String,
-    pub seq: u64,
+    pub event_seq: u64,
     pub ts: chrono::DateTime<Utc>,
     pub agent_id: String,
     #[serde(rename = "type")]
@@ -1124,8 +1125,8 @@ fn event_stream_path(agent_id: &str, request: &EventStreamRequest) -> Result<Str
         if let Some(limit) = request.limit {
             query.append_pair("limit", &limit.to_string());
         }
-        if let Some(cursor) = request.cursor.as_deref() {
-            query.append_pair("cursor", cursor);
+        if let Some(after_seq) = request.after_seq {
+            query.append_pair("after_seq", &after_seq.to_string());
         }
         if let Some(projection) = request.projection.as_deref() {
             query.append_pair("projection", projection);
@@ -1151,8 +1152,11 @@ fn event_page_path(agent_id: &str, request: &EventPageRequest) -> Result<String>
         if let Some(limit) = request.limit {
             query.append_pair("limit", &limit.to_string());
         }
-        if let Some(cursor) = request.cursor.as_deref() {
-            query.append_pair("cursor", cursor);
+        if let Some(before_seq) = request.before_seq {
+            query.append_pair("before_seq", &before_seq.to_string());
+        }
+        if let Some(after_seq) = request.after_seq {
+            query.append_pair("after_seq", &after_seq.to_string());
         }
         if let Some(order) = request.order.as_deref() {
             query.append_pair("order", order);
@@ -1491,7 +1495,7 @@ mod tests {
         let path = event_stream_path(
             "default",
             &EventStreamRequest {
-                cursor: Some("evt_123".into()),
+                after_seq: Some(123),
                 limit: Some(20),
                 projection: Some("local_debug".into()),
             },
@@ -1499,25 +1503,22 @@ mod tests {
         .unwrap();
         assert_eq!(
             path,
-            "/agents/default/events/stream?limit=20&cursor=evt_123&projection=local_debug"
+            "/agents/default/events/stream?limit=20&after_seq=123&projection=local_debug"
         );
     }
 
     #[test]
-    fn event_stream_path_encodes_reserved_query_characters() {
+    fn event_stream_path_includes_seq_cursor() {
         let path = event_stream_path(
             "default",
             &EventStreamRequest {
-                cursor: Some("evt?x=1&y=2".into()),
+                after_seq: Some(42),
                 limit: None,
                 projection: None,
             },
         )
         .unwrap();
-        assert_eq!(
-            path,
-            "/agents/default/events/stream?cursor=evt%3Fx%3D1%26y%3D2"
-        );
+        assert_eq!(path, "/agents/default/events/stream?after_seq=42");
     }
 
     #[test]
@@ -1624,7 +1625,7 @@ mod tests {
     async fn sse_comment_heartbeat_does_not_emit_event_and_preserves_liveness() {
         let event = StreamEventEnvelope {
             id: "evt-1".into(),
-            seq: 1,
+            event_seq: 1,
             ts: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
                 .unwrap()
                 .with_timezone(&chrono::Utc),
@@ -1707,9 +1708,9 @@ mod tests {
 
     #[test]
     fn parse_sse_frame_ignores_comments_and_multiline_data() {
-        let frame = b": heartbeat\nid: evt_123\nevent: message_admitted\ndata: {\"id\":\"evt_123\",\ndata: \"seq\":1,\ndata: \"ts\":\"2026-04-19T08:00:00Z\",\ndata: \"agent_id\":\"default\",\ndata: \"type\":\"message_admitted\",\ndata: \"payload\":{}}\n";
+        let frame = b": heartbeat\nid: 1\nevent: message_admitted\ndata: {\"id\":\"evt_123\",\ndata: \"event_seq\":1,\ndata: \"ts\":\"2026-04-19T08:00:00Z\",\ndata: \"agent_id\":\"default\",\ndata: \"type\":\"message_admitted\",\ndata: \"payload\":{}}\n";
         let parsed = parse_sse_frame(frame).unwrap().unwrap();
-        assert_eq!(parsed.id, "evt_123");
+        assert_eq!(parsed.id, "1");
         assert_eq!(parsed.event, "message_admitted");
         assert_eq!(parsed.data.event_type, "message_admitted");
         assert_eq!(parsed.data.agent_id, "default");

@@ -1557,6 +1557,7 @@ mod tests {
         };
         let event = |kind: &str, created_at, data| AuditEvent {
             id: uuid::Uuid::new_v4().to_string(),
+            event_seq: 0,
             created_at,
             kind: kind.into(),
             data,

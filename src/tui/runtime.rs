@@ -67,8 +67,8 @@ pub(super) enum TuiRuntimeMessage {
 type SnapshotBootstrapResult = (
     AgentStateSnapshot,
     Vec<StreamEventEnvelope>,
-    Option<String>,
-    Option<String>,
+    Option<u64>,
+    Option<u64>,
     bool,
 );
 
@@ -430,9 +430,9 @@ impl TuiApp {
                             },
                         )
                         .await?;
-                    let newest_cursor = events_page.newest_cursor.clone();
+                    let newest_cursor = events_page.newest_seq;
                     events_page.events.reverse();
-                    let oldest_cursor = events_page.oldest_cursor;
+                    let oldest_cursor = events_page.oldest_seq;
                     let has_older = events_page.has_older;
                     anyhow::Ok((
                         snapshot,
@@ -543,17 +543,13 @@ impl TuiApp {
         self.begin_connect_event_stream_for(agent_id, cursor);
     }
 
-    pub(super) fn begin_connect_event_stream_for(
-        &mut self,
-        agent_id: String,
-        cursor: Option<String>,
-    ) {
+    pub(super) fn begin_connect_event_stream_for(&mut self, agent_id: String, cursor: Option<u64>) {
         self.stream_connect_in_flight = true;
         self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
         let request_id = self.stream_connect_request_id;
         self.reconnect_deadline = None;
         let request = EventStreamRequest {
-            cursor,
+            after_seq: cursor,
             ..Default::default()
         };
         let client = self.client.clone();
@@ -775,7 +771,7 @@ impl TuiApp {
                     .agent_events_page(
                         &agent_id,
                         EventPageRequest {
-                            cursor: Some(cursor),
+                            before_seq: Some(cursor),
                             limit: Some(EVENT_HISTORY_PAGE_LIMIT),
                             order: Some("desc".into()),
                             ..Default::default()
@@ -818,11 +814,8 @@ impl TuiApp {
             if projection.agent.identity.agent_id != agent_id {
                 return;
             }
-            let added = projection.prepend_event_history_page(
-                page.events,
-                page.oldest_cursor,
-                page.has_older,
-            );
+            let added =
+                projection.prepend_event_history_page(page.events, page.oldest_seq, page.has_older);
             (added, projection.history_has_older)
         };
         if added > 0 {

@@ -3199,6 +3199,8 @@ impl BriefRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
     pub id: String,
+    #[serde(default)]
+    pub event_seq: u64,
     pub created_at: DateTime<Utc>,
     pub kind: String,
     pub data: Value,
@@ -3208,6 +3210,7 @@ impl AuditEvent {
     pub fn new(kind: impl Into<String>, data: Value) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
+            event_seq: 0,
             created_at: Utc::now(),
             kind: kind.into(),
             data,

@@ -57,17 +57,16 @@ async fn next_sse_event_kind(
     .await?
 }
 
-async fn newest_event_cursor(base: &str, client: &Client) -> Result<String> {
+async fn newest_event_seq(base: &str, client: &Client) -> Result<u64> {
     let page: serde_json::Value = client
         .get(format!("{base}/agents/default/events?limit=1&order=desc"))
         .send()
         .await?
         .json()
         .await?;
-    page["newest_cursor"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("newest_cursor should be present"))
+    page["newest_seq"]
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("newest_seq should be present"))
 }
 
 pub async fn events_route_supports_cursor_pagination() -> Result<()> {
@@ -95,17 +94,17 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
         .await?;
     let latest_events = latest["events"].as_array().expect("events");
     assert_eq!(latest_events.len(), 2);
-    let latest_newest = latest_events[0]["id"].as_str().expect("newest id");
-    let latest_oldest = latest_events[1]["id"].as_str().expect("oldest id");
-    assert_eq!(latest["newest_cursor"], latest_newest);
-    assert_eq!(latest["oldest_cursor"], latest_oldest);
+    let latest_newest = latest_events[0]["event_seq"].as_u64().expect("newest seq");
+    let latest_oldest = latest_events[1]["event_seq"].as_u64().expect("oldest seq");
+    assert_eq!(latest["newest_seq"], latest_newest);
+    assert_eq!(latest["oldest_seq"], latest_oldest);
     assert_eq!(latest["has_older"], true);
     assert_eq!(latest["has_newer"], false);
 
     let older: serde_json::Value = client
         .get(format!(
-            "{base}/agents/default/events?cursor={}&limit=2&order=desc",
-            latest["oldest_cursor"].as_str().expect("oldest cursor")
+            "{base}/agents/default/events?before_seq={}&limit=2&order=desc",
+            latest["oldest_seq"].as_u64().expect("oldest seq")
         ))
         .send()
         .await?
@@ -113,16 +112,18 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
         .await?;
     let older_events = older["events"].as_array().expect("events");
     assert!(!older_events.is_empty());
-    let older_newest = older_events[0]["id"].as_str().expect("older newest id");
+    let older_newest = older_events[0]["event_seq"]
+        .as_u64()
+        .expect("older newest seq");
     assert_ne!(older_newest, latest_newest);
     assert_ne!(older_newest, latest_oldest);
-    assert_eq!(older["newest_cursor"], older_newest);
+    assert_eq!(older["newest_seq"], older_newest);
     assert_eq!(older["has_newer"], true);
 
     let newer: serde_json::Value = client
         .get(format!(
-            "{base}/agents/default/events?cursor={}&limit=2&order=asc",
-            older["newest_cursor"].as_str().expect("newest cursor")
+            "{base}/agents/default/events?after_seq={}&limit=2&order=asc",
+            older["newest_seq"].as_u64().expect("newest seq")
         ))
         .send()
         .await?
@@ -130,22 +131,20 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
         .await?;
     let newer_events = newer["events"].as_array().expect("events");
     assert_eq!(newer_events.len(), 2);
-    assert_eq!(newer_events[0]["id"], latest_oldest);
-    assert_eq!(newer_events[1]["id"], latest_newest);
-    assert_eq!(newer["oldest_cursor"], latest_oldest);
-    assert_eq!(newer["newest_cursor"], latest_newest);
+    assert_eq!(newer_events[0]["event_seq"], latest_oldest);
+    assert_eq!(newer_events[1]["event_seq"], latest_newest);
+    assert_eq!(newer["oldest_seq"], latest_oldest);
+    assert_eq!(newer["newest_seq"], latest_newest);
 
     let empty_cursor: serde_json::Value = client
-        .get(format!(
-            "{base}/agents/default/events?cursor=&limit=2&order=desc"
-        ))
+        .get(format!("{base}/agents/default/events?limit=2&order=desc"))
         .send()
         .await?
         .json()
         .await?;
     assert_eq!(empty_cursor["events"].as_array().expect("events").len(), 2);
-    assert_eq!(empty_cursor["newest_cursor"], latest_newest);
-    assert_eq!(empty_cursor["oldest_cursor"], latest_oldest);
+    assert_eq!(empty_cursor["newest_seq"], latest_newest);
+    assert_eq!(empty_cursor["oldest_seq"], latest_oldest);
 
     server.abort();
     Ok(())
@@ -163,7 +162,7 @@ pub async fn events_route_supports_cursor_replay() -> Result<()> {
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let cursor = newest_event_cursor(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client).await?;
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
@@ -172,7 +171,7 @@ pub async fn events_route_supports_cursor_replay() -> Result<()> {
         .await?;
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?cursor={cursor}"
+            "{base}/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
@@ -196,7 +195,7 @@ pub async fn events_stream_supports_cursor_and_rfc3339_ts() -> Result<()> {
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let cursor = newest_event_cursor(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client).await?;
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
@@ -206,7 +205,7 @@ pub async fn events_stream_supports_cursor_and_rfc3339_ts() -> Result<()> {
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?cursor={cursor}"
+            "{base}/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
@@ -234,7 +233,7 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let cursor = newest_event_cursor(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client).await?;
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
@@ -244,7 +243,7 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?cursor={cursor}"
+            "{base}/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
@@ -286,7 +285,7 @@ pub async fn events_route_operator_projection_preserves_tool_payload() -> Result
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let cursor = newest_event_cursor(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client).await?;
 
     runtime.storage().append_event(&AuditEvent::new(
         "tool_executed",
@@ -303,7 +302,7 @@ pub async fn events_route_operator_projection_preserves_tool_payload() -> Result
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?cursor={cursor}&projection=operator"
+            "{base}/agents/default/events/stream?after_seq={after_seq}&projection=operator"
         ))
         .send()
         .await?;
@@ -347,7 +346,7 @@ pub async fn events_route_operator_projection_preserves_assistant_round_payload(
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let cursor = newest_event_cursor(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client).await?;
 
     runtime.storage().append_event(&AuditEvent::new(
         "assistant_round_recorded",
@@ -371,7 +370,7 @@ pub async fn events_route_operator_projection_preserves_assistant_round_payload(
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?cursor={cursor}&projection=operator"
+            "{base}/agents/default/events/stream?after_seq={after_seq}&projection=operator"
         ))
         .send()
         .await?;
@@ -427,7 +426,7 @@ pub async fn events_route_operator_projection_preserves_workspace_payload() -> R
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let cursor = newest_event_cursor(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client).await?;
 
     runtime.storage().append_event(&AuditEvent::new(
         "workspace_used",
@@ -444,7 +443,7 @@ pub async fn events_route_operator_projection_preserves_workspace_payload() -> R
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?cursor={cursor}&projection=operator"
+            "{base}/agents/default/events/stream?after_seq={after_seq}&projection=operator"
         ))
         .send()
         .await?;
@@ -506,10 +505,9 @@ pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after
         .iter()
         .find(|event| event["type"] == "assistant_round_recorded")
         .expect("events page should include the appended assistant round");
-    let cursor = assistant_tail["id"]
-        .as_str()
-        .expect("assistant round cursor should be present")
-        .to_string();
+    let after_seq = assistant_tail["event_seq"]
+        .as_u64()
+        .expect("assistant round event seq should be present");
     assert_eq!(assistant_tail["projection"]["name"], "operator");
     assert_eq!(
         assistant_tail["projection"]["raw_payload_included"],
@@ -536,13 +534,13 @@ pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?cursor={cursor}&projection=operator"
+            "{base}/agents/default/events/stream?after_seq={after_seq}&projection=operator"
         ))
         .send()
         .await?;
     let replayed = next_sse_event_kind(&mut stream, "tool_executed").await?;
     assert_eq!(replayed.event, "tool_executed");
-    assert_ne!(replayed._id, cursor);
+    assert_ne!(replayed._id, after_seq.to_string());
 
     server.abort();
     Ok(())
@@ -630,9 +628,7 @@ pub async fn events_stream_with_missing_cursor_returns_not_found() -> Result<()>
     let (_host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();
     let response = client
-        .get(format!(
-            "{base}/agents/default/events/stream?cursor=evt_missing"
-        ))
+        .get(format!("{base}/agents/default/events/stream?after_seq=999"))
         .send()
         .await?;
     let status = response.status();
