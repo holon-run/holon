@@ -430,15 +430,15 @@ impl TuiApp {
                             },
                         )
                         .await?;
-                    let newest_cursor = events_page.newest_seq;
+                    let newest_seq = events_page.newest_seq;
                     events_page.events.reverse();
-                    let oldest_cursor = events_page.oldest_seq;
+                    let oldest_seq = events_page.oldest_seq;
                     let has_older = events_page.has_older;
                     anyhow::Ok((
                         snapshot,
                         events_page.events,
-                        newest_cursor,
-                        oldest_cursor,
+                        newest_seq,
+                        oldest_seq,
                         has_older,
                     ))
                 }
@@ -467,7 +467,7 @@ impl TuiApp {
             return;
         }
         self.snapshot_refresh_in_flight = false;
-        let (snapshot, events_tail, newest_cursor, oldest_cursor, has_older) = match result {
+        let (snapshot, events_tail, newest_seq, oldest_seq, has_older) = match result {
             Ok(result) => result,
             Err(err) => {
                 if let Some(checkpoint) = checkpoint {
@@ -497,8 +497,8 @@ impl TuiApp {
         } else {
             TuiProjection::from_snapshot(snapshot)
         };
-        projection.merge_event_tail(events_tail, newest_cursor);
-        projection.set_event_history_state_from_tail(oldest_cursor, has_older);
+        projection.merge_event_tail(events_tail, newest_seq);
+        projection.set_event_history_state_from_tail(oldest_seq, has_older);
         let cursor = projection.cursor.clone();
 
         self.stop_stream_task();

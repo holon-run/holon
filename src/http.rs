@@ -1405,7 +1405,7 @@ fn initial_buffered_events(
         } else {
             match events.iter().position(|event| event.event_seq == after_seq) {
                 Some(position) => position + 1,
-                None => return Err(cursor_not_found(after_seq.to_string())),
+                None => return Err(event_seq_not_found(after_seq)),
             }
         }
     } else {
@@ -1454,14 +1454,14 @@ fn event_page(
         .filter(|event| event.event_seq > lower && event.event_seq < upper)
         .cloned()
         .collect::<Vec<_>>();
-    let total = filtered.len();
+    let has_more = filtered.len() > limit;
     match order {
         EventPageOrder::Asc => {
             filtered.truncate(limit);
             EventPage {
                 events: filtered,
-                has_older: lower > 0,
-                has_newer: total > limit || before_seq.is_some(),
+                has_older: false,
+                has_newer: has_more,
             }
         }
         EventPageOrder::Desc => {
@@ -1469,8 +1469,8 @@ fn event_page(
             filtered.truncate(limit);
             EventPage {
                 events: filtered,
-                has_older: total > limit || after_seq.is_some_and(|seq| seq > 0),
-                has_newer: before_seq.is_some(),
+                has_older: has_more,
+                has_newer: false,
             }
         }
     }
@@ -1565,14 +1565,15 @@ fn clone_payload_field(payload: &Value, field: &str) -> Option<Value> {
     payload.get(field).filter(|value| !value.is_null()).cloned()
 }
 
-fn cursor_not_found(cursor: String) -> (StatusCode, Json<Value>) {
+fn event_seq_not_found(event_seq: u64) -> (StatusCode, Json<Value>) {
     (
         StatusCode::NOT_FOUND,
         Json(json!({
             "ok": false,
-            "error": format!("cursor {cursor} was not found"),
+            "error": format!("after_seq {event_seq} was not found in the replay window"),
             "code": "cursor_not_found",
-            "cursor": cursor,
+            "after_seq": event_seq,
+            "event_seq": event_seq,
         })),
     )
 }

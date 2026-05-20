@@ -118,7 +118,7 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
     assert_ne!(older_newest, latest_newest);
     assert_ne!(older_newest, latest_oldest);
     assert_eq!(older["newest_seq"], older_newest);
-    assert_eq!(older["has_newer"], true);
+    assert_eq!(older["has_newer"], false);
 
     let newer: serde_json::Value = client
         .get(format!(
@@ -135,6 +135,32 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
     assert_eq!(newer_events[1]["event_seq"], latest_newest);
     assert_eq!(newer["oldest_seq"], latest_oldest);
     assert_eq!(newer["newest_seq"], latest_newest);
+    assert_eq!(newer["has_older"], false);
+    assert_eq!(newer["has_newer"], false);
+
+    let bounded_newer: serde_json::Value = client
+        .get(format!(
+            "{base}/agents/default/events?after_seq={latest_oldest}&limit=10&order=desc"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(bounded_newer["events"].as_array().expect("events").len(), 1);
+    assert_eq!(bounded_newer["has_older"], false);
+    assert_eq!(bounded_newer["has_newer"], false);
+
+    let bounded_older: serde_json::Value = client
+        .get(format!(
+            "{base}/agents/default/events?after_seq={older_newest}&before_seq={latest_newest}&limit=10&order=asc"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(bounded_older["events"].as_array().expect("events").len(), 1);
+    assert_eq!(bounded_older["has_older"], false);
+    assert_eq!(bounded_older["has_newer"], false);
 
     let empty_cursor: serde_json::Value = client
         .get(format!("{base}/agents/default/events?limit=2&order=desc"))

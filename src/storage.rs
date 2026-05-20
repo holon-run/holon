@@ -156,8 +156,7 @@ impl AppStorage {
         }
 
         let events_path = ledger_dir.join("events.jsonl");
-        migrate_events_ledger(&events_path)?;
-        let event_seq_counter = max_event_seq(&events_path)?;
+        let event_seq_counter = migrate_events_ledger(&events_path)?;
 
         Ok(Self {
             events_path,
@@ -1082,40 +1081,26 @@ impl AppStorage {
     }
 }
 
-fn max_event_seq(path: &Path) -> Result<u64> {
+fn migrate_events_ledger(path: &Path) -> Result<u64> {
     if !path.exists() {
         return Ok(0);
     }
+
+    let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f");
+    let tmp_path = path.with_file_name(format!(".events.jsonl.{timestamp}.tmp"));
     let file =
         fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut tmp = fs::File::create(&tmp_path)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
     let mut max_seq = 0;
+    let mut changed = false;
+
     for line in BufReader::new(file).lines() {
         let line = line.with_context(|| format!("failed to read {}", path.display()))?;
         if line.trim().is_empty() {
             continue;
         }
-        let event: AuditEvent = serde_json::from_str(&line)?;
-        max_seq = max_seq.max(event.event_seq);
-    }
-    Ok(max_seq)
-}
-
-fn migrate_events_ledger(path: &Path) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-
-    let content =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut max_seq = 0;
-    let mut changed = false;
-    let mut migrated = Vec::new();
-
-    for line in content.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let mut value: Value = serde_json::from_str(line)?;
+        let mut value: Value = serde_json::from_str(&line)?;
         let object = value
             .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("event ledger line is not a JSON object"))?;
@@ -1134,16 +1119,15 @@ fn migrate_events_ledger(path: &Path) -> Result<()> {
                 changed = true;
             }
         }
-        migrated.push(serde_json::to_string(&value)?);
+        writeln!(tmp, "{}", serde_json::to_string(&value)?)?;
     }
 
     if !changed {
-        return Ok(());
+        let _ = fs::remove_file(&tmp_path);
+        return Ok(max_seq);
     }
 
-    let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f");
     let backup_path = path.with_file_name(format!("events.jsonl.bak.{timestamp}"));
-    let tmp_path = path.with_file_name(format!(".events.jsonl.{timestamp}.tmp"));
     fs::copy(path, &backup_path).with_context(|| {
         format!(
             "failed to back up {} to {}",
@@ -1151,10 +1135,6 @@ fn migrate_events_ledger(path: &Path) -> Result<()> {
             backup_path.display()
         )
     })?;
-    let mut bytes = migrated.join("\n").into_bytes();
-    bytes.push(b'\n');
-    fs::write(&tmp_path, bytes)
-        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
     fs::rename(&tmp_path, path).with_context(|| {
         format!(
             "failed to replace {} with {}",
@@ -1162,7 +1142,7 @@ fn migrate_events_ledger(path: &Path) -> Result<()> {
             tmp_path.display()
         )
     })?;
-    Ok(())
+    Ok(max_seq)
 }
 
 fn append_jsonl_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
