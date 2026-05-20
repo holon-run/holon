@@ -560,6 +560,8 @@ impl Renderable for PresentationItem {
 pub(crate) struct PresentationReducer {
     live_group: Option<LiveGroup>,
     last_ts: Option<DateTime<Utc>>,
+    observed_assistant_text_keys: HashSet<String>,
+    observed_brief_keys: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -576,7 +578,6 @@ impl PresentationReducer {
     pub(crate) fn reduce(&mut self, events: &[ProjectionEventRecord]) -> Vec<TimedItem> {
         let mut items: Vec<TimedItem> = Vec::new();
         let final_brief_texts = final_brief_texts(events);
-        let mut observed_assistant_text_keys = HashSet::new();
 
         let mut i = 0;
         while i < events.len() {
@@ -630,8 +631,10 @@ impl PresentationReducer {
                 }
 
                 "brief_created" => {
-                    if let Some(item) = brief_result_item(event) {
-                        items.push(TimedItem { item, ts: event.ts });
+                    if let Some((key, item)) = brief_result_item(event) {
+                        if self.observed_brief_keys.insert(key) {
+                            items.push(TimedItem { item, ts: event.ts });
+                        }
                     }
                 }
 
@@ -676,7 +679,7 @@ impl PresentationReducer {
                         let text_key = normalized_event_text_key(event, &text);
                         if !text.trim().is_empty()
                             && !matches_final_brief_text(event, &text, &final_brief_texts)
-                            && observed_assistant_text_keys.insert(text_key)
+                            && self.observed_assistant_text_keys.insert(text_key)
                         {
                             items.push(TimedItem {
                                 item: PresentationItem::AssistantProgress {
@@ -889,24 +892,37 @@ impl PresentationReducer {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-fn brief_result_item(event: &ProjectionEventRecord) -> Option<PresentationItem> {
+fn brief_result_item(event: &ProjectionEventRecord) -> Option<(String, PresentationItem)> {
     match serde_json::from_value::<BriefRecord>(event.payload.clone()) {
         Ok(brief) if is_operator_queue_ack(&brief) => None,
-        Ok(brief) => Some(PresentationItem::AssistantResult {
-            brief_id: Some(brief.id),
-            body: brief.text,
-            outcome: match brief.kind {
-                BriefKind::Failure => Outcome::Failure,
-                BriefKind::Result => Outcome::Success,
-                BriefKind::Ack => Outcome::Neutral,
+        Ok(brief) => {
+            let key = format!("id:{}", brief.id);
+            Some((
+                key,
+                PresentationItem::AssistantResult {
+                    brief_id: Some(brief.id),
+                    body: brief.text,
+                    outcome: match brief.kind {
+                        BriefKind::Failure => Outcome::Failure,
+                        BriefKind::Result => Outcome::Success,
+                        BriefKind::Ack => Outcome::Neutral,
+                    },
+                },
+            ))
+        }
+        Err(_) => Some((
+            format!("summary:{}", normalize_text_key(&event.summary)),
+            PresentationItem::AssistantResult {
+                brief_id: None,
+                body: event.summary.clone(),
+                outcome: Outcome::Neutral,
             },
-        }),
-        Err(_) => Some(PresentationItem::AssistantResult {
-            brief_id: None,
-            body: event.summary.clone(),
-            outcome: Outcome::Neutral,
-        }),
+        )),
     }
+}
+
+fn normalize_text_key(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn operator_message_text(event: &ProjectionEventRecord) -> Option<String> {
@@ -970,12 +986,14 @@ fn matches_final_brief_text(
 }
 
 fn normalized_event_text_key(event: &ProjectionEventRecord, text: &str) -> String {
-    let agent_id = event.payload.get("agent_id").and_then(Value::as_str);
-    normalized_text_key(agent_id, text)
-}
-
-fn normalized_text_key(agent_id: Option<&str>, text: &str) -> String {
-    format!("{}::{}", agent_id.unwrap_or(""), normalized_text(text))
+    let normalized = normalized_text(text);
+    match (
+        event.payload.get("turn_index").and_then(Value::as_u64),
+        event.payload.get("round").and_then(Value::as_u64),
+    ) {
+        (Some(turn_index), Some(round)) => format!("turn:{turn_index}:round:{round}::{normalized}"),
+        _ => normalized,
+    }
 }
 
 fn normalized_text(text: &str) -> String {
@@ -1392,6 +1410,33 @@ mod tests {
     }
 
     #[test]
+    fn reducer_deduplicates_repeated_brief_created_by_brief_id() {
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "completed the task",
+            None,
+            None,
+        );
+        let first = make_event("brief_created", "Brief: completed the task", json!(brief));
+        let mut second = first.clone();
+        second.id = "evt-2".into();
+        second.event_seq = 2;
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[first, second]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::AssistantResult { brief_id, body, .. } => {
+                assert!(brief_id.is_some());
+                assert_eq!(body, "completed the task");
+            }
+            other => panic!("expected AssistantResult, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn reducer_filters_canonical_operator_queue_ack_briefs() {
         let message = crate::types::MessageEnvelope::new(
             "default",
@@ -1485,6 +1530,71 @@ mod tests {
             }
             other => panic!("expected AssistantProgress, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn reducer_deduplicates_same_round_text_despite_agent_id_mismatch() {
+        let assistant = make_event(
+            "assistant_round_recorded",
+            "assistant round",
+            json!({
+                "agent_id": "default",
+                "turn_index": 12,
+                "round": 3,
+                "text_preview": "Rendering once"
+            }),
+        );
+        let text_only = make_event(
+            "text_only_round_observed",
+            "text only round",
+            json!({
+                "turn_index": 12,
+                "round": 3,
+                "text_preview": "Rendering once"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[assistant, text_only]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::AssistantProgress { text, .. } => {
+                assert_eq!(text, "Rendering once");
+            }
+            other => panic!("expected AssistantProgress, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_deduplicates_same_round_text_across_incremental_reductions() {
+        let assistant = make_event(
+            "assistant_round_recorded",
+            "assistant round",
+            json!({
+                "agent_id": "default",
+                "turn_index": 12,
+                "round": 3,
+                "text_preview": "Rendering once"
+            }),
+        );
+        let text_only = make_event(
+            "text_only_round_observed",
+            "text only round",
+            json!({
+                "agent_id": "default",
+                "turn_index": 12,
+                "round": 3,
+                "text_preview": "Rendering once"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let first = reducer.reduce(&[assistant]);
+        let second = reducer.reduce(&[text_only]);
+
+        assert_eq!(first.len(), 1);
+        assert!(second.is_empty());
     }
 
     #[test]
