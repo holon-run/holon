@@ -19,11 +19,16 @@ runtime to classify the work. If any WorkItem is still runnable, an indefinite
 sleep must not silently strand the agent; the runtime should enqueue or
 schedule a continuation instead.
 
-The scheduler should also gain a generic `WaitCondition` / `WakeSource` model.
-This model records that a WorkItem is waiting, what opaque subject it is waiting
-on, and which runtime-observable sources can reactivate the agent. The scheduler
-does not interpret provider-specific meanings such as CI, review, merge,
-inbox, or deployment state.
+As the first implementation phase, the scheduler should keep the agent-facing
+contract small: `blocked_by` remains free text, and blocked WorkItems gain a
+single fallback recheck deadline derived from `recheck_after` / `recheck_at`.
+The fallback is only an anti-forget reminder; it does not make the WorkItem
+runnable and does not mean the blocker is resolved.
+
+A fuller `WaitCondition` / `WakeSource` model remains a possible future
+direction, but it should not be implemented until the scheduler has a concrete
+use for those extra fields. The first phase should not add generic
+agent-facing WaitCondition CRUD tools.
 
 ## Problem
 
@@ -62,10 +67,10 @@ reliable without teaching the core scheduler provider-specific business rules.
 - Define a scheduler-facing state model for WorkItems.
 - Make runnable work non-silent: indefinite sleep must not strand runnable
   WorkItems.
-- Represent waiting as structured runtime state instead of relying only on
-  natural-language blockers.
+- Add a minimal recoverability fallback for natural-language blockers without
+  requiring structured wait metadata.
 - Keep task result, external ingress, timer, operator input, and system tick
-  wakeups in one generic wake-source model.
+  wakeups compatible with a future generic wake-source model.
 - Preserve the boundary between generic runtime scheduling and provider or
   skill-specific business policy.
 - Support incremental migration from existing WorkItem, waiting intent, task,
@@ -98,8 +103,9 @@ The current repository already has the major runtime pieces:
   the agent rest.
 
 This RFC does not propose replacing those pieces. It proposes adding a clearer
-derived scheduling layer over them and evolving waiting intents into a more
-general `WaitCondition` model.
+derived scheduling layer over them. The first implementation phase should add a
+blocked WorkItem recheck fallback; evolving waiting intents into a more general
+`WaitCondition` model is deferred.
 
 ## Core model
 
@@ -179,14 +185,87 @@ A WorkItem is blocked when it has an explicit blocker that is not represented
 as a structured active wait.
 
 Natural-language blockers remain useful for operator visibility, but they are
-not enough for reliable automatic continuation. Over time, recoverable blockers
-should become structured wait conditions.
+not enough for reliable automatic continuation. In the first implementation
+phase, blocked WorkItems may carry a `recheck_at` deadline so the runtime can
+remind the owning agent to inspect the blocker later.
+
+The deadline does not change WorkItem readiness:
+
+```text
+blocked_by != None
+recheck_at <= now
+=> WorkItemSchedulingState::Blocked
+=> enqueue or consume a reminder for the owning agent
+=> agent must explicitly update or clear blocked_by
+```
+
+The scheduler must not parse `blocked_by` or infer whether the blocker is
+resolved.
 
 ### Completed
 
 Completed WorkItems do not participate in scheduling.
 
-## WaitCondition
+## Phase 0: blocked WorkItem recheck fallback
+
+The initial implementation should use the existing WorkItem blocker field plus
+one small scheduler-facing deadline:
+
+```text
+WorkItem {
+  blocked_by: Option<String>
+  recheck_at: Option<Timestamp>
+}
+```
+
+`UpdateWorkItem` should support a small `recheck_after` input, or an equivalent
+bounded field, when the agent sets or refreshes `blocked_by`.
+
+Rules:
+
+- Setting `blocked_by` with an explicit `recheck_after` sets one `recheck_at`
+  deadline relative to the update time.
+- Setting `blocked_by` without an explicit recheck value sets a default
+  `recheck_at = now + 1 hour`.
+- The 1-hour default is a generic runtime anti-forget fallback for unstructured
+  blocked WorkItems. It is not a provider-specific GitHub, CI, review, merge,
+  deployment, or inbox policy.
+- Clearing `blocked_by` clears `recheck_at` and any delivery marker for that
+  reminder.
+- Updating objective, plan status, todo list, or other WorkItem fields without
+  touching `blocked_by` must not reset `recheck_at`.
+- `recheck_at` is one-shot. Once the due reminder is delivered or consumed, the
+  runtime should not repeatedly enqueue new reminders for the same due
+  deadline. If the agent still needs a fallback, it must set or refresh
+  `blocked_by` with another `recheck_after`.
+
+Due rechecks are delivered per owning agent, not per WorkItem:
+
+- If one or more blocked WorkItems are due for the same agent, the scheduler
+  should coalesce them into one low-priority recheck wake/event.
+- The recheck payload or runtime context should identify the due WorkItems so
+  the agent can decide what to inspect.
+- Multiple due WorkItems should be ordered by earliest `recheck_at`, then by
+  the existing WorkItem ranking.
+- If the agent is sleeping or awake-idle, enqueue the coalesced recheck.
+- If the agent is already running a turn, consume or clear the due recheck
+  marker without interrupting and without enqueueing a later noise reminder.
+- If the agent already has queued input but is not running, do not add an extra
+  reminder solely for the recheck; rely on the existing queued turn/context to
+  surface due blocked WorkItems.
+
+The recheck reminder only asks the agent to reconcile state. It must not:
+
+- make the WorkItem runnable;
+- clear `blocked_by`;
+- resolve a wait;
+- choose provider-specific policy based on blocker text.
+
+## Deferred WaitCondition direction
+
+The following shape is a future direction, not the first implementation scope.
+It should be introduced only if the scheduler or a provider integration has a
+clear contract for using these fields.
 
 `WaitCondition` records that a WorkItem is waiting for a recoverable or
 operator-visible condition.
@@ -331,6 +410,14 @@ visible as non-recoverable or weakly recoverable.
 
 The core scheduler should not choose provider-specific fallback durations.
 
+For Phase 0, the only built-in duration is the generic 1-hour default for
+unstructured blocked WorkItems with no explicit `recheck_after`. The scheduler
+still does not interpret `blocked_by`; it only detects that the one-shot
+deadline is due and asks the agent to recheck.
+
+The fuller external wait classification below is deferred with the
+`WaitCondition` direction:
+
 It may classify external waits by recoverability:
 
 ```text
@@ -372,7 +459,7 @@ The scheduler owns:
 
 - deriving `WorkItemSchedulingState`;
 - preventing silent indefinite sleep while runnable work exists;
-- persisting and displaying structured wait lifecycle;
+- persisting and displaying blocked WorkItem recheck deadlines;
 - routing task, external ingress, timer, operator, and system tick wake sources;
 - enqueueing continuation for wake reconciliation;
 - surfacing weak or non-recoverable waits in audit/status views.
@@ -386,6 +473,20 @@ The scheduler does not own:
   reconciliation.
 
 ## Incremental implementation plan
+
+### 0. Add blocked WorkItem recheck fallback
+
+Add the minimal `blocked_by + recheck_after/recheck_at` contract:
+
+- persist `recheck_at` on blocked WorkItems;
+- extend `UpdateWorkItem` with `recheck_after` or an equivalent small input;
+- apply the 1-hour default only when setting or refreshing `blocked_by` without
+  an explicit recheck value;
+- clear `recheck_at` when `blocked_by` is cleared;
+- coalesce due reminders per agent;
+- preserve `Blocked` readiness until the agent explicitly updates the WorkItem.
+
+This phase must not add agent-facing WaitCondition CRUD tools.
 
 ### 1. Derive scheduling state
 
@@ -406,11 +507,12 @@ Replace ad hoc runnable-work checks with state-derived closure behavior:
 - `Blocked` -> expose blocker and do not auto-continue;
 - `Completed` -> ignore for scheduling.
 
-### 3. Introduce WaitCondition ledger records
+### 3. Consider WaitCondition ledger records
 
 Generalize or migrate waiting intents into `WaitCondition` records.
 
-The first version can keep the shape small:
+This step is deferred until the scheduler has a concrete use for the extra
+fields. A future version can keep the shape small:
 
 ```text
 kind
@@ -440,8 +542,10 @@ Surface weak external waits that have no timer, durable queue, or explicit
   become display text attached to a `Blocked` scheduling record?
 - What is the minimum continuation payload needed for reliable wake
   reconciliation?
+- After Phase 0, is there any scheduler-owned use for structured
+  `WaitCondition` fields beyond display and provider handoff?
 - Should system tick be a first-class `WakeSource` or a scheduler-only audit
-  mechanism?
+  mechanism if/when WaitCondition is introduced?
 - How should weak external waits be shown in `ListWorkItems`, `AgentGet`, and
   TUI surfaces?
 
