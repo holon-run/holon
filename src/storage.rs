@@ -18,8 +18,8 @@ use crate::types::{
     OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord,
     TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
     TranscriptEntry, WaitingIntentRecord, WaitingIntentStatus, WorkItemDelegationRecord,
-    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemState, WorkingMemoryDelta,
-    WorkspaceEntry, WorkspaceOccupancyRecord,
+    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState,
+    WorkItemState, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 const RUNTIME_DIR: &str = ".holon";
@@ -58,9 +58,11 @@ impl WorkQueuePromptProjection {
 pub struct WorkItemReadinessProjection {
     pub work_item: WorkItemRecord,
     pub readiness: WorkItemReadiness,
+    pub scheduling_state: WorkItemSchedulingState,
     pub candidate_class: WorkItemCandidateClass,
     pub is_current: bool,
     pub has_active_waits: bool,
+    pub has_active_task_waits: bool,
     pub has_triggered_waits: bool,
     pub last_triggered_at: Option<DateTime<Utc>>,
     pub current_todo: Option<TodoItem>,
@@ -731,6 +733,12 @@ impl AppStorage {
                     acc
                 },
             );
+        let active_task_waits = self
+            .latest_active_task_records(usize::MAX)?
+            .into_iter()
+            .filter(TaskRecord::is_blocking)
+            .filter_map(|task| task.effective_work_item_id().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
         let mut readiness = latest
             .values()
             .cloned()
@@ -739,28 +747,36 @@ impl AppStorage {
                     && item.state == WorkItemState::Open;
                 let last_triggered_at = active_waits.get(&item.id).copied().flatten();
                 let has_active_waits = active_waits.contains_key(&item.id);
+                let has_active_task_waits = active_task_waits.contains(&item.id);
                 let has_triggered_waits = last_triggered_at.is_some();
                 let readiness = item.readiness();
-                let candidate_class = if is_current && readiness == WorkItemReadiness::Runnable {
-                    WorkItemCandidateClass::CurrentRunnable
-                } else if item.state == WorkItemState::Completed {
-                    WorkItemCandidateClass::CompletedRecent
-                } else if has_triggered_waits && item.blocked_by.is_some() {
-                    WorkItemCandidateClass::TriggeredBlocked
-                } else if readiness == WorkItemReadiness::Runnable {
-                    WorkItemCandidateClass::QueuedRunnable
-                } else if readiness == WorkItemReadiness::WaitingForOperator {
-                    WorkItemCandidateClass::WaitingForOperator
-                } else {
-                    WorkItemCandidateClass::Blocked
-                };
+                let scheduling_state =
+                    item.scheduling_state(has_active_waits, has_active_task_waits);
+                let candidate_class =
+                    if is_current && scheduling_state == WorkItemSchedulingState::Runnable {
+                        WorkItemCandidateClass::CurrentRunnable
+                    } else if scheduling_state == WorkItemSchedulingState::Completed {
+                        WorkItemCandidateClass::CompletedRecent
+                    } else if has_triggered_waits
+                        && scheduling_state == WorkItemSchedulingState::Blocked
+                    {
+                        WorkItemCandidateClass::TriggeredBlocked
+                    } else if scheduling_state == WorkItemSchedulingState::Runnable {
+                        WorkItemCandidateClass::QueuedRunnable
+                    } else if scheduling_state == WorkItemSchedulingState::WaitingOperator {
+                        WorkItemCandidateClass::WaitingForOperator
+                    } else {
+                        WorkItemCandidateClass::Blocked
+                    };
                 WorkItemReadinessProjection {
                     current_todo: current_todo(&item),
                     work_item: item,
                     readiness,
+                    scheduling_state,
                     candidate_class,
                     is_current,
                     has_active_waits,
+                    has_active_task_waits,
                     has_triggered_waits,
                     last_triggered_at,
                 }
@@ -1469,7 +1485,7 @@ mod tests {
         AgentState, AgentStatus, EpisodeBoundaryReason, Priority, QueueEntryRecord,
         QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TodoItem,
         TodoItemState, TranscriptEntry, TranscriptEntryKind, TrustLevel, WorkItemPlanStatus,
-        WorkItemState,
+        WorkItemSchedulingState, WorkItemState,
     };
 
     use super::*;
@@ -2424,5 +2440,132 @@ mod tests {
             ]
         );
         assert!(projection.current.is_none());
+    }
+
+    #[test]
+    fn storage_work_queue_projection_derives_external_and_task_waits_per_work_item() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+
+        let mut external = WorkItemRecord::new("default", "waiting external", WorkItemState::Open);
+        external.updated_at = now - chrono::Duration::minutes(5);
+        let mut task_wait = WorkItemRecord::new("default", "waiting task", WorkItemState::Open);
+        task_wait.updated_at = now - chrono::Duration::minutes(4);
+        let mut background_task =
+            WorkItemRecord::new("default", "background task", WorkItemState::Open);
+        background_task.updated_at = now - chrono::Duration::minutes(3);
+        let mut nonblocking_detail =
+            WorkItemRecord::new("default", "nonblocking detail", WorkItemState::Open);
+        nonblocking_detail.updated_at = now - chrono::Duration::minutes(2);
+        let mut runnable = WorkItemRecord::new("default", "still runnable", WorkItemState::Open);
+        runnable.updated_at = now - chrono::Duration::minutes(1);
+
+        for item in [
+            &external,
+            &task_wait,
+            &background_task,
+            &nonblocking_detail,
+            &runnable,
+        ] {
+            storage.append_work_item(item).unwrap();
+        }
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: "wait-external".into(),
+                agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
+                work_item_id: Some(external.id.clone()),
+                description: "external callback".into(),
+                source: "test".into(),
+                resource: None,
+                condition: None,
+                delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: "trigger-external".into(),
+                created_at: now,
+                cancelled_at: None,
+                last_triggered_at: None,
+                trigger_count: 0,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+
+        for task in [
+            TaskRecord {
+                id: "task-blocking".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: Some(task_wait.id.clone()),
+                summary: Some("blocking task".into()),
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: None,
+            },
+            TaskRecord {
+                id: "task-background".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: Some(background_task.id.clone()),
+                summary: Some("background task".into()),
+                detail: Some(serde_json::json!({ "wait_policy": "background" })),
+                recovery: None,
+            },
+            TaskRecord {
+                id: "task-nonblocking-detail".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("nonblocking task".into()),
+                detail: Some(serde_json::json!({
+                    "wait_policy": "background",
+                    "work_item_id": nonblocking_detail.id
+                })),
+                recovery: None,
+            },
+        ] {
+            storage.append_task(&task).unwrap();
+        }
+
+        let projection = storage.work_queue_prompt_projection().unwrap();
+        let states = projection
+            .readiness
+            .iter()
+            .map(|item| (item.work_item.objective.as_str(), item.scheduling_state))
+            .collect::<Vec<_>>();
+
+        assert!(states.contains(&("waiting external", WorkItemSchedulingState::WaitingExternal)));
+        assert!(states.contains(&("waiting task", WorkItemSchedulingState::WaitingTask)));
+        assert!(states.contains(&("background task", WorkItemSchedulingState::Runnable)));
+        assert!(states.contains(&("nonblocking detail", WorkItemSchedulingState::Runnable)));
+        assert!(states.contains(&("still runnable", WorkItemSchedulingState::Runnable)));
+        assert_eq!(
+            projection
+                .queued_runnable
+                .iter()
+                .map(|item| item.work_item.objective.as_str())
+                .collect::<Vec<_>>(),
+            vec!["background task", "nonblocking detail", "still runnable"]
+        );
+        assert_eq!(
+            projection
+                .blocked
+                .iter()
+                .map(|item| item.work_item.objective.as_str())
+                .collect::<Vec<_>>(),
+            vec!["waiting task", "waiting external"]
+        );
     }
 }

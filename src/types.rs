@@ -2781,6 +2781,17 @@ pub enum WorkItemReadiness {
     Completed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemSchedulingState {
+    Runnable,
+    WaitingOperator,
+    WaitingTask,
+    WaitingExternal,
+    Blocked,
+    Completed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkItemPlanArtifact {
     pub path: PathBuf,
@@ -2853,6 +2864,29 @@ impl WorkItemRecord {
             return WorkItemReadiness::WaitingForOperator;
         }
         WorkItemReadiness::Runnable
+    }
+
+    pub fn scheduling_state(
+        &self,
+        has_active_external_wait: bool,
+        has_active_task_wait: bool,
+    ) -> WorkItemSchedulingState {
+        if self.state == WorkItemState::Completed {
+            return WorkItemSchedulingState::Completed;
+        }
+        if self.blocked_by.is_some() {
+            return WorkItemSchedulingState::Blocked;
+        }
+        if self.plan_status == WorkItemPlanStatus::NeedsInput {
+            return WorkItemSchedulingState::WaitingOperator;
+        }
+        if has_active_task_wait {
+            return WorkItemSchedulingState::WaitingTask;
+        }
+        if has_active_external_wait {
+            return WorkItemSchedulingState::WaitingExternal;
+        }
+        WorkItemSchedulingState::Runnable
     }
 
     pub fn is_runnable(&self) -> bool {
@@ -3982,6 +4016,45 @@ mod tests {
         });
         let episode: ContextEpisodeRecord = serde_json::from_value(episode).unwrap();
         assert_eq!(episode.workspace_id, AGENT_HOME_WORKSPACE_ID);
+    }
+
+    #[test]
+    fn work_item_scheduling_state_covers_wait_and_completion_cases() {
+        let base = WorkItemRecord::new("default", "ship", WorkItemState::Open);
+        assert_eq!(
+            base.scheduling_state(false, false),
+            WorkItemSchedulingState::Runnable
+        );
+
+        let mut waiting_operator = base.clone();
+        waiting_operator.plan_status = WorkItemPlanStatus::NeedsInput;
+        assert_eq!(
+            waiting_operator.scheduling_state(false, false),
+            WorkItemSchedulingState::WaitingOperator
+        );
+
+        let mut blocked = base.clone();
+        blocked.blocked_by = Some("external review".into());
+        assert_eq!(
+            blocked.scheduling_state(false, false),
+            WorkItemSchedulingState::Blocked
+        );
+
+        let mut completed = base.clone();
+        completed.state = WorkItemState::Completed;
+        assert_eq!(
+            completed.scheduling_state(false, false),
+            WorkItemSchedulingState::Completed
+        );
+
+        assert_eq!(
+            base.scheduling_state(true, false),
+            WorkItemSchedulingState::WaitingExternal
+        );
+        assert_eq!(
+            base.scheduling_state(false, true),
+            WorkItemSchedulingState::WaitingTask
+        );
     }
 
     #[test]
