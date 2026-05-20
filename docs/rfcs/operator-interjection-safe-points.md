@@ -2,7 +2,7 @@
 title: RFC: Operator Interjection Safe Points
 date: 2026-05-20
 status: draft
-Handle: rfc-operator-interjection-safe-points
+handle: rfc-operator-interjection-safe-points
 ---
 
 # Operator Interjection Safe Points
