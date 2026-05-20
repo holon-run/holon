@@ -146,6 +146,7 @@ pub(super) struct CachedChatText {
 pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     let mut cells = Vec::new();
     let mut visible_operator_message_ids = std::collections::BTreeSet::new();
+    let mut pending_operator_message_bodies = std::collections::BTreeMap::new();
     let durable_operator_message_ids = app
         .projection
         .as_ref()
@@ -155,7 +156,12 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         if durable_operator_message_ids.contains(&message.message_id) {
             continue;
         }
-        push_pending_operator_message_cell(&mut cells, &mut visible_operator_message_ids, message);
+        push_pending_operator_message_cell(
+            &mut cells,
+            &mut visible_operator_message_ids,
+            &mut pending_operator_message_bodies,
+            message,
+        );
     }
 
     if let Some(projection) = app.projection.as_ref() {
@@ -173,7 +179,11 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         for timed in &timed_items {
             if timed.item.is_visible_at(level) {
                 for rendered in timed.item.render(level) {
-                    cells.push(rendered_to_conversation_cell(&rendered, timed.ts));
+                    push_projected_conversation_cell(
+                        &mut cells,
+                        &mut pending_operator_message_bodies,
+                        rendered_to_conversation_cell(&rendered, timed.ts),
+                    );
                 }
             }
         }
@@ -196,6 +206,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
 fn push_pending_operator_message_cell(
     cells: &mut Vec<ConversationCell>,
     visible_operator_message_ids: &mut std::collections::BTreeSet<String>,
+    pending_operator_message_bodies: &mut std::collections::BTreeMap<String, usize>,
     message: &OperatorMessageRecord,
 ) {
     if !visible_operator_message_ids.insert(message.message_id.clone()) {
@@ -203,11 +214,35 @@ fn push_pending_operator_message_cell(
     }
     let body = render_operator_message_body(&message.body)
         .unwrap_or_else(|| compact_json(&serde_json::to_value(&message.body).unwrap_or_default()));
+    *pending_operator_message_bodies
+        .entry(normalized_operator_message_body_key(&body))
+        .or_insert(0) += 1;
     cells.push(ConversationCell::UserMessage {
         created_at: message.created_at,
         body,
         status: Some(message.status.clone()),
     });
+}
+
+fn push_projected_conversation_cell(
+    cells: &mut Vec<ConversationCell>,
+    pending_operator_message_bodies: &mut std::collections::BTreeMap<String, usize>,
+    cell: ConversationCell,
+) {
+    if let ConversationCell::UserMessage { body, .. } = &cell {
+        let body_key = normalized_operator_message_body_key(body);
+        if let Some(count) = pending_operator_message_bodies.get_mut(&body_key) {
+            if *count > 0 {
+                *count -= 1;
+                return;
+            }
+        }
+    }
+    cells.push(cell);
+}
+
+fn normalized_operator_message_body_key(body: &str) -> String {
+    body.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 impl ConversationCell {

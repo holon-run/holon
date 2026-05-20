@@ -2377,6 +2377,89 @@ fn projection_operator_message_prunes_reconciled_optimistic_entry() {
 }
 
 #[test]
+fn projection_operator_message_deduplicates_unreconciled_optimistic_entry_by_body() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    let ts = Utc::now();
+    app.optimistic_operator_messages = vec![OperatorMessageRecord {
+        message_id: "local-message-1".into(),
+        agent_id: "default".into(),
+        status: OperatorMessageStatus::Queued,
+        created_at: ts,
+        updated_at: ts,
+        body: MessageBody::Text {
+            text: "same operator text".into(),
+        },
+        error: None,
+    }];
+
+    let snapshot = sample_snapshot("default", "evt-0");
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.replace_event_window(
+        vec![operator_message_event_envelope(
+            "message-1",
+            0,
+            "default",
+            "same operator text",
+        )],
+        Some(0),
+    );
+    app.projection = Some(projection);
+
+    let items = collect_chat_items(&app);
+    let user_messages = items
+        .iter()
+        .filter(|item| matches!(item, ConversationCell::UserMessage { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(user_messages.len(), 1);
+    assert!(matches!(
+        user_messages[0],
+        ConversationCell::UserMessage {
+            body,
+            status: Some(OperatorMessageStatus::Queued),
+            ..
+        } if body == "same operator text"
+    ));
+}
+
+#[test]
+fn projection_operator_message_keeps_distinct_durable_messages_with_same_body() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    let snapshot = sample_snapshot("default", "evt-0");
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.replace_event_window(
+        vec![
+            operator_message_event_envelope("message-1", 0, "default", "repeat"),
+            operator_message_event_envelope("message-2", 1, "default", "repeat"),
+        ],
+        Some(0),
+    );
+    app.projection = Some(projection);
+
+    let user_message_count = collect_chat_items(&app)
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                ConversationCell::UserMessage {
+                    body,
+                    status: None,
+                    ..
+                } if body == "repeat"
+            )
+        })
+        .count();
+    assert_eq!(user_message_count, 2);
+}
+
+#[test]
 fn events_overlay_selection_stays_pinned_to_same_event_id() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
