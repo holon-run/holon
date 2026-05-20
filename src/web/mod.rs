@@ -553,7 +553,7 @@ impl WebProviderKind {
                 supports_full_content: false,
                 supports_native_citations: false,
                 default_priority: 40,
-                status: WebProviderSupportStatus::Unsupported,
+                status: WebProviderSupportStatus::Supported,
             },
         }
     }
@@ -788,7 +788,7 @@ mod tests {
         assert_eq!(WebProviderKind::Brave.capabilities().default_priority, 80);
         assert_eq!(
             WebProviderKind::Command.capabilities().status,
-            WebProviderSupportStatus::Unsupported
+            WebProviderSupportStatus::Supported
         );
     }
 }

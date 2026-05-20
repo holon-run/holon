@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -53,6 +53,16 @@ pub struct WebSearchProviderAttempt {
     pub error_message: Option<String>,
     pub provider_kind: Option<WebProviderKind>,
     pub capabilities: Option<WebProviderCapabilityMetadata>,
+    pub command: Option<WebSearchCommandAttempt>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct WebSearchCommandAttempt {
+    pub argv_template: Vec<String>,
+    pub exit_status: Option<i32>,
+    pub exit_status_text: Option<String>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -147,9 +157,40 @@ struct RoutedSearchOutcome {
     winning_provider: Option<String>,
 }
 
+#[derive(Debug)]
+struct ProviderSearchOutput {
+    results: Vec<WebSearchResult>,
+    diagnostics: Option<ProviderSearchDiagnostics>,
+}
+
+#[derive(Debug)]
+enum ProviderSearchDiagnostics {
+    Command(WebSearchCommandAttempt),
+}
+
+impl ProviderSearchOutput {
+    fn new(results: Vec<WebSearchResult>) -> Self {
+        Self {
+            results,
+            diagnostics: None,
+        }
+    }
+
+    fn command(results: Vec<WebSearchResult>, command: WebSearchCommandAttempt) -> Self {
+        Self {
+            results,
+            diagnostics: Some(ProviderSearchDiagnostics::Command(command)),
+        }
+    }
+}
+
 fn provider_order(provider: &str, config: &WebConfig) -> Vec<String> {
     if provider != "auto" {
-        return vec![provider.trim().to_string()];
+        let mut providers = vec![provider.trim().to_string()];
+        providers.extend(default_provider_order(config));
+        providers = dedupe_provider_order(providers);
+        providers.truncate(config.search.max_provider_attempts.max(1));
+        return providers;
     }
     let configured = dedupe_provider_order(&config.search.providers);
     let mut providers = if configured.is_empty() {
@@ -218,13 +259,18 @@ where
 fn routed_single(
     provider_id: String,
     kind: Option<WebProviderKind>,
-    outcome: Result<Vec<WebSearchResult>>,
+    outcome: Result<ProviderSearchOutput>,
 ) -> Result<RoutedSearchOutcome> {
     match outcome {
-        Ok(results) => Ok(RoutedSearchOutcome {
-            provider_attempts: vec![successful_attempt(&provider_id, kind, results.len())],
+        Ok(output) => Ok(RoutedSearchOutcome {
+            provider_attempts: vec![successful_attempt(
+                &provider_id,
+                kind,
+                output.results.len(),
+                output.diagnostics,
+            )],
             winning_provider: Some(provider_id),
-            results,
+            results: output.results,
         }),
         Err(error) => Err(single_provider_error(&provider_id, kind, error)),
     }
@@ -240,10 +286,15 @@ async fn search_fallback(
     for provider_id in provider_order {
         let kind = provider_kind(&provider_id, config);
         match search_one_provider(query, max_results, &provider_id, config).await {
-            Ok(results) => {
-                attempts.push(successful_attempt(&provider_id, kind, results.len()));
+            Ok(output) => {
+                attempts.push(successful_attempt(
+                    &provider_id,
+                    kind,
+                    output.results.len(),
+                    output.diagnostics,
+                ));
                 return Ok(RoutedSearchOutcome {
-                    results,
+                    results: output.results,
                     provider_attempts: attempts,
                     winning_provider: Some(provider_id),
                 });
@@ -267,13 +318,14 @@ async fn search_aggregate(
     for provider_id in provider_order {
         let kind = provider_kind(&provider_id, config);
         match search_one_provider(query, max_results, &provider_id, config).await {
-            Ok(provider_results) => {
+            Ok(output) => {
                 attempts.push(successful_attempt(
                     &provider_id,
                     kind,
-                    provider_results.len(),
+                    output.results.len(),
+                    output.diagnostics,
                 ));
-                for result in provider_results {
+                for result in output.results {
                     if seen_urls.insert(result.url.clone()) {
                         results.push(result);
                     }
@@ -304,6 +356,7 @@ fn successful_attempt(
     provider: &str,
     kind: Option<WebProviderKind>,
     result_count: usize,
+    diagnostics: Option<ProviderSearchDiagnostics>,
 ) -> WebSearchProviderAttempt {
     WebSearchProviderAttempt {
         provider: provider.to_string(),
@@ -313,6 +366,7 @@ fn successful_attempt(
         error_message: None,
         provider_kind: kind,
         capabilities: kind.map(|kind| kind.capabilities()),
+        command: command_attempt_from_diagnostics(diagnostics),
     }
 }
 
@@ -330,7 +384,22 @@ fn failed_attempt(
         error_message: Some(tool_error.message),
         provider_kind: kind,
         capabilities: kind.map(|kind| kind.capabilities()),
+        command: command_attempt_from_details(tool_error.details.as_ref()),
     }
+}
+
+fn command_attempt_from_diagnostics(
+    diagnostics: Option<ProviderSearchDiagnostics>,
+) -> Option<WebSearchCommandAttempt> {
+    match diagnostics {
+        Some(ProviderSearchDiagnostics::Command(command)) => Some(command),
+        None => None,
+    }
+}
+
+fn command_attempt_from_details(details: Option<&Value>) -> Option<WebSearchCommandAttempt> {
+    let command = details?.get("command")?;
+    serde_json::from_value(command.clone()).ok()
 }
 
 fn single_provider_error(
@@ -415,9 +484,11 @@ async fn search_one_provider(
     max_results: usize,
     provider_id: &str,
     config: &WebConfig,
-) -> Result<Vec<WebSearchResult>> {
+) -> Result<ProviderSearchOutput> {
     match provider_id {
-        DUCKDUCKGO_PROVIDER_ID => duckduckgo_search(query, max_results, &config.fetch).await,
+        DUCKDUCKGO_PROVIDER_ID => duckduckgo_search(query, max_results, &config.fetch)
+            .await
+            .map(ProviderSearchOutput::new),
         provider_id => {
             let provider_config = config.providers.get(provider_id).ok_or_else(|| {
                 search_error(
@@ -445,8 +516,8 @@ async fn search_configured_provider(
     provider_id: &str,
     provider_config: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
-) -> Result<Vec<WebSearchResult>> {
-    match provider_config.kind {
+) -> Result<ProviderSearchOutput> {
+    let results = match provider_config.kind {
         WebProviderKind::Searxng => {
             searxng_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
@@ -467,7 +538,7 @@ async fn search_configured_provider(
             firecrawl_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
         WebProviderKind::Command => {
-            command_search(query, max_results, provider_id, provider_config).await
+            return command_search(query, max_results, provider_id, provider_config).await;
         }
         kind => Err(search_error(
             "provider_unavailable",
@@ -475,7 +546,8 @@ async fn search_configured_provider(
             provider_id,
             "configure a duckduckgo, searxng, brave, tavily, exa, perplexity, or firecrawl provider for this Holon version",
         )),
-    }
+    }?;
+    Ok(ProviderSearchOutput::new(results))
 }
 
 async fn command_search(
@@ -483,7 +555,7 @@ async fn command_search(
     max_results: usize,
     provider_id: &str,
     provider: &WebProviderConfig,
-) -> Result<Vec<WebSearchResult>> {
+) -> Result<ProviderSearchOutput> {
     let command = provider.command.as_ref().ok_or_else(|| {
         search_error(
             "provider_unavailable",
@@ -585,18 +657,21 @@ async fn command_search(
             "retry later or check the configured command provider",
         )
     })??;
+    let command_attempt =
+        command_attempt(&command.argv, &status, stdout.truncated, stderr.truncated);
     if stdout.truncated || stderr.truncated {
-        return Err(search_error(
+        return Err(command_search_error(
             "response_too_large",
             format!(
                 "WebSearch command provider output exceeded limits (stdout limit: {stdout_limit} bytes; stderr limit: {stderr_limit} bytes)"
             ),
             provider_id,
             "narrow the query, reduce stderr output, or increase web.providers.<id>.limits.max_output_bytes",
+            command_attempt,
         ));
     }
     if !status.success() {
-        return Err(search_error(
+        return Err(command_search_error(
             "provider_unavailable",
             format!(
                 "WebSearch command provider exited with status {}; stderr: {}",
@@ -605,6 +680,7 @@ async fn command_search(
             ),
             provider_id,
             "check the configured command provider and its arguments",
+            command_attempt,
         ));
     }
     let stdout = String::from_utf8(stdout.bytes).map_err(|error| {
@@ -616,6 +692,22 @@ async fn command_search(
         )
     })?;
     parse_command_results(&stdout, output, provider_id, max_results)
+        .map(|results| ProviderSearchOutput::command(results, command_attempt))
+}
+
+fn command_attempt(
+    argv_template: &[String],
+    status: &ExitStatus,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+) -> WebSearchCommandAttempt {
+    WebSearchCommandAttempt {
+        argv_template: argv_template.to_vec(),
+        exit_status: status.code(),
+        exit_status_text: Some(status.to_string()),
+        stdout_truncated,
+        stderr_truncated,
+    }
 }
 
 fn expand_command_argv(
@@ -1626,6 +1718,25 @@ fn search_error(
     )
 }
 
+fn command_search_error(
+    kind: &'static str,
+    message: impl Into<String>,
+    provider: impl Into<String>,
+    recovery_hint: impl Into<String>,
+    command: WebSearchCommandAttempt,
+) -> anyhow::Error {
+    let provider = provider.into();
+    anyhow::Error::from(
+        ToolError::new(kind, message)
+            .with_details(json!({
+                "provider": provider,
+                "command": command,
+            }))
+            .with_recovery_hint(recovery_hint)
+            .with_retryable(matches!(kind, "rate_limited" | "network_failed")),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1973,11 +2084,11 @@ mod tests {
 
         let results = command_search("holon", 3, "cmd", &provider).await.unwrap();
 
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].title, "holon");
-        assert_eq!(results[0].url, "https://example.com/3");
-        assert_eq!(results[0].snippet.as_deref(), Some("Snippet"));
-        assert_eq!(results[0].source, "cmd");
+        assert_eq!(results.results.len(), 1);
+        assert_eq!(results.results[0].title, "holon");
+        assert_eq!(results.results[0].url, "https://example.com/3");
+        assert_eq!(results.results[0].snippet.as_deref(), Some("Snippet"));
+        assert_eq!(results.results[0].source, "cmd");
     }
 
     #[tokio::test]
