@@ -379,13 +379,17 @@ impl LocalClient {
         self.get_control_json("/control/runtime/status").await
     }
 
+    pub async fn runtime_readiness(&self) -> Result<RuntimeStatusResponse> {
+        self.get_control_json("/control/runtime/readiness").await
+    }
+
     #[cfg(unix)]
-    pub async fn runtime_status_unix_only(&self) -> Result<RuntimeStatusResponse> {
+    pub async fn runtime_readiness_unix_only(&self) -> Result<RuntimeStatusResponse> {
         let body = self
-            .send_unix(RequestSpec::get("/control/runtime/status"), true)
+            .send_unix(RequestSpec::get("/control/runtime/readiness"), true)
             .await?;
         serde_json::from_slice(&body).with_context(|| {
-            "failed to decode response body for GET /control/runtime/status over unix socket"
+            "failed to decode response body for GET /control/runtime/readiness over unix socket"
         })
     }
 

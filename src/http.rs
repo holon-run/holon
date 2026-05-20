@@ -183,6 +183,7 @@ pub fn router(state: AppState) -> Router {
             "/control/agents/:agent_id/operator-ingress",
             post(operator_ingress),
         )
+        .route("/control/runtime/readiness", get(runtime_readiness))
         .route("/control/runtime/status", get(runtime_status))
         .route("/control/runtime/shutdown", post(runtime_shutdown))
         .route(
@@ -637,6 +638,33 @@ pub async fn runtime_status(
         .into_iter()
         .filter_map(|agent| agent.last_runtime_failure)
         .max_by(|left, right| left.occurred_at.cmp(&right.occurred_at));
+    let (startup_surface, runtime_surface) = runtime_surfaces(&state);
+    Ok(Json(runtime_service.status_response(
+        activity,
+        last_failure,
+        startup_surface,
+        runtime_surface,
+    )))
+}
+
+pub async fn runtime_readiness(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime_service = state
+        .runtime_service
+        .as_ref()
+        .ok_or_else(|| service_unavailable("runtime service metadata is unavailable"))?;
+    let (startup_surface, runtime_surface) = runtime_surfaces(&state);
+    Ok(Json(
+        runtime_service.readiness_response(startup_surface, runtime_surface),
+    ))
+}
+
+fn runtime_surfaces(
+    state: &AppState,
+) -> (crate::daemon::RuntimeStartupSurface, RuntimeConfigSurface) {
     let config = state.host.config();
     let startup_surface = crate::daemon::RuntimeStartupSurface {
         home_dir: config.home_dir.clone(),
@@ -647,13 +675,7 @@ pub async fn runtime_status(
         control_token_configured: config.control_token.is_some(),
         control_auth_mode: config.control_auth_mode.into(),
     };
-    let runtime_surface = RuntimeConfigSurface::new(config);
-    Ok(Json(runtime_service.status_response(
-        activity,
-        last_failure,
-        startup_surface,
-        runtime_surface,
-    )))
+    (startup_surface, RuntimeConfigSurface::new(config))
 }
 
 pub async fn runtime_shutdown(

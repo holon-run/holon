@@ -29,6 +29,7 @@ http_async_tests!(
     control_start_restores_live_runtime_loop_for_stopped_agent,
     daemon_shutdown_restart_preserves_public_agent_http_runnability,
     runtime_status_route_reports_runtime_metadata,
+    runtime_readiness_route_omits_activity_summary,
     runtime_status_route_reports_waiting_activity_summary,
     runtime_status_route_reports_last_runtime_failure_summary,
     runtime_shutdown_route_requests_shutdown,
@@ -38,4 +39,5 @@ http_async_tests!(
 http_async_tests!(
     control_prompt_is_open_over_unix_socket_auto,
     control_runtime_status_is_open_over_unix_socket_when_auth_required,
+    control_runtime_readiness_is_open_over_unix_socket_when_auth_required,
 );

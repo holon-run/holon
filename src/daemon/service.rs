@@ -210,6 +210,27 @@ impl RuntimeServiceHandle {
         }
     }
 
+    pub fn readiness_response(
+        &self,
+        startup_surface: RuntimeStartupSurface,
+        runtime_surface: RuntimeConfigSurface,
+    ) -> RuntimeStatusResponse {
+        RuntimeStatusResponse {
+            ok: true,
+            healthy: true,
+            pid: self.inner.metadata.pid,
+            home_dir: self.inner.metadata.home_dir.clone(),
+            socket_path: self.inner.metadata.socket_path.clone(),
+            http_addr: self.inner.metadata.http_addr.clone(),
+            started_at: self.inner.metadata.started_at,
+            config_fingerprint: self.inner.metadata.config_fingerprint.clone(),
+            startup_surface: Some(startup_surface),
+            runtime_surface: Some(runtime_surface),
+            activity: None,
+            last_failure: None,
+        }
+    }
+
     pub fn shutdown_response(&self) -> RuntimeShutdownResponse {
         RuntimeShutdownResponse {
             ok: true,

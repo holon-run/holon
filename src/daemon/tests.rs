@@ -492,7 +492,7 @@ async fn daemon_stop_surfaces_incompatible_status_probe_guidance() {
     assert!(err.contains("stale socket with no runtime currently serving it"));
     assert!(err.contains("Probe error:"));
     assert!(err.contains(
-        "failed to decode response body for GET /control/runtime/status over unix socket"
+        "failed to decode response body for GET /control/runtime/readiness over unix socket"
     ));
     assert!(socket_path.exists());
 }

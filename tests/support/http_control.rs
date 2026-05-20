@@ -425,6 +425,42 @@ pub async fn control_runtime_status_is_open_over_unix_socket_when_auth_required(
     Ok(())
 }
 
+#[cfg(unix)]
+pub async fn control_runtime_readiness_is_open_over_unix_socket_when_auth_required() -> Result<()> {
+    let config = test_config_with_paths(
+        tempdir().unwrap().keep(),
+        tempdir().unwrap().keep(),
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Required,
+    );
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    if let Some(parent) = config.socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let host = RuntimeHost::new_with_provider(config.clone(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    let runtime_service = RuntimeServiceHandle::new(&config)?;
+    let router: Router = http::router(AppState::for_unix_with_runtime_service(
+        host.clone(),
+        Some(runtime_service),
+    ));
+    let listener = UnixListener::bind(&config.socket_path)?;
+    let socket_path = config.socket_path.clone();
+    let server = tokio::spawn(async move {
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        http::serve_unix(listener, router, rx).await?;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let response =
+        unix_request(&socket_path, "GET", "/control/runtime/readiness", &[], None).await?;
+    assert_eq!(response.status, 200);
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<()> {
     let config = test_config_with_paths(
         tempdir().unwrap().keep(),
@@ -1006,6 +1042,49 @@ pub async fn runtime_status_route_reports_runtime_metadata() -> Result<()> {
     assert_eq!(payload["activity"]["active_task_count"], 0);
     assert_eq!(payload["activity"]["processing_agent_count"], 0);
     assert_eq!(payload["activity"]["waiting_agent_count"], 0);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn runtime_readiness_route_omits_activity_summary() -> Result<()> {
+    let config = test_config();
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    let host = RuntimeHost::new_with_provider(config.clone(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    let runtime_service = RuntimeServiceHandle::new(&config)?;
+    let router: Router = http::router(AppState::for_tcp_with_runtime_service(
+        host.clone(),
+        Some(runtime_service.clone()),
+    ));
+    let listener = TcpListener::bind(&config.http_addr).await?;
+    let addr = connect_addr(listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await?;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://{addr}/control/runtime/readiness"))
+        .bearer_auth("secret")
+        .send()
+        .await?;
+    assert!(response.status().is_success());
+    let payload: serde_json::Value = response.json().await?;
+    assert_eq!(payload["healthy"], true);
+    assert_eq!(payload["home_dir"], config.home_dir.display().to_string());
+    assert_eq!(
+        payload["startup_surface"]["default_agent_id"],
+        config.default_agent_id
+    );
+    assert_eq!(
+        payload["runtime_surface"]["model_default"],
+        config.default_model.as_string()
+    );
+    assert!(payload.get("activity").is_none());
+    assert!(payload.get("last_failure").is_none());
 
     server.abort();
     Ok(())

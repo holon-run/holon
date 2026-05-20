@@ -1085,6 +1085,9 @@ fn migrate_events_ledger(path: &Path) -> Result<u64> {
     if !path.exists() {
         return Ok(0);
     }
+    if let Some(seq) = read_tail_event_seq(path)? {
+        return Ok(seq);
+    }
 
     let timestamp = Utc::now().format("%Y%m%d%H%M%S%3f");
     let tmp_path = path.with_file_name(format!(".events.jsonl.{timestamp}.tmp"));
@@ -1143,6 +1146,13 @@ fn migrate_events_ledger(path: &Path) -> Result<u64> {
         )
     })?;
     Ok(max_seq)
+}
+
+fn read_tail_event_seq(path: &Path) -> Result<Option<u64>> {
+    let Some(value) = read_latest_jsonl_matching::<Value, _>(path, |_| true)? else {
+        return Ok(Some(0));
+    };
+    Ok(value.get("event_seq").and_then(Value::as_u64))
 }
 
 fn append_jsonl_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -1553,6 +1563,42 @@ mod tests {
             .unwrap();
         let events = storage.read_recent_events(10).unwrap();
         assert_eq!(events.last().map(|event| event.event_seq), Some(3));
+    }
+
+    #[test]
+    fn storage_uses_tail_event_seq_without_rewriting_migrated_ledger() {
+        let dir = tempdir().unwrap();
+        let ledger_dir = dir.path().join(".holon/ledger");
+        std::fs::create_dir_all(&ledger_dir).unwrap();
+        let events_path = ledger_dir.join("events.jsonl");
+        let first = AuditEvent {
+            id: "evt-new-1".into(),
+            event_seq: 41,
+            created_at: Utc::now(),
+            kind: "test_event".into(),
+            data: serde_json::json!({ "n": 1 }),
+        };
+        std::fs::write(
+            &events_path,
+            format!("{}\n", serde_json::to_string(&first).unwrap()),
+        )
+        .unwrap();
+
+        let storage = AppStorage::new(dir.path()).unwrap();
+        assert!(!std::fs::read_dir(&ledger_dir).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("events.jsonl.bak.")));
+
+        storage
+            .append_event(&AuditEvent::new(
+                "test_event",
+                serde_json::json!({ "n": 2 }),
+            ))
+            .unwrap();
+        let events = storage.read_recent_events(10).unwrap();
+        assert_eq!(events.last().map(|event| event.event_seq), Some(42));
     }
 
     #[test]
