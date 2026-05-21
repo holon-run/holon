@@ -994,7 +994,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         catalog_model(
             "nearai",
             "Qwen/Qwen3.5-122B-A10B",
-            "Qwen3.5 122B A10B (NEAR AI Cloud TEE)",
+            "Qwen 3.5 122B A10B (NEAR AI Cloud TEE)",
             131_072,
             65_536,
             true,
