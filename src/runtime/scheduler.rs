@@ -545,10 +545,7 @@ pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerD
 pub(crate) fn wait_decision_for_projection(
     projection: &SchedulerProjection,
 ) -> Option<SchedulerDecision> {
-    if projection.active_waiting_intents > 0 {
-        if projection.active_agent_waiting_intents == 0 {
-            return None;
-        }
+    if projection.active_agent_waiting_intents > 0 {
         return Some(
             SchedulerDecision::new(
                 SchedulerDecisionKind::WaitForExternalChange,

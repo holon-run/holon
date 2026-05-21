@@ -74,6 +74,16 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
         };
     }
 
+    if facts.awaiting_operator_input {
+        return ClosureDecision {
+            outcome: ClosureOutcome::Waiting,
+            waiting_reason: Some(WaitingReason::AwaitingOperatorInput),
+            work_signal: None,
+            runtime_posture,
+            evidence,
+        };
+    }
+
     if facts.active_agent_waiting_intents > 0 {
         return ClosureDecision {
             outcome: ClosureOutcome::Waiting,
@@ -144,16 +154,6 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
             outcome: ClosureOutcome::Continuable,
             waiting_reason: None,
             work_signal: Some(work_signal),
-            runtime_posture,
-            evidence,
-        };
-    }
-
-    if facts.awaiting_operator_input {
-        return ClosureDecision {
-            outcome: ClosureOutcome::Waiting,
-            waiting_reason: Some(WaitingReason::AwaitingOperatorInput),
-            work_signal: None,
             runtime_posture,
             evidence,
         };
@@ -277,6 +277,7 @@ mod tests {
     fn waiting_intents_map_to_awaiting_external_change() {
         let decision = derive_closure_decision(&ClosureFacts {
             active_waiting_intents: 1,
+            active_agent_waiting_intents: 1,
             ..facts()
         });
 
@@ -384,6 +385,7 @@ mod tests {
     fn waiting_conditions_override_runnable_work() {
         let decision = derive_closure_decision(&ClosureFacts {
             active_waiting_intents: 1,
+            active_agent_waiting_intents: 1,
             work_signal: Some(WorkReactivationSignal {
                 work_item_id: "work-1".into(),
                 state: WorkItemState::Open,

@@ -298,7 +298,16 @@ impl RuntimeHandle {
                 }
                 Ok(true)
             }
-            None => Ok(false),
+            None => {
+                if let Some(decision) =
+                    scheduler::wait_decision_for_projection(&scheduler_projection).map(|decision| {
+                        decision.boundary(scheduler::SchedulerBoundary::IdleTick.as_str())
+                    })
+                {
+                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                }
+                Ok(false)
+            }
         }
     }
 
@@ -1162,7 +1171,8 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|value| value.as_str() == Some("work_queue_tick_blocked_by_wait_fact")));
+            .any(|value| value.as_str()
+                == Some("current_work_item_scheduling_state=WaitingExternal")));
     }
 
     #[test]
