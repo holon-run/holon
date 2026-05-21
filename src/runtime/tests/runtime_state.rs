@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::*;
-use crate::types::{AuthorityClass, SkillLoadReason};
+use crate::types::{AuthorityClass, SkillLoadReason, WorkItemPlanStatus};
 
 struct BlockingProvider {
     started: Arc<tokio::sync::Notify>,
@@ -10,6 +10,25 @@ struct OperatorInterjectionProbeProvider {
     calls: Mutex<usize>,
     requests: Mutex<Vec<ProviderTurnRequest>>,
     first_tool_round: Arc<tokio::sync::Notify>,
+}
+
+fn blocking_task_for_work_item(task_id: &str, work_item_id: Option<&str>) -> TaskRecord {
+    TaskRecord {
+        id: task_id.into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Running,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: work_item_id.map(ToString::to_string),
+        summary: Some("blocking command".into()),
+        detail: Some(serde_json::json!({
+            "wait_policy": "blocking",
+            "work_item_id": work_item_id,
+        })),
+        recovery: None,
+    }
 }
 
 #[async_trait]
@@ -236,6 +255,193 @@ async fn explicit_sleep_transition_records_scheduler_owned_posture_decision() {
             && event.data["previous_status"] == "awake_running"
             && event.data["next_status"] == "asleep"
     }));
+}
+
+#[tokio::test]
+async fn indefinite_sleep_with_current_runnable_work_item_emits_continuation_tick() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item_id = seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-1".into());
+        guard.state.current_work_item_id = Some(work_item_id.clone());
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    runtime.transition_to_sleep(None).await.unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeRunning);
+    assert_eq!(state.current_run_id.as_deref(), Some("run-1"));
+    assert_eq!(state.pending, 1);
+    assert_eq!(state.sleeping_until, None);
+    let messages = runtime.storage().read_recent_messages(10).unwrap();
+    let tick = messages
+        .iter()
+        .find(|message| {
+            matches!(
+                (&message.kind, &message.origin),
+                (MessageKind::SystemTick, MessageOrigin::System { subsystem }) if subsystem == "work_queue"
+            )
+        })
+        .expect("work queue tick should be enqueued");
+    assert_eq!(tick.work_item_id.as_deref(), Some(work_item_id.as_str()));
+    assert_eq!(
+        tick.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("work_queue"))
+            .and_then(|metadata| metadata.get("reason"))
+            .and_then(|value| value.as_str()),
+        Some("continue_active")
+    );
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision"
+            && event.data["boundary"] == "lifecycle_sleep"
+            && event.data["reason"] == "sleep_overridden_runnable_work"
+            && event.data["next_status"] == "awake_running"
+            && event.data["evidence"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item == "work_queue_reason=continue_active")
+            })
+    }));
+}
+
+#[tokio::test]
+async fn indefinite_sleep_with_queued_runnable_work_item_emits_selection_tick() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let queued = runtime
+        .create_work_item("queued runnable work".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-1".into());
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    runtime.transition_to_sleep(None).await.unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeRunning);
+    assert_eq!(state.pending, 1);
+    let messages = runtime.storage().read_recent_messages(10).unwrap();
+    let tick = messages
+        .iter()
+        .find(|message| {
+            matches!(
+                (&message.kind, &message.origin),
+                (MessageKind::SystemTick, MessageOrigin::System { subsystem }) if subsystem == "work_queue"
+            )
+        })
+        .expect("work queue tick should be enqueued");
+    assert_eq!(tick.work_item_id.as_deref(), Some(queued.id.as_str()));
+    assert_eq!(
+        tick.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("work_queue"))
+            .and_then(|metadata| metadata.get("reason"))
+            .and_then(|value| value.as_str()),
+        Some("queued_available")
+    );
+}
+
+#[tokio::test]
+async fn indefinite_sleep_with_waiting_operator_or_task_work_item_can_sleep() {
+    for waiting_kind in ["operator", "task"] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let mut work = runtime
+            .create_work_item(format!("waiting {waiting_kind}"), None, None, Vec::new())
+            .await
+            .unwrap();
+        if waiting_kind == "operator" {
+            work = runtime
+                .update_work_item_fields(
+                    work.id.clone(),
+                    None,
+                    Some(WorkItemPlanStatus::NeedsInput),
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        } else {
+            runtime
+                .storage()
+                .append_task(&blocking_task_for_work_item("task-wait", Some(&work.id)))
+                .unwrap();
+        }
+        {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.status = AgentStatus::AwakeRunning;
+            guard.state.current_run_id = Some("run-1".into());
+            guard.state.current_work_item_id = Some(work.id.clone());
+            runtime.storage().write_agent(&guard.state).unwrap();
+        }
+
+        runtime.transition_to_sleep(None).await.unwrap();
+
+        let state = runtime.agent_state().await.unwrap();
+        assert_eq!(state.status, AgentStatus::Asleep);
+        assert_eq!(state.current_run_id, None);
+        assert_eq!(state.pending, 0);
+        assert_eq!(state.sleeping_until, None);
+        assert!(runtime
+            .storage()
+            .read_recent_messages(10)
+            .unwrap()
+            .iter()
+            .all(|message| !matches!(
+                (&message.kind, &message.origin),
+                (MessageKind::SystemTick, MessageOrigin::System { subsystem }) if subsystem == "work_queue"
+            )));
+    }
 }
 
 #[tokio::test]

@@ -1251,6 +1251,34 @@ impl RuntimeHandle {
             chrono::Utc::now()
                 + chrono::Duration::milliseconds(i64::try_from(duration_ms).unwrap_or(i64::MAX))
         });
+        if sleeping_until.is_none() {
+            if let Some((work_item, reason)) = self.indefinite_sleep_runnable_work()? {
+                let state = {
+                    let guard = self.inner.agent.lock().await;
+                    self.inner.storage.append_event(&AuditEvent::new(
+                        "scheduler_posture_decision",
+                        serde_json::json!({
+                            "boundary": "lifecycle_sleep",
+                            "reason": "sleep_overridden_runnable_work",
+                            "previous_status": guard.state.status,
+                            "next_status": guard.state.status,
+                            "evidence": [
+                                format!("previous_run_id={:?}", guard.state.current_run_id),
+                                "sleeping_until=None".to_string(),
+                                format!("work_item_id={}", work_item.id),
+                                format!("work_queue_reason={reason}"),
+                                "work_item_scheduling_state=Runnable".to_string(),
+                            ],
+                        }),
+                    ))?;
+                    guard.state.clone()
+                };
+                self.emit_system_tick_from_work_queue(&work_item, reason)
+                    .await?;
+                self.append_state_changed_events(&state)?;
+                return Ok(());
+            }
+        }
         let state = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
             .transition_to_sleep(
                 sleeping_until,
@@ -1262,6 +1290,20 @@ impl RuntimeHandle {
             self.spawn_session_sleep_wake(duration_ms, sleeping_until);
         }
         Ok(())
+    }
+
+    fn indefinite_sleep_runnable_work(
+        &self,
+    ) -> Result<Option<(crate::types::WorkItemRecord, &'static str)>> {
+        let projection = self.inner.storage.work_queue_prompt_projection()?;
+        if let Some(current) = projection.current_runnable {
+            return Ok(Some((current.work_item, "continue_active")));
+        }
+        Ok(projection
+            .queued_runnable
+            .into_iter()
+            .next()
+            .map(|queued| (queued.work_item, "queued_available")))
     }
 
     fn spawn_session_sleep_wake(
