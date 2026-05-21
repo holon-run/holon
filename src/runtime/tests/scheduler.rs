@@ -1,6 +1,8 @@
 use super::super::*;
 use super::support::*;
-use crate::types::{ToolExecutionStatus, WorkItemPlanStatus};
+use crate::types::{
+    ToolExecutionStatus, WorkItemPlanStatus, WorkItemSchedulingState, WorkReactivationMode,
+};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -764,18 +766,24 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
     assert_eq!(wake_decision.reason, "wake_hint");
 
     storage
-        .append_task(&TaskRecord {
-            id: "blocking-task".into(),
+        .append_waiting_intent(&WaitingIntentRecord {
+            id: "wait-current".into(),
             agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
+            scope: ExternalTriggerScope::Agent,
+            work_item_id: None,
+            description: "unrelated wait".into(),
+            source: "test".into(),
+            resource: None,
+            condition: None,
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "trigger-wait-current".into(),
             created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: Some("work-1".into()),
-            summary: Some("fixture task".into()),
-            detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
-            recovery: None,
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
         })
         .unwrap();
     let blocked_projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
@@ -788,12 +796,109 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
             duplicate: None,
         }),
     );
-    assert!(blocked_projection.has_blocking_active_tasks);
+    assert_eq!(blocked_projection.active_agent_waiting_intents, 1);
     assert_eq!(
         work_queue_decision.kind,
         scheduler::SchedulerDecisionKind::EmitSystemTick
     );
     assert_eq!(work_queue_decision.reason, "continue_active");
+}
+
+#[test]
+fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let now = Utc::now();
+
+    let mut work_item = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
+    work_item.id = "work-queued".into();
+    work_item.revision = 4;
+    storage.append_work_item(&work_item).unwrap();
+    storage
+        .append_waiting_intent(&WaitingIntentRecord {
+            id: "agent-wait".into(),
+            agent_id: "default".into(),
+            scope: ExternalTriggerScope::Agent,
+            work_item_id: None,
+            description: "unrelated external wait".into(),
+            source: "github".into(),
+            resource: None,
+            condition: None,
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "trigger-agent-wait".into(),
+            created_at: now,
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        })
+        .unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(projection.active_agent_waiting_intents, 1);
+    assert_eq!(
+        projection
+            .work_reactivation_signal()
+            .as_ref()
+            .map(|signal| { (signal.work_item_id.as_str(), signal.reactivation_mode,) }),
+        Some(("work-queued", WorkReactivationMode::ActivateQueued))
+    );
+
+    let decision = scheduler::decide_next_action(
+        &projection,
+        scheduler::SchedulerBoundary::IdleTick,
+        scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
+            work_item: &work_item,
+            duplicate: None,
+        }),
+    );
+
+    assert_eq!(
+        decision.kind,
+        scheduler::SchedulerDecisionKind::EmitSystemTick
+    );
+    assert_eq!(decision.reason, "queued_available");
+}
+
+#[test]
+fn background_work_item_task_does_not_block_runnable_work() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-background".into());
+    storage.write_agent(&agent).unwrap();
+    let now = Utc::now();
+
+    let mut work_item = WorkItemRecord::new("default", "runnable work", WorkItemState::Open);
+    work_item.id = "work-background".into();
+    storage.append_work_item(&work_item).unwrap();
+    storage
+        .append_task(&TaskRecord {
+            id: "background-task".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: Some(work_item.id.clone()),
+            summary: Some("background task".into()),
+            detail: Some(serde_json::json!({ "wait_policy": "background" })),
+            recovery: None,
+        })
+        .unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert!(!projection.has_blocking_active_tasks);
+    assert_eq!(
+        projection.current_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::Runnable)
+    );
+    assert!(scheduler::wait_decision_for_projection(&projection).is_none());
 }
 
 #[test]

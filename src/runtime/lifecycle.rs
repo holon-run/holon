@@ -157,9 +157,7 @@ impl RuntimeHandle {
         let runtime_error = runtime_error_override.unwrap_or(projection.runtime_error);
         Ok(derive_closure_decision(&ClosureFacts {
             runtime_error,
-            awaiting_operator_input: super::memory_refresh::work_queue_waits_for_operator(
-                &work_queue_projection,
-            ),
+            awaiting_operator_input: projection.current_work_item_waits_for_operator(),
             active_blocking_tasks: projection
                 .active_tasks
                 .iter()
@@ -169,9 +167,7 @@ impl RuntimeHandle {
             active_agent_waiting_intents: projection.active_agent_waiting_intents,
             active_timers: projection.active_timers,
             current_work_item_scheduling_state: projection.current_work_item_scheduling_state,
-            work_signal: super::memory_refresh::work_queue_reactivation_signal(
-                &work_queue_projection,
-            ),
+            work_signal: projection.work_reactivation_signal(),
             turn_started: state.turn_index > 0,
             turn_in_progress: state.current_run_id.is_some(),
             turn_terminal_kind: state

@@ -74,36 +74,6 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
         };
     }
 
-    if facts.awaiting_operator_input {
-        return ClosureDecision {
-            outcome: ClosureOutcome::Waiting,
-            waiting_reason: Some(WaitingReason::AwaitingOperatorInput),
-            work_signal: None,
-            runtime_posture,
-            evidence,
-        };
-    }
-
-    if facts.active_agent_waiting_intents > 0 {
-        return ClosureDecision {
-            outcome: ClosureOutcome::Waiting,
-            waiting_reason: Some(WaitingReason::AwaitingExternalChange),
-            work_signal: None,
-            runtime_posture,
-            evidence,
-        };
-    }
-
-    if facts.active_timers > 0 {
-        return ClosureDecision {
-            outcome: ClosureOutcome::Waiting,
-            waiting_reason: Some(WaitingReason::AwaitingTimer),
-            work_signal: None,
-            runtime_posture,
-            evidence,
-        };
-    }
-
     if facts.turn_in_progress {
         evidence.push("turn_in_progress".to_string());
         return ClosureDecision {
@@ -154,6 +124,36 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
             outcome: ClosureOutcome::Continuable,
             waiting_reason: None,
             work_signal: Some(work_signal),
+            runtime_posture,
+            evidence,
+        };
+    }
+
+    if facts.awaiting_operator_input {
+        return ClosureDecision {
+            outcome: ClosureOutcome::Waiting,
+            waiting_reason: Some(WaitingReason::AwaitingOperatorInput),
+            work_signal: None,
+            runtime_posture,
+            evidence,
+        };
+    }
+
+    if facts.active_agent_waiting_intents > 0 {
+        return ClosureDecision {
+            outcome: ClosureOutcome::Waiting,
+            waiting_reason: Some(WaitingReason::AwaitingExternalChange),
+            work_signal: None,
+            runtime_posture,
+            evidence,
+        };
+    }
+
+    if facts.active_timers > 0 {
+        return ClosureDecision {
+            outcome: ClosureOutcome::Waiting,
+            waiting_reason: Some(WaitingReason::AwaitingTimer),
+            work_signal: None,
             runtime_posture,
             evidence,
         };
@@ -409,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn waiting_conditions_override_runnable_work() {
+    fn runnable_work_overrides_unrelated_agent_waiting_intent() {
         let decision = derive_closure_decision(&ClosureFacts {
             active_waiting_intents: 1,
             active_agent_waiting_intents: 1,
@@ -421,12 +421,15 @@ mod tests {
             ..facts()
         });
 
-        assert_eq!(decision.outcome, ClosureOutcome::Waiting);
+        assert_eq!(decision.outcome, ClosureOutcome::Continuable);
+        assert_eq!(decision.waiting_reason, None);
         assert_eq!(
-            decision.waiting_reason,
-            Some(WaitingReason::AwaitingExternalChange)
+            decision
+                .work_signal
+                .as_ref()
+                .map(|signal| signal.work_item_id.as_str()),
+            Some("work-1")
         );
-        assert_eq!(decision.work_signal, None);
     }
 
     #[test]

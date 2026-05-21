@@ -4,7 +4,7 @@ use crate::storage::{AppStorage, WorkQueuePromptProjection};
 use crate::types::{
     AgentStatus, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint, Priority,
     TaskRecord, TaskStatus, TimerStatus, TrustLevel, TurnTerminalKind, WaitingIntentStatus,
-    WorkItemRecord, WorkItemSchedulingState,
+    WorkItemRecord, WorkItemSchedulingState, WorkReactivationMode, WorkReactivationSignal,
 };
 use chrono::{DateTime, Utc};
 
@@ -154,6 +154,32 @@ impl SchedulerProjection {
                 &storage.read_recent_briefs(64)?,
             ),
         })
+    }
+
+    pub(crate) fn work_reactivation_signal(&self) -> Option<WorkReactivationSignal> {
+        self.current_work_item
+            .as_ref()
+            .filter(|_| {
+                self.current_work_item_scheduling_state == Some(WorkItemSchedulingState::Runnable)
+            })
+            .map(|item| WorkReactivationSignal {
+                work_item_id: item.id.clone(),
+                state: item.state.clone(),
+                reactivation_mode: WorkReactivationMode::ContinueActive,
+            })
+            .or_else(|| {
+                self.queued_runnable_work_items
+                    .first()
+                    .map(|item| WorkReactivationSignal {
+                        work_item_id: item.id.clone(),
+                        state: item.state.clone(),
+                        reactivation_mode: WorkReactivationMode::ActivateQueued,
+                    })
+            })
+    }
+
+    pub(crate) fn current_work_item_waits_for_operator(&self) -> bool {
+        self.current_work_item_scheduling_state == Some(WorkItemSchedulingState::WaitingOperator)
     }
 }
 
@@ -545,6 +571,9 @@ pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerD
 pub(crate) fn wait_decision_for_projection(
     projection: &SchedulerProjection,
 ) -> Option<SchedulerDecision> {
+    if projection.work_reactivation_signal().is_some() {
+        return None;
+    }
     if projection.active_agent_waiting_intents > 0 {
         return Some(
             SchedulerDecision::new(
