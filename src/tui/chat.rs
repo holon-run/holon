@@ -523,10 +523,20 @@ fn active_activity_status_label(speaker: &str) -> Option<&'static str> {
         Some("Working")
     } else if speaker.starts_with("Holon (queued)") {
         Some("Queued")
+    } else if speaker.starts_with("Holon (continuing)") {
+        Some("Continuing")
     } else if speaker.starts_with("Holon (starting)") {
         Some("Starting")
+    } else if speaker.starts_with("Holon (waiting task)") {
+        Some("Waiting task")
+    } else if speaker.starts_with("Holon (waiting external)") {
+        Some("Waiting external")
     } else if speaker.starts_with("Holon (waiting)") {
         Some("Waiting")
+    } else if speaker.starts_with("Holon (needs input)") {
+        Some("Needs input")
+    } else if speaker.starts_with("Holon (blocked)") {
+        Some("Blocked")
     } else if speaker.starts_with("Holon (delegating)") {
         Some("Delegating")
     } else if speaker.starts_with("Holon (sleeping)") {
@@ -596,6 +606,21 @@ fn stable_active_activity_timestamp() -> DateTime<chrono::Utc> {
 }
 
 fn agent_has_active_activity(agent: &AgentSummary) -> bool {
+    match agent.scheduling_posture.posture {
+        crate::types::AgentSchedulingPosture::Unknown => {}
+        crate::types::AgentSchedulingPosture::Archived
+        | crate::types::AgentSchedulingPosture::Idle => {
+            return false;
+        }
+        crate::types::AgentSchedulingPosture::ActiveTurn
+        | crate::types::AgentSchedulingPosture::HasQueuedInput
+        | crate::types::AgentSchedulingPosture::HasRunnableWork
+        | crate::types::AgentSchedulingPosture::WaitingForTask
+        | crate::types::AgentSchedulingPosture::WaitingForExternal
+        | crate::types::AgentSchedulingPosture::WaitingForOperator
+        | crate::types::AgentSchedulingPosture::Blocked => return true,
+    }
+
     let active_parent = matches!(
         agent.agent.status,
         crate::types::AgentStatus::Booting
@@ -654,6 +679,27 @@ fn is_progress_event(event: &crate::tui::projection::ProjectionEventRecord) -> b
 }
 
 fn active_activity_speaker(agent: &AgentSummary) -> String {
+    match agent.scheduling_posture.posture {
+        crate::types::AgentSchedulingPosture::Unknown => {}
+        crate::types::AgentSchedulingPosture::Archived => return "Holon (stopped)".into(),
+        crate::types::AgentSchedulingPosture::ActiveTurn => return "Holon (working)".into(),
+        crate::types::AgentSchedulingPosture::HasQueuedInput => return "Holon (queued)".into(),
+        crate::types::AgentSchedulingPosture::HasRunnableWork => {
+            return "Holon (continuing)".into()
+        }
+        crate::types::AgentSchedulingPosture::WaitingForTask => {
+            return "Holon (waiting task)".into()
+        }
+        crate::types::AgentSchedulingPosture::WaitingForExternal => {
+            return "Holon (waiting external)".into();
+        }
+        crate::types::AgentSchedulingPosture::WaitingForOperator => {
+            return "Holon (needs input)".into();
+        }
+        crate::types::AgentSchedulingPosture::Blocked => return "Holon (blocked)".into(),
+        crate::types::AgentSchedulingPosture::Idle => return "Holon (idle)".into(),
+    }
+
     match agent.agent.status {
         crate::types::AgentStatus::Booting => "Holon (starting)".into(),
         crate::types::AgentStatus::AwaitingTask => "Holon (waiting)".into(),
@@ -849,10 +895,17 @@ fn trim_preview(input: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        action_event_body, assistant_message_from_event, latest_action_event, progress_event_body,
+        action_event_body, active_activity_speaker, agent_has_active_activity,
+        assistant_message_from_event, latest_action_event, progress_event_body,
     };
     use crate::operator_event::{present_operator_event, OperatorPresentationContext};
     use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord};
+    use crate::types::{
+        AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
+        AgentOwnership, AgentPostureProjection, AgentProfilePreset, AgentRegistryStatus,
+        AgentSchedulingPosture, AgentState, AgentStatus, AgentSummary, AgentTokenUsageSummary,
+        AgentVisibility, ClosureDecision, ClosureOutcome, RuntimePosture, TokenUsage,
+    };
     use chrono::Utc;
     use serde_json::{json, Value};
 
@@ -872,6 +925,87 @@ mod tests {
             summary: presentation.summary.clone(),
             presentation,
             payload,
+        }
+    }
+
+    fn model_ref() -> crate::config::ModelRef {
+        crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap()
+    }
+
+    fn agent_summary(status: AgentStatus, posture: AgentSchedulingPosture) -> AgentSummary {
+        let mut state = AgentState::new("default");
+        state.status = status;
+        AgentSummary {
+            identity: AgentIdentityView {
+                agent_id: "default".into(),
+                kind: AgentKind::Default,
+                visibility: AgentVisibility::Public,
+                ownership: AgentOwnership::SelfOwned,
+                profile_preset: AgentProfilePreset::PublicNamed,
+                status: AgentRegistryStatus::Active,
+                is_default_agent: true,
+                parent_agent_id: None,
+                lineage_parent_agent_id: None,
+                delegated_from_task_id: None,
+            },
+            agent: state,
+            scheduling_posture: AgentPostureProjection {
+                posture,
+                reason: "test posture".into(),
+                work_item_id: None,
+                waiting_intent_id: None,
+                task_id: None,
+                run_id: None,
+            },
+            active_task_count: 0,
+            lifecycle: AgentLifecycleHint::default(),
+            model: AgentModelState {
+                source: AgentModelSource::RuntimeDefault,
+                runtime_default_model: model_ref(),
+                effective_model: model_ref(),
+                requested_model: None,
+                active_model: None,
+                fallback_active: false,
+                effective_fallback_models: Vec::new(),
+                override_model: None,
+                override_reasoning_effort: None,
+                resolved_policy: crate::model_catalog::ResolvedRuntimeModelPolicy::default(),
+            },
+            token_usage: AgentTokenUsageSummary {
+                total: TokenUsage::new(0, 0),
+                total_model_rounds: 0,
+                last_turn: None,
+            },
+            closure: ClosureDecision {
+                outcome: ClosureOutcome::Completed,
+                waiting_reason: None,
+                work_signal: None,
+                runtime_posture: RuntimePosture::Awake,
+                evidence: Vec::new(),
+            },
+            execution: crate::system::ExecutionSnapshot {
+                profile: crate::system::ExecutionProfile::default(),
+                policy: crate::system::ExecutionProfile::default().policy_snapshot(),
+                attached_workspaces: Vec::new(),
+                workspace_id: None,
+                workspace_anchor: Default::default(),
+                execution_root: Default::default(),
+                cwd: Default::default(),
+                execution_root_id: None,
+                projection_kind: None,
+                access_mode: None,
+                worktree_root: None,
+            },
+            active_workspace_occupancy: None,
+            loaded_agents_md: Default::default(),
+            skills: Default::default(),
+            active_children: Vec::new(),
+            active_waiting_intents: Vec::new(),
+            active_wait_conditions: Vec::new(),
+            active_external_triggers: Vec::new(),
+            recent_operator_notifications: Vec::new(),
+            recent_brief_count: 0,
+            recent_event_count: 0,
         }
     }
 
@@ -977,6 +1111,43 @@ mod tests {
             assistant_message_from_event(&assistant).as_deref(),
             Some("I will inspect the event path first.")
         );
+    }
+
+    #[test]
+    fn posture_runnable_overrides_asleep_activity_label() {
+        let agent = agent_summary(AgentStatus::Asleep, AgentSchedulingPosture::HasRunnableWork);
+
+        assert!(agent_has_active_activity(&agent));
+        assert_eq!(active_activity_speaker(&agent), "Holon (continuing)");
+    }
+
+    #[test]
+    fn posture_waiting_and_blocked_labels_are_distinct() {
+        let waiting_external = agent_summary(
+            AgentStatus::Asleep,
+            AgentSchedulingPosture::WaitingForExternal,
+        );
+        let needs_input = agent_summary(
+            AgentStatus::Asleep,
+            AgentSchedulingPosture::WaitingForOperator,
+        );
+        let blocked = agent_summary(AgentStatus::Asleep, AgentSchedulingPosture::Blocked);
+
+        assert_eq!(
+            active_activity_speaker(&waiting_external),
+            "Holon (waiting external)"
+        );
+        assert_eq!(active_activity_speaker(&needs_input), "Holon (needs input)");
+        assert_eq!(active_activity_speaker(&blocked), "Holon (blocked)");
+    }
+
+    #[test]
+    fn unknown_posture_keeps_legacy_activity_fallback() {
+        let mut agent = agent_summary(AgentStatus::AwakeIdle, AgentSchedulingPosture::Unknown);
+        agent.agent.pending = 1;
+
+        assert!(agent_has_active_activity(&agent));
+        assert_eq!(active_activity_speaker(&agent), "Holon (queued)");
     }
 }
 
