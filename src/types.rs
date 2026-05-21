@@ -3002,6 +3002,7 @@ pub enum WorkItemSchedulingState {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSchedulingPosture {
+    Unknown,
     Archived,
     ActiveTurn,
     HasQueuedInput,
@@ -3030,7 +3031,7 @@ pub struct AgentPostureProjection {
 impl Default for AgentPostureProjection {
     fn default() -> Self {
         Self {
-            posture: AgentSchedulingPosture::Idle,
+            posture: AgentSchedulingPosture::Unknown,
             reason: "posture projection unavailable".into(),
             work_item_id: None,
             waiting_intent_id: None,
