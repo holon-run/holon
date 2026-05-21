@@ -1,6 +1,9 @@
 use super::super::*;
 use super::support::*;
-use crate::types::{AuthorityClass, SkillLoadReason, WorkItemPlanStatus};
+use crate::types::{
+    AuthorityClass, SkillLoadReason, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
+    WakeSource, WorkItemPlanStatus,
+};
 
 struct BlockingProvider {
     started: Arc<tokio::sync::Notify>,
@@ -1638,6 +1641,222 @@ async fn task_result_routes_through_reduction_and_follow_up_behavior() {
     assert!(events
         .iter()
         .any(|event| event.kind == "task_result_received"));
+}
+
+#[tokio::test]
+async fn task_result_records_wait_reconciliation_without_resolving_wait_condition() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(CountingProvider {
+        calls: Mutex::new(0),
+        reply: "task follow-up",
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let now = Utc::now();
+    runtime
+        .storage()
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-task-1".into(),
+            agent_id: "default".into(),
+            work_item_id: Some("wi-1".into()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Task,
+            source: None,
+            subject_ref: Some("task-1".into()),
+            waiting_for: "task result".into(),
+            wake_sources: vec![WakeSource::TaskResult {
+                task_id: "task-1".into(),
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+        })
+        .unwrap();
+
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        TrustLevel::TrustedSystem,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "task completed".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.metadata = Some(serde_json::json!({
+        "task_id": "task-1",
+        "task_kind": "child_agent_task",
+        "task_status": "completed",
+    }));
+
+    runtime
+        .process_message(
+            message,
+            closure_decision(
+                ClosureOutcome::Waiting,
+                Some(WaitingReason::AwaitingTaskResult),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let events = runtime.storage().read_recent_events(100).unwrap();
+    let signal = events
+        .iter()
+        .find(|event| {
+            event.kind == "wait_reconciliation_requested"
+                && event.data["wait_condition_id"] == "wait-task-1"
+        })
+        .expect("task result should request wait reconciliation");
+    assert_eq!(signal.data["wake_source"].as_str(), Some("task_result"));
+    assert_eq!(signal.data["subject_ref"].as_str(), Some("task-1"));
+    assert_eq!(signal.data["work_item_id"].as_str(), Some("wi-1"));
+
+    let active_conditions = runtime
+        .storage()
+        .latest_active_wait_conditions_for_agent("default")
+        .unwrap();
+    assert!(active_conditions
+        .iter()
+        .any(|condition| condition.id == "wait-task-1"));
+}
+
+#[tokio::test]
+async fn timer_operator_and_system_ticks_record_wait_reconciliation_signals() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "reconciled",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let now = Utc::now();
+    for (id, kind, wake_sources) in [
+        (
+            "wait-timer",
+            WaitConditionKind::Timer,
+            vec![WakeSource::Timer { wake_at: now }],
+        ),
+        (
+            "wait-operator",
+            WaitConditionKind::Operator,
+            vec![WakeSource::OperatorInput],
+        ),
+        (
+            "wait-system",
+            WaitConditionKind::System,
+            vec![WakeSource::SystemTick],
+        ),
+    ] {
+        runtime
+            .storage()
+            .append_wait_condition(&WaitConditionRecord {
+                id: id.into(),
+                agent_id: "default".into(),
+                work_item_id: Some(format!("{id}-work")),
+                status: WaitConditionStatus::Active,
+                kind,
+                source: None,
+                subject_ref: None,
+                waiting_for: format!("{id} fired"),
+                wake_sources,
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+            })
+            .unwrap();
+    }
+
+    for message in [
+        MessageEnvelope::new(
+            "default",
+            MessageKind::TimerTick,
+            MessageOrigin::Timer {
+                timer_id: "timer-1".into(),
+            },
+            TrustLevel::TrustedSystem,
+            Priority::Next,
+            MessageBody::Text {
+                text: "timer fired".into(),
+            },
+        ),
+        MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator-1".into()),
+            },
+            TrustLevel::TrustedOperator,
+            Priority::Interject,
+            MessageBody::Text {
+                text: "operator input".into(),
+            },
+        ),
+        MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "scheduler".into(),
+            },
+            TrustLevel::TrustedSystem,
+            Priority::Next,
+            MessageBody::Text {
+                text: "system tick".into(),
+            },
+        ),
+    ] {
+        runtime
+            .process_message(message, closure_decision(ClosureOutcome::Completed, None))
+            .await
+            .unwrap();
+    }
+
+    let events = runtime.storage().read_recent_events(100).unwrap();
+    for (condition_id, wake_source) in [
+        ("wait-timer", "timer"),
+        ("wait-operator", "operator_input"),
+        ("wait-system", "system_tick"),
+    ] {
+        assert!(events.iter().any(|event| {
+            event.kind == "wait_reconciliation_requested"
+                && event.data["wait_condition_id"] == condition_id
+                && event.data["wake_source"] == wake_source
+        }));
+    }
+    let active_conditions = runtime
+        .storage()
+        .latest_active_wait_conditions_for_agent("default")
+        .unwrap();
+    assert_eq!(active_conditions.len(), 3);
 }
 
 #[tokio::test]

@@ -2688,6 +2688,129 @@ async fn default_external_ingress_wakes_without_owning_work_item_wait_state() {
 }
 
 #[tokio::test]
+async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("reconciled")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let now = Utc::now();
+    let work = runtime
+        .create_work_item("wait for CI".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    let waiting_id = "wait-ci".to_string();
+    let trigger_id = "trigger-ci".to_string();
+    runtime
+        .storage()
+        .append_waiting_intent(&WaitingIntentRecord {
+            id: waiting_id.clone(),
+            agent_id: "default".into(),
+            scope: ExternalTriggerScope::WorkItem,
+            work_item_id: Some(work.id.clone()),
+            description: "wait for CI".into(),
+            source: "github".into(),
+            resource: Some("holon-run/holon#1292".into()),
+            condition: Some("checks complete".into()),
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: trigger_id.clone(),
+            created_at: now,
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        })
+        .unwrap();
+    runtime
+        .storage()
+        .append_external_trigger(&ExternalTriggerRecord {
+            external_trigger_id: trigger_id.clone(),
+            target_agent_id: "default".into(),
+            waiting_intent_id: Some(waiting_id.clone()),
+            scope: ExternalTriggerScope::WorkItem,
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/ci".into()),
+            token_hash: "token-hash".into(),
+            status: ExternalTriggerStatus::Active,
+            created_at: now,
+            revoked_at: None,
+            last_delivered_at: None,
+            delivery_count: 0,
+        })
+        .unwrap();
+
+    runtime
+        .deliver_callback(
+            &trigger_id,
+            CallbackDeliveryPayload {
+                body: Some(MessageBody::Json {
+                    value: serde_json::json!({"check": "Rust", "conclusion": "success"}),
+                }),
+                content_type: Some("application/json".into()),
+                correlation_id: Some("corr-ci".into()),
+                causation_id: Some("run-123".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let tick = runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .into_iter()
+        .find(|message| message.kind == MessageKind::SystemTick)
+        .expect("wake hint should enqueue a system tick");
+
+    runtime
+        .process_message(
+            tick,
+            closure_decision(
+                ClosureOutcome::Waiting,
+                Some(WaitingReason::AwaitingExternalChange),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let events = runtime.storage().read_recent_events(100).unwrap();
+    let signal = events
+        .iter()
+        .find(|event| {
+            event.kind == "wait_reconciliation_requested"
+                && event.data["wait_condition_id"] == format!("waiting_intent:{waiting_id}")
+        })
+        .expect("external wake should request wait reconciliation");
+    assert_eq!(
+        signal.data["wake_source"].as_str(),
+        Some("external_ingress")
+    );
+    assert_eq!(signal.data["work_item_id"].as_str(), Some(work.id.as_str()));
+    assert_eq!(
+        signal.data["subject_ref"].as_str(),
+        Some(trigger_id.as_str())
+    );
+    assert_eq!(signal.data["waiting_for"].as_str(), Some("checks complete"));
+
+    let waiting = runtime.latest_waiting_intents().await.unwrap();
+    let active = waiting
+        .iter()
+        .find(|record| record.id == waiting_id)
+        .expect("waiting intent should remain visible after wake firing");
+    assert_eq!(active.status, WaitingIntentStatus::Active);
+    assert_eq!(active.trigger_count, 1);
+}
+
+#[tokio::test]
 async fn completing_work_item_does_not_revoke_agent_external_trigger() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
