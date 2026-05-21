@@ -4,7 +4,7 @@ use crate::storage::{AppStorage, WorkQueuePromptProjection};
 use crate::types::{
     AgentStatus, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint, Priority,
     TaskRecord, TaskStatus, TimerStatus, TrustLevel, TurnTerminalKind, WaitingIntentStatus,
-    WorkItemRecord,
+    WorkItemRecord, WorkItemSchedulingState,
 };
 use chrono::{DateTime, Utc};
 
@@ -16,6 +16,7 @@ pub(crate) struct SchedulerProjection {
     pub active_tasks: Vec<TaskRecord>,
     pub has_blocking_active_tasks: bool,
     pub current_work_item: Option<WorkItemRecord>,
+    pub current_work_item_scheduling_state: Option<WorkItemSchedulingState>,
     pub queued_runnable_work_items: Vec<WorkItemRecord>,
     pub queued_work_items: usize,
     pub pending_wake_hint: bool,
@@ -106,6 +107,11 @@ impl SchedulerProjection {
             .iter()
             .map(|item| item.work_item.clone())
             .collect::<Vec<_>>();
+        let current_work_item_scheduling_state = work_queue
+            .readiness
+            .iter()
+            .find(|item| item.is_current)
+            .map(|item| item.scheduling_state);
         let active_waiting_intents = storage
             .latest_waiting_intents()?
             .into_iter()
@@ -133,6 +139,7 @@ impl SchedulerProjection {
             active_tasks,
             has_blocking_active_tasks,
             current_work_item: work_queue.current,
+            current_work_item_scheduling_state,
             queued_work_items: queued_runnable_work_items.len(),
             queued_runnable_work_items,
             pending_wake_hint: snapshot.pending_wake_hint,
@@ -539,15 +546,22 @@ pub(crate) fn wait_decision_for_projection(
     projection: &SchedulerProjection,
 ) -> Option<SchedulerDecision> {
     if projection.active_waiting_intents > 0 {
+        if projection.active_agent_waiting_intents == 0 {
+            return None;
+        }
         return Some(
             SchedulerDecision::new(
                 SchedulerDecisionKind::WaitForExternalChange,
-                "active_waiting_intents",
+                "active_agent_waiting_intents",
             )
             .liveness_only(true)
             .evidence(format!(
                 "active_waiting_intents={}",
                 projection.active_waiting_intents
+            ))
+            .evidence(format!(
+                "active_agent_waiting_intents={}",
+                projection.active_agent_waiting_intents
             )),
         );
     }
@@ -559,17 +573,32 @@ pub(crate) fn wait_decision_for_projection(
         );
     }
     projection.current_work_item.as_ref().and_then(|item| {
-        if item.is_waiting_for_operator() {
-            Some(
+        match projection.current_work_item_scheduling_state {
+            Some(WorkItemSchedulingState::WaitingOperator) => Some(
                 SchedulerDecision::new(
                     SchedulerDecisionKind::WaitForOperator,
                     "work_item_needs_input",
                 )
                 .liveness_only(true)
-                .work_item_id(item.id.clone()),
-            )
-        } else {
-            None
+                .work_item_id(item.id.clone())
+                .evidence("current_work_item_scheduling_state=WaitingOperator"),
+            ),
+            Some(WorkItemSchedulingState::WaitingTask) => Some(
+                SchedulerDecision::new(SchedulerDecisionKind::WaitForTask, "work_item_task_wait")
+                    .liveness_only(true)
+                    .work_item_id(item.id.clone())
+                    .evidence("current_work_item_scheduling_state=WaitingTask"),
+            ),
+            Some(WorkItemSchedulingState::WaitingExternal) => Some(
+                SchedulerDecision::new(
+                    SchedulerDecisionKind::WaitForExternalChange,
+                    "work_item_external_wait",
+                )
+                .liveness_only(true)
+                .work_item_id(item.id.clone())
+                .evidence("current_work_item_scheduling_state=WaitingExternal"),
+            ),
+            _ => None,
         }
     })
 }

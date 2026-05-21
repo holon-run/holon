@@ -1,6 +1,6 @@
 use crate::types::{
     AuditEvent, BriefRecord, ClosureDecision, ClosureOutcome, RuntimePosture, TurnTerminalKind,
-    WaitingReason, WorkReactivationSignal,
+    WaitingReason, WorkItemSchedulingState, WorkReactivationSignal,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -9,7 +9,9 @@ pub(super) struct ClosureFacts {
     pub(super) awaiting_operator_input: bool,
     pub(super) active_blocking_tasks: usize,
     pub(super) active_waiting_intents: usize,
+    pub(super) active_agent_waiting_intents: usize,
     pub(super) active_timers: usize,
+    pub(super) current_work_item_scheduling_state: Option<WorkItemSchedulingState>,
     pub(super) work_signal: Option<WorkReactivationSignal>,
     pub(super) turn_started: bool,
     pub(super) turn_in_progress: bool,
@@ -38,8 +40,17 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
             facts.active_waiting_intents
         ));
     }
+    if facts.active_agent_waiting_intents > 0 {
+        evidence.push(format!(
+            "active_agent_waiting_intents={}",
+            facts.active_agent_waiting_intents
+        ));
+    }
     if facts.active_timers > 0 {
         evidence.push(format!("active_timers={}", facts.active_timers));
+    }
+    if let Some(state) = facts.current_work_item_scheduling_state {
+        evidence.push(format!("current_work_item_scheduling_state={state:?}"));
     }
     if let Some(work_signal) = facts.work_signal.as_ref() {
         evidence.push(format!(
@@ -63,17 +74,7 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
         };
     }
 
-    if facts.awaiting_operator_input {
-        return ClosureDecision {
-            outcome: ClosureOutcome::Waiting,
-            waiting_reason: Some(WaitingReason::AwaitingOperatorInput),
-            work_signal: None,
-            runtime_posture,
-            evidence,
-        };
-    }
-
-    if facts.active_waiting_intents > 0 {
+    if facts.active_agent_waiting_intents > 0 {
         return ClosureDecision {
             outcome: ClosureOutcome::Waiting,
             waiting_reason: Some(WaitingReason::AwaitingExternalChange),
@@ -146,6 +147,38 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
             runtime_posture,
             evidence,
         };
+    }
+
+    if facts.awaiting_operator_input {
+        return ClosureDecision {
+            outcome: ClosureOutcome::Waiting,
+            waiting_reason: Some(WaitingReason::AwaitingOperatorInput),
+            work_signal: None,
+            runtime_posture,
+            evidence,
+        };
+    }
+
+    match facts.current_work_item_scheduling_state {
+        Some(WorkItemSchedulingState::WaitingTask) => {
+            return ClosureDecision {
+                outcome: ClosureOutcome::Waiting,
+                waiting_reason: Some(WaitingReason::AwaitingTaskResult),
+                work_signal: None,
+                runtime_posture,
+                evidence,
+            };
+        }
+        Some(WorkItemSchedulingState::WaitingExternal) => {
+            return ClosureDecision {
+                outcome: ClosureOutcome::Waiting,
+                waiting_reason: Some(WaitingReason::AwaitingExternalChange),
+                work_signal: None,
+                runtime_posture,
+                evidence,
+            };
+        }
+        _ => {}
     }
 
     if matches!(facts.turn_terminal_kind, Some(TurnTerminalKind::Completed)) {

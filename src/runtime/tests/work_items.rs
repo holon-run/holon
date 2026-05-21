@@ -3349,6 +3349,72 @@ async fn current_needs_input_work_item_waits_for_operator_without_work_signal() 
 }
 
 #[tokio::test]
+async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let current = WorkItemRecord::new(
+        "default",
+        "waiting for external review",
+        WorkItemState::Open,
+    );
+    let current_id = current.id.clone();
+    storage.append_work_item(&current).unwrap();
+    let queued = WorkItemRecord::new("default", "queued follow-up work", WorkItemState::Open);
+    let queued_id = queued.id.clone();
+    storage.append_work_item(&queued).unwrap();
+    storage
+        .append_waiting_intent(&WaitingIntentRecord {
+            id: "wait-current".into(),
+            agent_id: "default".into(),
+            scope: ExternalTriggerScope::WorkItem,
+            work_item_id: Some(current_id.clone()),
+            description: "wait for current review".into(),
+            source: "github".into(),
+            resource: Some("pull_request:1".into()),
+            condition: None,
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "trigger-current".into(),
+            created_at: Utc::now(),
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        })
+        .unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some(current_id);
+    storage.write_agent(&agent).unwrap();
+
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("tick done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let closure = runtime.current_closure_decision().await.unwrap();
+    assert_eq!(closure.outcome, ClosureOutcome::Continuable);
+    assert_eq!(closure.waiting_reason, None);
+    let signal = closure.work_signal.expect("work signal should exist");
+    assert_eq!(signal.work_item_id, queued_id);
+    assert_eq!(
+        signal.reactivation_mode,
+        WorkReactivationMode::ActivateQueued
+    );
+    assert!(closure
+        .evidence
+        .iter()
+        .any(|item| item == "current_work_item_scheduling_state=WaitingExternal"));
+}
+
+#[tokio::test]
 async fn current_closure_reports_continuable_for_queued_work_item_without_active_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
