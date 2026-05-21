@@ -595,6 +595,21 @@ pub(crate) fn wait_decision_for_projection(
                 .work_item_id(item.id.clone())
                 .evidence("current_work_item_scheduling_state=WaitingExternal"),
             ),
+            Some(WorkItemSchedulingState::WaitingTimer) => Some(
+                SchedulerDecision::new(SchedulerDecisionKind::WaitForTimer, "work_item_timer_wait")
+                    .liveness_only(true)
+                    .work_item_id(item.id.clone())
+                    .evidence("current_work_item_scheduling_state=WaitingTimer"),
+            ),
+            Some(WorkItemSchedulingState::WaitingSystem) => Some(
+                SchedulerDecision::new(
+                    SchedulerDecisionKind::EmitSystemTick,
+                    "work_item_system_wait",
+                )
+                .liveness_only(true)
+                .work_item_id(item.id.clone())
+                .evidence("current_work_item_scheduling_state=WaitingSystem"),
+            ),
             _ => None,
         }
     })
