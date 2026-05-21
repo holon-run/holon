@@ -18,8 +18,8 @@ use crate::types::{
     OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord,
     TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
     TranscriptEntry, WaitingIntentRecord, WaitingIntentStatus, WorkItemDelegationRecord,
-    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemState, WorkingMemoryDelta,
-    WorkspaceEntry, WorkspaceOccupancyRecord,
+    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState,
+    WorkItemState, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 const RUNTIME_DIR: &str = ".holon";
@@ -57,10 +57,12 @@ impl WorkQueuePromptProjection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkItemReadinessProjection {
     pub work_item: WorkItemRecord,
+    pub scheduling_state: WorkItemSchedulingState,
     pub readiness: WorkItemReadiness,
     pub candidate_class: WorkItemCandidateClass,
     pub is_current: bool,
     pub has_active_waits: bool,
+    pub has_active_task_waits: bool,
     pub has_triggered_waits: bool,
     pub last_triggered_at: Option<DateTime<Utc>>,
     pub current_todo: Option<TodoItem>,
@@ -731,6 +733,12 @@ impl AppStorage {
                     acc
                 },
             );
+        let active_task_waits = self
+            .latest_active_task_records(usize::MAX)?
+            .into_iter()
+            .filter(|task| task.is_blocking())
+            .filter_map(|task| task.effective_work_item_id().map(str::to_string))
+            .collect::<std::collections::BTreeSet<_>>();
         let mut readiness = latest
             .values()
             .cloned()
@@ -739,28 +747,34 @@ impl AppStorage {
                     && item.state == WorkItemState::Open;
                 let last_triggered_at = active_waits.get(&item.id).copied().flatten();
                 let has_active_waits = active_waits.contains_key(&item.id);
+                let has_active_task_waits = active_task_waits.contains(&item.id);
                 let has_triggered_waits = last_triggered_at.is_some();
-                let readiness = item.readiness();
-                let candidate_class = if is_current && readiness == WorkItemReadiness::Runnable {
-                    WorkItemCandidateClass::CurrentRunnable
-                } else if item.state == WorkItemState::Completed {
-                    WorkItemCandidateClass::CompletedRecent
-                } else if has_triggered_waits && item.blocked_by.is_some() {
-                    WorkItemCandidateClass::TriggeredBlocked
-                } else if readiness == WorkItemReadiness::Runnable {
-                    WorkItemCandidateClass::QueuedRunnable
-                } else if readiness == WorkItemReadiness::WaitingForOperator {
-                    WorkItemCandidateClass::WaitingForOperator
-                } else {
-                    WorkItemCandidateClass::Blocked
-                };
+                let scheduling_state =
+                    item.scheduling_state(has_active_waits, has_active_task_waits);
+                let readiness = readiness_for_scheduling_state(scheduling_state);
+                let candidate_class =
+                    if is_current && scheduling_state == WorkItemSchedulingState::Runnable {
+                        WorkItemCandidateClass::CurrentRunnable
+                    } else if item.state == WorkItemState::Completed {
+                        WorkItemCandidateClass::CompletedRecent
+                    } else if has_triggered_waits && item.blocked_by.is_some() {
+                        WorkItemCandidateClass::TriggeredBlocked
+                    } else if scheduling_state == WorkItemSchedulingState::Runnable {
+                        WorkItemCandidateClass::QueuedRunnable
+                    } else if scheduling_state == WorkItemSchedulingState::WaitingOperator {
+                        WorkItemCandidateClass::WaitingForOperator
+                    } else {
+                        WorkItemCandidateClass::Blocked
+                    };
                 WorkItemReadinessProjection {
                     current_todo: current_todo(&item),
                     work_item: item,
+                    scheduling_state,
                     readiness,
                     candidate_class,
                     is_current,
                     has_active_waits,
+                    has_active_task_waits,
                     has_triggered_waits,
                     last_triggered_at,
                 }
@@ -839,6 +853,32 @@ impl AppStorage {
                         .then_with(|| left.id.cmp(&right.id))
                 })
         }))
+    }
+
+    pub fn due_blocked_work_item_rechecks(
+        &self,
+        agent_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<WorkItemRecord>> {
+        let mut due = self
+            .latest_work_items()?
+            .into_iter()
+            .filter(|item| item.agent_id == agent_id)
+            .filter(|item| item.state == WorkItemState::Open)
+            .filter(|item| item.blocked_by.is_some())
+            .filter(|item| item.recheck_at.is_some_and(|recheck_at| recheck_at <= now))
+            .filter(|item| {
+                item.recheck_consumed_at
+                    .zip(item.recheck_at)
+                    .is_none_or(|(consumed_at, recheck_at)| consumed_at < recheck_at)
+            })
+            .collect::<Vec<_>>();
+        due.sort_by(|left, right| {
+            left.recheck_at
+                .cmp(&right.recheck_at)
+                .then_with(|| compare_queue_display_order(left, right))
+        });
+        Ok(due)
     }
 
     pub fn latest_work_item(&self, work_item_id: &str) -> Result<Option<WorkItemRecord>> {
@@ -1388,6 +1428,17 @@ fn compare_queue_display_order(
 
 fn blocked_rank(record: &WorkItemRecord) -> u8 {
     u8::from(record.blocked_by.is_some())
+}
+
+fn readiness_for_scheduling_state(state: WorkItemSchedulingState) -> WorkItemReadiness {
+    match state {
+        WorkItemSchedulingState::Runnable => WorkItemReadiness::Runnable,
+        WorkItemSchedulingState::WaitingOperator => WorkItemReadiness::WaitingForOperator,
+        WorkItemSchedulingState::WaitingTask
+        | WorkItemSchedulingState::WaitingExternal
+        | WorkItemSchedulingState::Blocked => WorkItemReadiness::Blocked,
+        WorkItemSchedulingState::Completed => WorkItemReadiness::Completed,
+    }
 }
 
 fn candidate_class_rank(class: WorkItemCandidateClass) -> u8 {

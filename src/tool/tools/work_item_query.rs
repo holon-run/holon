@@ -65,6 +65,10 @@ pub(crate) struct WorkItemView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) blocked_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recheck_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recheck_consumed_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) completion_report: Option<WorkItemCompletionReportView>,
     pub(crate) created_at: DateTime<Utc>,
     pub(crate) updated_at: DateTime<Utc>,
@@ -143,6 +147,8 @@ pub(crate) async fn view_for_record(
         plan_artifact,
         todo_list,
         blocked_by: record.blocked_by,
+        recheck_at: record.recheck_at,
+        recheck_consumed_at: record.recheck_consumed_at,
         completion_report,
         created_at: record.created_at,
         updated_at: record.updated_at,

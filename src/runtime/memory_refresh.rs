@@ -10,6 +10,7 @@ const CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT: usize = 512;
 enum IdleTickTrigger {
     WorkQueueActive(crate::types::WorkItemRecord),
     WorkQueueQueued(crate::types::WorkItemRecord),
+    BlockedRecheck(Vec<crate::types::WorkItemRecord>),
     WakeHint(PendingWakeHint),
 }
 
@@ -46,6 +47,7 @@ pub(super) fn work_queue_waits_for_operator(projection: &WorkQueuePromptProjecti
 fn idle_tick_trigger_from_state(
     pending_wake_hint: Option<PendingWakeHint>,
     projection: WorkQueuePromptProjection,
+    due_rechecks: Vec<crate::types::WorkItemRecord>,
 ) -> Option<IdleTickTrigger> {
     if let Some(pending) = pending_wake_hint {
         Some(IdleTickTrigger::WakeHint(pending))
@@ -60,6 +62,13 @@ fn idle_tick_trigger_from_state(
             .into_iter()
             .next()
             .map(|item| IdleTickTrigger::WorkQueueQueued(item.work_item))
+            .or_else(|| {
+                if due_rechecks.is_empty() {
+                    None
+                } else {
+                    Some(IdleTickTrigger::BlockedRecheck(due_rechecks))
+                }
+            })
     }
 }
 
@@ -147,6 +156,10 @@ impl RuntimeHandle {
         };
 
         let work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
+        let due_rechecks = self
+            .inner
+            .storage
+            .due_blocked_work_item_rechecks(scheduler_snapshot.id(), chrono::Utc::now())?;
         let scheduler_projection =
             scheduler::SchedulerProjection::from_snapshot_with_queue_len_and_work_queue(
                 &self.inner.storage,
@@ -154,7 +167,8 @@ impl RuntimeHandle {
                 queue_len,
                 work_queue_projection.clone(),
             )?;
-        let trigger = idle_tick_trigger_from_state(pending_wake_hint, work_queue_projection);
+        let trigger =
+            idle_tick_trigger_from_state(pending_wake_hint, work_queue_projection, due_rechecks);
 
         let suppress_continue_active = triggering_continuation
             .is_some_and(|continuation| continuation.model_reentry)
@@ -278,6 +292,13 @@ impl RuntimeHandle {
                 if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                     guard.state.pending_wake_hint = None;
                     self.inner.storage.write_agent(&guard.state)?;
+                }
+                Ok(true)
+            }
+            Some(IdleTickTrigger::BlockedRecheck(items)) => {
+                self.emit_system_tick_from_blocked_recheck(&items).await?;
+                for item in items {
+                    let _ = self.consume_work_item_recheck(&item.id).await?;
                 }
                 Ok(true)
             }
@@ -648,6 +669,70 @@ impl RuntimeHandle {
                     .metadata
                     .as_ref()
                     .and_then(|value| value.get("work_queue"))
+                    .cloned(),
+            }),
+        ))?;
+        let _ = self.enqueue(message).await?;
+        Ok(())
+    }
+
+    pub(super) async fn emit_system_tick_from_blocked_recheck(
+        &self,
+        work_items: &[crate::types::WorkItemRecord],
+    ) -> Result<()> {
+        let items = work_items
+            .iter()
+            .map(|item| {
+                serde_json::json!({
+                    "work_item_id": item.id,
+                    "work_item_revision": item.revision,
+                    "objective": item.objective,
+                    "blocked_by": item.blocked_by,
+                    "recheck_at": item.recheck_at,
+                })
+            })
+            .collect::<Vec<_>>();
+        let idempotency_key = work_items
+            .iter()
+            .filter_map(|item| item.recheck_at.map(|recheck_at| (item, recheck_at)))
+            .map(|(item, recheck_at)| format!("{}@{}", item.id, recheck_at.to_rfc3339()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut message = MessageEnvelope::new(
+            self.agent_id().await?,
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_item_recheck".into(),
+            },
+            TrustLevel::TrustedSystem,
+            Priority::Background,
+            MessageBody::Text {
+                text: format!(
+                    "{} blocked WorkItem recheck{} due; inspect blockers and refresh or clear blocked_by.",
+                    work_items.len(),
+                    if work_items.len() == 1 { " is" } else { "s are" }
+                ),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        message.metadata = Some(serde_json::json!({
+            "work_item_recheck": {
+                "idempotency_key": idempotency_key,
+                "count": work_items.len(),
+                "items": items,
+            }
+        }));
+        self.inner.storage.append_event(&AuditEvent::new(
+            "system_tick_emitted",
+            serde_json::json!({
+                "subsystem": "work_item_recheck",
+                "work_item_recheck": message
+                    .metadata
+                    .as_ref()
+                    .and_then(|value| value.get("work_item_recheck"))
                     .cloned(),
             }),
         ))?;

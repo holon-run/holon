@@ -2055,6 +2055,28 @@ impl RuntimeHandle {
         todo_list: Option<Vec<TodoItem>>,
         blocked_by: Option<Option<String>>,
     ) -> Result<WorkItemRecord> {
+        self.update_work_item_fields_with_recheck(
+            work_item_id,
+            objective,
+            plan_status,
+            _plan,
+            todo_list,
+            blocked_by,
+            None,
+        )
+        .await
+    }
+
+    pub async fn update_work_item_fields_with_recheck(
+        &self,
+        work_item_id: String,
+        objective: Option<String>,
+        plan_status: Option<WorkItemPlanStatus>,
+        _plan: Option<Option<String>>,
+        todo_list: Option<Vec<TodoItem>>,
+        blocked_by: Option<Option<String>>,
+        recheck_after_ms: Option<u64>,
+    ) -> Result<WorkItemRecord> {
         let agent_id = self.agent_id().await?;
         let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if existing.state == WorkItemState::Completed {
@@ -2090,6 +2112,20 @@ impl RuntimeHandle {
         }
         if let Some(blocked_by) = blocked_by {
             record.blocked_by = blocked_by;
+            match record.blocked_by {
+                Some(_) => {
+                    let recheck_after_ms = recheck_after_ms.unwrap_or(60 * 60 * 1000);
+                    let recheck_after_ms = i64::try_from(recheck_after_ms).unwrap_or(i64::MAX);
+                    let recheck_after = chrono::Duration::try_milliseconds(recheck_after_ms)
+                        .unwrap_or(chrono::Duration::MAX);
+                    record.recheck_at = Some(Utc::now() + recheck_after);
+                    record.recheck_consumed_at = None;
+                }
+                None => {
+                    record.recheck_at = None;
+                    record.recheck_consumed_at = None;
+                }
+            }
             record.updated_at = Utc::now();
             wrote_item = true;
         }
@@ -2130,6 +2166,61 @@ impl RuntimeHandle {
         Ok(record)
     }
 
+    pub async fn consume_work_item_recheck(
+        &self,
+        work_item_id: &str,
+    ) -> Result<Option<WorkItemRecord>> {
+        let agent_id = self.agent_id().await?;
+        let existing = match self.validate_owned_work_item(&agent_id, work_item_id) {
+            Ok(record) => record,
+            Err(_) => return Ok(None),
+        };
+        if existing.state != WorkItemState::Open || existing.blocked_by.is_none() {
+            return Ok(None);
+        }
+        let Some(recheck_at) = existing.recheck_at else {
+            return Ok(None);
+        };
+        if existing
+            .recheck_consumed_at
+            .is_some_and(|consumed_at| consumed_at >= recheck_at)
+        {
+            return Ok(Some(existing));
+        }
+
+        let mut record = WorkItemRecord {
+            revision: existing.revision + 1,
+            recheck_consumed_at: Some(Utc::now()),
+            updated_at: Utc::now(),
+            ..existing
+        };
+        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+            self.agent_home().as_path(),
+            &mut record,
+        )?;
+        self.inner.storage.append_work_item(&record)?;
+        if plan_artifact_changed {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_plan_artifact_refreshed",
+                serde_json::json!({
+                    "work_item_id": record.id.clone(),
+                    "revision": record.revision,
+                    "plan_artifact": record.plan_artifact.clone(),
+                }),
+            ))?;
+        }
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_recheck_consumed",
+            serde_json::json!({
+                "work_item_id": record.id.clone(),
+                "revision": record.revision,
+                "recheck_at": record.recheck_at,
+                "recheck_consumed_at": record.recheck_consumed_at,
+            }),
+        ))?;
+        Ok(Some(record))
+    }
+
     pub async fn complete_work_item(
         &self,
         work_item_id: String,
@@ -2144,6 +2235,8 @@ impl RuntimeHandle {
             revision: existing.revision + 1,
             state: WorkItemState::Completed,
             blocked_by: None,
+            recheck_at: None,
+            recheck_consumed_at: None,
             result_summary: existing.result_summary.clone(),
             updated_at: Utc::now(),
             ..existing

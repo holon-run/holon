@@ -1,6 +1,6 @@
 use super::super::*;
 use super::support::*;
-use crate::types::{WorkItemPlanStatus, WorkItemReadiness};
+use crate::types::{WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState};
 
 fn blocking_task_for_work_item(task_id: &str, work_item_id: Option<&str>) -> TaskRecord {
     TaskRecord {
@@ -78,6 +78,152 @@ fn work_item_record_revision_defaults_for_old_records() {
     let record: WorkItemRecord = serde_json::from_value(value).unwrap();
     assert_eq!(record.revision, 1);
     assert!(record.plan_artifact.is_none());
+    assert!(record.recheck_at.is_none());
+    assert!(record.recheck_consumed_at.is_none());
+}
+
+#[tokio::test]
+async fn update_work_item_sets_and_preserves_blocked_recheck_deadline() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("wait with fallback".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let before = Utc::now();
+    let blocked = runtime
+        .update_work_item_fields_with_recheck(
+            work.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("waiting for CI".into())),
+            Some(25),
+        )
+        .await
+        .unwrap();
+    let recheck_at = blocked.recheck_at.expect("blocked item has recheck_at");
+    assert!(recheck_at >= before + chrono::Duration::milliseconds(25));
+    assert!(blocked.recheck_consumed_at.is_none());
+
+    let updated = runtime
+        .update_work_item_fields(
+            work.id.clone(),
+            Some("wait with unchanged fallback".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.recheck_at, Some(recheck_at));
+
+    let cleared = runtime
+        .update_work_item_fields(work.id.clone(), None, None, None, None, Some(None))
+        .await
+        .unwrap();
+    assert!(cleared.blocked_by.is_none());
+    assert!(cleared.recheck_at.is_none());
+    assert!(cleared.recheck_consumed_at.is_none());
+}
+
+#[tokio::test]
+async fn work_queue_projection_derives_scheduling_state_per_work_item() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let runnable = runtime
+        .create_work_item("runnable".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let external = runtime
+        .create_work_item("external wait".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let task_wait = runtime
+        .create_work_item("task wait".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let now = Utc::now();
+    runtime
+        .storage()
+        .append_waiting_intent(&WaitingIntentRecord {
+            id: "wait-external".into(),
+            agent_id: "default".into(),
+            scope: ExternalTriggerScope::WorkItem,
+            work_item_id: Some(external.id.clone()),
+            description: "external callback".into(),
+            source: "github".into(),
+            resource: Some("pull_request:1".into()),
+            condition: Some("checks".into()),
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "trigger-external".into(),
+            created_at: now,
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        })
+        .unwrap();
+    runtime
+        .storage()
+        .append_task(&blocking_task_for_work_item(
+            "task-wait",
+            Some(&task_wait.id),
+        ))
+        .unwrap();
+
+    let projection = runtime.storage().work_queue_prompt_projection().unwrap();
+    let state_for = |id: &str| {
+        projection
+            .readiness
+            .iter()
+            .find(|item| item.work_item.id == id)
+            .map(|item| item.scheduling_state)
+            .unwrap()
+    };
+    assert_eq!(state_for(&runnable.id), WorkItemSchedulingState::Runnable);
+    assert_eq!(
+        state_for(&external.id),
+        WorkItemSchedulingState::WaitingExternal
+    );
+    assert_eq!(
+        state_for(&task_wait.id),
+        WorkItemSchedulingState::WaitingTask
+    );
+    assert!(projection
+        .queued_runnable
+        .iter()
+        .any(|item| item.work_item.id == runnable.id));
+    assert!(!projection
+        .queued_runnable
+        .iter()
+        .any(|item| item.work_item.id == external.id));
 }
 
 #[tokio::test]

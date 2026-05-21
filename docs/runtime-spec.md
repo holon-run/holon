@@ -1721,6 +1721,8 @@ The minimal shape is:
 - `plan?`
 - `todo_list`
 - `blocked_by?`
+- `recheck_at?`
+- `recheck_consumed_at?`
 - `result_summary?`
 - `created_at`
 - `updated_at`
@@ -1757,12 +1759,32 @@ item. Queued and blocked are derived views:
 - blocked: open work with `blocked_by`
 - completed: work whose state is `completed`
 
-Scheduler readiness is also a derived view:
+Scheduler readiness is also a derived view. Internally, the runtime first
+derives a `WorkItemSchedulingState` from WorkItem lifecycle, plan status,
+blockers, active task waits, and active external waits:
+
+- `runnable`
+- `waiting_operator`
+- `waiting_task`
+- `waiting_external`
+- `blocked`
+- `completed`
+
+The older readiness labels are projected from that scheduling state for
+compatibility:
 
 - runnable: open work with no `blocked_by` and `plan_status != needs_input`
 - waiting_for_operator: open work with `plan_status = needs_input`
-- blocked: open work with `blocked_by`
+- blocked: open work with `blocked_by`, an active task wait, or an active
+  external wait
 - completed: completed work
+
+`recheck_at` is a one-shot fallback reminder deadline for open work items with
+`blocked_by`. When due, the runtime may enqueue a low-priority system tick for
+the owning agent to inspect the blocker. The reminder does not make the work
+item runnable and does not clear or interpret `blocked_by`; the agent must
+explicitly refresh or clear the blocker. `recheck_consumed_at` records that the
+current `recheck_at` reminder has already been delivered or consumed.
 
 `open` is a lifecycle state only. It must not be used by itself as evidence
 that scheduler-owned continuation is allowed.
@@ -1845,6 +1867,14 @@ item owned by the agent.
 - `plan_status` is optional
 - `todo_list` is optional and uses full-snapshot replacement semantics
 - `blocked_by` is optional and nullable
+- `recheck_after` is optional and applies only when setting a non-empty
+  `blocked_by`; it is a positive millisecond delay used to compute
+  `recheck_at`
+
+When `blocked_by` is set without `recheck_after`, the runtime assigns a default
+fallback recheck deadline. Updating other WorkItem fields without touching
+`blocked_by` preserves the existing deadline. Clearing `blocked_by` also clears
+`recheck_at` and `recheck_consumed_at`.
 
 `CompleteWorkItem` marks an existing work item completed:
 
@@ -1854,8 +1884,9 @@ item owned by the agent.
   same assistant round as the successful `CompleteWorkItem` call
 - completion is an explicit agent assertion; it is not blocked by generic
   active task `wait_policy`
-- completion clears `blocked_by` and finishes the item; it does not revoke
-  agent-scoped external trigger capabilities
+- completion clears `blocked_by`, `recheck_at`, and `recheck_consumed_at`, and
+  finishes the item; it does not revoke agent-scoped external trigger
+  capabilities
 
 There is no separate agent-facing `UpdateWorkPlan` tool and no separate
 work-plan storage stream. Plan body state lives in the AgentHome plan artifact;
