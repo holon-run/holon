@@ -2851,6 +2851,8 @@ pub enum WorkItemSchedulingState {
     WaitingOperator,
     WaitingTask,
     WaitingExternal,
+    WaitingTimer,
+    WaitingSystem,
     Blocked,
     Completed,
 }
@@ -2924,8 +2926,7 @@ impl WorkItemRecord {
 
     pub fn scheduling_state(
         &self,
-        has_active_external_wait: bool,
-        has_active_task_wait: bool,
+        active_wait_state: Option<WorkItemSchedulingState>,
     ) -> WorkItemSchedulingState {
         if self.state == WorkItemState::Completed {
             return WorkItemSchedulingState::Completed;
@@ -2933,11 +2934,8 @@ impl WorkItemRecord {
         if self.plan_status == WorkItemPlanStatus::NeedsInput {
             return WorkItemSchedulingState::WaitingOperator;
         }
-        if has_active_task_wait {
-            return WorkItemSchedulingState::WaitingTask;
-        }
-        if has_active_external_wait {
-            return WorkItemSchedulingState::WaitingExternal;
+        if let Some(wait_state) = active_wait_state {
+            return wait_state;
         }
         if self.blocked_by.is_some() {
             return WorkItemSchedulingState::Blocked;
@@ -2946,11 +2944,13 @@ impl WorkItemRecord {
     }
 
     pub fn readiness(&self) -> WorkItemReadiness {
-        match self.scheduling_state(false, false) {
+        match self.scheduling_state(None) {
             WorkItemSchedulingState::Runnable => WorkItemReadiness::Runnable,
             WorkItemSchedulingState::WaitingOperator => WorkItemReadiness::WaitingForOperator,
             WorkItemSchedulingState::WaitingTask
             | WorkItemSchedulingState::WaitingExternal
+            | WorkItemSchedulingState::WaitingTimer
+            | WorkItemSchedulingState::WaitingSystem
             | WorkItemSchedulingState::Blocked => WorkItemReadiness::Blocked,
             WorkItemSchedulingState::Completed => WorkItemReadiness::Completed,
         }

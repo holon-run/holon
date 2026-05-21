@@ -178,6 +178,33 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
                 evidence,
             };
         }
+        Some(WorkItemSchedulingState::WaitingTimer) => {
+            return ClosureDecision {
+                outcome: ClosureOutcome::Waiting,
+                waiting_reason: Some(WaitingReason::AwaitingTimer),
+                work_signal: None,
+                runtime_posture,
+                evidence,
+            };
+        }
+        Some(WorkItemSchedulingState::WaitingOperator) => {
+            return ClosureDecision {
+                outcome: ClosureOutcome::Waiting,
+                waiting_reason: Some(WaitingReason::AwaitingOperatorInput),
+                work_signal: None,
+                runtime_posture,
+                evidence,
+            };
+        }
+        Some(WorkItemSchedulingState::WaitingSystem) => {
+            return ClosureDecision {
+                outcome: ClosureOutcome::Waiting,
+                waiting_reason: None,
+                work_signal: None,
+                runtime_posture,
+                evidence,
+            };
+        }
         _ => {}
     }
 

@@ -79,6 +79,43 @@ pub enum WorkItemCandidateClass {
     CompletedRecent,
 }
 
+#[derive(Debug, Default)]
+struct ActiveWaitConditionStates {
+    task: bool,
+    external: bool,
+    operator: bool,
+    timer: bool,
+    system: bool,
+}
+
+impl ActiveWaitConditionStates {
+    fn record(&mut self, kind: WaitConditionKind) {
+        match kind {
+            WaitConditionKind::Task => self.task = true,
+            WaitConditionKind::External => self.external = true,
+            WaitConditionKind::Operator => self.operator = true,
+            WaitConditionKind::Timer => self.timer = true,
+            WaitConditionKind::System => self.system = true,
+        }
+    }
+
+    fn scheduling_state(&self) -> Option<WorkItemSchedulingState> {
+        if self.task {
+            Some(WorkItemSchedulingState::WaitingTask)
+        } else if self.operator {
+            Some(WorkItemSchedulingState::WaitingOperator)
+        } else if self.timer {
+            Some(WorkItemSchedulingState::WaitingTimer)
+        } else if self.external {
+            Some(WorkItemSchedulingState::WaitingExternal)
+        } else if self.system {
+            Some(WorkItemSchedulingState::WaitingSystem)
+        } else {
+            None
+        }
+    }
+}
+
 impl WorkItemReadinessProjection {
     pub fn record(&self) -> &WorkItemRecord {
         &self.work_item
@@ -297,8 +334,23 @@ impl AppStorage {
     }
 
     pub fn append_waiting_intent(&self, record: &WaitingIntentRecord) -> Result<()> {
-        self.append_jsonl(&self.waiting_intents_path, record)?;
-        self.append_wait_condition(&wait_condition_from_waiting_intent(record))
+        let wait_condition = wait_condition_from_waiting_intent(record);
+        let waiting_intent_bytes = jsonl_bytes(record)?;
+        let wait_condition_bytes = jsonl_bytes(&wait_condition)?;
+
+        // Compatibility migration: keep the legacy waiting-intents ledger as the
+        // first durable write, then mirror the same state into the internal wait
+        // condition ledger while holding the storage append mutex so no other
+        // append can observe or interleave with the ordered pair. A filesystem
+        // failure on the second write can still leave the legacy append present;
+        // callers should treat the returned error as a mirror consistency failure,
+        // not proof that the legacy intent was absent.
+        let _guard = self
+            .append_mutex
+            .lock()
+            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+        append_jsonl_bytes(&self.waiting_intents_path, &waiting_intent_bytes)?;
+        append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)
     }
 
     pub fn append_wait_condition(&self, record: &WaitConditionRecord) -> Result<()> {
@@ -347,10 +399,7 @@ impl AppStorage {
     }
 
     fn append_jsonl<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
-        let line = serde_json::to_string(value)?;
-        let mut bytes = Vec::with_capacity(line.len() + 1);
-        bytes.extend_from_slice(line.as_bytes());
-        bytes.push(b'\n');
+        let bytes = jsonl_bytes(value)?;
 
         let _guard = self
             .append_mutex
@@ -751,14 +800,9 @@ impl AppStorage {
             .filter(|condition| condition.status == WaitConditionStatus::Active)
             .filter_map(|condition| condition.work_item_id.map(|id| (id, condition.kind)))
             .fold(
-                std::collections::BTreeMap::<String, (bool, bool)>::new(),
+                std::collections::BTreeMap::<String, ActiveWaitConditionStates>::new(),
                 |mut acc, (id, kind)| {
-                    let slot = acc.entry(id).or_insert((false, false));
-                    if kind == WaitConditionKind::Task {
-                        slot.0 = true;
-                    } else {
-                        slot.1 = true;
-                    }
+                    acc.entry(id).or_default().record(kind);
                     acc
                 },
             );
@@ -776,13 +820,22 @@ impl AppStorage {
                     && item.state == WorkItemState::Open;
                 let last_triggered_at = active_waits.get(&item.id).copied().flatten();
                 let wait_condition = active_wait_conditions.get(&item.id);
-                let has_active_waits = active_waits.contains_key(&item.id)
-                    || wait_condition.is_some_and(|(_, external)| *external);
+                let wait_condition_state =
+                    wait_condition.and_then(ActiveWaitConditionStates::scheduling_state);
+                let has_active_waits =
+                    active_waits.contains_key(&item.id) || wait_condition_state.is_some();
                 let has_active_task_waits = active_task_waits.contains(&item.id)
-                    || wait_condition.is_some_and(|(task, _)| *task);
+                    || wait_condition.is_some_and(|states| states.task);
                 let has_triggered_waits = last_triggered_at.is_some();
-                let scheduling_state =
-                    item.scheduling_state(has_active_waits, has_active_task_waits);
+                let scheduling_state = item.scheduling_state(if has_active_task_waits {
+                    Some(WorkItemSchedulingState::WaitingTask)
+                } else {
+                    wait_condition_state.or_else(|| {
+                        active_waits
+                            .contains_key(&item.id)
+                            .then_some(WorkItemSchedulingState::WaitingExternal)
+                    })
+                });
                 let readiness = readiness_for_scheduling_state(scheduling_state);
                 let candidate_class =
                     if is_current && scheduling_state == WorkItemSchedulingState::Runnable {
@@ -857,7 +910,7 @@ impl AppStorage {
                     && !active_task_waits.contains(&item.id)
                     && !active_wait_conditions
                         .get(&item.id)
-                        .is_some_and(|(task, _)| *task)
+                        .is_some_and(|states| states.task)
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -1265,6 +1318,14 @@ fn read_tail_event_seq(path: &Path) -> Result<Option<u64>> {
     Ok(value.get("event_seq").and_then(Value::as_u64))
 }
 
+fn jsonl_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
+    let line = serde_json::to_string(value)?;
+    let mut bytes = Vec::with_capacity(line.len() + 1);
+    bytes.extend_from_slice(line.as_bytes());
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
 fn append_jsonl_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -1543,6 +1604,8 @@ fn readiness_for_scheduling_state(state: WorkItemSchedulingState) -> WorkItemRea
         WorkItemSchedulingState::WaitingOperator => WorkItemReadiness::WaitingForOperator,
         WorkItemSchedulingState::WaitingTask
         | WorkItemSchedulingState::WaitingExternal
+        | WorkItemSchedulingState::WaitingTimer
+        | WorkItemSchedulingState::WaitingSystem
         | WorkItemSchedulingState::Blocked => WorkItemReadiness::Blocked,
         WorkItemSchedulingState::Completed => WorkItemReadiness::Completed,
     }
@@ -2283,9 +2346,22 @@ mod tests {
             WorkItemRecord::new("default", "external wait", WorkItemState::Open);
         external_wait.blocked_by = Some("ci".into());
         external_wait.updated_at = now + chrono::Duration::seconds(1);
+        let mut operator_wait =
+            WorkItemRecord::new("default", "operator wait", WorkItemState::Open);
+        operator_wait.blocked_by = Some("operator input".into());
+        operator_wait.updated_at = now + chrono::Duration::seconds(2);
+        let mut timer_wait = WorkItemRecord::new("default", "timer wait", WorkItemState::Open);
+        timer_wait.blocked_by = Some("timer".into());
+        timer_wait.updated_at = now + chrono::Duration::seconds(3);
+        let mut system_wait = WorkItemRecord::new("default", "system wait", WorkItemState::Open);
+        system_wait.blocked_by = Some("system tick".into());
+        system_wait.updated_at = now + chrono::Duration::seconds(4);
 
         storage.append_work_item(&task_wait).unwrap();
         storage.append_work_item(&external_wait).unwrap();
+        storage.append_work_item(&operator_wait).unwrap();
+        storage.append_work_item(&timer_wait).unwrap();
+        storage.append_work_item(&system_wait).unwrap();
         storage
             .append_wait_condition(&WaitConditionRecord {
                 id: "task-condition".into(),
@@ -2328,15 +2404,94 @@ mod tests {
                 cancelled_at: None,
             })
             .unwrap();
+        storage
+            .append_wait_condition(&WaitConditionRecord {
+                id: "operator-condition".into(),
+                agent_id: "default".into(),
+                work_item_id: Some(operator_wait.id.clone()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::Operator,
+                source: None,
+                subject_ref: None,
+                waiting_for: "operator input".into(),
+                wake_sources: vec![WakeSource::OperatorInput],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+            })
+            .unwrap();
+        storage
+            .append_wait_condition(&WaitConditionRecord {
+                id: "timer-condition".into(),
+                agent_id: "default".into(),
+                work_item_id: Some(timer_wait.id.clone()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::Timer,
+                source: None,
+                subject_ref: None,
+                waiting_for: "timer".into(),
+                wake_sources: vec![WakeSource::Timer {
+                    wake_at: now + chrono::Duration::minutes(5),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+            })
+            .unwrap();
+        storage
+            .append_wait_condition(&WaitConditionRecord {
+                id: "system-condition".into(),
+                agent_id: "default".into(),
+                work_item_id: Some(system_wait.id.clone()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::System,
+                source: None,
+                subject_ref: None,
+                waiting_for: "system tick".into(),
+                wake_sources: vec![WakeSource::SystemTick],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+            })
+            .unwrap();
 
         let projection = storage.work_queue_prompt_projection().unwrap();
+        let state_for = |id: &str| {
+            projection
+                .readiness
+                .iter()
+                .find(|item| item.work_item.id == id)
+                .map(|item| item.scheduling_state)
+                .unwrap()
+        };
+        assert_eq!(
+            state_for(&operator_wait.id),
+            WorkItemSchedulingState::WaitingOperator
+        );
+        assert_eq!(
+            state_for(&timer_wait.id),
+            WorkItemSchedulingState::WaitingTimer
+        );
+        assert_eq!(
+            state_for(&system_wait.id),
+            WorkItemSchedulingState::WaitingSystem
+        );
         assert_eq!(
             projection
                 .blocked
                 .iter()
                 .map(|item| item.work_item.objective.as_str())
                 .collect::<Vec<_>>(),
-            vec!["external wait"]
+            vec!["system wait", "timer wait", "external wait"]
         );
         assert!(projection
             .queued_blocked
