@@ -17,7 +17,8 @@ use crate::types::{
     DeliverySummaryRecord, ExternalTriggerRecord, ExternalTriggerScope, MessageEnvelope,
     OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord,
     TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
-    TranscriptEntry, WaitingIntentRecord, WaitingIntentStatus, WorkItemDelegationRecord,
+    TranscriptEntry, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
+    WaitingIntentRecord, WaitingIntentStatus, WakeSource, WorkItemDelegationRecord,
     WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState,
     WorkItemState, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
@@ -109,6 +110,7 @@ pub struct AppStorage {
     transcript_path: PathBuf,
     queue_entries_path: PathBuf,
     waiting_intents_path: PathBuf,
+    wait_conditions_path: PathBuf,
     external_triggers_path: PathBuf,
     operator_notifications_path: PathBuf,
     operator_transport_bindings_path: PathBuf,
@@ -173,6 +175,7 @@ impl AppStorage {
             transcript_path: ledger_dir.join("transcript.jsonl"),
             queue_entries_path: ledger_dir.join("queue_entries.jsonl"),
             waiting_intents_path: ledger_dir.join("waiting_intents.jsonl"),
+            wait_conditions_path: ledger_dir.join("wait_conditions.jsonl"),
             external_triggers_path: ledger_dir.join("external_triggers.jsonl"),
             operator_notifications_path: ledger_dir.join("operator_notifications.jsonl"),
             operator_transport_bindings_path: ledger_dir.join("operator_transport_bindings.jsonl"),
@@ -294,7 +297,12 @@ impl AppStorage {
     }
 
     pub fn append_waiting_intent(&self, record: &WaitingIntentRecord) -> Result<()> {
-        self.append_jsonl(&self.waiting_intents_path, record)
+        self.append_jsonl(&self.waiting_intents_path, record)?;
+        self.append_wait_condition(&wait_condition_from_waiting_intent(record))
+    }
+
+    pub fn append_wait_condition(&self, record: &WaitConditionRecord) -> Result<()> {
+        self.append_jsonl(&self.wait_conditions_path, record)
     }
 
     pub fn append_external_trigger(&self, record: &ExternalTriggerRecord) -> Result<()> {
@@ -452,6 +460,10 @@ impl AppStorage {
 
     pub fn read_recent_waiting_intents(&self, limit: usize) -> Result<Vec<WaitingIntentRecord>> {
         read_recent_jsonl(&self.waiting_intents_path, limit)
+    }
+
+    pub fn read_recent_wait_conditions(&self, limit: usize) -> Result<Vec<WaitConditionRecord>> {
+        read_recent_jsonl(&self.wait_conditions_path, limit)
     }
 
     pub fn read_recent_queue_entries(&self, limit: usize) -> Result<Vec<QueueEntryRecord>> {
@@ -733,6 +745,23 @@ impl AppStorage {
                     acc
                 },
             );
+        let active_wait_conditions = self
+            .latest_wait_conditions()?
+            .into_iter()
+            .filter(|condition| condition.status == WaitConditionStatus::Active)
+            .filter_map(|condition| condition.work_item_id.map(|id| (id, condition.kind)))
+            .fold(
+                std::collections::BTreeMap::<String, (bool, bool)>::new(),
+                |mut acc, (id, kind)| {
+                    let slot = acc.entry(id).or_insert((false, false));
+                    if kind == WaitConditionKind::Task {
+                        slot.0 = true;
+                    } else {
+                        slot.1 = true;
+                    }
+                    acc
+                },
+            );
         let active_task_waits = self
             .latest_active_task_records(usize::MAX)?
             .into_iter()
@@ -746,8 +775,11 @@ impl AppStorage {
                 let is_current = current_work_item_id.as_deref() == Some(item.id.as_str())
                     && item.state == WorkItemState::Open;
                 let last_triggered_at = active_waits.get(&item.id).copied().flatten();
-                let has_active_waits = active_waits.contains_key(&item.id);
-                let has_active_task_waits = active_task_waits.contains(&item.id);
+                let wait_condition = active_wait_conditions.get(&item.id);
+                let has_active_waits = active_waits.contains_key(&item.id)
+                    || wait_condition.is_some_and(|(_, external)| *external);
+                let has_active_task_waits = active_task_waits.contains(&item.id)
+                    || wait_condition.is_some_and(|(task, _)| *task);
                 let has_triggered_waits = last_triggered_at.is_some();
                 let scheduling_state =
                     item.scheduling_state(has_active_waits, has_active_task_waits);
@@ -806,6 +838,7 @@ impl AppStorage {
         let blocked = readiness
             .iter()
             .filter(|item| item.candidate_class == WorkItemCandidateClass::Blocked)
+            .filter(|item| item.scheduling_state != WorkItemSchedulingState::WaitingTask)
             .take(3)
             .cloned()
             .collect::<Vec<_>>();
@@ -821,6 +854,10 @@ impl AppStorage {
             .filter(|item| {
                 item.state == WorkItemState::Open
                     && Some(item.id.as_str()) != current_work_item_id.as_deref()
+                    && !active_task_waits.contains(&item.id)
+                    && !active_wait_conditions
+                        .get(&item.id)
+                        .is_some_and(|(task, _)| *task)
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -978,6 +1015,39 @@ impl AppStorage {
             latest.insert(record.id.clone(), record);
         }
         Ok(latest.into_values().collect())
+    }
+
+    pub fn latest_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
+        let records = self.read_recent_wait_conditions(usize::MAX)?;
+        let mut latest = std::collections::BTreeMap::new();
+        for record in records {
+            latest.insert(record.id.clone(), record);
+        }
+        Ok(latest.into_values().collect())
+    }
+
+    pub fn latest_active_wait_conditions_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<WaitConditionRecord>> {
+        Ok(self
+            .latest_wait_conditions()?
+            .into_iter()
+            .filter(|record| record.agent_id == agent_id)
+            .filter(|record| record.status == WaitConditionStatus::Active)
+            .collect())
+    }
+
+    pub fn latest_active_wait_conditions_for_work_item(
+        &self,
+        agent_id: &str,
+        work_item_id: &str,
+    ) -> Result<Vec<WaitConditionRecord>> {
+        Ok(self
+            .latest_active_wait_conditions_for_agent(agent_id)?
+            .into_iter()
+            .filter(|record| record.work_item_id.as_deref() == Some(work_item_id))
+            .collect())
     }
 
     pub fn latest_waiting_intent(
@@ -1305,6 +1375,43 @@ where
     }
 
     parse_jsonl_match(&prefix, path, &mut matches)
+}
+
+fn wait_condition_from_waiting_intent(record: &WaitingIntentRecord) -> WaitConditionRecord {
+    let updated_at = record
+        .cancelled_at
+        .or(record.last_triggered_at)
+        .unwrap_or(record.created_at);
+    WaitConditionRecord {
+        id: format!("waiting_intent:{}", record.id),
+        agent_id: record.agent_id.clone(),
+        work_item_id: record.work_item_id.clone(),
+        status: match record.status {
+            WaitingIntentStatus::Active => WaitConditionStatus::Active,
+            WaitingIntentStatus::Cancelled => WaitConditionStatus::Cancelled,
+        },
+        kind: WaitConditionKind::External,
+        source: Some(record.source.clone()),
+        subject_ref: record.resource.clone(),
+        waiting_for: record
+            .condition
+            .clone()
+            .unwrap_or_else(|| record.description.clone()),
+        wake_sources: vec![WakeSource::ExternalIngress {
+            external_trigger_id: Some(record.external_trigger_id.clone()),
+        }],
+        continuation: Some(serde_json::json!({
+            "waiting_intent_id": record.id,
+            "external_trigger_id": record.external_trigger_id,
+            "scope": record.scope,
+            "delivery_mode": record.delivery_mode,
+        })),
+        created_at: record.created_at,
+        updated_at,
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: record.cancelled_at,
+    }
 }
 
 fn scan_jsonl_reverse<T, F>(path: &Path, mut visit: F) -> Result<()>
@@ -2097,6 +2204,144 @@ mod tests {
             .expect("latest waiting intent should be found");
         assert_eq!(found.work_item_id.as_deref(), Some("work-new"));
         assert_eq!(found.trigger_count, 1);
+    }
+
+    #[test]
+    fn append_waiting_intent_mirrors_internal_wait_condition_ledger() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+        let active = WaitingIntentRecord {
+            id: "wait-1".into(),
+            agent_id: "default".into(),
+            scope: ExternalTriggerScope::WorkItem,
+            work_item_id: Some("work-1".into()),
+            description: "waiting for github".into(),
+            source: "github".into(),
+            resource: Some("pr-1".into()),
+            condition: Some("ci passed".into()),
+            delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "trigger-1".into(),
+            created_at: now,
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        };
+        let cancelled = WaitingIntentRecord {
+            status: WaitingIntentStatus::Cancelled,
+            cancelled_at: Some(now + chrono::Duration::seconds(10)),
+            ..active.clone()
+        };
+
+        storage.append_waiting_intent(&active).unwrap();
+        let mirrored = storage.latest_wait_conditions().unwrap();
+        assert_eq!(mirrored.len(), 1);
+        assert_eq!(mirrored[0].id, "waiting_intent:wait-1");
+        assert_eq!(mirrored[0].status, WaitConditionStatus::Active);
+        assert_eq!(mirrored[0].kind, WaitConditionKind::External);
+        assert_eq!(mirrored[0].source.as_deref(), Some("github"));
+        assert_eq!(mirrored[0].subject_ref.as_deref(), Some("pr-1"));
+        assert_eq!(mirrored[0].waiting_for, "ci passed");
+        assert_eq!(
+            mirrored[0].wake_sources,
+            vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-1".into()),
+            }]
+        );
+        assert_eq!(
+            mirrored[0]
+                .continuation
+                .as_ref()
+                .and_then(|value| value.get("waiting_intent_id").and_then(|id| id.as_str())),
+            Some("wait-1")
+        );
+
+        storage.append_waiting_intent(&cancelled).unwrap();
+        let active_for_work = storage
+            .latest_active_wait_conditions_for_work_item("default", "work-1")
+            .unwrap();
+        assert!(active_for_work.is_empty());
+        let latest = storage.latest_wait_conditions().unwrap();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].status, WaitConditionStatus::Cancelled);
+        assert_eq!(latest[0].cancelled_at, cancelled.cancelled_at);
+    }
+
+    #[test]
+    fn work_queue_projection_uses_internal_wait_conditions_for_wait_state() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+
+        let mut task_wait = WorkItemRecord::new("default", "task wait", WorkItemState::Open);
+        task_wait.blocked_by = Some("command task".into());
+        task_wait.updated_at = now;
+        let mut external_wait =
+            WorkItemRecord::new("default", "external wait", WorkItemState::Open);
+        external_wait.blocked_by = Some("ci".into());
+        external_wait.updated_at = now + chrono::Duration::seconds(1);
+
+        storage.append_work_item(&task_wait).unwrap();
+        storage.append_work_item(&external_wait).unwrap();
+        storage
+            .append_wait_condition(&WaitConditionRecord {
+                id: "task-condition".into(),
+                agent_id: "default".into(),
+                work_item_id: Some(task_wait.id.clone()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::Task,
+                source: None,
+                subject_ref: Some("task-1".into()),
+                waiting_for: "task result".into(),
+                wake_sources: vec![WakeSource::TaskResult {
+                    task_id: "task-1".into(),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+            })
+            .unwrap();
+        storage
+            .append_wait_condition(&WaitConditionRecord {
+                id: "external-condition".into(),
+                agent_id: "default".into(),
+                work_item_id: Some(external_wait.id.clone()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("github".into()),
+                subject_ref: Some("pr-1".into()),
+                waiting_for: "ci".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some("trigger-1".into()),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+            })
+            .unwrap();
+
+        let projection = storage.work_queue_prompt_projection().unwrap();
+        assert_eq!(
+            projection
+                .blocked
+                .iter()
+                .map(|item| item.work_item.objective.as_str())
+                .collect::<Vec<_>>(),
+            vec!["external wait"]
+        );
+        assert!(projection
+            .queued_blocked
+            .iter()
+            .all(|item| item.objective != "task wait"));
     }
 
     #[test]

@@ -1700,6 +1700,69 @@ pub struct WaitingIntentRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum WaitConditionStatus {
+    Active,
+    Resolved,
+    Cancelled,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitConditionKind {
+    Task,
+    External,
+    Operator,
+    Timer,
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WakeSource {
+    TaskResult {
+        task_id: String,
+    },
+    ExternalIngress {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        external_trigger_id: Option<String>,
+    },
+    Timer {
+        wake_at: DateTime<Utc>,
+    },
+    OperatorInput,
+    SystemTick,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WaitConditionRecord {
+    pub id: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    pub status: WaitConditionStatus,
+    pub kind: WaitConditionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_ref: Option<String>,
+    pub waiting_for: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wake_sources: Vec<WakeSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<Value>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum ExternalTriggerStatus {
     Active,
     Revoked,
@@ -2867,9 +2930,6 @@ impl WorkItemRecord {
         if self.state == WorkItemState::Completed {
             return WorkItemSchedulingState::Completed;
         }
-        if self.blocked_by.is_some() {
-            return WorkItemSchedulingState::Blocked;
-        }
         if self.plan_status == WorkItemPlanStatus::NeedsInput {
             return WorkItemSchedulingState::WaitingOperator;
         }
@@ -2878,6 +2938,9 @@ impl WorkItemRecord {
         }
         if has_active_external_wait {
             return WorkItemSchedulingState::WaitingExternal;
+        }
+        if self.blocked_by.is_some() {
+            return WorkItemSchedulingState::Blocked;
         }
         WorkItemSchedulingState::Runnable
     }
