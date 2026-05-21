@@ -17,14 +17,12 @@ enum IdleTickTrigger {
 pub(super) fn work_queue_reactivation_signal(
     projection: &WorkQueuePromptProjection,
 ) -> Option<WorkReactivationSignal> {
-    if let Some(current) = projection.current.as_ref() {
-        if current.is_runnable() {
-            return Some(WorkReactivationSignal {
-                work_item_id: current.id.clone(),
-                state: current.state.clone(),
-                reactivation_mode: WorkReactivationMode::ContinueActive,
-            });
-        }
+    if let Some(current) = projection.current_runnable.as_ref() {
+        return Some(WorkReactivationSignal {
+            work_item_id: current.work_item.id.clone(),
+            state: current.work_item.state.clone(),
+            reactivation_mode: WorkReactivationMode::ContinueActive,
+        });
     }
     projection
         .queued_runnable
@@ -52,10 +50,8 @@ fn idle_tick_trigger_from_state(
     if let Some(pending) = pending_wake_hint {
         Some(IdleTickTrigger::WakeHint(pending))
     } else {
-        if let Some(current) = projection.current {
-            if current.is_runnable() {
-                return Some(IdleTickTrigger::WorkQueueActive(current));
-            }
+        if let Some(current) = projection.current_runnable {
+            return Some(IdleTickTrigger::WorkQueueActive(current.work_item));
         }
         projection
             .queued_runnable
@@ -302,7 +298,16 @@ impl RuntimeHandle {
                 }
                 Ok(true)
             }
-            None => Ok(false),
+            None => {
+                if let Some(decision) =
+                    scheduler::wait_decision_for_projection(&scheduler_projection).map(|decision| {
+                        decision.boundary(scheduler::SchedulerBoundary::IdleTick.as_str())
+                    })
+                {
+                    scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
+                }
+                Ok(false)
+            }
         }
     }
 
@@ -1166,7 +1171,8 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|value| value.as_str() == Some("work_queue_tick_blocked_by_wait_fact")));
+            .any(|value| value.as_str()
+                == Some("current_work_item_scheduling_state=WaitingExternal")));
     }
 
     #[test]

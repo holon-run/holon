@@ -10,5 +10,5 @@
   "active_agent_waiting_intents": 1,
   "active_timers": 0,
   "decision": "WaitForExternalChange",
-  "decision_reason": "active_waiting_intents"
+  "decision_reason": "active_agent_waiting_intents"
 }

@@ -166,7 +166,9 @@ impl RuntimeHandle {
                 .filter(|task| task.is_blocking())
                 .count(),
             active_waiting_intents: projection.active_waiting_intents,
+            active_agent_waiting_intents: projection.active_agent_waiting_intents,
             active_timers: projection.active_timers,
+            current_work_item_scheduling_state: projection.current_work_item_scheduling_state,
             work_signal: super::memory_refresh::work_queue_reactivation_signal(
                 &work_queue_projection,
             ),
@@ -498,7 +500,19 @@ impl RuntimeHandle {
             ),
             active_blocking_tasks: blocking_task_count(&active_tasks),
             active_waiting_intents: active_waiting_intent_count,
+            active_agent_waiting_intents: storage
+                .latest_waiting_intents()?
+                .into_iter()
+                .filter(|record| record.agent_id == state.id)
+                .filter(|record| record.status == WaitingIntentStatus::Active)
+                .filter(|record| record.scope == ExternalTriggerScope::Agent)
+                .count(),
             active_timers,
+            current_work_item_scheduling_state: work_queue_projection
+                .readiness
+                .iter()
+                .find(|item| item.is_current)
+                .map(|item| item.scheduling_state),
             work_signal: super::memory_refresh::work_queue_reactivation_signal(
                 &work_queue_projection,
             ),
