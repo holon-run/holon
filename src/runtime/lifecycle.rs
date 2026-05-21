@@ -1,7 +1,7 @@
 use super::*;
 use std::path::{Path, PathBuf};
 
-use crate::runtime::closure::{derive_closure_decision, runtime_error_active, ClosureFacts};
+use crate::runtime::closure::{derive_closure_decision, ClosureFacts};
 use crate::storage::AppStorage;
 use crate::types::{
     AgentListEntry, AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason,
@@ -152,14 +152,12 @@ impl RuntimeHandle {
         let projection = scheduler::SchedulerProjection::from_state_with_work_queue(
             &self.inner.storage,
             state,
-            work_queue_projection.clone(),
+            work_queue_projection,
         )?;
         let runtime_error = runtime_error_override.unwrap_or(projection.runtime_error);
         Ok(derive_closure_decision(&ClosureFacts {
             runtime_error,
-            awaiting_operator_input: super::memory_refresh::work_queue_waits_for_operator(
-                &work_queue_projection,
-            ),
+            awaiting_operator_input: projection.current_work_item_waits_for_operator(),
             active_blocking_tasks: projection
                 .active_tasks
                 .iter()
@@ -169,9 +167,7 @@ impl RuntimeHandle {
             active_agent_waiting_intents: projection.active_agent_waiting_intents,
             active_timers: projection.active_timers,
             current_work_item_scheduling_state: projection.current_work_item_scheduling_state,
-            work_signal: super::memory_refresh::work_queue_reactivation_signal(
-                &work_queue_projection,
-            ),
+            work_signal: projection.work_reactivation_signal(),
             turn_started: state.turn_index > 0,
             turn_in_progress: state.current_run_id.is_some(),
             turn_terminal_kind: state
@@ -479,48 +475,17 @@ impl RuntimeHandle {
         storage: &AppStorage,
         state: &AgentState,
     ) -> Result<ChildAgentObservabilitySnapshot> {
-        let latest_tasks = storage.latest_task_records()?;
-        let active_tasks = active_child_tasks(&state.id, &latest_tasks);
-        let active_waiting_intent_count = storage
-            .latest_waiting_intents()?
-            .into_iter()
-            .filter(|record| record.agent_id == state.id)
-            .filter(|record| record.status == WaitingIntentStatus::Active)
-            .filter(|record| record.scope == ExternalTriggerScope::WorkItem)
-            .count();
-        let active_timers = storage
-            .latest_timer_records()?
-            .into_iter()
-            .filter(|timer| timer.agent_id == state.id)
-            .filter(|timer| timer.status == TimerStatus::Active)
-            .count();
-        let work_queue_projection = storage.work_queue_prompt_projection()?;
+        let projection = scheduler::SchedulerProjection::from_state(storage, state)?;
+        let active_tasks = projection.active_tasks.iter().collect::<Vec<_>>();
         let closure = derive_closure_decision(&ClosureFacts {
-            runtime_error: runtime_error_active(
-                &storage.read_recent_events(64)?,
-                &storage.read_recent_briefs(64)?,
-            ),
-            awaiting_operator_input: super::memory_refresh::work_queue_waits_for_operator(
-                &work_queue_projection,
-            ),
+            runtime_error: projection.runtime_error,
+            awaiting_operator_input: projection.current_work_item_waits_for_operator(),
             active_blocking_tasks: blocking_task_count(&active_tasks),
-            active_waiting_intents: active_waiting_intent_count,
-            active_agent_waiting_intents: storage
-                .latest_waiting_intents()?
-                .into_iter()
-                .filter(|record| record.agent_id == state.id)
-                .filter(|record| record.status == WaitingIntentStatus::Active)
-                .filter(|record| record.scope == ExternalTriggerScope::Agent)
-                .count(),
-            active_timers,
-            current_work_item_scheduling_state: work_queue_projection
-                .readiness
-                .iter()
-                .find(|item| item.is_current)
-                .map(|item| item.scheduling_state),
-            work_signal: super::memory_refresh::work_queue_reactivation_signal(
-                &work_queue_projection,
-            ),
+            active_waiting_intents: projection.active_waiting_intents,
+            active_agent_waiting_intents: projection.active_agent_waiting_intents,
+            active_timers: projection.active_timers,
+            current_work_item_scheduling_state: projection.current_work_item_scheduling_state,
+            work_signal: projection.work_reactivation_signal(),
             turn_started: state.turn_index > 0,
             turn_in_progress: state.current_run_id.is_some(),
             turn_terminal_kind: state
@@ -538,7 +503,7 @@ impl RuntimeHandle {
         Ok(build_child_agent_observability_with_active_tasks(
             state,
             closure.waiting_reason,
-            active_waiting_intent_count,
+            projection.active_work_item_waiting_intents,
             &active_tasks,
             &briefs,
         ))

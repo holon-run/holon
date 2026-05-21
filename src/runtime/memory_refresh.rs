@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     storage::WorkQueuePromptProjection,
-    types::{BriefKind, TaskStatus, TodoItemState, WorkReactivationMode, WorkReactivationSignal},
+    types::{BriefKind, TaskStatus, TodoItemState},
 };
 
 const CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT: usize = 512;
@@ -12,34 +12,6 @@ enum IdleTickTrigger {
     WorkQueueQueued(crate::types::WorkItemRecord),
     BlockedRecheck(Vec<crate::types::WorkItemRecord>),
     WakeHint(PendingWakeHint),
-}
-
-pub(super) fn work_queue_reactivation_signal(
-    projection: &WorkQueuePromptProjection,
-) -> Option<WorkReactivationSignal> {
-    if let Some(current) = projection.current_runnable.as_ref() {
-        return Some(WorkReactivationSignal {
-            work_item_id: current.work_item.id.clone(),
-            state: current.work_item.state.clone(),
-            reactivation_mode: WorkReactivationMode::ContinueActive,
-        });
-    }
-    projection
-        .queued_runnable
-        .iter()
-        .next()
-        .map(|queued| WorkReactivationSignal {
-            work_item_id: queued.work_item.id.clone(),
-            state: queued.work_item.state.clone(),
-            reactivation_mode: WorkReactivationMode::ActivateQueued,
-        })
-}
-
-pub(super) fn work_queue_waits_for_operator(projection: &WorkQueuePromptProjection) -> bool {
-    projection
-        .current
-        .as_ref()
-        .is_some_and(|item| item.is_waiting_for_operator())
 }
 
 fn idle_tick_trigger_from_state(
