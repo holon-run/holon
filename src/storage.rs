@@ -13,15 +13,15 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
 use crate::types::{
-    AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, ContextEpisodeRecord,
-    DeliverySummaryRecord, ExternalTriggerRecord, ExternalTriggerScope, ExternalWaitRecoverability,
-    MessageEnvelope, OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding,
-    QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState,
-    ToolExecutionRecord, TranscriptEntry, WaitConditionKind, WaitConditionRecord,
-    WaitConditionStatus, WaitingIntentRecord, WaitingIntentStatus, WakeSource,
-    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemReadiness, WorkItemRecord,
-    WorkItemSchedulingState, WorkItemState, WorkingMemoryDelta, WorkspaceEntry,
-    WorkspaceOccupancyRecord,
+    AgentIdentityRecord, AgentPostureProjection, AgentSchedulingPosture, AgentState, AgentStatus,
+    AuditEvent, BriefRecord, ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord,
+    ExternalTriggerScope, ExternalWaitRecoverability, MessageEnvelope, OperatorDeliveryRecord,
+    OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, QueueEntryStatus,
+    TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
+    TranscriptEntry, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
+    WaitingIntentRecord, WaitingIntentStatus, WakeSource, WorkItemDelegationRecord,
+    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState,
+    WorkItemState, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 const RUNTIME_DIR: &str = ".holon";
@@ -120,6 +120,18 @@ impl ActiveWaitConditionStates {
 impl WorkItemReadinessProjection {
     pub fn record(&self) -> &WorkItemRecord {
         &self.work_item
+    }
+
+    fn posture_reason(&self) -> String {
+        let label = if self.is_current {
+            "current WorkItem"
+        } else {
+            "queued WorkItem"
+        };
+        format!(
+            "{label} {} is {:?}",
+            self.work_item.id, self.scheduling_state
+        )
     }
 }
 
@@ -947,6 +959,141 @@ impl AppStorage {
             waiting_for_operator,
             blocked,
             completed_recent,
+        })
+    }
+
+    pub fn agent_posture_projection(&self, agent: &AgentState) -> Result<AgentPostureProjection> {
+        if matches!(agent.status, AgentStatus::Stopped) {
+            return Ok(AgentPostureProjection {
+                posture: AgentSchedulingPosture::Archived,
+                reason: "agent lifecycle is stopped".into(),
+                work_item_id: None,
+                waiting_intent_id: None,
+                task_id: None,
+                run_id: None,
+            });
+        }
+
+        if let Some(run_id) = agent.current_run_id.clone() {
+            return Ok(AgentPostureProjection {
+                posture: AgentSchedulingPosture::ActiveTurn,
+                reason: "agent has an active turn".into(),
+                work_item_id: agent.current_turn_work_item_id.clone(),
+                waiting_intent_id: None,
+                task_id: None,
+                run_id: Some(run_id),
+            });
+        }
+
+        if self
+            .latest_queue_entries()?
+            .iter()
+            .any(|entry| entry.agent_id == agent.id && entry.status == QueueEntryStatus::Queued)
+        {
+            return Ok(AgentPostureProjection {
+                posture: AgentSchedulingPosture::HasQueuedInput,
+                reason: "agent has queued input".into(),
+                work_item_id: None,
+                waiting_intent_id: None,
+                task_id: None,
+                run_id: None,
+            });
+        }
+
+        let work_queue = self.work_queue_prompt_projection()?;
+        if let Some(item) = work_queue
+            .current_runnable
+            .as_ref()
+            .or_else(|| work_queue.queued_runnable.first())
+        {
+            return Ok(AgentPostureProjection {
+                posture: AgentSchedulingPosture::HasRunnableWork,
+                reason: item.posture_reason(),
+                work_item_id: Some(item.work_item.id.clone()),
+                waiting_intent_id: None,
+                task_id: None,
+                run_id: None,
+            });
+        }
+
+        if let Some(item) = work_queue
+            .readiness
+            .iter()
+            .find(|item| item.scheduling_state == WorkItemSchedulingState::WaitingTask)
+        {
+            return Ok(AgentPostureProjection {
+                posture: AgentSchedulingPosture::WaitingForTask,
+                reason: item.posture_reason(),
+                work_item_id: Some(item.work_item.id.clone()),
+                waiting_intent_id: None,
+                task_id: self
+                    .latest_active_task_records_for_agent(&agent.id, usize::MAX)?
+                    .into_iter()
+                    .find(|task| {
+                        task.is_blocking()
+                            && task.effective_work_item_id() == Some(item.work_item.id.as_str())
+                    })
+                    .map(|task| task.id),
+                run_id: None,
+            });
+        }
+
+        if let Some(item) = work_queue
+            .readiness
+            .iter()
+            .find(|item| item.scheduling_state == WorkItemSchedulingState::WaitingExternal)
+        {
+            return Ok(AgentPostureProjection {
+                posture: AgentSchedulingPosture::WaitingForExternal,
+                reason: item.posture_reason(),
+                work_item_id: Some(item.work_item.id.clone()),
+                waiting_intent_id: self
+                    .latest_waiting_intents()?
+                    .into_iter()
+                    .find(|intent| {
+                        intent.status == WaitingIntentStatus::Active
+                            && intent.scope == ExternalTriggerScope::WorkItem
+                            && intent.work_item_id.as_deref() == Some(item.work_item.id.as_str())
+                    })
+                    .map(|intent| intent.id),
+                task_id: None,
+                run_id: None,
+            });
+        }
+
+        if let Some(item) = work_queue.waiting_for_operator.first() {
+            return Ok(AgentPostureProjection {
+                posture: AgentSchedulingPosture::WaitingForOperator,
+                reason: item.posture_reason(),
+                work_item_id: Some(item.work_item.id.clone()),
+                waiting_intent_id: None,
+                task_id: None,
+                run_id: None,
+            });
+        }
+
+        if let Some(item) = work_queue
+            .blocked
+            .first()
+            .or_else(|| work_queue.triggered_blocked.first())
+        {
+            return Ok(AgentPostureProjection {
+                posture: AgentSchedulingPosture::Blocked,
+                reason: item.posture_reason(),
+                work_item_id: Some(item.work_item.id.clone()),
+                waiting_intent_id: None,
+                task_id: None,
+                run_id: None,
+            });
+        }
+
+        Ok(AgentPostureProjection {
+            posture: AgentSchedulingPosture::Idle,
+            reason: "no queued input, active turn, runnable work, or active waits".into(),
+            work_item_id: None,
+            waiting_intent_id: None,
+            task_id: None,
+            run_id: None,
         })
     }
 
@@ -2706,6 +2853,233 @@ mod tests {
             .queued_blocked
             .iter()
             .all(|item| item.objective != "task wait"));
+    }
+
+    #[test]
+    fn agent_posture_projection_derives_precedence_from_runtime_facts() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Asleep;
+        storage.write_agent(&agent).unwrap();
+
+        assert_eq!(
+            storage.agent_posture_projection(&agent).unwrap().posture,
+            AgentSchedulingPosture::Idle
+        );
+
+        let mut blocked = WorkItemRecord::new("default", "blocked", WorkItemState::Open);
+        blocked.blocked_by = Some("unstructured blocker".into());
+        storage.append_work_item(&blocked).unwrap();
+        assert_eq!(
+            storage.agent_posture_projection(&agent).unwrap().posture,
+            AgentSchedulingPosture::Blocked
+        );
+
+        let mut external = WorkItemRecord::new("default", "external", WorkItemState::Open);
+        external.blocked_by = Some("github".into());
+        external.updated_at = now + chrono::Duration::seconds(1);
+        storage.append_work_item(&external).unwrap();
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: "wait-external".into(),
+                agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
+                work_item_id: Some(external.id.clone()),
+                description: "external callback".into(),
+                source: "github".into(),
+                resource: Some("pull_request:1".into()),
+                condition: Some("merged".into()),
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: "trigger-external".into(),
+                created_at: now,
+                cancelled_at: None,
+                last_triggered_at: None,
+                trigger_count: 0,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+        assert_eq!(
+            storage.agent_posture_projection(&agent).unwrap().posture,
+            AgentSchedulingPosture::WaitingForExternal
+        );
+
+        let mut needs_input = WorkItemRecord::new("default", "operator", WorkItemState::Open);
+        needs_input.plan_status = WorkItemPlanStatus::NeedsInput;
+        needs_input.updated_at = now + chrono::Duration::seconds(2);
+        storage.append_work_item(&needs_input).unwrap();
+        assert_eq!(
+            storage.agent_posture_projection(&agent).unwrap().posture,
+            AgentSchedulingPosture::WaitingForExternal,
+            "external wait has precedence over operator wait"
+        );
+
+        let mut task_wait = WorkItemRecord::new("default", "task", WorkItemState::Open);
+        task_wait.blocked_by = Some("command task".into());
+        task_wait.updated_at = now + chrono::Duration::seconds(3);
+        storage.append_work_item(&task_wait).unwrap();
+        storage
+            .append_task(&TaskRecord {
+                id: "task-1".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: Some(task_wait.id.clone()),
+                summary: Some("blocking task".into()),
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: None,
+            })
+            .unwrap();
+        let task_projection = storage.agent_posture_projection(&agent).unwrap();
+        assert_eq!(
+            task_projection.posture,
+            AgentSchedulingPosture::WaitingForTask
+        );
+        assert_eq!(task_projection.task_id.as_deref(), Some("task-1"));
+
+        let runnable = WorkItemRecord::new("default", "runnable", WorkItemState::Open);
+        storage.append_work_item(&runnable).unwrap();
+        assert_eq!(
+            storage.agent_posture_projection(&agent).unwrap().posture,
+            AgentSchedulingPosture::HasRunnableWork
+        );
+
+        storage
+            .append_queue_entry(&QueueEntryRecord {
+                message_id: "queued-message".into(),
+                agent_id: "default".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+        assert_eq!(
+            storage.agent_posture_projection(&agent).unwrap().posture,
+            AgentSchedulingPosture::HasQueuedInput
+        );
+
+        agent.current_run_id = Some("run-1".into());
+        assert_eq!(
+            storage.agent_posture_projection(&agent).unwrap().posture,
+            AgentSchedulingPosture::ActiveTurn
+        );
+
+        agent.current_run_id = None;
+        agent.status = AgentStatus::Stopped;
+        assert_eq!(
+            storage.agent_posture_projection(&agent).unwrap().posture,
+            AgentSchedulingPosture::Archived
+        );
+    }
+
+    #[test]
+    fn agent_posture_projection_acceptance_states_are_directly_derived() {
+        let posture_for = |storage: &AppStorage, agent: &AgentState| {
+            storage.agent_posture_projection(agent).unwrap().posture
+        };
+
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Asleep;
+        assert_eq!(posture_for(&storage, &agent), AgentSchedulingPosture::Idle);
+
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Asleep;
+        storage
+            .append_queue_entry(&QueueEntryRecord {
+                message_id: "queued-message".into(),
+                agent_id: "default".into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+        assert_eq!(
+            posture_for(&storage, &agent),
+            AgentSchedulingPosture::HasQueuedInput
+        );
+
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Asleep;
+        let runnable = WorkItemRecord::new("default", "current runnable", WorkItemState::Open);
+        agent.current_work_item_id = Some(runnable.id.clone());
+        storage.write_agent(&agent).unwrap();
+        storage.append_work_item(&runnable).unwrap();
+        assert_eq!(
+            posture_for(&storage, &agent),
+            AgentSchedulingPosture::HasRunnableWork
+        );
+
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Asleep;
+        let mut needs_input =
+            WorkItemRecord::new("default", "operator decision", WorkItemState::Open);
+        needs_input.plan_status = WorkItemPlanStatus::NeedsInput;
+        storage.append_work_item(&needs_input).unwrap();
+        assert_eq!(
+            posture_for(&storage, &agent),
+            AgentSchedulingPosture::WaitingForOperator
+        );
+
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Asleep;
+        let mut external = WorkItemRecord::new("default", "external wait", WorkItemState::Open);
+        external.blocked_by = Some("github".into());
+        storage.append_work_item(&external).unwrap();
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: "wait-external".into(),
+                agent_id: "default".into(),
+                scope: ExternalTriggerScope::WorkItem,
+                work_item_id: Some(external.id.clone()),
+                description: "external callback".into(),
+                source: "github".into(),
+                resource: Some("pull_request:1".into()),
+                condition: Some("merged".into()),
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: "trigger-external".into(),
+                created_at: Utc::now(),
+                cancelled_at: None,
+                last_triggered_at: None,
+                trigger_count: 0,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+        assert_eq!(
+            posture_for(&storage, &agent),
+            AgentSchedulingPosture::WaitingForExternal
+        );
+
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Asleep;
+        let mut blocked = WorkItemRecord::new("default", "blocked", WorkItemState::Open);
+        blocked.blocked_by = Some("unstructured blocker".into());
+        storage.append_work_item(&blocked).unwrap();
+        assert_eq!(
+            posture_for(&storage, &agent),
+            AgentSchedulingPosture::Blocked
+        );
     }
 
     #[test]

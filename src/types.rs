@@ -2999,6 +2999,34 @@ pub enum WorkItemSchedulingState {
     Completed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSchedulingPosture {
+    Archived,
+    ActiveTurn,
+    HasQueuedInput,
+    HasRunnableWork,
+    WaitingForTask,
+    WaitingForExternal,
+    WaitingForOperator,
+    Blocked,
+    Idle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentPostureProjection {
+    pub posture: AgentSchedulingPosture,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_intent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkItemPlanArtifact {
     pub path: PathBuf,
