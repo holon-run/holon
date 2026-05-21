@@ -406,6 +406,7 @@ impl RuntimeHandle {
             skills,
             active_children,
             active_waiting_intents: self.active_waiting_intent_summaries().await?,
+            active_wait_conditions: self.active_wait_condition_summaries().await?,
             active_external_triggers,
             recent_operator_notifications: self.recent_operator_notifications(10).await?,
             recent_brief_count: self.inner.storage.read_recent_briefs(50)?.len(),

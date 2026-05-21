@@ -440,6 +440,22 @@ The runtime can then evolve in phases:
 Allow external waits without timer recovery, but surface an audit warning such
 as `external_wait_without_recovery`.
 
+Implemented status surfaces should expose active wait conditions without
+provider-specific interpretation. Each active wait condition may include a
+derived `external_recoverability` value:
+
+- `recoverable` when the wait has a timer, system tick, or opaque
+  provider/user-declared fallback metadata such as a durable queue or recheck
+  source;
+- `weak` when the wait only has external ingress/callback wake sources;
+- `explicit_no_fallback` when opaque metadata records that no fallback exists
+  and includes a reason.
+
+Agent-facing projections such as `AgentGet` and `ListWorkItems` should preserve
+the opaque wait metadata alongside the derived classification so agents and
+skills can reconcile provider-specific details without teaching the scheduler
+about GitHub, CI, or other providers.
+
 ### Phase 2: soft recovery
 
 Allow a generic system tick to re-enter the agent for audit or reconciliation.

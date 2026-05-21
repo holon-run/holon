@@ -60,7 +60,14 @@ pub(crate) async fn execute(
             )
         })?;
     let context = query_context(runtime).await?;
-    let work_item =
-        view_for_record(runtime, &context, record, args.include_todo_list, None).await?;
+    let work_item = view_for_record(
+        runtime,
+        &context,
+        record,
+        args.include_todo_list,
+        None,
+        None,
+    )
+    .await?;
     serialize_success(NAME, &GetWorkItemResult { context, work_item })
 }

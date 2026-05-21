@@ -1177,6 +1177,7 @@ mod tests {
                 },
             }],
             active_waiting_intents: Vec::new(),
+            active_wait_conditions: Vec::new(),
             active_external_triggers: Vec::new(),
             recent_operator_notifications: Vec::new(),
             recent_brief_count: 0,

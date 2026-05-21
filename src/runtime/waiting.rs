@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::ingress::WakeHint;
-use crate::types::{WaitConditionRecord, WaitingReason, WakeSource};
+use crate::types::{WaitConditionRecord, WaitConditionSummary, WaitingReason, WakeSource};
 use std::time::Duration;
 
 impl RuntimeHandle {
@@ -350,6 +350,19 @@ impl RuntimeHandle {
             .filter(|record| record.status == WaitingIntentStatus::Active)
             .filter(|record| record.scope == ExternalTriggerScope::WorkItem)
             .count())
+    }
+
+    pub(super) async fn active_wait_condition_summaries(
+        &self,
+    ) -> Result<Vec<WaitConditionSummary>> {
+        let agent_id = self.agent_id().await?;
+        Ok(self
+            .inner
+            .storage
+            .latest_active_wait_conditions_for_agent(&agent_id)?
+            .into_iter()
+            .map(WaitConditionSummary::from)
+            .collect())
     }
 
     pub(super) async fn active_external_trigger_summaries(

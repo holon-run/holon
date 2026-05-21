@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     runtime::RuntimeHandle,
     types::{
-        DeliverySummaryRecord, TodoItem, WorkItemPlanArtifact, WorkItemPlanStatus,
-        WorkItemReadiness, WorkItemRecord, WorkItemState,
+        DeliverySummaryRecord, TodoItem, WaitConditionSummary, WorkItemPlanArtifact,
+        WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
     },
 };
 
@@ -70,6 +70,8 @@ pub(crate) struct WorkItemView {
     pub(crate) recheck_consumed_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) completion_report: Option<WorkItemCompletionReportView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) active_wait_conditions: Vec<WaitConditionSummary>,
     pub(crate) created_at: DateTime<Utc>,
     pub(crate) updated_at: DateTime<Utc>,
 }
@@ -81,6 +83,7 @@ pub(crate) struct WorkItemQueryContext {
 }
 
 pub(crate) type WorkItemDeliverySummaryMap = BTreeMap<String, DeliverySummaryRecord>;
+pub(crate) type WorkItemWaitConditionSummaryMap = BTreeMap<String, Vec<WaitConditionSummary>>;
 
 pub(crate) async fn query_context(runtime: &RuntimeHandle) -> Result<WorkItemQueryContext> {
     let state = runtime.agent_state().await?;
@@ -112,6 +115,7 @@ pub(crate) async fn view_for_record(
     record: WorkItemRecord,
     include_todo_list: bool,
     delivery_summaries: Option<&WorkItemDeliverySummaryMap>,
+    wait_conditions: Option<&WorkItemWaitConditionSummaryMap>,
 ) -> Result<WorkItemView> {
     let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
         && record.state == WorkItemState::Open;
@@ -133,6 +137,15 @@ pub(crate) async fn view_for_record(
     let focus = focus_view(&record, is_current);
     let readiness = record.readiness();
     let completion_report = completion_report_for_record(runtime, &record, delivery_summaries)?;
+    let active_wait_conditions = match wait_conditions {
+        Some(wait_conditions) => wait_conditions.get(&record.id).cloned().unwrap_or_default(),
+        None => runtime
+            .storage()
+            .latest_active_wait_conditions_for_work_item(&record.agent_id, &record.id)?
+            .into_iter()
+            .map(WaitConditionSummary::from)
+            .collect(),
+    };
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,
@@ -150,9 +163,35 @@ pub(crate) async fn view_for_record(
         recheck_at: record.recheck_at,
         recheck_consumed_at: record.recheck_consumed_at,
         completion_report,
+        active_wait_conditions,
         created_at: record.created_at,
         updated_at: record.updated_at,
     })
+}
+
+pub(crate) fn active_wait_conditions_by_work_item(
+    runtime: &RuntimeHandle,
+    records: &[WorkItemRecord],
+) -> Result<WorkItemWaitConditionSummaryMap> {
+    let agent_ids = records
+        .iter()
+        .map(|record| record.agent_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut wait_conditions = BTreeMap::new();
+    for agent_id in agent_ids {
+        for condition in runtime
+            .storage()
+            .latest_active_wait_conditions_for_agent(agent_id)?
+        {
+            if let Some(work_item_id) = condition.work_item_id.as_ref() {
+                wait_conditions
+                    .entry(work_item_id.clone())
+                    .or_insert_with(Vec::new)
+                    .push(WaitConditionSummary::from(condition));
+            }
+        }
+    }
+    Ok(wait_conditions)
 }
 
 pub(crate) fn latest_delivery_summaries_by_work_item(
