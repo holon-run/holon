@@ -139,27 +139,7 @@ pub(crate) fn classify_reqwest_transport_error_with_trace(
 ) -> anyhow::Error {
     let status = error.status().map(|status| status.as_u16());
     let source_chain = error_chain_messages(&error);
-    let classification = if error.is_timeout() {
-        ProviderFailureClassification {
-            kind: ProviderFailureKind::Timeout,
-            disposition: RetryDisposition::Retryable,
-        }
-    } else if error.is_connect() {
-        ProviderFailureClassification {
-            kind: ProviderFailureKind::Connection,
-            disposition: RetryDisposition::Retryable,
-        }
-    } else if is_retryable_response_body_read_interruption(stage, &error, &source_chain) {
-        ProviderFailureClassification {
-            kind: ProviderFailureKind::Connection,
-            disposition: RetryDisposition::Retryable,
-        }
-    } else {
-        ProviderFailureClassification {
-            kind: ProviderFailureKind::Unknown,
-            disposition: RetryDisposition::FailFast,
-        }
-    };
+    let classification = classify_reqwest_transport_failure(stage, &error, &source_chain);
     provider_transport_error(
         classification,
         status,
@@ -174,6 +154,52 @@ pub(crate) fn classify_reqwest_transport_error_with_trace(
         )),
         format!("{context}: {error}"),
     )
+}
+
+fn classify_reqwest_transport_failure(
+    stage: &str,
+    error: &reqwest::Error,
+    source_chain: &[String],
+) -> ProviderFailureClassification {
+    if error.is_timeout() {
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::Timeout,
+            disposition: RetryDisposition::Retryable,
+        }
+    } else if error.is_connect() {
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::Connection,
+            disposition: RetryDisposition::Retryable,
+        }
+    } else if is_retryable_request_send_transport_failure(stage, source_chain)
+        || is_retryable_response_body_read_interruption(stage, error, source_chain)
+    {
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::Connection,
+            disposition: RetryDisposition::Retryable,
+        }
+    } else {
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::Unknown,
+            disposition: RetryDisposition::FailFast,
+        }
+    }
+}
+
+fn is_retryable_request_send_transport_failure(stage: &str, source_chain: &[String]) -> bool {
+    if !matches!(stage, "streaming_request_send") {
+        return false;
+    }
+
+    source_chain.iter().any(|message| {
+        let message = message.to_ascii_lowercase();
+        message.contains("connection error")
+            || message.contains("connection closed")
+            || message.contains("connection reset")
+            || message.contains("connection aborted")
+            || message.contains("tls close_notify")
+            || message.contains("broken pipe")
+    })
 }
 
 fn is_retryable_response_body_read_interruption(
@@ -387,5 +413,42 @@ mod tests {
             ),
             "https://example.com/v1/responses"
         );
+    }
+
+    #[test]
+    fn streaming_request_send_connection_source_chain_is_retryable() {
+        let source_chain = vec![
+            "client error (SendRequest)".to_string(),
+            "connection error".to_string(),
+            "peer closed connection without sending TLS close_notify".to_string(),
+        ];
+
+        assert!(super::is_retryable_request_send_transport_failure(
+            "streaming_request_send",
+            &source_chain
+        ));
+    }
+
+    #[test]
+    fn request_send_connection_source_chain_is_stage_limited() {
+        let source_chain = vec!["connection error".to_string()];
+
+        assert!(!super::is_retryable_request_send_transport_failure(
+            "response_status",
+            &source_chain
+        ));
+    }
+
+    #[test]
+    fn streaming_request_send_non_transport_source_chain_is_not_retryable() {
+        let source_chain = vec![
+            "builder error".to_string(),
+            "invalid header value".to_string(),
+        ];
+
+        assert!(!super::is_retryable_request_send_transport_failure(
+            "streaming_request_send",
+            &source_chain
+        ));
     }
 }
