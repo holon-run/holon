@@ -2484,6 +2484,41 @@ fn chat_deduplicates_bootstrap_event_when_stream_replays_it() {
 }
 
 #[test]
+fn projection_deduplicates_stream_events_using_outer_id_fallback() {
+    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
+    projection.replace_event_window(Vec::new(), None);
+    let mut envelope = work_item_written_event_envelope("", 0, "default", "outer id work");
+    envelope.id.clear();
+
+    for _ in 0..2 {
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "sse-event-1".into(),
+                event: envelope.event_type.clone(),
+                data: envelope.clone(),
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+    }
+
+    assert_eq!(projection.event_log().len(), 1);
+    assert_eq!(projection.event_log()[0].id, "sse-event-1");
+}
+
+#[test]
+fn projection_deduplicates_duplicates_within_history_page() {
+    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
+    projection.replace_event_window(Vec::new(), None);
+    let event = work_item_written_event_envelope("evt-history-work", 42, "default", "history work");
+
+    let added = projection.prepend_event_history_page(vec![event.clone(), event], Some(42), true);
+
+    assert_eq!(added, 1);
+    assert_eq!(projection.event_log().len(), 1);
+    assert_eq!(projection.event_log()[0].id, "evt-history-work");
+}
+
+#[test]
 fn chat_text_omits_processing_and_processed_operator_status_labels() {
     for _status in [
         OperatorMessageStatus::Processing,

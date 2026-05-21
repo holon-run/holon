@@ -237,13 +237,13 @@ impl TuiProjection {
             return 0;
         }
 
-        let existing_ids = self
+        let mut existing_ids = self
             .event_log
             .iter()
             .filter(|event| !event.id.is_empty())
             .map(|event| event.id.clone())
             .collect::<BTreeSet<_>>();
-        let existing_seqs_without_ids = self
+        let mut existing_seqs_without_ids = self
             .event_log
             .iter()
             .filter_map(|event| {
@@ -254,12 +254,12 @@ impl TuiProjection {
 
         let mut prepended = Vec::new();
         for envelope in events {
-            if !envelope.id.is_empty() && existing_ids.contains(&envelope.id) {
+            if !envelope.id.is_empty() && !existing_ids.insert(envelope.id.clone()) {
                 continue;
             }
             if envelope.id.is_empty()
                 && envelope.event_seq != 0
-                && existing_seqs_without_ids.contains(&envelope.event_seq)
+                && !existing_seqs_without_ids.insert(envelope.event_seq)
             {
                 continue;
             }
@@ -288,7 +288,7 @@ impl TuiProjection {
     }
 
     pub(crate) fn apply_event(&mut self, event: AgentStreamEvent, log_writer: &TuiLogWriter) {
-        if self.has_event_identity(&event.data.id, event.data.event_seq) {
+        if self.has_event_identity(effective_stream_event_id(&event), event.data.event_seq) {
             return;
         }
         let presentation_context = self.operator_presentation_context();
@@ -1263,11 +1263,7 @@ fn projection_event_record_from_stream_event(
         presentation_context,
     );
     ProjectionEventRecord {
-        id: if event.data.id.is_empty() {
-            event.id.clone()
-        } else {
-            event.data.id.clone()
-        },
+        id: effective_stream_event_id(event).to_string(),
         event_seq: event.data.event_seq,
         ts: event.data.ts,
         kind: event.data.event_type.clone(),
@@ -1275,6 +1271,14 @@ fn projection_event_record_from_stream_event(
         summary: presentation.summary.clone(),
         presentation,
         payload: event.data.payload.clone(),
+    }
+}
+
+fn effective_stream_event_id(event: &AgentStreamEvent) -> &str {
+    if event.data.id.is_empty() {
+        &event.id
+    } else {
+        &event.data.id
     }
 }
 
