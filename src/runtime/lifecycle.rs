@@ -361,6 +361,7 @@ impl RuntimeHandle {
         let agent = self.agent_state().await?;
         let active_task_count = self.inner.storage.active_task_count_for_agent(&agent.id)?;
         let model = self.model_state_for(&agent);
+        let scheduling_posture = self.inner.storage.agent_posture_projection(&agent)?;
         let closure = self.current_closure_decision().await?;
         let execution = self.execution_snapshot().await?;
         let loaded_agents_md = self.loaded_agents_md().await?;
@@ -396,6 +397,7 @@ impl RuntimeHandle {
                 agent.status.clone(),
             ),
             agent,
+            scheduling_posture,
             active_task_count,
             model,
             token_usage,
@@ -417,6 +419,7 @@ impl RuntimeHandle {
     pub async fn agent_list_entry(&self) -> Result<AgentListEntry> {
         let agent = self.agent_state().await?;
         let model = self.model_state_for(&agent);
+        let scheduling_posture = self.inner.storage.agent_posture_projection(&agent)?;
         let identity = self.agent_identity_view().await?;
         let waiting_reason = super::lightweight_agent_list_waiting_reason(&agent);
         Ok(AgentListEntry {
@@ -426,6 +429,7 @@ impl RuntimeHandle {
                 agent.status.clone(),
             ),
             status: agent.status,
+            scheduling_posture,
             pending: agent.pending,
             current_run_id: agent.current_run_id,
             waiting_reason,

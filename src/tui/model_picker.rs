@@ -200,6 +200,7 @@ mod tests {
             agent: AgentState::new("default"),
             active_task_count: 0,
             lifecycle: AgentLifecycleHint::default(),
+            scheduling_posture: Default::default(),
             model: AgentModelState {
                 source: AgentModelSource::RuntimeDefault,
                 runtime_default_model: ModelRef::new(ProviderId::openai(), "gpt-5.4"),
