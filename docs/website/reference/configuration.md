@@ -88,6 +88,7 @@ As an alternative to the credential store, Holon reads API keys from environment
 | Mistral | `MISTRAL_API_KEY` |
 | xAI | `XAI_API_KEY` |
 | Moonshot | `MOONSHOT_API_KEY` |
+| NEAR AI Cloud (TEE inference) | `NEARAI_API_KEY` |
 | Volcengine | `VOLCENGINE_API_KEY` or `ARK_API_KEY` |
 | StepFun | `STEPFUN_API_KEY` |
 | Qwen | `QWEN_API_KEY` or `DASHSCOPE_API_KEY` |

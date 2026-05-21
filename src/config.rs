@@ -2457,6 +2457,13 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
     )?;
     insert_openai_compatible_provider(
         &mut registry,
+        "nearai",
+        "https://cloud-api.near.ai/v1",
+        &["NEARAI_API_KEY"],
+        settings_env,
+    )?;
+    insert_openai_compatible_provider(
+        &mut registry,
         "nvidia",
         "https://integrate.api.nvidia.com/v1",
         &["NVIDIA_API_KEY"],
@@ -4512,6 +4519,7 @@ mod tests {
         settings_env.insert("ZAI_API_KEY".to_string(), "zai-key".to_string());
         settings_env.insert("BIGMODEL_API_KEY".to_string(), "bigmodel-key".to_string());
         settings_env.insert("DASHSCOPE_API_KEY".to_string(), "dashscope-key".to_string());
+        settings_env.insert("NEARAI_API_KEY".to_string(), "nearai-key".to_string());
 
         let providers = super::built_in_provider_registry(&settings_env).unwrap();
 
@@ -4529,6 +4537,17 @@ mod tests {
         let qwen = providers.get(&ProviderId::parse("qwen").unwrap()).unwrap();
         assert_eq!(qwen.auth.env.as_deref(), Some("DASHSCOPE_API_KEY"));
         assert_eq!(qwen.credential.as_deref(), Some("dashscope-key"));
+
+        let nearai = providers
+            .get(&ProviderId::parse("nearai").unwrap())
+            .unwrap();
+        assert_eq!(
+            nearai.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(nearai.base_url, "https://cloud-api.near.ai/v1");
+        assert_eq!(nearai.auth.env.as_deref(), Some("NEARAI_API_KEY"));
+        assert_eq!(nearai.credential.as_deref(), Some("nearai-key"));
 
         let stepfun_plan = providers
             .get(&ProviderId::parse("stepfun-plan").unwrap())
@@ -4920,6 +4939,7 @@ mod tests {
                 "LITELLM_API_KEY",
                 "MISTRAL_API_KEY",
                 "MOONSHOT_API_KEY",
+                "NEARAI_API_KEY",
                 "NVIDIA_API_KEY",
                 "OPENCODE_GO_API_KEY",
                 "OPENROUTER_API_KEY",
