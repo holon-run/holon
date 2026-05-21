@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::ingress::WakeHint;
-use crate::types::WaitingReason;
+use crate::types::{WaitConditionRecord, WaitingReason, WakeSource};
 use std::time::Duration;
 
 impl RuntimeHandle {
@@ -380,6 +380,8 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         pre_cleanup_closure: &ClosureDecision,
     ) -> Result<()> {
+        self.record_wait_reconciliation_signals(message).await?;
+
         let active_waiting = self
             .latest_waiting_intents()
             .await?
@@ -475,6 +477,36 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    async fn record_wait_reconciliation_signals(&self, message: &MessageEnvelope) -> Result<()> {
+        let agent_id = self.agent_id().await?;
+        let active_conditions = self
+            .inner
+            .storage
+            .latest_active_wait_conditions_for_agent(&agent_id)?;
+        if active_conditions.is_empty() {
+            return Ok(());
+        }
+
+        for signal in reconciliation_signals_for_message(message, &active_conditions) {
+            let duplicate = self
+                .inner
+                .storage
+                .read_recent_events(500)?
+                .iter()
+                .any(|event| {
+                    event.kind == "wait_reconciliation_requested"
+                        && event.data["dedupe_key"] == signal["dedupe_key"]
+                });
+            if duplicate {
+                continue;
+            }
+            self.inner
+                .storage
+                .append_event(&AuditEvent::new("wait_reconciliation_requested", signal))?;
+        }
+        Ok(())
+    }
+
     async fn cancel_waiting_intents(&self, waiting_intent_ids: Vec<String>) -> Result<Vec<String>> {
         let mut cancelled = Vec::new();
         for waiting_intent_id in waiting_intent_ids {
@@ -483,6 +515,126 @@ impl RuntimeHandle {
         }
         Ok(cancelled)
     }
+}
+
+fn reconciliation_signals_for_message(
+    message: &MessageEnvelope,
+    active_conditions: &[WaitConditionRecord],
+) -> Vec<serde_json::Value> {
+    active_conditions
+        .iter()
+        .filter_map(|condition| reconciliation_signal_for_condition(message, condition))
+        .collect()
+}
+
+fn reconciliation_signal_for_condition(
+    message: &MessageEnvelope,
+    condition: &WaitConditionRecord,
+) -> Option<serde_json::Value> {
+    let (wake_source, subject_ref) = matching_wake_source(message, condition)?;
+    let dedupe_key = format!(
+        "wait_reconciliation:{}:{}:{}",
+        condition.id, wake_source, message.id
+    );
+    Some(serde_json::json!({
+        "dedupe_key": dedupe_key,
+        "message_id": message.id,
+        "trigger_kind": message.trigger_kind,
+        "wait_condition_id": condition.id,
+        "wake_source": wake_source,
+        "work_item_id": condition.work_item_id,
+        "subject_ref": subject_ref.or_else(|| condition.subject_ref.clone()),
+        "waiting_for": condition.waiting_for,
+        "source": condition.source,
+    }))
+}
+
+fn matching_wake_source(
+    message: &MessageEnvelope,
+    condition: &WaitConditionRecord,
+) -> Option<(String, Option<String>)> {
+    match (&message.kind, &message.origin) {
+        (MessageKind::TaskResult, MessageOrigin::Task { task_id }) => condition
+            .wake_sources
+            .iter()
+            .any(|source| matches!(source, WakeSource::TaskResult { task_id: id } if id == task_id))
+            .then(|| ("task_result".to_string(), Some(task_id.clone()))),
+        (MessageKind::CallbackEvent, _) => {
+            let external_trigger_id = message.source_refs.get("external_trigger_id");
+            let waiting_intent_id = message.source_refs.get("waiting_intent_id");
+            condition
+                .wake_sources
+                .iter()
+                .any(|source| match source {
+                    WakeSource::ExternalIngress {
+                        external_trigger_id: Some(id),
+                    } => external_trigger_id == Some(id),
+                    WakeSource::ExternalIngress {
+                        external_trigger_id: None,
+                    } => true,
+                    _ => false,
+                })
+                .then(|| {
+                    (
+                        "external_ingress".to_string(),
+                        external_trigger_id
+                            .cloned()
+                            .or_else(|| waiting_intent_id.cloned()),
+                    )
+                })
+        }
+        (MessageKind::TimerTick, MessageOrigin::Timer { timer_id }) => condition
+            .wake_sources
+            .iter()
+            .any(|source| matches!(source, WakeSource::Timer { .. }))
+            .then(|| ("timer".to_string(), Some(timer_id.clone()))),
+        (MessageKind::OperatorPrompt, MessageOrigin::Operator { actor_id }) => condition
+            .wake_sources
+            .iter()
+            .any(|source| matches!(source, WakeSource::OperatorInput))
+            .then(|| ("operator_input".to_string(), actor_id.clone())),
+        (MessageKind::SystemTick, MessageOrigin::System { subsystem }) => {
+            if let Some(external) = matching_wake_hint_external_source(message, condition) {
+                return Some(external);
+            }
+            condition
+                .wake_sources
+                .iter()
+                .any(|source| matches!(source, WakeSource::SystemTick))
+                .then(|| ("system_tick".to_string(), Some(subsystem.clone())))
+        }
+        _ => None,
+    }
+}
+
+fn matching_wake_hint_external_source(
+    message: &MessageEnvelope,
+    condition: &WaitConditionRecord,
+) -> Option<(String, Option<String>)> {
+    let wake_hint = message.metadata.as_ref()?.get("wake_hint")?;
+    let external_trigger_id = wake_hint
+        .get("external_trigger_id")
+        .and_then(serde_json::Value::as_str);
+    let waiting_intent_id = wake_hint
+        .get("waiting_intent_id")
+        .and_then(serde_json::Value::as_str);
+    let matches_external = condition.wake_sources.iter().any(|source| match source {
+        WakeSource::ExternalIngress {
+            external_trigger_id: Some(id),
+        } => Some(id.as_str()) == external_trigger_id,
+        WakeSource::ExternalIngress {
+            external_trigger_id: None,
+        } => true,
+        _ => false,
+    });
+    matches_external.then(|| {
+        (
+            "external_ingress".to_string(),
+            external_trigger_id
+                .or(waiting_intent_id)
+                .map(ToString::to_string),
+        )
+    })
 }
 
 fn advance_time(base: chrono::DateTime<Utc>, delta_ms: u64) -> Result<chrono::DateTime<Utc>> {
