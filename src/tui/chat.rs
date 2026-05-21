@@ -146,6 +146,7 @@ pub(super) struct CachedChatText {
 pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     let mut cells = Vec::new();
     let mut durable_operator_message_bodies = std::collections::BTreeMap::new();
+    let mut projected_cell_keys = std::collections::BTreeSet::new();
     let mut visible_operator_message_ids = std::collections::BTreeSet::new();
     let durable_operator_message_ids = app
         .projection
@@ -172,6 +173,8 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
                     push_projected_conversation_cell(
                         &mut cells,
                         &mut durable_operator_message_bodies,
+                        &mut projected_cell_keys,
+                        &timed.dedupe_key,
                         rendered_to_conversation_cell(&rendered, timed.ts),
                     );
                 }
@@ -236,14 +239,29 @@ fn push_pending_operator_message_cell(
 fn push_projected_conversation_cell(
     cells: &mut Vec<ConversationCell>,
     durable_operator_message_bodies: &mut std::collections::BTreeMap<String, usize>,
+    projected_cell_keys: &mut std::collections::BTreeSet<String>,
+    source_key: &str,
     cell: ConversationCell,
 ) {
+    if !projected_cell_keys.insert(projected_conversation_cell_key(source_key, &cell)) {
+        return;
+    }
     if let ConversationCell::UserMessage { body, .. } = &cell {
         *durable_operator_message_bodies
             .entry(normalized_operator_message_body_key(body))
             .or_insert(0) += 1;
     }
     cells.push(cell);
+}
+
+fn projected_conversation_cell_key(source_key: &str, cell: &ConversationCell) -> String {
+    format!(
+        "{}|{:?}|{}|{}",
+        source_key,
+        cell.role(),
+        cell.sort_speaker(),
+        normalized_operator_message_body_key(cell.sort_body())
+    )
 }
 
 fn normalized_operator_message_body_key(body: &str) -> String {

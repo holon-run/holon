@@ -163,10 +163,24 @@ impl TuiProjection {
         let mut existing_ids = self
             .event_log
             .iter()
+            .filter(|event| !event.id.is_empty())
             .map(|event| event.id.clone())
             .collect::<BTreeSet<_>>();
+        let mut existing_seqs_without_ids = self
+            .event_log
+            .iter()
+            .filter_map(|event| {
+                (event.id.is_empty() && event.event_seq != 0).then_some(event.event_seq)
+            })
+            .collect::<BTreeSet<_>>();
         for envelope in events_tail {
-            if !existing_ids.insert(envelope.id.clone()) {
+            if !envelope.id.is_empty() && !existing_ids.insert(envelope.id.clone()) {
+                continue;
+            }
+            if envelope.id.is_empty()
+                && envelope.event_seq != 0
+                && !existing_seqs_without_ids.insert(envelope.event_seq)
+            {
                 continue;
             }
             let record = self.projection_event_record_from_envelope(envelope);
@@ -226,13 +240,27 @@ impl TuiProjection {
         let existing_ids = self
             .event_log
             .iter()
+            .filter(|event| !event.id.is_empty())
             .map(|event| event.id.clone())
+            .collect::<BTreeSet<_>>();
+        let existing_seqs_without_ids = self
+            .event_log
+            .iter()
+            .filter_map(|event| {
+                (event.id.is_empty() && event.event_seq != 0).then_some(event.event_seq)
+            })
             .collect::<BTreeSet<_>>();
         events.reverse();
 
         let mut prepended = Vec::new();
         for envelope in events {
-            if existing_ids.contains(&envelope.id) {
+            if !envelope.id.is_empty() && existing_ids.contains(&envelope.id) {
+                continue;
+            }
+            if envelope.id.is_empty()
+                && envelope.event_seq != 0
+                && existing_seqs_without_ids.contains(&envelope.event_seq)
+            {
                 continue;
             }
             prepended.push(self.projection_event_record_from_envelope(envelope));
@@ -260,6 +288,9 @@ impl TuiProjection {
     }
 
     pub(crate) fn apply_event(&mut self, event: AgentStreamEvent, log_writer: &TuiLogWriter) {
+        if self.has_event_identity(&event.data.id, event.data.event_seq) {
+            return;
+        }
         let presentation_context = self.operator_presentation_context();
         let record = projection_event_record_from_stream_event(&event, &presentation_context);
         let event_log_limit = if self.history_paging_active {
@@ -486,8 +517,30 @@ impl TuiProjection {
         }
     }
 
+    fn has_event_identity(&self, id: &str, event_seq: u64) -> bool {
+        if !id.is_empty() {
+            return self.event_log.iter().any(|event| event.id == id);
+        }
+        event_seq != 0
+            && self
+                .event_log
+                .iter()
+                .any(|event| event.id.is_empty() && event.event_seq == event_seq)
+    }
+
     fn seed_event_log(&mut self, events_tail: Vec<StreamEventEnvelope>) {
+        let mut seen_ids = BTreeSet::new();
+        let mut seen_seqs_without_ids = BTreeSet::new();
         for envelope in events_tail {
+            if !envelope.id.is_empty() && !seen_ids.insert(envelope.id.clone()) {
+                continue;
+            }
+            if envelope.id.is_empty()
+                && envelope.event_seq != 0
+                && !seen_seqs_without_ids.insert(envelope.event_seq)
+            {
+                continue;
+            }
             let record = self.projection_event_record_from_envelope(envelope);
             push_limited(&mut self.event_log, record, EVENT_LOG_LIMIT);
         }
@@ -1210,7 +1263,11 @@ fn projection_event_record_from_stream_event(
         presentation_context,
     );
     ProjectionEventRecord {
-        id: event.id.clone(),
+        id: if event.data.id.is_empty() {
+            event.id.clone()
+        } else {
+            event.data.id.clone()
+        },
         event_seq: event.data.event_seq,
         ts: event.data.ts,
         kind: event.data.event_type.clone(),
@@ -1828,7 +1885,8 @@ mod tests {
         let mut projection = TuiProjection::from_snapshot(snapshot);
 
         projection.apply_event(
-            sample_event(
+            sample_event_with_id(
+                "evt-prev-assistant-round",
                 "assistant_round_recorded",
                 json!({
                     "run_id": "run-1",
@@ -1851,7 +1909,8 @@ mod tests {
             &test_log_writer(),
         );
         projection.apply_event(
-            sample_event(
+            sample_event_with_id(
+                "evt-current-assistant-round",
                 "assistant_round_recorded",
                 json!({
                     "run_id": "run-2",
@@ -1954,7 +2013,8 @@ mod tests {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
 
         projection.apply_event(
-            sample_event(
+            sample_event_with_id(
+                "evt-assistant-tools",
                 "assistant_round_recorded",
                 json!({
                     "redacted": true,
@@ -1976,7 +2036,8 @@ mod tests {
         );
 
         projection.apply_event(
-            sample_event(
+            sample_event_with_id(
+                "evt-assistant-empty",
                 "assistant_round_recorded",
                 json!({
                     "redacted": true,
@@ -2489,10 +2550,14 @@ mod tests {
     }
 
     fn sample_event(kind: &str, payload: Value) -> AgentStreamEvent {
+        sample_event_with_id(&format!("evt-{kind}"), kind, payload)
+    }
+
+    fn sample_event_with_id(id: &str, kind: &str, payload: Value) -> AgentStreamEvent {
         AgentStreamEvent {
-            id: format!("evt-{kind}"),
+            id: id.to_string(),
             event: kind.to_string(),
-            data: sample_event_envelope_with_payload(&format!("evt-{kind}"), 1, kind, payload),
+            data: sample_event_envelope_with_payload(id, 1, kind, payload),
         }
     }
 

@@ -140,6 +140,29 @@ pub enum ItemState {
 pub struct TimedItem {
     pub item: PresentationItem,
     pub ts: DateTime<Utc>,
+    pub dedupe_key: String,
+}
+
+impl TimedItem {
+    pub(crate) fn from_event(item: PresentationItem, event: &ProjectionEventRecord) -> Self {
+        Self {
+            item,
+            ts: event.ts,
+            dedupe_key: event_dedupe_key(event),
+        }
+    }
+
+    pub(crate) fn with_key(
+        item: PresentationItem,
+        ts: DateTime<Utc>,
+        dedupe_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            item,
+            ts,
+            dedupe_key: dedupe_key.into(),
+        }
+    }
 }
 
 // ── RenderedCell: surface-neutral intermediate ─────────────────────────────
@@ -606,8 +629,8 @@ impl PresentationReducer {
                             let full_stdout = tool_full_output(next);
                             let full_stderr = tool_full_stderr(next);
 
-                            items.push(TimedItem {
-                                item: PresentationItem::CommandExecuted {
+                            items.push(TimedItem::from_event(
+                                PresentationItem::CommandExecuted {
                                     cmd_preview: exec_preview,
                                     duration_ms,
                                     exit_code,
@@ -615,8 +638,8 @@ impl PresentationReducer {
                                     full_stdout,
                                     full_stderr,
                                 },
-                                ts: next.ts,
-                            });
+                                next,
+                            ));
                             i += 2;
                             continue;
                         }
@@ -626,10 +649,10 @@ impl PresentationReducer {
                 "message_enqueued" => {
                     if let Some((key, text)) = operator_message_item(event) {
                         if self.observed_user_message_keys.insert(key) {
-                            items.push(TimedItem {
-                                item: PresentationItem::UserMessage { text },
-                                ts: event.ts,
-                            });
+                            items.push(TimedItem::from_event(
+                                PresentationItem::UserMessage { text },
+                                event,
+                            ));
                         }
                     }
                 }
@@ -643,21 +666,21 @@ impl PresentationReducer {
                             _ => false,
                         };
                         if !duplicates_observed_preview && self.observed_brief_keys.insert(key) {
-                            items.push(TimedItem { item, ts: event.ts });
+                            items.push(TimedItem::from_event(item, event));
                         }
                     }
                 }
 
                 "tool_executed" | "tool_execution_failed" => {
                     if is_sleep_tool_event(event) {
-                        items.push(TimedItem {
-                            item: PresentationItem::InternalTransition {
+                        items.push(TimedItem::from_event(
+                            PresentationItem::InternalTransition {
                                 what: "Sleep".into(),
                                 from: "tool".into(),
                                 to: event.summary.clone(),
                             },
-                            ts: event.ts,
-                        });
+                            event,
+                        ));
                         i += 1;
                         continue;
                     }
@@ -671,8 +694,8 @@ impl PresentationReducer {
                     let full_stdout = tool_full_output(event);
                     let full_stderr = tool_full_stderr(event);
 
-                    items.push(TimedItem {
-                        item: PresentationItem::CommandExecuted {
+                    items.push(TimedItem::from_event(
+                        PresentationItem::CommandExecuted {
                             cmd_preview,
                             duration_ms: tool_duration_ms(event),
                             exit_code,
@@ -680,8 +703,8 @@ impl PresentationReducer {
                             full_stdout,
                             full_stderr,
                         },
-                        ts: event.ts,
-                    });
+                        event,
+                    ));
                 }
 
                 "assistant_round_recorded" | "text_only_round_observed" => {
@@ -693,13 +716,13 @@ impl PresentationReducer {
                         {
                             self.observed_assistant_texts
                                 .insert(strip_preview_ellipsis(normalized_text(&text).as_str()));
-                            items.push(TimedItem {
-                                item: PresentationItem::AssistantProgress {
+                            items.push(TimedItem::from_event(
+                                PresentationItem::AssistantProgress {
                                     text,
                                     state: ItemState::Stable,
                                 },
-                                ts: event.ts,
-                            });
+                                event,
+                            ));
                         }
                     }
                 }
@@ -721,13 +744,13 @@ impl PresentationReducer {
                         "command_task_runner_failed" => TaskTransition::RunnerFailed,
                         _ => TaskTransition::StatusUpdated,
                     };
-                    items.push(TimedItem {
-                        item: PresentationItem::TaskLifecycle {
+                    items.push(TimedItem::from_event(
+                        PresentationItem::TaskLifecycle {
                             task_id: task_id.to_string(),
                             transition,
                         },
-                        ts: event.ts,
-                    });
+                        event,
+                    ));
                 }
 
                 "task_status_updated" => {
@@ -736,18 +759,18 @@ impl PresentationReducer {
                         .get("task_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("?");
-                    items.push(TimedItem {
-                        item: PresentationItem::TaskLifecycle {
+                    items.push(TimedItem::from_event(
+                        PresentationItem::TaskLifecycle {
                             task_id: task_id.to_string(),
                             transition: TaskTransition::StatusUpdated,
                         },
-                        ts: event.ts,
-                    });
+                        event,
+                    ));
                 }
 
                 "provider_round_completed" => {
                     if let Some(item) = provider_round_item(event) {
-                        items.push(TimedItem { item, ts: event.ts });
+                        items.push(TimedItem::from_event(item, event));
                     }
                 }
 
@@ -756,14 +779,14 @@ impl PresentationReducer {
                         "continuation_resolved" => "continuation",
                         _ => "closure",
                     };
-                    items.push(TimedItem {
-                        item: PresentationItem::InternalTransition {
+                    items.push(TimedItem::from_event(
+                        PresentationItem::InternalTransition {
                             what: what.to_string(),
                             from: "?".to_string(),
                             to: event.summary.clone(),
                         },
-                        ts: event.ts,
-                    });
+                        event,
+                    ));
                 }
 
                 "work_item_written" => {
@@ -779,21 +802,21 @@ impl PresentationReducer {
                         .unwrap_or("updated");
                     let summary = event.summary.clone();
                     if action == "created" || action == "completed" {
-                        items.push(TimedItem {
-                            item: PresentationItem::WorkItemCard {
+                        items.push(TimedItem::from_event(
+                            PresentationItem::WorkItemCard {
                                 action: action.to_string(),
                                 summary,
                             },
-                            ts: event.ts,
-                        });
+                            event,
+                        ));
                     } else {
-                        items.push(TimedItem {
-                            item: PresentationItem::WorkItemBookkeeping {
+                        items.push(TimedItem::from_event(
+                            PresentationItem::WorkItemBookkeeping {
                                 item_id: item_id.to_string(),
                                 transition: WorkItemTransition::Created,
                             },
-                            ts: event.ts,
-                        });
+                            event,
+                        ));
                     }
                 }
 
@@ -814,22 +837,22 @@ impl PresentationReducer {
                         "worktree_exited" => "exited worktree",
                         _ => "changed",
                     };
-                    items.push(TimedItem {
-                        item: PresentationItem::WorkspaceChange {
+                    items.push(TimedItem::from_event(
+                        PresentationItem::WorkspaceChange {
                             path: path.to_string(),
                             action: action.to_string(),
                         },
-                        ts: event.ts,
-                    });
+                        event,
+                    ));
                 }
 
                 kind if is_suppressed_known_runtime_event(kind) => {}
 
                 _ => {
-                    items.push(TimedItem {
-                        item: self.event_to_presentation(event),
-                        ts: event.ts,
-                    });
+                    items.push(TimedItem::from_event(
+                        self.event_to_presentation(event),
+                        event,
+                    ));
                 }
             }
 
@@ -845,27 +868,31 @@ impl PresentationReducer {
 
     /// Return the current live group as a `TimedItem`, if one is accumulating.
     pub(crate) fn current_live_item(&self) -> Option<TimedItem> {
-        self.live_group.as_ref().map(|group| TimedItem {
-            item: PresentationItem::ActionGroup {
-                heading: group.heading.clone(),
-                items: group.items.clone(),
-                state: ItemState::Live,
-            },
-            ts: self.last_ts.unwrap_or_else(Utc::now),
+        self.live_group.as_ref().map(|group| {
+            TimedItem::with_key(
+                PresentationItem::ActionGroup {
+                    heading: group.heading.clone(),
+                    items: group.items.clone(),
+                    state: ItemState::Live,
+                },
+                self.last_ts.unwrap_or_else(Utc::now),
+                "live-group",
+            )
         })
     }
 
     pub(crate) fn flush(&mut self) -> Vec<TimedItem> {
         let mut items: Vec<TimedItem> = Vec::new();
         if let Some(group) = self.live_group.take() {
-            items.push(TimedItem {
-                item: PresentationItem::ActionGroup {
+            items.push(TimedItem::with_key(
+                PresentationItem::ActionGroup {
                     heading: group.heading,
                     items: group.items,
                     state: ItemState::Stable,
                 },
-                ts: self.last_ts.unwrap_or_else(Utc::now),
-            });
+                self.last_ts.unwrap_or_else(Utc::now),
+                "flushed-live-group",
+            ));
         }
         items
     }
@@ -931,6 +958,13 @@ fn brief_result_item(event: &ProjectionEventRecord) -> Option<(String, Presentat
             },
         )),
     }
+}
+
+fn event_dedupe_key(event: &ProjectionEventRecord) -> String {
+    if !event.id.is_empty() {
+        return format!("event-id:{}", event.id);
+    }
+    format!("event-seq:{}:{}", event.event_seq, event.kind)
 }
 
 fn normalize_text_key(text: &str) -> String {

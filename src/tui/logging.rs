@@ -428,14 +428,15 @@ mod tests {
             },
             payload: json!({ "id": "brief_1", "text": "completed work" }),
         };
-        let item = TimedItem {
-            ts: event.ts,
-            item: PresentationItem::AssistantResult {
+        let item = TimedItem::with_key(
+            PresentationItem::AssistantResult {
                 brief_id: Some("brief_1".into()),
                 body: "completed work".into(),
                 outcome: Outcome::Success,
             },
-        };
+            event.ts,
+            "test-item",
+        );
 
         writer
             .write_event(&event)
@@ -468,14 +469,15 @@ mod tests {
             },
             payload: json!({ "id": "brief_1", "text": "completed work" }),
         };
-        let item = TimedItem {
-            ts: event.ts,
-            item: PresentationItem::AssistantResult {
+        let item = TimedItem::with_key(
+            PresentationItem::AssistantResult {
                 brief_id: Some("brief_1".into()),
                 body: "completed work".into(),
                 outcome: Outcome::Success,
             },
-        };
+            event.ts,
+            "test-item",
+        );
 
         writer
             .write_event(&event)
@@ -521,13 +523,14 @@ mod tests {
             },
             payload: json!({ "model": "test-model" }),
         };
-        let item = TimedItem {
-            ts: event.ts,
-            item: PresentationItem::GenericEvent {
+        let item = TimedItem::with_key(
+            PresentationItem::GenericEvent {
                 kind: "provider_round_completed".into(),
                 summary: "provider completed".into(),
             },
-        };
+            event.ts,
+            "test-item",
+        );
 
         writer
             .write_presentation_items(std::slice::from_ref(&event), &[item])
@@ -561,13 +564,14 @@ mod tests {
             },
             payload: json!({ "model": "test-model" }),
         };
-        let item = TimedItem {
-            ts: event.ts,
-            item: PresentationItem::GenericEvent {
+        let item = TimedItem::with_key(
+            PresentationItem::GenericEvent {
                 kind: "provider_round_completed".into(),
                 summary: "provider completed".into(),
             },
-        };
+            event.ts,
+            "test-item",
+        );
 
         for _ in 0..8 {
             writer
@@ -603,13 +607,14 @@ mod tests {
             },
             payload: json!({ "model": "test-model" }),
         };
-        let item = TimedItem {
-            ts: event.ts,
-            item: PresentationItem::GenericEvent {
+        let item = TimedItem::with_key(
+            PresentationItem::GenericEvent {
                 kind: "provider_round_completed".into(),
                 summary: "provider completed".repeat(100),
             },
-        };
+            event.ts,
+            "test-item",
+        );
 
         writer
             .write_presentation_items(std::slice::from_ref(&event), std::slice::from_ref(&item))
