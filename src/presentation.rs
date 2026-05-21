@@ -561,6 +561,7 @@ pub(crate) struct PresentationReducer {
     live_group: Option<LiveGroup>,
     last_ts: Option<DateTime<Utc>>,
     observed_assistant_text_keys: HashSet<String>,
+    observed_assistant_texts: HashSet<String>,
     observed_user_message_keys: HashSet<String>,
     observed_brief_keys: HashSet<String>,
 }
@@ -635,7 +636,13 @@ impl PresentationReducer {
 
                 "brief_created" => {
                     if let Some((key, item)) = brief_result_item(event) {
-                        if self.observed_brief_keys.insert(key) {
+                        let duplicates_observed_preview = match &item {
+                            PresentationItem::AssistantResult { body, .. } => self
+                                .observed_assistant_texts
+                                .contains(&strip_preview_ellipsis(normalized_text(body).as_str())),
+                            _ => false,
+                        };
+                        if !duplicates_observed_preview && self.observed_brief_keys.insert(key) {
                             items.push(TimedItem { item, ts: event.ts });
                         }
                     }
@@ -684,6 +691,8 @@ impl PresentationReducer {
                             && !matches_final_brief_text(event, &text, &final_brief_texts)
                             && self.observed_assistant_text_keys.insert(text_key)
                         {
+                            self.observed_assistant_texts
+                                .insert(strip_preview_ellipsis(normalized_text(&text).as_str()));
                             items.push(TimedItem {
                                 item: PresentationItem::AssistantProgress {
                                     text,
@@ -1634,6 +1643,74 @@ mod tests {
 
         assert_eq!(first.len(), 1);
         assert!(second.is_empty());
+    }
+
+    #[test]
+    fn reducer_deduplicates_later_brief_against_observed_assistant_text() {
+        let assistant = make_event(
+            "assistant_round_recorded",
+            "assistant round",
+            json!({
+                "agent_id": "default",
+                "text_preview": "Issue recorded: #1128"
+            }),
+        );
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Issue recorded: #1128",
+            None,
+            None,
+        );
+        let brief_event = make_event("brief_created", "Issue recorded: #1128", json!(brief));
+
+        let mut reducer = PresentationReducer::new();
+        let first = reducer.reduce(&[assistant]);
+        let second = reducer.reduce(&[brief_event]);
+
+        assert_eq!(first.len(), 1);
+        assert!(matches!(
+            first[0].item,
+            PresentationItem::AssistantProgress { .. }
+        ));
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn reducer_keeps_later_brief_when_it_extends_observed_assistant_text() {
+        let assistant = make_event(
+            "assistant_round_recorded",
+            "assistant round",
+            json!({
+                "agent_id": "default",
+                "text_preview": "Issue recorded: #1128..."
+            }),
+        );
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Issue recorded: #1128 with complete details",
+            None,
+            None,
+        );
+        let brief_event = make_event(
+            "brief_created",
+            "Issue recorded: #1128 with complete details",
+            json!(brief),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let first = reducer.reduce(&[assistant]);
+        let second = reducer.reduce(&[brief_event]);
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        match &second[0].item {
+            PresentationItem::AssistantResult { body, .. } => {
+                assert_eq!(body, "Issue recorded: #1128 with complete details");
+            }
+            other => panic!("expected AssistantResult, got {:?}", other),
+        }
     }
 
     #[test]
