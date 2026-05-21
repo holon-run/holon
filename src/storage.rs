@@ -265,11 +265,15 @@ impl AppStorage {
     }
 
     pub fn append_event(&self, event: &AuditEvent) -> Result<()> {
-        let mut event = event.clone();
         let _guard = self
             .append_mutex
             .lock()
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+        self.append_event_with_append_mutex_held(event)
+    }
+
+    fn append_event_with_append_mutex_held(&self, event: &AuditEvent) -> Result<()> {
+        let mut event = event.clone();
         let mut counter = self
             .event_seq_counter
             .lock()
@@ -339,7 +343,6 @@ impl AppStorage {
         let event = external_wait_recoverability_event(&wait_condition);
         let waiting_intent_bytes = jsonl_bytes(record)?;
         let wait_condition_bytes = jsonl_bytes(&wait_condition)?;
-        let event_bytes = event.as_ref().map(jsonl_bytes).transpose()?;
 
         // Compatibility migration: keep the legacy waiting-intents ledger as the
         // first durable write, then mirror the same state into the internal wait
@@ -354,8 +357,8 @@ impl AppStorage {
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
         append_jsonl_bytes(&self.waiting_intents_path, &waiting_intent_bytes)?;
         append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)?;
-        if let Some(event_bytes) = event_bytes {
-            append_jsonl_bytes(&self.events_path, &event_bytes)?;
+        if let Some(event) = event.as_ref() {
+            self.append_event_with_append_mutex_held(event)?;
         }
         Ok(())
     }
@@ -363,15 +366,14 @@ impl AppStorage {
     pub fn append_wait_condition(&self, record: &WaitConditionRecord) -> Result<()> {
         let event = external_wait_recoverability_event(record);
         let wait_condition_bytes = jsonl_bytes(record)?;
-        let event_bytes = event.as_ref().map(jsonl_bytes).transpose()?;
 
         let _guard = self
             .append_mutex
             .lock()
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
         append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)?;
-        if let Some(event_bytes) = event_bytes {
-            append_jsonl_bytes(&self.events_path, &event_bytes)?;
+        if let Some(event) = event.as_ref() {
+            self.append_event_with_append_mutex_held(event)?;
         }
         Ok(())
     }
@@ -1737,10 +1739,10 @@ mod tests {
     use chrono::Utc;
 
     use crate::types::{
-        AgentState, AgentStatus, EpisodeBoundaryReason, Priority, QueueEntryRecord,
-        QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TodoItem,
-        TodoItemState, TranscriptEntry, TranscriptEntryKind, TrustLevel, WorkItemPlanStatus,
-        WorkItemState,
+        AgentState, AgentStatus, CallbackDeliveryMode, EpisodeBoundaryReason, Priority,
+        QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus,
+        TodoItem, TodoItemState, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        WorkItemPlanStatus, WorkItemState,
     };
 
     use super::*;
@@ -2503,6 +2505,41 @@ mod tests {
             event.kind == "external_wait_without_recovery"
                 && event.data["wait_condition_id"] == "recoverable"
         }));
+        let emitted = events
+            .iter()
+            .filter(|event| event.kind == "external_wait_without_recovery")
+            .collect::<Vec<_>>();
+        assert_eq!(emitted.len(), 2);
+        assert!(emitted[0].event_seq > 0);
+        assert!(emitted[1].event_seq > emitted[0].event_seq);
+
+        storage
+            .append_waiting_intent(&WaitingIntentRecord {
+                id: "legacy-weak".into(),
+                agent_id: "default".into(),
+                scope: ExternalTriggerScope::Agent,
+                work_item_id: Some("work-legacy".into()),
+                description: "legacy weak external wait".into(),
+                source: "github".into(),
+                resource: Some("pr-4".into()),
+                condition: Some("merged".into()),
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                status: WaitingIntentStatus::Active,
+                external_trigger_id: "trigger-4".into(),
+                created_at: now,
+                cancelled_at: None,
+                last_triggered_at: None,
+                trigger_count: 0,
+                correlation_id: None,
+                causation_id: None,
+            })
+            .unwrap();
+        let legacy_events = storage.read_recent_events(10).unwrap();
+        let legacy_event = legacy_events
+            .iter()
+            .find(|event| event.data["wait_condition_id"] == "waiting_intent:legacy-weak")
+            .expect("legacy mirror should emit recoverability audit event");
+        assert!(legacy_event.event_seq > emitted[1].event_seq);
     }
 
     #[test]

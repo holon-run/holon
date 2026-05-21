@@ -12,8 +12,9 @@ use crate::{
 use super::{
     serialize_success,
     work_item_query::{
-        latest_delivery_summaries_by_work_item, lifecycle_view, query_context, view_for_record,
-        WorkItemFocusView, WorkItemLifecycleView, WorkItemQueryContext, WorkItemView,
+        active_wait_conditions_by_work_item, latest_delivery_summaries_by_work_item,
+        lifecycle_view, query_context, view_for_record, WorkItemFocusView, WorkItemLifecycleView,
+        WorkItemQueryContext, WorkItemView,
     },
     BuiltinToolDefinition,
 };
@@ -94,6 +95,7 @@ pub(crate) async fn execute(
     } else {
         None
     };
+    let wait_conditions = active_wait_conditions_by_work_item(runtime, &selected)?;
     let mut work_items = Vec::with_capacity(selected.len());
     for record in selected {
         work_items.push(
@@ -103,6 +105,7 @@ pub(crate) async fn execute(
                 record,
                 args.include_todo_list,
                 delivery_summaries.as_ref(),
+                Some(&wait_conditions),
             )
             .await?,
         );
