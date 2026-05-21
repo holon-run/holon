@@ -1735,6 +1735,14 @@ pub enum WakeSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalWaitRecoverability {
+    Recoverable,
+    Weak,
+    ExplicitNoFallback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WaitConditionRecord {
     pub id: String,
     pub agent_id: String,
@@ -1759,6 +1767,94 @@ pub struct WaitConditionRecord {
     pub resolved_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled_at: Option<DateTime<Utc>>,
+}
+
+impl WaitConditionRecord {
+    pub fn external_recoverability(&self) -> Option<ExternalWaitRecoverability> {
+        if self.kind != WaitConditionKind::External || self.status != WaitConditionStatus::Active {
+            return None;
+        }
+        if explicit_no_fallback_reason(self.continuation.as_ref()).is_some() {
+            return Some(ExternalWaitRecoverability::ExplicitNoFallback);
+        }
+        if self.wake_sources.iter().any(recoverable_wake_source)
+            || continuation_declares_recovery(self.continuation.as_ref())
+        {
+            return Some(ExternalWaitRecoverability::Recoverable);
+        }
+        Some(ExternalWaitRecoverability::Weak)
+    }
+
+    pub fn no_fallback_reason(&self) -> Option<String> {
+        explicit_no_fallback_reason(self.continuation.as_ref()).map(ToString::to_string)
+    }
+}
+
+fn recoverable_wake_source(source: &WakeSource) -> bool {
+    matches!(source, WakeSource::Timer { .. } | WakeSource::SystemTick)
+}
+
+fn continuation_declares_recovery(continuation: Option<&Value>) -> bool {
+    let Some(value) = continuation else {
+        return false;
+    };
+    [
+        "durable_queue",
+        "durable_queue_ref",
+        "recheck_source",
+        "recheck_after",
+        "recheck_at",
+        "fallback",
+        "fallback_source",
+    ]
+    .into_iter()
+    .any(|key| value.get(key).is_some_and(json_truthy))
+        || value
+            .get("recoverability")
+            .or_else(|| value.get("recovery"))
+            .is_some_and(|value| {
+                value
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind == "recoverable")
+                    || value
+                        .get("durable_queue")
+                        .or_else(|| value.get("recheck_source"))
+                        .or_else(|| value.get("fallback_source"))
+                        .is_some_and(json_truthy)
+            })
+}
+
+fn explicit_no_fallback_reason(continuation: Option<&Value>) -> Option<&str> {
+    let value = continuation?;
+    value
+        .get("no_fallback_reason")
+        .or_else(|| value.get("explicit_no_fallback_reason"))
+        .and_then(Value::as_str)
+        .filter(|reason| !reason.trim().is_empty())
+        .or_else(|| {
+            value
+                .get("recoverability")
+                .or_else(|| value.get("recovery"))
+                .and_then(|value| {
+                    let kind = value.get("kind").and_then(Value::as_str)?;
+                    (kind == "explicit_no_fallback" || kind == "no_fallback")
+                        .then(|| value.get("reason").and_then(Value::as_str))
+                        .flatten()
+                })
+                .filter(|reason| !reason.trim().is_empty())
+        })
+}
+
+fn json_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::String(value) => !value.trim().is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+        Value::Number(_) => true,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1835,6 +1931,52 @@ pub struct WaitingIntentSummary {
     pub created_at: DateTime<Utc>,
     pub cancelled_at: Option<DateTime<Utc>>,
     pub last_triggered_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WaitConditionSummary {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    pub status: WaitConditionStatus,
+    pub kind: WaitConditionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_ref: Option<String>,
+    pub waiting_for: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wake_sources: Vec<WakeSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_recoverability: Option<ExternalWaitRecoverability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_fallback_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<Value>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<WaitConditionRecord> for WaitConditionSummary {
+    fn from(record: WaitConditionRecord) -> Self {
+        let external_recoverability = record.external_recoverability();
+        let no_fallback_reason = record.no_fallback_reason();
+        Self {
+            id: record.id,
+            work_item_id: record.work_item_id,
+            status: record.status,
+            kind: record.kind,
+            source: record.source,
+            subject_ref: record.subject_ref,
+            waiting_for: record.waiting_for,
+            wake_sources: record.wake_sources,
+            external_recoverability,
+            no_fallback_reason,
+            continuation: record.continuation,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3455,6 +3597,8 @@ pub struct AgentSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_children: Vec<ChildAgentSummary>,
     pub active_waiting_intents: Vec<WaitingIntentSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_wait_conditions: Vec<WaitConditionSummary>,
     #[serde(default)]
     pub active_external_triggers: Vec<ExternalTriggerSummary>,
     #[serde(default)]
@@ -3623,6 +3767,7 @@ impl AgentListEntry {
             skills: SkillsRuntimeView::default(),
             active_children: Vec::new(),
             active_waiting_intents: Vec::new(),
+            active_wait_conditions: Vec::new(),
             active_external_triggers: Vec::new(),
             recent_operator_notifications: Vec::new(),
             recent_brief_count: 0,

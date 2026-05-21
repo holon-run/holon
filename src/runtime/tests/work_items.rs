@@ -1,6 +1,9 @@
 use super::super::*;
 use super::support::*;
-use crate::types::{WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState};
+use crate::types::{
+    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemPlanStatus,
+    WorkItemReadiness, WorkItemSchedulingState,
+};
 
 fn blocking_task_for_work_item(task_id: &str, work_item_id: Option<&str>) -> TaskRecord {
     TaskRecord {
@@ -327,6 +330,73 @@ async fn work_item_query_tools_return_current_open_done_views() {
         active_item["todo_list"][0]["state"].as_str(),
         Some("in_progress")
     );
+
+    let now = Utc::now();
+    runtime
+        .storage()
+        .append_wait_condition(&WaitConditionRecord {
+            id: "weak-external-wait".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(active.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("pull_request:1313".into()),
+            waiting_for: "PR merged".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-weak".into()),
+            }],
+            continuation: Some(serde_json::json!({
+                "provider": "github",
+                "subscription_id": "sub_1"
+            })),
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+        })
+        .unwrap();
+
+    let (active_wait_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "active-wait".into(),
+                name: "ListWorkItems".into(),
+                input: serde_json::json!({"filter": "current"}),
+            },
+        )
+        .await
+        .unwrap();
+    let active_wait_payload = active_wait_result.envelope.result.unwrap();
+    let wait = &active_wait_payload["work_items"][0]["active_wait_conditions"][0];
+    assert_eq!(wait["id"].as_str(), Some("weak-external-wait"));
+    assert_eq!(wait["external_recoverability"].as_str(), Some("weak"));
+    assert_eq!(
+        wait["continuation"]["subscription_id"].as_str(),
+        Some("sub_1")
+    );
+
+    let (agent_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &TrustLevel::TrustedOperator,
+            &crate::tool::ToolCall {
+                id: "agent-get".into(),
+                name: "AgentGet".into(),
+                input: serde_json::json!({}),
+            },
+        )
+        .await
+        .unwrap();
+    let agent_payload = agent_result.envelope.result.unwrap();
+    let agent_wait = &agent_payload["agent"]["active_wait_conditions"][0];
+    assert_eq!(agent_wait["id"].as_str(), Some("weak-external-wait"));
+    assert_eq!(agent_wait["external_recoverability"].as_str(), Some("weak"));
 
     let (list_result, _) = registry
         .execute(

@@ -228,6 +228,7 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
         skills: SkillsRuntimeView::default(),
         active_children: Vec::<ChildAgentSummary>::new(),
         active_waiting_intents: Vec::<WaitingIntentSummary>::new(),
+        active_wait_conditions: Vec::new(),
         active_external_triggers: Vec::new(),
         recent_operator_notifications: Vec::new(),
         recent_brief_count: 1,

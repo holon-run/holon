@@ -14,13 +14,14 @@ use serde_json::Value;
 
 use crate::types::{
     AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, ContextEpisodeRecord,
-    DeliverySummaryRecord, ExternalTriggerRecord, ExternalTriggerScope, MessageEnvelope,
-    OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord,
-    TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
-    TranscriptEntry, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
-    WaitingIntentRecord, WaitingIntentStatus, WakeSource, WorkItemDelegationRecord,
-    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState,
-    WorkItemState, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
+    DeliverySummaryRecord, ExternalTriggerRecord, ExternalTriggerScope, ExternalWaitRecoverability,
+    MessageEnvelope, OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding,
+    QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState,
+    ToolExecutionRecord, TranscriptEntry, WaitConditionKind, WaitConditionRecord,
+    WaitConditionStatus, WaitingIntentRecord, WaitingIntentStatus, WakeSource,
+    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemReadiness, WorkItemRecord,
+    WorkItemSchedulingState, WorkItemState, WorkingMemoryDelta, WorkspaceEntry,
+    WorkspaceOccupancyRecord,
 };
 
 const RUNTIME_DIR: &str = ".holon";
@@ -335,8 +336,10 @@ impl AppStorage {
 
     pub fn append_waiting_intent(&self, record: &WaitingIntentRecord) -> Result<()> {
         let wait_condition = wait_condition_from_waiting_intent(record);
+        let event = external_wait_recoverability_event(&wait_condition);
         let waiting_intent_bytes = jsonl_bytes(record)?;
         let wait_condition_bytes = jsonl_bytes(&wait_condition)?;
+        let event_bytes = event.as_ref().map(jsonl_bytes).transpose()?;
 
         // Compatibility migration: keep the legacy waiting-intents ledger as the
         // first durable write, then mirror the same state into the internal wait
@@ -350,11 +353,27 @@ impl AppStorage {
             .lock()
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
         append_jsonl_bytes(&self.waiting_intents_path, &waiting_intent_bytes)?;
-        append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)
+        append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)?;
+        if let Some(event_bytes) = event_bytes {
+            append_jsonl_bytes(&self.events_path, &event_bytes)?;
+        }
+        Ok(())
     }
 
     pub fn append_wait_condition(&self, record: &WaitConditionRecord) -> Result<()> {
-        self.append_jsonl(&self.wait_conditions_path, record)
+        let event = external_wait_recoverability_event(record);
+        let wait_condition_bytes = jsonl_bytes(record)?;
+        let event_bytes = event.as_ref().map(jsonl_bytes).transpose()?;
+
+        let _guard = self
+            .append_mutex
+            .lock()
+            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+        append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)?;
+        if let Some(event_bytes) = event_bytes {
+            append_jsonl_bytes(&self.events_path, &event_bytes)?;
+        }
+        Ok(())
     }
 
     pub fn append_external_trigger(&self, record: &ExternalTriggerRecord) -> Result<()> {
@@ -1475,6 +1494,37 @@ fn wait_condition_from_waiting_intent(record: &WaitingIntentRecord) -> WaitCondi
     }
 }
 
+fn external_wait_recoverability_event(record: &WaitConditionRecord) -> Option<AuditEvent> {
+    match record.external_recoverability()? {
+        ExternalWaitRecoverability::Weak => Some(AuditEvent::new(
+            "external_wait_without_recovery",
+            serde_json::json!({
+                "wait_condition_id": record.id,
+                "work_item_id": record.work_item_id,
+                "source": record.source,
+                "subject_ref": record.subject_ref,
+                "waiting_for": record.waiting_for,
+                "external_recoverability": "weak",
+                "wake_sources": record.wake_sources,
+            }),
+        )),
+        ExternalWaitRecoverability::ExplicitNoFallback => Some(AuditEvent::new(
+            "external_wait_without_recovery",
+            serde_json::json!({
+                "wait_condition_id": record.id,
+                "work_item_id": record.work_item_id,
+                "source": record.source,
+                "subject_ref": record.subject_ref,
+                "waiting_for": record.waiting_for,
+                "external_recoverability": "explicit_no_fallback",
+                "no_fallback_reason": record.no_fallback_reason(),
+                "wake_sources": record.wake_sources,
+            }),
+        )),
+        ExternalWaitRecoverability::Recoverable => None,
+    }
+}
+
 fn scan_jsonl_reverse<T, F>(path: &Path, mut visit: F) -> Result<()>
 where
     T: DeserializeOwned,
@@ -2331,6 +2381,128 @@ mod tests {
         assert_eq!(latest.len(), 1);
         assert_eq!(latest[0].status, WaitConditionStatus::Cancelled);
         assert_eq!(latest[0].cancelled_at, cancelled.cancelled_at);
+    }
+
+    #[test]
+    fn external_wait_recoverability_is_derived_and_audited() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+
+        for record in [
+            WaitConditionRecord {
+                id: "weak".into(),
+                agent_id: "default".into(),
+                work_item_id: Some("work-weak".into()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("github".into()),
+                subject_ref: Some("pr-1".into()),
+                waiting_for: "merged".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some("trigger-1".into()),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+            },
+            WaitConditionRecord {
+                id: "recoverable".into(),
+                agent_id: "default".into(),
+                work_item_id: Some("work-recoverable".into()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("github".into()),
+                subject_ref: Some("pr-2".into()),
+                waiting_for: "checks".into(),
+                wake_sources: vec![
+                    WakeSource::ExternalIngress {
+                        external_trigger_id: Some("trigger-2".into()),
+                    },
+                    WakeSource::Timer {
+                        wake_at: now + chrono::Duration::hours(1),
+                    },
+                ],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+            },
+            WaitConditionRecord {
+                id: "explicit".into(),
+                agent_id: "default".into(),
+                work_item_id: Some("work-explicit".into()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("github".into()),
+                subject_ref: Some("pr-3".into()),
+                waiting_for: "manual merge".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some("trigger-3".into()),
+                }],
+                continuation: Some(serde_json::json!({
+                    "no_fallback_reason": "provider has no poll API"
+                })),
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+            },
+        ] {
+            storage.append_wait_condition(&record).unwrap();
+        }
+
+        let mut conditions = storage.latest_wait_conditions().unwrap();
+        conditions.sort_by(|left, right| left.id.cmp(&right.id));
+        assert_eq!(
+            conditions
+                .iter()
+                .find(|condition| condition.id == "weak")
+                .and_then(WaitConditionRecord::external_recoverability),
+            Some(ExternalWaitRecoverability::Weak)
+        );
+        assert_eq!(
+            conditions
+                .iter()
+                .find(|condition| condition.id == "recoverable")
+                .and_then(WaitConditionRecord::external_recoverability),
+            Some(ExternalWaitRecoverability::Recoverable)
+        );
+        let explicit = conditions
+            .iter()
+            .find(|condition| condition.id == "explicit")
+            .unwrap();
+        assert_eq!(
+            explicit.external_recoverability(),
+            Some(ExternalWaitRecoverability::ExplicitNoFallback)
+        );
+        assert_eq!(
+            explicit.no_fallback_reason().as_deref(),
+            Some("provider has no poll API")
+        );
+
+        let events = storage.read_recent_events(10).unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "external_wait_without_recovery"
+                && event.data["wait_condition_id"] == "weak"
+                && event.data["external_recoverability"] == "weak"
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "external_wait_without_recovery"
+                && event.data["wait_condition_id"] == "explicit"
+                && event.data["external_recoverability"] == "explicit_no_fallback"
+                && event.data["no_fallback_reason"] == "provider has no poll API"
+        }));
+        assert!(!events.iter().any(|event| {
+            event.kind == "external_wait_without_recovery"
+                && event.data["wait_condition_id"] == "recoverable"
+        }));
     }
 
     #[test]

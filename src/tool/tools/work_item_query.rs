@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     runtime::RuntimeHandle,
     types::{
-        DeliverySummaryRecord, TodoItem, WorkItemPlanArtifact, WorkItemPlanStatus,
-        WorkItemReadiness, WorkItemRecord, WorkItemState,
+        DeliverySummaryRecord, TodoItem, WaitConditionSummary, WorkItemPlanArtifact,
+        WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
     },
 };
 
@@ -70,6 +70,8 @@ pub(crate) struct WorkItemView {
     pub(crate) recheck_consumed_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) completion_report: Option<WorkItemCompletionReportView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) active_wait_conditions: Vec<WaitConditionSummary>,
     pub(crate) created_at: DateTime<Utc>,
     pub(crate) updated_at: DateTime<Utc>,
 }
@@ -133,6 +135,12 @@ pub(crate) async fn view_for_record(
     let focus = focus_view(&record, is_current);
     let readiness = record.readiness();
     let completion_report = completion_report_for_record(runtime, &record, delivery_summaries)?;
+    let active_wait_conditions = runtime
+        .storage()
+        .latest_active_wait_conditions_for_work_item(&record.agent_id, &record.id)?
+        .into_iter()
+        .map(WaitConditionSummary::from)
+        .collect();
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,
@@ -150,6 +158,7 @@ pub(crate) async fn view_for_record(
         recheck_at: record.recheck_at,
         recheck_consumed_at: record.recheck_consumed_at,
         completion_report,
+        active_wait_conditions,
         created_at: record.created_at,
         updated_at: record.updated_at,
     })
