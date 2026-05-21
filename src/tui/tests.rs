@@ -279,6 +279,54 @@ fn operator_message_event_envelope(
     )
 }
 
+fn work_item_written_event_envelope(
+    id: &str,
+    event_seq: u64,
+    agent_id: &str,
+    objective: &str,
+) -> StreamEventEnvelope {
+    pipeline_event_envelope(
+        id,
+        event_seq,
+        agent_id,
+        "work_item_written",
+        json!({
+            "action": "created",
+            "record": {
+                "id": "work-1",
+                "agent_id": agent_id,
+                "workspace_id": crate::types::AGENT_HOME_WORKSPACE_ID,
+                "objective": objective,
+                "state": "open",
+                "plan_status": "draft",
+                "todo_list": [],
+                "created_at": Utc::now(),
+                "updated_at": Utc::now()
+            }
+        }),
+    )
+}
+
+fn tool_executed_event_envelope(
+    id: &str,
+    event_seq: u64,
+    agent_id: &str,
+    tool_name: &str,
+) -> StreamEventEnvelope {
+    pipeline_event_envelope(
+        id,
+        event_seq,
+        agent_id,
+        "tool_executed",
+        json!({
+            "duration_ms": 0,
+            "status": "success",
+            "summary": tool_name,
+            "tool_name": tool_name,
+        }),
+    )
+}
+
 fn apply_brief_event(app: &mut TuiApp, brief: BriefRecord) {
     let event_id = format!("evt-{}", brief.id);
     let projection = app.projection.get_or_insert_with(|| {
@@ -2291,6 +2339,186 @@ fn chat_dedupes_pending_operator_message_when_event_log_contains_it() {
 }
 
 #[test]
+fn chat_deduplicates_replayed_projected_work_item_events() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    let event = work_item_written_event_envelope(
+        "evt-work-item",
+        42,
+        "default",
+        "Resolve and close the M1.15 GitHub issue list",
+    );
+    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
+    for _ in 0..2 {
+        projection.apply_event(
+            AgentStreamEvent {
+                id: event.id.clone(),
+                event: event.event_type.clone(),
+                data: event.clone(),
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+    }
+    assert_eq!(projection.event_log().len(), 1);
+    app.projection = Some(projection);
+
+    let matching = collect_chat_items(&app)
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                ConversationCell::SystemNotice { body, .. }
+                    if body.contains("Resolve and close the M1.15 GitHub issue list")
+            )
+        })
+        .count();
+    assert_eq!(matching, 1);
+}
+
+#[test]
+fn chat_deduplicates_replayed_projected_tool_events() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    let event = tool_executed_event_envelope("evt-tool", 43, "default", "PickWorkItem");
+    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
+    for _ in 0..2 {
+        projection.apply_event(
+            AgentStreamEvent {
+                id: event.id.clone(),
+                event: event.event_type.clone(),
+                data: event.clone(),
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+    }
+    assert_eq!(projection.event_log().len(), 1);
+    app.display_mode = OperatorDisplayMode::Verbose;
+    app.projection = Some(projection);
+
+    let matching = collect_chat_items(&app)
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                ConversationCell::SystemNotice { body, .. }
+                    if body.contains("PickWorkItem")
+            )
+        })
+        .count();
+    assert_eq!(matching, 1);
+}
+
+#[test]
+fn chat_keeps_distinct_projected_tool_events_with_same_body() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
+    for (id, event_seq) in [("evt-tool-1", 43), ("evt-tool-2", 44)] {
+        let event = tool_executed_event_envelope(id, event_seq, "default", "PickWorkItem");
+        projection.apply_event(
+            AgentStreamEvent {
+                id: event.id.clone(),
+                event: event.event_type.clone(),
+                data: event,
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+    }
+    app.display_mode = OperatorDisplayMode::Verbose;
+    app.projection = Some(projection);
+
+    let matching = collect_chat_items(&app)
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                ConversationCell::SystemNotice { body, .. }
+                    if body.contains("PickWorkItem")
+            )
+        })
+        .count();
+    assert_eq!(matching, 2);
+}
+
+#[test]
+fn chat_deduplicates_bootstrap_event_when_stream_replays_it() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    let event = work_item_written_event_envelope("evt-work-item", 42, "default", "bootstrap work");
+    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
+    projection.replace_event_window(vec![event.clone()], Some(42));
+    projection.apply_event(
+        AgentStreamEvent {
+            id: event.id.clone(),
+            event: event.event_type.clone(),
+            data: event,
+        },
+        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    assert_eq!(projection.event_log().len(), 1);
+    app.projection = Some(projection);
+
+    let matching = collect_chat_items(&app)
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                ConversationCell::SystemNotice { body, .. }
+                    if body.contains("bootstrap work")
+            )
+        })
+        .count();
+    assert_eq!(matching, 1);
+}
+
+#[test]
+fn projection_deduplicates_stream_events_using_outer_id_fallback() {
+    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
+    projection.replace_event_window(Vec::new(), None);
+    let mut envelope = work_item_written_event_envelope("", 0, "default", "outer id work");
+    envelope.id.clear();
+
+    for _ in 0..2 {
+        projection.apply_event(
+            AgentStreamEvent {
+                id: "sse-event-1".into(),
+                event: envelope.event_type.clone(),
+                data: envelope.clone(),
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+    }
+
+    assert_eq!(projection.event_log().len(), 1);
+    assert_eq!(projection.event_log()[0].id, "sse-event-1");
+}
+
+#[test]
+fn projection_deduplicates_duplicates_within_history_page() {
+    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
+    projection.replace_event_window(Vec::new(), None);
+    let event = work_item_written_event_envelope("evt-history-work", 42, "default", "history work");
+
+    let added = projection.prepend_event_history_page(vec![event.clone(), event], Some(42), true);
+
+    assert_eq!(added, 1);
+    assert_eq!(projection.event_log().len(), 1);
+    assert_eq!(projection.event_log()[0].id, "evt-history-work");
+}
+
+#[test]
 fn chat_text_omits_processing_and_processed_operator_status_labels() {
     for _status in [
         OperatorMessageStatus::Processing,
@@ -3795,13 +4023,14 @@ fn pipeline_reducer_aggregation() {
 
     // Write with empty reducer_events but non-empty items
     use crate::presentation::{PresentationItem, TimedItem};
-    let dummy_item = TimedItem {
-        item: PresentationItem::AssistantProgress {
+    let dummy_item = TimedItem::with_key(
+        PresentationItem::AssistantProgress {
             text: "empty test".into(),
             state: crate::presentation::ItemState::Stable,
         },
-        ts: chrono::Utc::now(),
-    };
+        chrono::Utc::now(),
+        "empty-test",
+    );
     let result2 = empty_writer.write_presentation_items(&[], &[dummy_item]);
     assert!(
         result2.is_ok(),
