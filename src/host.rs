@@ -614,11 +614,13 @@ impl RuntimeHost {
             &self.runtime_context_config(),
             &agent,
         );
+        let scheduling_posture = storage.agent_posture_projection(&agent)?;
         let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
         Ok(AgentListEntry {
             identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),
             lifecycle: AgentLifecycleHint::from_status(&agent.id, agent.status.clone()),
             status: agent.status,
+            scheduling_posture,
             pending: agent.pending,
             current_run_id: agent.current_run_id,
             waiting_reason,

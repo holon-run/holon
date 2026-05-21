@@ -2777,6 +2777,7 @@ mod tests {
             agent: state,
             active_task_count: 0,
             lifecycle: AgentLifecycleHint::default(),
+            scheduling_posture: Default::default(),
             model: AgentModelState {
                 effective_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6")
                     .unwrap(),

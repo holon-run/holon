@@ -89,6 +89,11 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
         .await?;
 
     assert!(state_payload["agent"].is_object());
+    assert_eq!(
+        state_payload["agent"]["scheduling_posture"]["posture"],
+        "idle"
+    );
+    assert!(state_payload["agent"]["scheduling_posture"]["reason"].is_string());
     assert!(state_payload["session"].is_object());
     assert!(state_payload["tasks"].is_array());
     assert!(state_payload.get("transcript_tail").is_none());

@@ -40,6 +40,7 @@ fn minimal_agent_summary(agent_id: &str) -> AgentSummary {
         agent: state,
         active_task_count: 0,
         lifecycle: AgentLifecycleHint::default(),
+        scheduling_posture: Default::default(),
         model: AgentModelState {
             effective_model: ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
             requested_model: None,

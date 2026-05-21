@@ -112,6 +112,8 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
         .expect("agent list should contain default agent");
     assert_eq!(entry["identity"]["agent_id"], "default");
     assert!(entry.get("status").is_some());
+    assert_eq!(entry["scheduling_posture"]["posture"], "idle");
+    assert!(entry["scheduling_posture"]["reason"].is_string());
     assert!(entry.get("model").is_some());
     assert!(
         entry.get("model_availability").is_none(),

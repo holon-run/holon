@@ -3027,6 +3027,19 @@ pub struct AgentPostureProjection {
     pub run_id: Option<String>,
 }
 
+impl Default for AgentPostureProjection {
+    fn default() -> Self {
+        Self {
+            posture: AgentSchedulingPosture::Idle,
+            reason: "posture projection unavailable".into(),
+            work_item_id: None,
+            waiting_intent_id: None,
+            task_id: None,
+            run_id: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkItemPlanArtifact {
     pub path: PathBuf,
@@ -3611,6 +3624,8 @@ pub struct AgentSummary {
     pub identity: AgentIdentityView,
     pub agent: AgentState,
     #[serde(default)]
+    pub scheduling_posture: AgentPostureProjection,
+    #[serde(default)]
     pub active_task_count: usize,
     #[serde(default)]
     pub lifecycle: AgentLifecycleHint,
@@ -3692,6 +3707,8 @@ pub struct AgentListEntry {
     pub identity: AgentIdentityView,
     pub status: AgentStatus,
     #[serde(default)]
+    pub scheduling_posture: AgentPostureProjection,
+    #[serde(default)]
     pub lifecycle: AgentLifecycleHint,
     #[serde(default)]
     pub pending: usize,
@@ -3709,6 +3726,7 @@ impl AgentListEntry {
         Self {
             identity: summary.identity.clone(),
             status: summary.agent.status.clone(),
+            scheduling_posture: summary.scheduling_posture.clone(),
             lifecycle: summary.lifecycle.clone(),
             pending: summary.agent.pending,
             current_run_id: summary.agent.current_run_id.clone(),
@@ -3780,6 +3798,7 @@ impl AgentListEntry {
         AgentSummary {
             identity: self.identity,
             lifecycle: self.lifecycle,
+            scheduling_posture: self.scheduling_posture,
             model: self.model.into_model_state(),
             token_usage: AgentTokenUsageSummary {
                 total: TokenUsage::new(0, 0),
