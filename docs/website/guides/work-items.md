@@ -51,6 +51,7 @@ Each work item can contain:
 - **plan status** — `draft`, `ready`, or `needs_input`
 - **todo list** — checklist of meaningful progress steps
 - **blocked by** — specific blocker when progress cannot continue
+- **recheck deadline** — fallback time for reconsidering a blocked item
 
 Treat the work item as coordination state, not a scratchpad.
 
@@ -85,6 +86,26 @@ Use plan status intentionally:
 This matters because the runtime can distinguish active runnable work from work
 that should pause.
 
+## Scheduler Readiness Model
+
+Work item readiness is scheduler input. An open runnable work item is eligible
+for scheduler resume or a system tick, while blocked or waiting items should
+pause until their unblock condition changes.
+
+`Sleep` only rests the agent. It does not mark the current work item as blocked,
+waiting, or non-runnable. If no immediate progress is possible, update the work
+item state before sleeping:
+
+- use `plan_status=needs_input` when operator input is required
+- set `blocked_by` when waiting on a concrete non-operator blocker
+- add `recheck_after` with `blocked_by` when the blocker should be revisited
+  after a fallback delay
+- use an external trigger when an external system can actively wake the agent
+
+Keep work items runnable only when the next scheduler resume can make useful
+progress. This avoids loops where an agent sleeps while leaving an open item
+eligible for repeated system ticks.
+
 ## Todo List Best Practices
 
 Good todo items are:
@@ -104,6 +125,7 @@ Avoid:
 When a work item cannot proceed:
 
 - set `blocked_by` to the concrete blocker
+- add `recheck_after` when the blocker should be reconsidered later
 - use `needs_input` if operator clarification is required
 - attach external waiting mechanisms only when the work is truly cross-turn
 

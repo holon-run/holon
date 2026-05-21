@@ -67,6 +67,19 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         || names.contains(&"PickWorkItem")
         || names.contains(&"UpdateWorkItem")
         || names.contains(&"CompleteWorkItem")
+        || names.contains(&"GetWorkItem")
+        || names.contains(&"ListWorkItems")
+    {
+        sections.push(section(
+            "tool_work_item_scheduling",
+            PromptStability::Stable,
+            "WorkItem scheduler model: an open runnable WorkItem is eligible for scheduler resume or system tick; Sleep only rests the agent and does not change WorkItem readiness. Do not leave a WorkItem runnable when no immediate progress is possible just because you called Sleep. When waiting for operator input, set plan_status=needs_input. When waiting on a concrete non-operator blocker, set blocked_by. When that blocker should be rechecked later, set blocked_by with recheck_after as the fallback deadline. Use an external trigger when an external system can actively wake the agent; the trigger complements, but does not replace, explicitly updating WorkItem blocked/ready/completed state. If you discover progress can continue, clear blockers by updating the WorkItem before proceeding. Keep runnable WorkItems only for work that is actually ready for the scheduler to resume.".to_string(),
+        ));
+    }
+    if names.contains(&"CreateWorkItem")
+        || names.contains(&"PickWorkItem")
+        || names.contains(&"UpdateWorkItem")
+        || names.contains(&"CompleteWorkItem")
     {
         sections.push(section(
             "tool_work_item_write",
@@ -372,6 +385,33 @@ mod tests {
         assert!(section
             .content
             .contains("audit whether the acceptance evidence is present"));
+    }
+
+    #[test]
+    fn test_work_item_scheduling_section_emitted_when_available() {
+        let tools = vec![ToolSpec {
+            name: "UpdateWorkItem".into(),
+            description: String::new(),
+            input_schema: json!({}),
+            freeform_grammar: None,
+        }];
+        let sections = tool_sections(&tools);
+        let section = sections
+            .iter()
+            .find(|s| s.name == "tool_work_item_scheduling")
+            .expect("work item scheduling section");
+        assert!(section.content.contains("open runnable WorkItem"));
+        assert!(section.content.contains("system tick"));
+        assert!(section.content.contains("Sleep only rests the agent"));
+        assert!(section
+            .content
+            .contains("does not change WorkItem readiness"));
+        assert!(section.content.contains("plan_status=needs_input"));
+        assert!(section.content.contains("set blocked_by"));
+        assert!(section.content.contains("recheck_after"));
+        assert!(section
+            .content
+            .contains("Keep runnable WorkItems only for work that is actually ready"));
     }
 
     #[test]
