@@ -360,6 +360,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Ok(RunLoopPoll::Idle);
             }
 
+            scheduler::append_scheduling_diagnostics(&self.runtime.inner.storage, &guard.state)?;
             scheduler::append_scheduler_decision(&self.runtime.inner.storage, &decision)?;
             let message = guard
                 .queue

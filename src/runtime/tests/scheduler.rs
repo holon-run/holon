@@ -1,7 +1,9 @@
 use super::super::*;
 use super::support::*;
 use crate::types::{
-    ToolExecutionStatus, WorkItemPlanStatus, WorkItemSchedulingState, WorkReactivationMode,
+    AgentPostureProjection, AgentSchedulingPosture, ToolExecutionStatus, WaitConditionKind,
+    WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemPlanStatus,
+    WorkItemSchedulingState, WorkReactivationMode,
 };
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -899,6 +901,148 @@ fn background_work_item_task_does_not_block_runnable_work() {
         Some(WorkItemSchedulingState::Runnable)
     );
     assert!(scheduler::wait_decision_for_projection(&projection).is_none());
+}
+
+#[test]
+fn scheduling_diagnostics_detect_idle_posture_with_runnable_work() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    let work_item = WorkItemRecord::new("default", "runnable work", WorkItemState::Open);
+    agent.current_work_item_id = Some(work_item.id.clone());
+    storage.write_agent(&agent).unwrap();
+    storage.append_work_item(&work_item).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let work_queue = storage.work_queue_prompt_projection().unwrap();
+    let posture = AgentPostureProjection {
+        posture: AgentSchedulingPosture::Idle,
+        reason: "fixture intentionally stale posture".into(),
+        work_item_id: None,
+        waiting_intent_id: None,
+        task_id: None,
+        run_id: None,
+    };
+
+    let diagnostics = scheduler::scheduling_diagnostics_for_facts(
+        &agent,
+        &projection,
+        &posture,
+        &work_queue,
+        &[],
+        &[],
+    );
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].kind, "idle_posture_has_runnable_work");
+    assert_eq!(
+        diagnostics[0].work_item_id.as_deref(),
+        Some(work_item.id.as_str())
+    );
+}
+
+#[test]
+fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let now = Utc::now();
+
+    let mut external = WorkItemRecord::new("default", "external wait", WorkItemState::Open);
+    external.blocked_by = Some("github".into());
+    storage.append_work_item(&external).unwrap();
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-weak".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(external.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("pr-1".into()),
+            waiting_for: "merged".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-1".into()),
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+        })
+        .unwrap();
+
+    let mut blocked = WorkItemRecord::new("default", "blocked", WorkItemState::Open);
+    blocked.blocked_by = Some("manual blocker".into());
+    storage.append_work_item(&blocked).unwrap();
+
+    let diagnostics = scheduler::scheduling_diagnostics(&storage, &agent).unwrap();
+    let kinds = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.kind.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(kinds.contains(&"external_wait_has_weak_recoverability"));
+    assert!(kinds.contains(&"blocked_work_item_without_recheck_or_wait"));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.kind == "external_wait_has_weak_recoverability"
+            && diagnostic.wait_condition_id.as_deref() == Some("wait-weak")
+            && diagnostic.work_item_id.as_deref() == Some(external.id.as_str())
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.kind == "blocked_work_item_without_recheck_or_wait"
+            && diagnostic.work_item_id.as_deref() == Some(blocked.id.as_str())
+    }));
+}
+
+#[test]
+fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let now = Utc::now();
+
+    let mut external =
+        WorkItemRecord::new("default", "recoverable external wait", WorkItemState::Open);
+    external.blocked_by = Some("github".into());
+    storage.append_work_item(&external).unwrap();
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-recoverable".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(external.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("pr-2".into()),
+            waiting_for: "checks".into(),
+            wake_sources: vec![WakeSource::Timer {
+                wake_at: now + chrono::Duration::hours(1),
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+        })
+        .unwrap();
+
+    let mut blocked_with_recheck =
+        WorkItemRecord::new("default", "blocked with recheck", WorkItemState::Open);
+    blocked_with_recheck.blocked_by = Some("manual blocker".into());
+    blocked_with_recheck.recheck_at = Some(now + chrono::Duration::hours(1));
+    storage.append_work_item(&blocked_with_recheck).unwrap();
+
+    let diagnostics = scheduler::scheduling_diagnostics(&storage, &agent).unwrap();
+
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for legal waits, got {diagnostics:?}"
+    );
 }
 
 #[test]
