@@ -37,6 +37,10 @@ pub(crate) struct SchedulerAgentSnapshot {
 }
 
 impl SchedulerAgentSnapshot {
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
     pub(crate) fn from_state(state: &AgentState) -> Self {
         Self {
             id: state.id.clone(),

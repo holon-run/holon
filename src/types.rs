@@ -2781,6 +2781,17 @@ pub enum WorkItemReadiness {
     Completed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemSchedulingState {
+    Runnable,
+    WaitingOperator,
+    WaitingTask,
+    WaitingExternal,
+    Blocked,
+    Completed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkItemPlanArtifact {
     pub path: PathBuf,
@@ -2812,6 +2823,10 @@ pub struct WorkItemRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recheck_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recheck_consumed_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_summary: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -2836,23 +2851,46 @@ impl WorkItemRecord {
             plan_artifact: None,
             todo_list: Vec::new(),
             blocked_by: None,
+            recheck_at: None,
+            recheck_consumed_at: None,
             result_summary: None,
             created_at: now,
             updated_at: now,
         }
     }
 
-    pub fn readiness(&self) -> WorkItemReadiness {
+    pub fn scheduling_state(
+        &self,
+        has_active_external_wait: bool,
+        has_active_task_wait: bool,
+    ) -> WorkItemSchedulingState {
         if self.state == WorkItemState::Completed {
-            return WorkItemReadiness::Completed;
+            return WorkItemSchedulingState::Completed;
         }
         if self.blocked_by.is_some() {
-            return WorkItemReadiness::Blocked;
+            return WorkItemSchedulingState::Blocked;
         }
         if self.plan_status == WorkItemPlanStatus::NeedsInput {
-            return WorkItemReadiness::WaitingForOperator;
+            return WorkItemSchedulingState::WaitingOperator;
         }
-        WorkItemReadiness::Runnable
+        if has_active_task_wait {
+            return WorkItemSchedulingState::WaitingTask;
+        }
+        if has_active_external_wait {
+            return WorkItemSchedulingState::WaitingExternal;
+        }
+        WorkItemSchedulingState::Runnable
+    }
+
+    pub fn readiness(&self) -> WorkItemReadiness {
+        match self.scheduling_state(false, false) {
+            WorkItemSchedulingState::Runnable => WorkItemReadiness::Runnable,
+            WorkItemSchedulingState::WaitingOperator => WorkItemReadiness::WaitingForOperator,
+            WorkItemSchedulingState::WaitingTask
+            | WorkItemSchedulingState::WaitingExternal
+            | WorkItemSchedulingState::Blocked => WorkItemReadiness::Blocked,
+            WorkItemSchedulingState::Completed => WorkItemReadiness::Completed,
+        }
     }
 
     pub fn is_runnable(&self) -> bool {
