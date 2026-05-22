@@ -876,6 +876,64 @@ mod tests {
     }
 
     #[test]
+    fn prompt_cache_key_changes_when_user_global_agents_md_changes() {
+        let session = AgentState::new("default");
+        let execution = sample_execution_snapshot();
+        let mut first_loaded = LoadedAgentsMd::default();
+        first_loaded.user_global_source = Some(AgentsMdSource {
+            scope: crate::types::AgentsMdScope::UserGlobal,
+            kind: AgentsMdKind::AgentsMd,
+            path: PathBuf::from("/tmp/user/.agents/AGENTS.md"),
+            content: "first user-global guidance".into(),
+        });
+        let mut second_loaded = first_loaded.clone();
+        second_loaded
+            .user_global_source
+            .as_mut()
+            .expect("test source")
+            .content = "second user-global guidance".into();
+        let first_system_sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("/tmp/agent-home"),
+            &first_loaded,
+            &SkillsRuntimeView::default(),
+            &[],
+        );
+        let second_system_sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("/tmp/agent-home"),
+            &second_loaded,
+            &SkillsRuntimeView::default(),
+            &[],
+        );
+        let context_sections = Vec::new();
+        let tools = Vec::new();
+
+        let first_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &execution,
+            &first_system_sections,
+            &context_sections,
+            &tools,
+        );
+        let second_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &execution,
+            &second_system_sections,
+            &context_sections,
+            &tools,
+        );
+
+        assert_ne!(first_scope, second_scope);
+        assert_ne!(
+            prompt_cache_key(&session.id, &first_scope),
+            prompt_cache_key(&session.id, &second_scope)
+        );
+    }
+
+    #[test]
     fn prompt_cache_key_ignores_execution_root_bookkeeping_id_changes() {
         let session = AgentState::new("default");
         let mut first_execution = sample_execution_snapshot();
