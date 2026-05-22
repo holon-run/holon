@@ -424,7 +424,7 @@ impl TuiProjection {
                     self.mark_stale([ProjectionSlice::Workspace, ProjectionSlice::Agent]);
                 }
             }
-            "workspace_entered" => {
+            "workspace_entered" | "workspace_used" => {
                 if self.apply_workspace_entered(&event.data.payload) {
                     self.stale_slices.remove(&ProjectionSlice::Agent);
                     self.stale_slices.insert(ProjectionSlice::Workspace);
@@ -482,8 +482,25 @@ impl TuiProjection {
                     self.mark_stale([ProjectionSlice::Session, ProjectionSlice::Agent]);
                 }
             }
+            "agent_model_override_requested"
+            | "agent_model_override_set"
+            | "agent_model_override_clear_requested"
+            | "agent_model_override_cleared" => {
+                if self.apply_model_state_event(&event.data.payload) {
+                    self.stale_slices.remove(&ProjectionSlice::Agent);
+                } else {
+                    self.mark_stale([ProjectionSlice::Agent]);
+                }
+            }
+            "provider_round_completed" => {
+                if self.apply_provider_round_model_event(&event.data.payload) {
+                    self.stale_slices.remove(&ProjectionSlice::Agent);
+                }
+                // This event already carries enough payload for the active
+                // Conversation preview and event overlays. Avoid forcing a
+                // full /state refresh during normal turn progress.
+            }
             "assistant_round_recorded"
-            | "provider_round_completed"
             | "text_only_round_observed"
             | "max_output_tokens_recovery"
             | "runtime_error" => {
@@ -872,9 +889,55 @@ impl TuiProjection {
 
         self.workspace.active_workspace_entry = Some(entry.clone());
         self.workspace.active_workspace_occupancy = None;
+        self.workspace.worktree_session = None;
 
         self.agent.agent.active_workspace_entry = Some(entry);
         self.agent.active_workspace_occupancy = None;
+        self.agent.agent.worktree_session = None;
+        true
+    }
+
+    fn apply_model_state_event(&mut self, payload: &Value) -> bool {
+        let Some(model) = payload
+            .get("model")
+            .cloned()
+            .and_then(decode_value::<crate::types::AgentModelState>)
+        else {
+            return false;
+        };
+        self.agent.model = model;
+        true
+    }
+
+    fn apply_provider_round_model_event(&mut self, payload: &Value) -> bool {
+        let has_requested_model = payload.get("requested_model").is_some();
+        let has_active_model = payload.get("active_model").is_some();
+        let requested_model = payload.get("requested_model").and_then(|value| {
+            decode_value::<Option<crate::config::ModelRef>>(value.clone()).unwrap_or(None)
+        });
+        let active_model = payload.get("active_model").and_then(|value| {
+            decode_value::<Option<crate::config::ModelRef>>(value.clone()).unwrap_or(None)
+        });
+        let fallback_active = payload.get("fallback_active").and_then(Value::as_bool);
+
+        if !has_requested_model && !has_active_model && fallback_active.is_none() {
+            return false;
+        }
+
+        if has_requested_model {
+            self.agent.model.requested_model = requested_model;
+        }
+        if has_active_model {
+            self.agent.model.active_model = active_model;
+        }
+        self.agent.model.fallback_active = fallback_active.unwrap_or_else(|| {
+            self.agent
+                .model
+                .requested_model
+                .as_ref()
+                .zip(self.agent.model.active_model.as_ref())
+                .is_some_and(|(requested, active)| requested != active)
+        });
         true
     }
 
@@ -2309,6 +2372,153 @@ mod tests {
             .stale_slices
             .contains(&ProjectionSlice::Workspace));
         assert!(projection.workspace.active_workspace_occupancy.is_none());
+    }
+
+    #[test]
+    fn projection_updates_workspace_from_workspace_used_event() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        projection.agent.agent.worktree_session = projection.workspace.worktree_session.clone();
+
+        projection.apply_event(
+            sample_event(
+                "workspace_used",
+                json!({
+                    "workspace_id": crate::types::AGENT_HOME_WORKSPACE_ID,
+                    "workspace_anchor": "/tmp/agent-home",
+                    "execution_root_id": "canonical_root:agent_home",
+                    "execution_root": "/tmp/agent-home",
+                    "projection_kind": "canonical_root",
+                    "access_mode": "exclusive_write",
+                    "cwd": "/tmp/agent-home",
+                }),
+            ),
+            &test_log_writer(),
+        );
+
+        let entry = projection
+            .workspace
+            .active_workspace_entry
+            .as_ref()
+            .expect("workspace_used should update active workspace");
+        assert_eq!(entry.workspace_id, crate::types::AGENT_HOME_WORKSPACE_ID);
+        assert_eq!(entry.execution_root, PathBuf::from("/tmp/agent-home"));
+        assert_eq!(
+            projection
+                .agent
+                .agent
+                .active_workspace_entry
+                .as_ref()
+                .map(|entry| entry.workspace_id.as_str()),
+            Some(crate::types::AGENT_HOME_WORKSPACE_ID)
+        );
+        assert!(!projection.stale_slices.contains(&ProjectionSlice::Agent));
+        assert!(projection
+            .stale_slices
+            .contains(&ProjectionSlice::Workspace));
+        assert_eq!(
+            projection
+                .workspace
+                .active_workspace_entry
+                .as_ref()
+                .map(|entry| entry.cwd.as_path()),
+            Some(PathBuf::from("/tmp/agent-home").as_path())
+        );
+        assert!(projection.workspace.worktree_session.is_none());
+        assert!(projection.agent.agent.worktree_session.is_none());
+    }
+
+    #[test]
+    fn projection_updates_model_from_override_lifecycle_events() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let mut model = projection.agent.model.clone();
+        let override_model = crate::config::ModelRef::parse("openai/gpt-5.4").unwrap();
+        model.source = AgentModelSource::AgentOverride;
+        model.effective_model = override_model.clone();
+        model.requested_model = Some(override_model.clone());
+        model.active_model = Some(override_model.clone());
+        model.override_model = Some(override_model);
+        model.override_reasoning_effort = Some("high".into());
+
+        projection.apply_event(
+            sample_event(
+                "agent_model_override_set",
+                json!({
+                    "agent_id": "default",
+                    "model": model,
+                    "pending_next_turn": false,
+                }),
+            ),
+            &test_log_writer(),
+        );
+
+        assert_eq!(
+            projection
+                .agent
+                .model
+                .override_model
+                .as_ref()
+                .map(|model| model.as_string()),
+            Some("openai/gpt-5.4".into())
+        );
+        assert_eq!(
+            projection.agent.model.override_reasoning_effort.as_deref(),
+            Some("high")
+        );
+        assert!(!projection.stale_slices.contains(&ProjectionSlice::Agent));
+    }
+
+    #[test]
+    fn projection_updates_model_from_provider_round_events() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+
+        projection.apply_event(
+            sample_event(
+                "provider_round_completed",
+                json!({
+                    "requested_model": "openai/gpt-5.4",
+                    "active_model": "anthropic/claude-sonnet-4-6",
+                }),
+            ),
+            &test_log_writer(),
+        );
+
+        assert_eq!(
+            projection
+                .agent
+                .model
+                .requested_model
+                .as_ref()
+                .map(|model| model.as_string()),
+            Some("openai/gpt-5.4".into())
+        );
+        assert_eq!(
+            projection
+                .agent
+                .model
+                .active_model
+                .as_ref()
+                .map(|model| model.as_string()),
+            Some("anthropic/claude-sonnet-4-6".into())
+        );
+        assert!(projection.agent.model.fallback_active);
+        assert!(!projection.stale_slices.contains(&ProjectionSlice::Agent));
+
+        projection.apply_event(
+            sample_event_with_id(
+                "evt-provider-round-completed-clear",
+                "provider_round_completed",
+                json!({
+                    "requested_model": null,
+                    "active_model": null,
+                    "fallback_active": false,
+                }),
+            ),
+            &test_log_writer(),
+        );
+
+        assert!(projection.agent.model.requested_model.is_none());
+        assert!(projection.agent.model.active_model.is_none());
+        assert!(!projection.agent.model.fallback_active);
     }
 
     #[test]

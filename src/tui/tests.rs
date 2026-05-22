@@ -495,6 +495,80 @@ fn statusbar_view_model_shows_workspace_label_execution_root_and_model() {
 }
 
 #[test]
+fn statusbar_view_model_converges_from_workspace_used_event() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.status_line.clear();
+    let snapshot = sample_snapshot("default", "evt-0");
+    app.agents = vec![snapshot.agent.clone()];
+    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+    let projection = app.projection.as_mut().unwrap();
+    projection.apply_event(
+        pipeline_event(
+            "evt-workspace-used",
+            1,
+            "default",
+            "workspace_used",
+            json!({
+                "workspace_id": crate::types::AGENT_HOME_WORKSPACE_ID,
+                "workspace_anchor": "/tmp/agent-home",
+                "execution_root_id": "canonical_root:agent_home",
+                "execution_root": "/tmp/agent-home",
+                "projection_kind": "canonical_root",
+                "access_mode": "exclusive_write",
+                "cwd": "/tmp/agent-home",
+            }),
+        ),
+        &app.log_writer,
+    );
+    app.apply_projection_view();
+
+    let view_model = StatusbarViewModel::from_app(&app, false);
+
+    assert!(view_model.context_line.starts_with("agent_home ("));
+    assert!(view_model.context_line.contains("/tmp/agent-home)"));
+}
+
+#[test]
+fn statusbar_view_model_converges_from_provider_round_model_event() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.status_line.clear();
+    let snapshot = sample_snapshot("default", "evt-0");
+    app.agents = vec![snapshot.agent.clone()];
+    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+
+    let projection = app.projection.as_mut().unwrap();
+    projection.apply_event(
+        pipeline_event(
+            "evt-provider-model",
+            1,
+            "default",
+            "provider_round_completed",
+            json!({
+                "requested_model": "openai/gpt-5.4",
+                "active_model": "anthropic/claude-sonnet-4-6",
+            }),
+        ),
+        &app.log_writer,
+    );
+    app.apply_projection_view();
+
+    let view_model = StatusbarViewModel::from_app(&app, false);
+
+    assert!(view_model
+        .context_line
+        .contains("anthropic/claude-sonnet-4-6 (fallback from openai/gpt-5.4)"));
+}
+
+#[test]
 fn statusbar_view_model_uses_workspace_label_for_worktree_execution_root() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
