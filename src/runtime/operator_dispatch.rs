@@ -279,13 +279,37 @@ impl RuntimeHandle {
         let provider = self.current_provider().await;
         let native_search_provider = self.web_config().native_search_provider();
         let builtin_capability = provider.builtin_web_search();
-        let probe_result = builtin_capability
-            .as_ref()
-            .map(probe_builtin_web_search_capability)
-            .unwrap_or(BuiltinWebSearchProbeCacheEntry {
+        let probe_result = if let Some(capability) = builtin_capability.as_ref() {
+            let probe_key = BuiltinWebSearchProbeKey::from_capability(capability);
+            let cached_probe = {
+                let cache = self.inner.builtin_web_search_probe_cache.lock().await;
+                cache.get(&probe_key).cloned()
+            };
+            if let Some(cached_probe) = cached_probe {
+                cached_probe
+            } else if !builtin_web_search_probe_requested(
+                capability,
+                native_search_provider.as_ref(),
+                &self.web_config().search,
+            ) {
+                BuiltinWebSearchProbeCacheEntry {
+                    status: BuiltinWebSearchProbeStatus::Skipped,
+                    reason: Some("builtin web search is not requested by current config".into()),
+                }
+            } else {
+                probe_builtin_web_search_capability(
+                    provider.as_ref(),
+                    capability,
+                    self.web_config().search.max_results,
+                )
+                .await
+            }
+        } else {
+            BuiltinWebSearchProbeCacheEntry {
                 status: BuiltinWebSearchProbeStatus::Skipped,
                 reason: Some("active provider does not declare builtin web search".into()),
-            });
+            }
+        };
         let native_web_search_selection = {
             let mut cache = self.inner.builtin_web_search_probe_cache.lock().await;
             native_web_search_request_for_config(
@@ -301,7 +325,7 @@ impl RuntimeHandle {
             let guard = self.inner.agent.lock().await;
             self.apply_patch_surface_for_state(&guard.state)
         };
-        let available_tools = self.filter_native_web_search_tools(
+        let available_tools = filter_native_web_search_tools(
             self.filtered_tool_specs_for_apply_patch_surface(identity, apply_patch_surface)?,
             native_web_search.is_some(),
         );
@@ -312,21 +336,22 @@ impl RuntimeHandle {
             native_web_search_selection.diagnostics,
         ))
     }
-
-    fn filter_native_web_search_tools(
-        &self,
-        mut tools: Vec<ToolSpec>,
-        native_search_configured: bool,
-    ) -> Vec<ToolSpec> {
-        if native_search_configured {
-            tools.retain(|tool| tool.name != crate::tool::tools::web_search::NAME);
-        }
-        tools
-    }
 }
 
-fn probe_builtin_web_search_capability(
+fn filter_native_web_search_tools(
+    mut tools: Vec<ToolSpec>,
+    native_search_configured: bool,
+) -> Vec<ToolSpec> {
+    if native_search_configured {
+        tools.retain(|tool| tool.name != crate::tool::tools::web_search::NAME);
+    }
+    tools
+}
+
+async fn probe_builtin_web_search_capability(
+    provider: &dyn AgentProvider,
     capability: &crate::provider::ProviderBuiltinWebSearchCapability,
+    max_results: usize,
 ) -> BuiltinWebSearchProbeCacheEntry {
     if capability.provider_model_ref.trim().is_empty() {
         return unsupported_builtin_web_search_probe(
@@ -354,7 +379,7 @@ fn probe_builtin_web_search_capability(
         );
     }
 
-    let supported = match (
+    let locally_supported = match (
         capability.kind,
         capability.provider_transport.as_str(),
         capability.advertised_tool_type.as_str(),
@@ -367,16 +392,39 @@ fn probe_builtin_web_search_capability(
         _ => false,
     };
 
-    if supported {
-        BuiltinWebSearchProbeCacheEntry {
-            status: BuiltinWebSearchProbeStatus::Supported,
-            reason: None,
-        }
-    } else {
-        unsupported_builtin_web_search_probe(format!(
+    if !locally_supported {
+        return unsupported_builtin_web_search_probe(format!(
             "builtin web search capability is incompatible with transport {} and advertised tool type {}",
             capability.provider_transport, capability.advertised_tool_type
-        ))
+        ));
+    }
+
+    let request = ProviderNativeWebSearchRequest {
+        kind: capability.kind,
+        provider_id: capability.provider_id.clone(),
+        provider_model_ref: capability.provider_model_ref.clone(),
+        advertised_tool_type: capability.advertised_tool_type.clone(),
+        backend_kind: capability.backend_kind.clone(),
+        max_results: Some(max_results.max(1)),
+    };
+
+    match provider.probe_builtin_web_search(request).await {
+        Ok(()) => BuiltinWebSearchProbeCacheEntry {
+            status: BuiltinWebSearchProbeStatus::Supported,
+            reason: None,
+        },
+        Err(error) => {
+            let classification = crate::provider::classify_provider_error(&error);
+            let status = if classification.disposition.as_str() == "retryable" {
+                BuiltinWebSearchProbeStatus::TransientFailure
+            } else {
+                BuiltinWebSearchProbeStatus::Unsupported
+            };
+            BuiltinWebSearchProbeCacheEntry {
+                status,
+                reason: Some(format!("builtin web search provider probe failed: {error}")),
+            }
+        }
     }
 }
 
@@ -387,6 +435,29 @@ fn unsupported_builtin_web_search_probe(
         status: BuiltinWebSearchProbeStatus::Unsupported,
         reason: Some(reason.into()),
     }
+}
+
+fn builtin_web_search_probe_requested(
+    capability: &crate::provider::ProviderBuiltinWebSearchCapability,
+    native_search_provider: Option<&(String, WebProviderKind)>,
+    web_search: &crate::web::WebSearchConfig,
+) -> bool {
+    if !web_search.enabled {
+        return false;
+    }
+
+    if let Some((_, provider_kind)) = native_search_provider {
+        if provider_kind.is_native_search() {
+            return provider_kind_to_native_web_search_kind(*provider_kind)
+                == Some(capability.kind);
+        }
+    }
+
+    if web_search.provider.trim() != "auto" {
+        return false;
+    }
+
+    web_search.builtin_provider_enabled
 }
 
 fn native_web_search_request_for_config(
@@ -587,6 +658,46 @@ fn builtin_web_search_selection_diagnostics(
 mod tests {
     use super::*;
 
+    struct ProbeProvider {
+        result: std::result::Result<(), &'static str>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::provider::AgentProvider for ProbeProvider {
+        async fn complete_turn(
+            &self,
+            _request: crate::provider::ProviderTurnRequest,
+        ) -> Result<crate::provider::ProviderTurnResponse> {
+            Ok(crate::provider::ProviderTurnResponse {
+                blocks: vec![crate::provider::ModelBlock::Text { text: "OK".into() }],
+                stop_reason: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_usage: None,
+                request_diagnostics: None,
+            })
+        }
+
+        async fn probe_builtin_web_search(
+            &self,
+            _request: ProviderNativeWebSearchRequest,
+        ) -> Result<()> {
+            match self.result {
+                Ok(()) => Ok(()),
+                Err("transient") => Err(crate::provider::provider_transport_error(
+                    crate::provider::ProviderFailureClassification {
+                        kind: crate::provider::ProviderFailureKind::RateLimited,
+                        disposition: crate::provider::RetryDisposition::Retryable,
+                    },
+                    Some(429),
+                    None,
+                    "rate limited",
+                )),
+                Err(message) => Err(anyhow::anyhow!(message)),
+            }
+        }
+    }
+
     fn capability(
         kind: ProviderNativeWebSearchKind,
         provider_id: &str,
@@ -615,6 +726,46 @@ mod tests {
             reason: (!matches!(status, BuiltinWebSearchProbeStatus::Supported))
                 .then(|| "probe result".into()),
         }
+    }
+
+    fn tool_spec(name: &str) -> ToolSpec {
+        ToolSpec {
+            name: name.into(),
+            description: "test tool".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            freeform_grammar: None,
+        }
+    }
+
+    #[test]
+    fn managed_web_search_tool_stays_visible_when_builtin_search_not_selected() {
+        let tools = filter_native_web_search_tools(
+            vec![
+                tool_spec(crate::tool::tools::web_search::NAME),
+                tool_spec("read_file"),
+            ],
+            false,
+        );
+
+        assert!(tools
+            .iter()
+            .any(|tool| tool.name == crate::tool::tools::web_search::NAME));
+    }
+
+    #[test]
+    fn managed_web_search_tool_is_hidden_when_builtin_search_selected() {
+        let tools = filter_native_web_search_tools(
+            vec![
+                tool_spec(crate::tool::tools::web_search::NAME),
+                tool_spec("read_file"),
+            ],
+            true,
+        );
+
+        assert!(!tools
+            .iter()
+            .any(|tool| tool.name == crate::tool::tools::web_search::NAME));
+        assert!(tools.iter().any(|tool| tool.name == "read_file"));
     }
 
     #[test]
@@ -783,8 +934,8 @@ mod tests {
         assert!(selection.diagnostics.probe_cache_hit);
     }
 
-    #[test]
-    fn native_web_search_request_uses_contract_probe_result_on_cache_miss() {
+    #[tokio::test]
+    async fn builtin_web_search_probe_rejects_invalid_contract_without_backend_call() {
         let mut cache = HashMap::new();
         let unsupported_capability = capability(
             ProviderNativeWebSearchKind::OpenAi,
@@ -793,7 +944,12 @@ mod tests {
             "web_search_preview",
             "openai_codex_web_search",
         );
-        let probe_result = probe_builtin_web_search_capability(&unsupported_capability);
+        let probe_result = probe_builtin_web_search_capability(
+            &ProbeProvider { result: Ok(()) },
+            &unsupported_capability,
+            search_config().max_results,
+        )
+        .await;
 
         let selection = native_web_search_request_for_config(
             Some(unsupported_capability),
@@ -813,6 +969,49 @@ mod tests {
             BuiltinWebSearchProbeStatus::Unsupported
         );
         assert!(!selection.diagnostics.probe_cache_hit);
+    }
+
+    #[tokio::test]
+    async fn builtin_web_search_probe_uses_backend_result() {
+        let capability = crate::provider::ProviderBuiltinWebSearchCapability {
+            kind: ProviderNativeWebSearchKind::OpenAi,
+            provider_id: "openai-codex".into(),
+            provider_model_ref: "openai-codex/gpt-codex-test".into(),
+            provider_transport: "openai_codex_responses".into(),
+            provider_base_url: "https://api.example.test".into(),
+            advertised_tool_type: "web_search".into(),
+            backend_kind: "openai_codex_web_search".into(),
+        };
+
+        let supported = probe_builtin_web_search_capability(
+            &ProbeProvider { result: Ok(()) },
+            &capability,
+            search_config().max_results,
+        )
+        .await;
+        let unsupported = probe_builtin_web_search_capability(
+            &ProbeProvider {
+                result: Err("unsupported"),
+            },
+            &capability,
+            search_config().max_results,
+        )
+        .await;
+        let transient = probe_builtin_web_search_capability(
+            &ProbeProvider {
+                result: Err("transient"),
+            },
+            &capability,
+            search_config().max_results,
+        )
+        .await;
+
+        assert_eq!(supported.status, BuiltinWebSearchProbeStatus::Supported);
+        assert_eq!(unsupported.status, BuiltinWebSearchProbeStatus::Unsupported);
+        assert_eq!(
+            transient.status,
+            BuiltinWebSearchProbeStatus::TransientFailure
+        );
     }
 
     #[test]

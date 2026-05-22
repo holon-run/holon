@@ -19,14 +19,14 @@ use crate::{
     context::ContextConfig,
     model_catalog::BuiltInModelCatalog,
     provider::{
-        emitted_tool_json_schema,
+        builtin_web_search_probe_turn_request, emitted_tool_json_schema,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
         AgentProvider, ConversationMessage, ModelBlock, ProviderBuiltinWebSearchCapability,
         ProviderCacheUsage, ProviderIncrementalContinuationDiagnostics,
         ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
-        ProviderOpenAiRemoteCompactionDiagnostics, ProviderOpenAiRequestControlsDiagnostics,
-        ProviderPromptFrame, ProviderRequestDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
-        ToolSchemaContract,
+        ProviderNativeWebSearchRequest, ProviderOpenAiRemoteCompactionDiagnostics,
+        ProviderOpenAiRequestControlsDiagnostics, ProviderPromptFrame, ProviderRequestDiagnostics,
+        ProviderTurnRequest, ProviderTurnResponse, ToolSchemaContract,
     },
     token_estimate::estimate_json_tokens,
 };
@@ -564,6 +564,37 @@ impl AgentProvider for OpenAiProvider {
             backend_kind: config.backend_kind.clone(),
         })
     }
+
+    async fn probe_builtin_web_search(
+        &self,
+        request: ProviderNativeWebSearchRequest,
+    ) -> Result<()> {
+        let probe_request = builtin_web_search_probe_turn_request(request);
+        let body = build_openai_responses_request(
+            &self.model,
+            16,
+            &probe_request,
+            OpenAiResponsesTransportContract::StandardJson,
+            ToolSchemaContract::Relaxed,
+            None,
+        )?;
+        let headers = self
+            .api_key
+            .as_ref()
+            .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
+            .unwrap_or_default();
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+        send_openai_responses_request(
+            &self.client,
+            openai_responses_url(&self.base_url),
+            body,
+            headers,
+            trace.as_ref(),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -676,6 +707,42 @@ impl AgentProvider for OpenAiCodexProvider {
             advertised_tool_type: config.advertised_tool_type.clone(),
             backend_kind: config.backend_kind.clone(),
         })
+    }
+
+    async fn probe_builtin_web_search(
+        &self,
+        request: ProviderNativeWebSearchRequest,
+    ) -> Result<()> {
+        let credential = load_codex_cli_credential(&self.codex_home)?;
+        let probe_request = builtin_web_search_probe_turn_request(request);
+        let body = build_openai_responses_request(
+            &self.model,
+            16,
+            &probe_request,
+            OpenAiResponsesTransportContract::CodexStreaming,
+            ToolSchemaContract::Relaxed,
+            self.reasoning_effort.as_deref(),
+        )?;
+        let headers = vec![
+            (
+                "authorization",
+                format!("Bearer {}", credential.access_token),
+            ),
+            ("chatgpt-account-id", credential.account_id.clone()),
+            ("OpenAI-Beta", "responses=experimental".to_string()),
+            ("originator", self.originator.clone()),
+        ];
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+        send_openai_responses_streaming_request(
+            &self.client,
+            openai_codex_responses_url(&self.base_url),
+            body,
+            headers,
+            trace.as_ref(),
+            None,
+        )
+        .await?;
+        Ok(())
     }
 }
 

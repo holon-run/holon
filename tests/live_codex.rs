@@ -108,6 +108,18 @@ async fn live_openai_codex_builtin_web_search_reports_backend() -> Result<()> {
         .expect("openai codex provider should declare builtin search");
     assert_eq!(capability.advertised_tool_type, "web_search");
     assert_eq!(capability.backend_kind, "openai_codex_web_search");
+    let native_web_search = ProviderNativeWebSearchRequest {
+        kind: capability.kind,
+        provider_id: "openai-codex-native".into(),
+        provider_model_ref: capability.provider_model_ref,
+        advertised_tool_type: capability.advertised_tool_type,
+        backend_kind: capability.backend_kind,
+        max_results: Some(3),
+    };
+
+    provider
+        .probe_builtin_web_search(native_web_search.clone())
+        .await?;
 
     let output = provider
         .complete_turn(ProviderTurnRequest {
@@ -118,14 +130,7 @@ async fn live_openai_codex_builtin_web_search_reports_backend() -> Result<()> {
                 "Search the web and name today's date.".into(),
             )],
             tools: vec![],
-            native_web_search: Some(ProviderNativeWebSearchRequest {
-                kind: capability.kind,
-                provider_id: "openai-codex-native".into(),
-                provider_model_ref: capability.provider_model_ref,
-                advertised_tool_type: capability.advertised_tool_type,
-                backend_kind: capability.backend_kind,
-                max_results: Some(3),
-            }),
+            native_web_search: Some(native_web_search),
         })
         .await?;
     let diagnostics = output

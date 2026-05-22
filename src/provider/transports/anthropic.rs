@@ -16,10 +16,11 @@ use crate::{
     },
     prompt::PromptStability,
     provider::{
-        http_trace::ProviderHttpTrace, AgentProvider, AnthropicPromptCacheDiagnostics,
-        CacheBreakpointInfo, ConversationMessage, ModelBlock, PromptContentBlock,
-        ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderContextManagementPolicy,
-        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind, ProviderPromptCapability,
+        builtin_web_search_probe_turn_request, http_trace::ProviderHttpTrace, AgentProvider,
+        AnthropicPromptCacheDiagnostics, CacheBreakpointInfo, ConversationMessage, ModelBlock,
+        PromptContentBlock, ProviderBuiltinWebSearchCapability, ProviderCacheUsage,
+        ProviderContextManagementPolicy, ProviderNativeWebSearchDiagnostics,
+        ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderPromptCapability,
         ProviderTurnRequest, ProviderTurnResponse,
     },
 };
@@ -363,6 +364,15 @@ impl AgentProvider for AnthropicProvider {
             advertised_tool_type: config.advertised_tool_type.clone(),
             backend_kind: config.backend_kind.clone(),
         })
+    }
+
+    async fn probe_builtin_web_search(
+        &self,
+        request: ProviderNativeWebSearchRequest,
+    ) -> Result<()> {
+        self.complete_turn(builtin_web_search_probe_turn_request(request))
+            .await?;
+        Ok(())
     }
 
     fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {
