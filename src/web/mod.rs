@@ -105,6 +105,7 @@ impl From<&crate::config::WebFetchConfigFile> for WebFetchConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WebSearchConfig {
     pub enabled: bool,
+    pub builtin_provider_enabled: bool,
     pub provider: String,
     pub mode: WebSearchMode,
     pub providers: Vec<String>,
@@ -116,6 +117,7 @@ impl Default for WebSearchConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            builtin_provider_enabled: true,
             provider: "auto".into(),
             mode: WebSearchMode::Fallback,
             providers: Vec::new(),
@@ -130,6 +132,10 @@ impl From<&crate::config::WebSearchConfigFile> for WebSearchConfig {
         let fallback = Self::default();
         Self {
             enabled: value.enabled.unwrap_or(fallback.enabled),
+            builtin_provider_enabled: value
+                .builtin_provider
+                .enabled
+                .unwrap_or(fallback.builtin_provider_enabled),
             provider: value
                 .provider
                 .as_deref()

@@ -174,6 +174,8 @@ mod tests {
             kind: ProviderNativeWebSearchKind::Anthropic,
             provider_id: provider_id.into(),
             provider_model_ref: model_ref.into(),
+            provider_transport: "anthropic_messages".into(),
+            provider_base_url: "https://api.example.test".into(),
             advertised_tool_type: "web_search_20250305".into(),
             backend_kind: backend_kind.into(),
         }

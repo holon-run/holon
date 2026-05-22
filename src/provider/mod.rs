@@ -170,6 +170,8 @@ pub struct ProviderBuiltinWebSearchCapability {
     pub kind: ProviderNativeWebSearchKind,
     pub provider_id: String,
     pub provider_model_ref: String,
+    pub provider_transport: String,
+    pub provider_base_url: String,
     pub advertised_tool_type: String,
     pub backend_kind: String,
 }

@@ -558,6 +558,8 @@ impl AgentProvider for OpenAiProvider {
             kind: config.kind,
             provider_id: self.provider_id.clone(),
             provider_model_ref: format!("{}/{}", self.provider_id, self.model),
+            provider_transport: "openai_responses".into(),
+            provider_base_url: self.base_url.clone(),
             advertised_tool_type: config.advertised_tool_type.clone(),
             backend_kind: config.backend_kind.clone(),
         })
@@ -669,6 +671,8 @@ impl AgentProvider for OpenAiCodexProvider {
             kind: config.kind,
             provider_id: self.provider_id.clone(),
             provider_model_ref: format!("{}/{}", self.provider_id, self.model),
+            provider_transport: "openai_codex_responses".into(),
+            provider_base_url: self.base_url.clone(),
             advertised_tool_type: config.advertised_tool_type.clone(),
             backend_kind: config.backend_kind.clone(),
         })

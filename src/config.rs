@@ -390,6 +390,11 @@ impl WebFetchConfigFile {
 pub struct WebSearchConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing_if = "WebSearchBuiltinProviderConfigFile::is_empty"
+    )]
+    pub builtin_provider: WebSearchBuiltinProviderConfigFile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -402,9 +407,22 @@ pub struct WebSearchConfigFile {
     pub max_provider_attempts: Option<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebSearchBuiltinProviderConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+impl WebSearchBuiltinProviderConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+    }
+}
+
 impl WebSearchConfigFile {
     pub fn is_empty(&self) -> bool {
         self.enabled.is_none()
+            && self.builtin_provider.is_empty()
             && self.provider.is_none()
             && self.mode.is_none()
             && self.providers.is_empty()
@@ -1527,6 +1545,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec!["true", "false"],
         },
         ConfigSchemaEntry {
+            key: "web.search.builtin_provider.enabled",
+            kind: "boolean",
+            description: "Enable provider-declared builtin web search by default when the active model provider supports it.",
+            default: json!(true),
+            allowed_values: vec!["true", "false"],
+        },
+        ConfigSchemaEntry {
             key: "web.search.provider",
             kind: "string",
             description: "Default WebSearch provider id, or auto for configured routing policy.",
@@ -1778,6 +1803,13 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .enabled
             .map(Value::Bool)
             .unwrap_or(Value::Null)),
+        "web.search.builtin_provider.enabled" => Ok(config
+            .web
+            .search
+            .builtin_provider
+            .enabled
+            .map(Value::Bool)
+            .unwrap_or(Value::Null)),
         "web.search.provider" => Ok(config
             .web
             .search
@@ -1993,6 +2025,11 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
             );
         }
+        "web.search.builtin_provider.enabled" => {
+            config.web.search.builtin_provider.enabled = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
         "web.search.provider" => {
             let provider = raw_value.trim();
             if provider.is_empty() {
@@ -2172,6 +2209,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "web.fetch.allowed_hosts" => config.web.fetch.allowed_hosts.clear(),
         "web.fetch.denied_hosts" => config.web.fetch.denied_hosts.clear(),
         "web.search.enabled" => config.web.search.enabled = None,
+        "web.search.builtin_provider.enabled" => config.web.search.builtin_provider.enabled = None,
         "web.search.provider" => config.web.search.provider = None,
         "web.search.mode" => config.web.search.mode = None,
         "web.search.providers" => config.web.search.providers.clear(),
@@ -4258,6 +4296,7 @@ mod tests {
         )
         .unwrap();
         set_config_key(&mut config, "web.search.provider", "duckduckgo").unwrap();
+        set_config_key(&mut config, "web.search.builtin_provider.enabled", "false").unwrap();
         set_config_key(&mut config, "web.search.max_results", "3").unwrap();
         set_config_key(&mut config, "web.search.mode", "aggregate").unwrap();
         set_config_key(&mut config, "web.search.providers", "searx,brave").unwrap();
@@ -4278,6 +4317,10 @@ mod tests {
         assert_eq!(
             get_config_key(&config, "web.search.provider").unwrap(),
             json!("duckduckgo")
+        );
+        assert_eq!(
+            get_config_key(&config, "web.search.builtin_provider.enabled").unwrap(),
+            Value::Bool(false)
         );
         assert_eq!(
             get_config_key(&config, "web.search.max_results").unwrap(),
@@ -4344,6 +4387,7 @@ mod tests {
 
         unset_config_key(&mut config, "web.fetch.allowed_hosts").unwrap();
         unset_config_key(&mut config, "web.search.provider").unwrap();
+        unset_config_key(&mut config, "web.search.builtin_provider.enabled").unwrap();
         unset_config_key(&mut config, "web.search.mode").unwrap();
         unset_config_key(&mut config, "web.search.providers").unwrap();
         unset_config_key(&mut config, "web.search.max_provider_attempts").unwrap();
@@ -4357,6 +4401,10 @@ mod tests {
         );
         assert_eq!(
             get_config_key(&config, "web.search.provider").unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            get_config_key(&config, "web.search.builtin_provider.enabled").unwrap(),
             Value::Null
         );
         assert_eq!(
@@ -4649,6 +4697,45 @@ mod tests {
 
         let err = validate_provider_config(&id, &config).unwrap_err();
         assert!(err.to_string().contains("web_search for OpenAI Codex"));
+    }
+
+    #[test]
+    fn materialize_provider_config_can_disable_builtin_web_search_for_builtin_provider() {
+        let id = ProviderId::openai_codex();
+        let built_in = built_in_provider_registry(&HashMap::new())
+            .unwrap()
+            .remove(&id)
+            .unwrap();
+        assert!(built_in.builtin_web_search.is_some());
+
+        let runtime = super::materialize_provider_config(
+            id.clone(),
+            ProviderConfigFile {
+                transport: ProviderTransportKind::OpenAiCodexResponses,
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                auth: ProviderAuthConfig {
+                    source: CredentialSource::ExternalCli,
+                    kind: CredentialKind::SessionToken,
+                    env: None,
+                    profile: None,
+                    external: Some("codex_cli".into()),
+                },
+                reasoning_effort: None,
+                builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
+                    enabled: false,
+                    kind: ProviderNativeWebSearchKind::OpenAi,
+                    advertised_tool_type: "web_search".into(),
+                    backend_kind: "openai_codex_web_search".into(),
+                }),
+            },
+            &HashMap::new(),
+            &CredentialStoreFile::default(),
+            Some(built_in),
+        )
+        .unwrap();
+
+        assert_eq!(runtime.id, id);
+        assert!(runtime.builtin_web_search.is_none());
     }
 
     #[test]

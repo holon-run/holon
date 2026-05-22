@@ -358,6 +358,8 @@ impl AgentProvider for AnthropicProvider {
             kind: config.kind,
             provider_id: self.provider_id.clone(),
             provider_model_ref: format!("{}/{}", self.provider_id, self.model),
+            provider_transport: "anthropic_messages".into(),
+            provider_base_url: self.base_url.clone(),
             advertised_tool_type: config.advertised_tool_type.clone(),
             backend_kind: config.backend_kind.clone(),
         })

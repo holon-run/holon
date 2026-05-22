@@ -34,7 +34,7 @@ impl RuntimeHandle {
             }
             let state = guard.state.clone();
             drop(guard);
-            let (provider, available_tools, _) = self.provider_tool_selection(&identity).await?;
+            let (provider, available_tools, _, _) = self.provider_tool_selection(&identity).await?;
             let prompt_tools = provider.prompt_tool_specs(&available_tools);
             let workspace = self.workspace_view_from_state(&state)?;
             let execution = self.execution_snapshot_for_view(
@@ -168,7 +168,7 @@ impl RuntimeHandle {
         let identity = self.agent_identity_view().await?;
         self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
             .await?;
-        let (provider, available_tools, _) = self.provider_tool_selection(&identity).await?;
+        let (provider, available_tools, _, _) = self.provider_tool_selection(&identity).await?;
         let prompt_tools = provider.prompt_tool_specs(&available_tools);
         let execution = self.execution_snapshot().await?;
         let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
@@ -274,13 +274,25 @@ impl RuntimeHandle {
         Arc<dyn AgentProvider>,
         Vec<ToolSpec>,
         Option<ProviderNativeWebSearchRequest>,
+        BuiltinWebSearchSelectionDiagnostics,
     )> {
         let provider = self.current_provider().await;
         let native_search_provider = self.web_config().native_search_provider();
-        let native_web_search = self.native_web_search_request_for_provider(
-            provider.as_ref(),
-            native_search_provider.as_ref(),
-        );
+        let builtin_capability = provider.builtin_web_search();
+        let native_web_search_selection = {
+            let mut cache = self.inner.builtin_web_search_probe_cache.lock().await;
+            native_web_search_request_for_config(
+                builtin_capability,
+                native_search_provider.as_ref(),
+                &self.web_config().search,
+                &mut cache,
+                BuiltinWebSearchProbeCacheEntry {
+                    status: BuiltinWebSearchProbeStatus::Supported,
+                    reason: None,
+                },
+            )
+        };
+        let native_web_search = native_web_search_selection.request;
         let apply_patch_surface = {
             let guard = self.inner.agent.lock().await;
             self.apply_patch_surface_for_state(&guard.state)
@@ -289,19 +301,12 @@ impl RuntimeHandle {
             self.filtered_tool_specs_for_apply_patch_surface(identity, apply_patch_surface)?,
             native_web_search.is_some(),
         );
-        Ok((provider, available_tools, native_web_search))
-    }
-
-    fn native_web_search_request_for_provider(
-        &self,
-        provider: &dyn AgentProvider,
-        native_search_provider: Option<&(String, WebProviderKind)>,
-    ) -> Option<ProviderNativeWebSearchRequest> {
-        native_web_search_request_for_config(
-            provider.builtin_web_search(),
-            native_search_provider,
-            self.web_config().search.max_results,
-        )
+        Ok((
+            provider,
+            available_tools,
+            native_web_search,
+            native_web_search_selection.diagnostics,
+        ))
     }
 
     fn filter_native_web_search_tools(
@@ -319,64 +324,276 @@ impl RuntimeHandle {
 fn native_web_search_request_for_config(
     provider_capability: Option<crate::provider::ProviderBuiltinWebSearchCapability>,
     native_search_provider: Option<&(String, WebProviderKind)>,
-    max_results: usize,
-) -> Option<ProviderNativeWebSearchRequest> {
-    let (provider_id, provider_kind) = native_search_provider?;
-    let kind = match *provider_kind {
-        WebProviderKind::OpenAiNative => ProviderNativeWebSearchKind::OpenAi,
-        WebProviderKind::AnthropicNative => ProviderNativeWebSearchKind::Anthropic,
-        WebProviderKind::GeminiNative => ProviderNativeWebSearchKind::Gemini,
-        _ => return None,
+    web_search: &crate::web::WebSearchConfig,
+    probe_cache: &mut HashMap<BuiltinWebSearchProbeKey, BuiltinWebSearchProbeCacheEntry>,
+    probe_result: BuiltinWebSearchProbeCacheEntry,
+) -> BuiltinWebSearchSelection {
+    let Some(capability) = provider_capability else {
+        return builtin_web_search_selection(
+            None,
+            BuiltinWebSearchSelectionStatus::NotDeclared,
+            "active provider does not declare builtin web search",
+            BuiltinWebSearchProbeStatus::Skipped,
+            false,
+        );
     };
 
-    let capability = provider_capability?;
-    (capability.kind == kind).then_some(ProviderNativeWebSearchRequest {
-        kind,
-        provider_id: provider_id.clone(),
-        provider_model_ref: capability.provider_model_ref,
-        advertised_tool_type: capability.advertised_tool_type,
-        backend_kind: capability.backend_kind,
-        max_results: Some(max_results.max(1)),
-    })
+    if !web_search.enabled {
+        return builtin_web_search_selection(
+            Some(&capability),
+            BuiltinWebSearchSelectionStatus::Disabled,
+            "web.search.enabled is false",
+            BuiltinWebSearchProbeStatus::Skipped,
+            false,
+        );
+    }
+
+    let explicit_native = native_search_provider.and_then(|(provider_id, provider_kind)| {
+        provider_kind
+            .is_native_search()
+            .then_some((provider_id, *provider_kind))
+    });
+    let explicit_non_auto_provider = web_search.provider.trim() != "auto";
+    let (provider_id, required_kind, selection_reason) =
+        if let Some((provider_id, provider_kind)) = explicit_native {
+            (
+                provider_id.clone(),
+                provider_kind_to_native_web_search_kind(provider_kind),
+                "explicit native web search provider",
+            )
+        } else if explicit_non_auto_provider {
+            return builtin_web_search_selection(
+                Some(&capability),
+                BuiltinWebSearchSelectionStatus::NotRequested,
+                "web.search.provider explicitly selects managed WebSearch",
+                BuiltinWebSearchProbeStatus::Skipped,
+                false,
+            );
+        } else if web_search.builtin_provider_enabled {
+            (
+                capability.provider_id.clone(),
+                Some(capability.kind),
+                "provider-declared builtin web search default",
+            )
+        } else {
+            return builtin_web_search_selection(
+                Some(&capability),
+                BuiltinWebSearchSelectionStatus::Disabled,
+                "web.search.builtin_provider.enabled is false",
+                BuiltinWebSearchProbeStatus::Skipped,
+                false,
+            );
+        };
+
+    if required_kind != Some(capability.kind) {
+        return builtin_web_search_selection(
+            Some(&capability),
+            BuiltinWebSearchSelectionStatus::NotRequested,
+            "configured native web search provider kind does not match active provider capability",
+            BuiltinWebSearchProbeStatus::Skipped,
+            false,
+        );
+    }
+
+    let probe_key = BuiltinWebSearchProbeKey::from_capability(&capability);
+    let (probe, cache_hit) = if let Some(cached) = probe_cache.get(&probe_key).cloned() {
+        (cached, true)
+    } else {
+        if matches!(
+            probe_result.status,
+            BuiltinWebSearchProbeStatus::Supported | BuiltinWebSearchProbeStatus::Unsupported
+        ) {
+            probe_cache.insert(probe_key, probe_result.clone());
+        }
+        (probe_result, false)
+    };
+
+    match probe.status {
+        BuiltinWebSearchProbeStatus::Supported => {
+            let request = ProviderNativeWebSearchRequest {
+                kind: capability.kind,
+                provider_id,
+                provider_model_ref: capability.provider_model_ref.clone(),
+                advertised_tool_type: capability.advertised_tool_type.clone(),
+                backend_kind: capability.backend_kind.clone(),
+                max_results: Some(web_search.max_results.max(1)),
+            };
+            BuiltinWebSearchSelection {
+                request: Some(request),
+                diagnostics: builtin_web_search_selection_diagnostics(
+                    Some(&capability),
+                    BuiltinWebSearchSelectionStatus::Selected,
+                    Some(selection_reason.into()),
+                    BuiltinWebSearchProbeStatus::Supported,
+                    cache_hit,
+                ),
+            }
+        }
+        BuiltinWebSearchProbeStatus::Unsupported => builtin_web_search_selection(
+            Some(&capability),
+            BuiltinWebSearchSelectionStatus::Unsupported,
+            probe
+                .reason
+                .as_deref()
+                .unwrap_or("builtin web search probe reported unsupported"),
+            BuiltinWebSearchProbeStatus::Unsupported,
+            cache_hit,
+        ),
+        BuiltinWebSearchProbeStatus::TransientFailure => builtin_web_search_selection(
+            Some(&capability),
+            BuiltinWebSearchSelectionStatus::TransientProbeFailure,
+            probe
+                .reason
+                .as_deref()
+                .unwrap_or("builtin web search probe failed transiently"),
+            BuiltinWebSearchProbeStatus::TransientFailure,
+            cache_hit,
+        ),
+        BuiltinWebSearchProbeStatus::Skipped => builtin_web_search_selection(
+            Some(&capability),
+            BuiltinWebSearchSelectionStatus::NotRequested,
+            probe
+                .reason
+                .as_deref()
+                .unwrap_or("builtin web search probe skipped"),
+            BuiltinWebSearchProbeStatus::Skipped,
+            cache_hit,
+        ),
+    }
+}
+
+fn provider_kind_to_native_web_search_kind(
+    kind: WebProviderKind,
+) -> Option<ProviderNativeWebSearchKind> {
+    match kind {
+        WebProviderKind::OpenAiNative => Some(ProviderNativeWebSearchKind::OpenAi),
+        WebProviderKind::AnthropicNative => Some(ProviderNativeWebSearchKind::Anthropic),
+        WebProviderKind::GeminiNative => Some(ProviderNativeWebSearchKind::Gemini),
+        _ => None,
+    }
+}
+
+fn builtin_web_search_selection(
+    capability: Option<&crate::provider::ProviderBuiltinWebSearchCapability>,
+    status: BuiltinWebSearchSelectionStatus,
+    reason: &str,
+    probe_status: BuiltinWebSearchProbeStatus,
+    probe_cache_hit: bool,
+) -> BuiltinWebSearchSelection {
+    BuiltinWebSearchSelection {
+        request: None,
+        diagnostics: builtin_web_search_selection_diagnostics(
+            capability,
+            status,
+            Some(reason.into()),
+            probe_status,
+            probe_cache_hit,
+        ),
+    }
+}
+
+fn builtin_web_search_selection_diagnostics(
+    capability: Option<&crate::provider::ProviderBuiltinWebSearchCapability>,
+    status: BuiltinWebSearchSelectionStatus,
+    reason: Option<String>,
+    probe_status: BuiltinWebSearchProbeStatus,
+    probe_cache_hit: bool,
+) -> BuiltinWebSearchSelectionDiagnostics {
+    BuiltinWebSearchSelectionDiagnostics {
+        status,
+        reason,
+        provider_id: capability.map(|capability| capability.provider_id.clone()),
+        provider_model_ref: capability.map(|capability| capability.provider_model_ref.clone()),
+        provider_transport: capability.map(|capability| capability.provider_transport.clone()),
+        provider_base_url: capability.map(|capability| capability.provider_base_url.clone()),
+        advertised_tool_type: capability.map(|capability| capability.advertised_tool_type.clone()),
+        backend_kind: capability.map(|capability| capability.backend_kind.clone()),
+        probe_status,
+        probe_cache_hit,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn capability(
+        kind: ProviderNativeWebSearchKind,
+        provider_id: &str,
+        model_ref: &str,
+        tool_type: &str,
+        backend_kind: &str,
+    ) -> crate::provider::ProviderBuiltinWebSearchCapability {
+        crate::provider::ProviderBuiltinWebSearchCapability {
+            kind,
+            provider_id: provider_id.into(),
+            provider_model_ref: model_ref.into(),
+            provider_transport: "test_transport".into(),
+            provider_base_url: "https://api.example.test".into(),
+            advertised_tool_type: tool_type.into(),
+            backend_kind: backend_kind.into(),
+        }
+    }
+
+    fn search_config() -> crate::web::WebSearchConfig {
+        crate::web::WebSearchConfig::default()
+    }
+
+    fn probe(status: BuiltinWebSearchProbeStatus) -> BuiltinWebSearchProbeCacheEntry {
+        BuiltinWebSearchProbeCacheEntry {
+            status,
+            reason: (!matches!(status, BuiltinWebSearchProbeStatus::Supported))
+                .then(|| "probe result".into()),
+        }
+    }
+
     #[test]
     fn native_web_search_request_requires_matching_model_provider() {
         let native_provider = ("openai-native".to_string(), WebProviderKind::OpenAiNative);
+        let mut cache = HashMap::new();
 
-        assert!(native_web_search_request_for_config(
-            Some(crate::provider::ProviderBuiltinWebSearchCapability {
-                kind: ProviderNativeWebSearchKind::Anthropic,
-                provider_id: "anthropic".into(),
-                provider_model_ref: "anthropic/claude-test".into(),
-                advertised_tool_type: "web_search_20250305".into(),
-                backend_kind: "anthropic_web_search".into(),
-            }),
+        let selection = native_web_search_request_for_config(
+            Some(capability(
+                ProviderNativeWebSearchKind::Anthropic,
+                "anthropic",
+                "anthropic/claude-test",
+                "web_search_20250305",
+                "anthropic_web_search",
+            )),
             Some(&native_provider),
-            5,
-        )
-        .is_none());
+            &search_config(),
+            &mut cache,
+            probe(BuiltinWebSearchProbeStatus::Supported),
+        );
+
+        assert!(selection.request.is_none());
+        assert_eq!(
+            selection.diagnostics.status,
+            BuiltinWebSearchSelectionStatus::NotRequested
+        );
     }
 
     #[test]
     fn native_web_search_request_clamps_max_results() {
         let native_provider = ("openai-native".to_string(), WebProviderKind::OpenAiNative);
+        let mut config = search_config();
+        config.max_results = 0;
+        let mut cache = HashMap::new();
 
         let request = native_web_search_request_for_config(
-            Some(crate::provider::ProviderBuiltinWebSearchCapability {
-                kind: ProviderNativeWebSearchKind::OpenAi,
-                provider_id: "openai".into(),
-                provider_model_ref: "openai/gpt-test".into(),
-                advertised_tool_type: "web_search_preview".into(),
-                backend_kind: "openai_web_search".into(),
-            }),
+            Some(capability(
+                ProviderNativeWebSearchKind::OpenAi,
+                "openai",
+                "openai/gpt-test",
+                "web_search_preview",
+                "openai_web_search",
+            )),
             Some(&native_provider),
-            0,
+            &config,
+            &mut cache,
+            probe(BuiltinWebSearchProbeStatus::Supported),
         )
+        .request
         .unwrap();
 
         assert_eq!(request.max_results, Some(1));
@@ -388,23 +605,151 @@ mod tests {
     #[test]
     fn native_web_search_request_uses_codex_provider_capability_metadata() {
         let native_provider = ("openai-native".to_string(), WebProviderKind::OpenAiNative);
+        let mut cache = HashMap::new();
 
         let request = native_web_search_request_for_config(
-            Some(crate::provider::ProviderBuiltinWebSearchCapability {
-                kind: ProviderNativeWebSearchKind::OpenAi,
-                provider_id: "openai-codex".into(),
-                provider_model_ref: "openai-codex/gpt-codex-test".into(),
-                advertised_tool_type: "web_search".into(),
-                backend_kind: "openai_codex_web_search".into(),
-            }),
+            Some(capability(
+                ProviderNativeWebSearchKind::OpenAi,
+                "openai-codex",
+                "openai-codex/gpt-codex-test",
+                "web_search",
+                "openai_codex_web_search",
+            )),
             Some(&native_provider),
-            5,
+            &search_config(),
+            &mut cache,
+            probe(BuiltinWebSearchProbeStatus::Supported),
         )
+        .request
         .unwrap();
 
         assert_eq!(request.provider_id, "openai-native");
         assert_eq!(request.provider_model_ref, "openai-codex/gpt-codex-test");
         assert_eq!(request.advertised_tool_type, "web_search");
         assert_eq!(request.backend_kind, "openai_codex_web_search");
+    }
+
+    #[test]
+    fn native_web_search_request_defaults_to_declared_provider_capability() {
+        let mut cache = HashMap::new();
+
+        let selection = native_web_search_request_for_config(
+            Some(capability(
+                ProviderNativeWebSearchKind::OpenAi,
+                "openai-codex",
+                "openai-codex/gpt-codex-test",
+                "web_search",
+                "openai_codex_web_search",
+            )),
+            None,
+            &search_config(),
+            &mut cache,
+            probe(BuiltinWebSearchProbeStatus::Supported),
+        );
+        let request = selection.request.unwrap();
+
+        assert_eq!(request.provider_id, "openai-codex");
+        assert_eq!(request.advertised_tool_type, "web_search");
+        assert_eq!(
+            selection.diagnostics.status,
+            BuiltinWebSearchSelectionStatus::Selected
+        );
+        assert!(!selection.diagnostics.probe_cache_hit);
+    }
+
+    #[test]
+    fn native_web_search_request_respects_global_builtin_disable() {
+        let mut config = search_config();
+        config.builtin_provider_enabled = false;
+        let mut cache = HashMap::new();
+
+        let selection = native_web_search_request_for_config(
+            Some(capability(
+                ProviderNativeWebSearchKind::OpenAi,
+                "openai-codex",
+                "openai-codex/gpt-codex-test",
+                "web_search",
+                "openai_codex_web_search",
+            )),
+            None,
+            &config,
+            &mut cache,
+            probe(BuiltinWebSearchProbeStatus::Supported),
+        );
+
+        assert!(selection.request.is_none());
+        assert_eq!(
+            selection.diagnostics.status,
+            BuiltinWebSearchSelectionStatus::Disabled
+        );
+    }
+
+    #[test]
+    fn native_web_search_request_uses_cached_unsupported_probe_decision() {
+        let mut cache = HashMap::new();
+        let capability = capability(
+            ProviderNativeWebSearchKind::OpenAi,
+            "openai-codex",
+            "openai-codex/gpt-codex-test",
+            "web_search",
+            "openai_codex_web_search",
+        );
+        let key = BuiltinWebSearchProbeKey::from_capability(&capability);
+        cache.insert(key, probe(BuiltinWebSearchProbeStatus::Unsupported));
+
+        let selection = native_web_search_request_for_config(
+            Some(capability),
+            None,
+            &search_config(),
+            &mut cache,
+            probe(BuiltinWebSearchProbeStatus::Supported),
+        );
+
+        assert!(selection.request.is_none());
+        assert_eq!(
+            selection.diagnostics.status,
+            BuiltinWebSearchSelectionStatus::Unsupported
+        );
+        assert!(selection.diagnostics.probe_cache_hit);
+    }
+
+    #[test]
+    fn native_web_search_request_does_not_cache_transient_probe_failure() {
+        let mut cache = HashMap::new();
+
+        let first = native_web_search_request_for_config(
+            Some(capability(
+                ProviderNativeWebSearchKind::OpenAi,
+                "openai-codex",
+                "openai-codex/gpt-codex-test",
+                "web_search",
+                "openai_codex_web_search",
+            )),
+            None,
+            &search_config(),
+            &mut cache,
+            probe(BuiltinWebSearchProbeStatus::TransientFailure),
+        );
+        let second = native_web_search_request_for_config(
+            Some(capability(
+                ProviderNativeWebSearchKind::OpenAi,
+                "openai-codex",
+                "openai-codex/gpt-codex-test",
+                "web_search",
+                "openai_codex_web_search",
+            )),
+            None,
+            &search_config(),
+            &mut cache,
+            probe(BuiltinWebSearchProbeStatus::Supported),
+        );
+
+        assert!(first.request.is_none());
+        assert_eq!(
+            first.diagnostics.status,
+            BuiltinWebSearchSelectionStatus::TransientProbeFailure
+        );
+        assert!(second.request.is_some());
+        assert!(!second.diagnostics.probe_cache_hit);
     }
 }

@@ -1774,7 +1774,7 @@ impl TurnExecution<'_> {
         };
         runtime.reconfigure_provider_for_current_state().await?;
         let identity = runtime.agent_identity_view().await?;
-        let (provider, available_tools, native_web_search) =
+        let (provider, available_tools, native_web_search, builtin_web_search_selection) =
             runtime.provider_tool_selection(&identity).await?;
         let allowed_tool_names = available_tools
             .iter()
@@ -1787,6 +1787,7 @@ impl TurnExecution<'_> {
                 "model_override": turn_model_override,
                 "pending_fallback_model": turn_pending_fallback_model,
                 "model": turn_model_state,
+                "builtin_web_search_selection": builtin_web_search_selection,
             }),
         ))?;
         if let Some(pending) = turn_pending_fallback_model.as_ref() {
