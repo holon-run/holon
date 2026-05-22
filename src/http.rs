@@ -2524,10 +2524,7 @@ async fn callback_ingress(
             .await
             .map_err(error_response)?
     };
-    if descriptor.delivery_mode != mode.delivery_mode()
-        && !(mode == CallbackIngressMode::Enqueue
-            && descriptor.delivery_mode == crate::types::CallbackDeliveryMode::EnqueueMessage)
-    {
+    if descriptor.delivery_mode != mode.delivery_mode() {
         return Err(forbidden("callback delivery mode mismatch"));
     }
     let result = runtime

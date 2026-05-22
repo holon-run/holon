@@ -427,11 +427,16 @@ fn default_external_ingress(
     Ok(storage
         .latest_external_triggers()?
         .into_iter()
-        .find(|record| {
+        .filter(|record| {
             record.target_agent_id == agent_id
                 && record.scope == ExternalTriggerScope::Agent
                 && record.delivery_mode == CallbackDeliveryMode::WakeHint
                 && record.status == ExternalTriggerStatus::Active
+        })
+        .max_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.external_trigger_id.cmp(&right.external_trigger_id))
         }))
 }
 
@@ -3299,6 +3304,86 @@ mod tests {
         assert!(ingress.content.contains("- mode: wake_hint"));
         assert!(ingress.content.contains("- status: active"));
         assert!(ingress.content.contains("capability_secret: true"));
+    }
+
+    #[test]
+    fn build_context_uses_latest_default_external_wake_ingress() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = chrono::Utc::now();
+        storage
+            .append_external_trigger(&ExternalTriggerRecord {
+                external_trigger_id: "aaa-old-wake".into(),
+                target_agent_id: "default".into(),
+                waiting_intent_id: None,
+                scope: ExternalTriggerScope::Agent,
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/old".into()),
+                token_hash: "redacted-old-token-hash".into(),
+                status: ExternalTriggerStatus::Active,
+                created_at: now - chrono::Duration::seconds(60),
+                revoked_at: None,
+                last_delivered_at: None,
+                delivery_count: 0,
+            })
+            .unwrap();
+        storage
+            .append_external_trigger(&ExternalTriggerRecord {
+                external_trigger_id: "zzz-new-wake".into(),
+                target_agent_id: "default".into(),
+                waiting_intent_id: None,
+                scope: ExternalTriggerScope::Agent,
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/new".into()),
+                token_hash: "redacted-new-token-hash".into(),
+                status: ExternalTriggerStatus::Active,
+                created_at: now,
+                revoked_at: None,
+                last_delivered_at: None,
+                delivery_count: 0,
+            })
+            .unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Inspect ingress".to_string(),
+            },
+        );
+        let session = AgentState::new("default");
+
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 4,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 4,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let ingress = built
+            .sections
+            .iter()
+            .find(|section| section.name == "default_external_ingress")
+            .expect("default external ingress section should be present");
+        assert!(ingress
+            .content
+            .contains("http://127.0.0.1:7878/callbacks/wake/new"));
+        assert!(!ingress
+            .content
+            .contains("http://127.0.0.1:7878/callbacks/wake/old"));
     }
 
     #[test]

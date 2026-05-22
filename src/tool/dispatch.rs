@@ -588,8 +588,8 @@ mod tests {
         assert!(names.iter().any(|name| name == "CompleteWorkItem"));
         assert!(names.iter().any(|name| name == "MemorySearch"));
         assert!(names.iter().any(|name| name == "MemoryGet"));
-        assert!(names.iter().any(|name| name == "CreateExternalTrigger"));
-        assert!(names.iter().any(|name| name == "CancelExternalTrigger"));
+        assert!(names.iter().all(|name| name != "CreateExternalTrigger"));
+        assert!(names.iter().all(|name| name != "CancelExternalTrigger"));
         assert!(names.iter().any(|name| name == "ApplyPatch"));
         assert!(names.iter().any(|name| name == "WebFetch"));
         assert!(names.iter().any(|name| name == "WebSearch"));
@@ -629,14 +629,6 @@ mod tests {
         assert_eq!(
             family_for("CompleteWorkItem"),
             ToolCapabilityFamily::CoreAgent
-        );
-        assert_eq!(
-            family_for("CreateExternalTrigger"),
-            ToolCapabilityFamily::ExternalTrigger
-        );
-        assert_eq!(
-            family_for("CancelExternalTrigger"),
-            ToolCapabilityFamily::ExternalTrigger
         );
         assert_eq!(
             family_for("SpawnAgent"),
