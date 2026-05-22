@@ -1271,7 +1271,8 @@ pub fn validate_provider_config(
     provider_config: &ProviderConfigFile,
 ) -> Result<()> {
     parse_url_value("providers.<id>.base_url", &provider_config.base_url)?;
-    validate_provider_auth(provider_id, &provider_config.auth)
+    validate_provider_auth(provider_id, &provider_config.auth)?;
+    validate_provider_builtin_web_search(provider_id, provider_config)
 }
 
 pub fn built_in_provider_default_config(
@@ -2907,6 +2908,7 @@ fn materialize_provider_config(
     if let Some(reasoning_effort) = provider_config.reasoning_effort.as_deref() {
         validate_openai_reasoning_effort(reasoning_effort)?;
     }
+    validate_provider_builtin_web_search(&id, &provider_config)?;
     runtime.id = id;
     runtime.transport = provider_config.transport;
     runtime.base_url = provider_config.base_url;
@@ -2926,6 +2928,58 @@ fn validate_openai_reasoning_effort(value: &str) -> Result<()> {
         "low" | "medium" | "high" | "xhigh" => Ok(()),
         _ => Err(anyhow!(
             "invalid OpenAI Codex reasoning_effort '{value}'; must be one of low, medium, high, xhigh"
+        )),
+    }
+}
+
+fn validate_provider_builtin_web_search(
+    provider_id: &ProviderId,
+    provider_config: &ProviderConfigFile,
+) -> Result<()> {
+    let Some(search) = provider_config.builtin_web_search.as_ref() else {
+        return Ok(());
+    };
+    if !search.enabled {
+        return Ok(());
+    }
+    if search.advertised_tool_type.trim().is_empty() {
+        return Err(anyhow!(
+            "providers.{}.builtin_web_search.advertised_tool_type must not be empty",
+            provider_id.as_str()
+        ));
+    }
+    if search.backend_kind.trim().is_empty() {
+        return Err(anyhow!(
+            "providers.{}.builtin_web_search.backend_kind must not be empty",
+            provider_id.as_str()
+        ));
+    }
+    match (provider_config.transport, search.kind) {
+        (ProviderTransportKind::OpenAiResponses, ProviderNativeWebSearchKind::OpenAi) => {
+            if search.advertised_tool_type == "web_search_preview" {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "providers.{}.builtin_web_search.advertised_tool_type must be web_search_preview for OpenAI Responses native search",
+                    provider_id.as_str()
+                ))
+            }
+        }
+        (ProviderTransportKind::AnthropicMessages, ProviderNativeWebSearchKind::Anthropic) => {
+            if search.advertised_tool_type == "web_search_20250305" {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "providers.{}.builtin_web_search.advertised_tool_type must be web_search_20250305 for Anthropic Messages native search",
+                    provider_id.as_str()
+                ))
+            }
+        }
+        _ => Err(anyhow!(
+            "providers.{}.builtin_web_search kind {:?} is incompatible with transport {:?}",
+            provider_id.as_str(),
+            search.kind,
+            provider_config.transport
         )),
     }
 }
@@ -3793,9 +3847,10 @@ mod tests {
         parse_comma_separated_values, parse_url_value, persisted_config_path,
         provider_registry_for_tests, resolve_anthropic_context_management_config,
         save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
-        AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig, ControlAuthMode,
-        CredentialKind, CredentialSource, CredentialStoreFile, HolonConfigFile, ModelConfigFile,
-        ModelRef, ProviderAuthConfig, ProviderConfigFile, ProviderId, ProviderRegistry,
+        validate_provider_config, AnthropicCacheStrategy, AnthropicContextManagementConfig,
+        AppConfig, ControlAuthMode, CredentialKind, CredentialSource, CredentialStoreFile,
+        HolonConfigFile, ModelConfigFile, ModelRef, ProviderAuthConfig,
+        ProviderBuiltinWebSearchConfig, ProviderConfigFile, ProviderId, ProviderRegistry,
         ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID,
     };
 
@@ -4436,6 +4491,85 @@ mod tests {
         };
         let err = super::validate_provider_auth(&id, &auth).unwrap_err();
         assert!(err.to_string().contains("requires auth.env"));
+    }
+
+    #[test]
+    fn provider_builtin_web_search_rejects_empty_tool_metadata() {
+        let id = ProviderId::parse("custom-anthropic").unwrap();
+        let config = ProviderConfigFile {
+            transport: ProviderTransportKind::AnthropicMessages,
+            base_url: "https://api.example.com".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("CUSTOM_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            reasoning_effort: None,
+            builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
+                enabled: true,
+                kind: ProviderNativeWebSearchKind::Anthropic,
+                advertised_tool_type: String::new(),
+                backend_kind: "custom_backend".into(),
+            }),
+        };
+
+        let err = validate_provider_config(&id, &config).unwrap_err();
+        assert!(err.to_string().contains("advertised_tool_type"));
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn provider_builtin_web_search_rejects_transport_kind_mismatch() {
+        let id = ProviderId::parse("custom-openai").unwrap();
+        let config = ProviderConfigFile {
+            transport: ProviderTransportKind::OpenAiResponses,
+            base_url: "https://api.example.com".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("CUSTOM_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            reasoning_effort: None,
+            builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
+                enabled: true,
+                kind: ProviderNativeWebSearchKind::Anthropic,
+                advertised_tool_type: "web_search_20250305".into(),
+                backend_kind: "custom_backend".into(),
+            }),
+        };
+
+        let err = validate_provider_config(&id, &config).unwrap_err();
+        assert!(err.to_string().contains("incompatible with transport"));
+    }
+
+    #[test]
+    fn provider_builtin_web_search_rejects_wrong_tool_type() {
+        let id = ProviderId::parse("custom-openai").unwrap();
+        let config = ProviderConfigFile {
+            transport: ProviderTransportKind::OpenAiResponses,
+            base_url: "https://api.example.com".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("CUSTOM_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            reasoning_effort: None,
+            builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
+                enabled: true,
+                kind: ProviderNativeWebSearchKind::OpenAi,
+                advertised_tool_type: "web_search_20250305".into(),
+                backend_kind: "custom_backend".into(),
+            }),
+        };
+
+        let err = validate_provider_config(&id, &config).unwrap_err();
+        assert!(err.to_string().contains("web_search_preview"));
     }
 
     #[test]
