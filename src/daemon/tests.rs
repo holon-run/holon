@@ -7,7 +7,7 @@ use super::state::{
 };
 use super::{
     clear_persisted_daemon_lifecycle_failures, config_fingerprint, daemon_log_hint, daemon_logs,
-    daemon_paths, daemon_status, daemon_stop, load_last_runtime_failure,
+    daemon_paths, daemon_status, daemon_stop, ensure_serve_preflight, load_last_runtime_failure,
     persist_daemon_lifecycle_failure, runtime_activity_summary, DaemonLifecycleState,
     RuntimeActivityState, RuntimeConfigSurface, RuntimeControlAuthMode, RuntimeServiceMetadata,
     RuntimeStartupSurface, RuntimeStatusResponse,
@@ -61,6 +61,14 @@ fn test_config() -> AppConfig {
         providers: provider_registry_for_tests(None, Some("dummy"), home.path().join(".codex")),
         web_config: crate::web::WebConfig::default(),
     }
+}
+
+#[cfg(unix)]
+fn dead_pid() -> u32 {
+    let mut child = Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
 }
 
 #[test]
@@ -387,6 +395,64 @@ async fn probe_runtime_treats_non_socket_path_as_stale() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn daemon_status_surfaces_dead_pid_and_leftover_socket_as_stale() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    let pid = dead_pid();
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    let metadata = RuntimeServiceMetadata {
+        pid,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+    };
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+    drop(listener);
+
+    let status = daemon_status(&config).await.unwrap();
+
+    assert_eq!(status.state, DaemonLifecycleState::Stale);
+    assert_eq!(status.pid, Some(pid));
+    assert!(!status.control_connectivity);
+    assert_eq!(status.message, "stale daemon state detected");
+    assert!(status.stale_files.contains(&paths.pid_path));
+    assert!(status.stale_files.contains(&paths.metadata_path));
+    assert!(status.stale_files.contains(&paths.socket_path));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serve_preflight_cleans_dead_pid_and_leftover_socket_state() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    let pid = dead_pid();
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    let metadata = RuntimeServiceMetadata {
+        pid,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+    };
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+    drop(listener);
+
+    ensure_serve_preflight(&config).await.unwrap();
+
+    assert!(!paths.pid_path.exists());
+    assert!(!paths.metadata_path.exists());
+    assert!(!paths.socket_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn startup_stability_retries_transient_occupied_socket_probe_failure() {
     let future_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
     assert!(should_retry_startup_stability_probe(true, future_deadline));
@@ -445,10 +511,11 @@ async fn daemon_stop_refuses_foreign_socket_cleanup() {
 async fn daemon_stop_treats_missing_pid_process_as_stale_state() {
     let config = test_config();
     let paths = daemon_paths(&config);
+    let pid = dead_pid();
     fs::create_dir_all(config.run_dir()).unwrap();
-    fs::write(&paths.pid_path, b"999999\n").unwrap();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
     let metadata = RuntimeServiceMetadata {
-        pid: 999_999,
+        pid,
         home_dir: config.home_dir.clone(),
         socket_path: config.socket_path.clone(),
         http_addr: config.http_addr.clone(),
