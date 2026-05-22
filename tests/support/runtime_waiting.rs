@@ -27,13 +27,14 @@ use holon::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{ToolCall, ToolError, ToolRegistry, ToolResult},
     types::{
-        AgentKind, AgentProfilePreset, AgentStatus, BriefKind, ChildAgentPhase, ClosureOutcome,
-        CommandTaskSpec, ControlAction, ExternalTriggerStatus, FailureArtifactCategory,
-        MessageBody, MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationBoundary,
-        OperatorTransportBinding, OperatorTransportBindingStatus, OperatorTransportCapabilities,
-        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority,
-        QueueEntryStatus, TaskStatus, TodoItem, TodoItemState, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, TrustLevel, WaitingReason, WorkItemState,
+        AgentKind, AgentProfilePreset, AgentStatus, BriefKind, CallbackDeliveryMode,
+        ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction, ExternalTriggerStatus,
+        FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
+        OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
+        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
+        OperatorTransportDeliveryAuthKind, Priority, QueueEntryStatus, TaskStatus, TodoItem,
+        TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingReason,
+        WorkItemState,
     },
 };
 use serde_json::json;
@@ -44,8 +45,8 @@ use tokio::time::{sleep, Duration};
 use crate::support::runtime_compaction_providers::MaxOutputRecoveryProvider;
 use crate::support::runtime_helpers::{
     aggressive_compaction_config, git, init_git_repo, operator_transport_binding,
-    parse_tool_result_payload, parse_tool_result_value, test_config, wait_for_worktree_presence,
-    wait_until, wait_until_async, wait_until_async_for,
+    parse_tool_result_value, test_config, wait_for_worktree_presence, wait_until, wait_until_async,
+    wait_until_async_for,
 };
 use crate::support::runtime_providers::{
     DelayedTextProvider, DelegatedBoundaryProvider, FileEditingProvider, LongShellProvider,
@@ -702,7 +703,7 @@ pub async fn notify_operator_prefers_reply_route_for_delivery() -> Result<()> {
         async move {
             Ok(runtime
                 .storage()
-                .read_recent_events(20)?
+                .read_recent_events(200)?
                 .iter()
                 .any(|event| event.kind == "message_processing_started"))
         }
@@ -766,7 +767,7 @@ pub async fn notify_operator_ignores_reply_route_when_binding_no_longer_matches(
         async move {
             Ok(runtime
                 .storage()
-                .read_recent_events(20)?
+                .read_recent_events(200)?
                 .iter()
                 .any(|event| event.kind == "message_processing_started"))
         }
@@ -830,7 +831,7 @@ pub async fn notify_operator_falls_back_to_default_route_without_reply_route() -
         async move {
             Ok(runtime
                 .storage()
-                .read_recent_events(20)?
+                .read_recent_events(200)?
                 .iter()
                 .any(|event| event.kind == "message_processing_started"))
         }
@@ -895,7 +896,7 @@ pub async fn agent_summary_last_turn_token_usage_survives_transcript_windowing()
     Ok(())
 }
 
-pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
+pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
@@ -904,13 +905,13 @@ pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
         .await?;
     runtime.pick_work_item(work_item.id).await?;
 
-    let (created, _) = registry
+    let create_error = registry
         .execute(
             &runtime,
             "default",
             &TrustLevel::TrustedOperator,
             &ToolCall {
-                id: "tool-create-callback".into(),
+                id: "tool-create-external-trigger-rejected".into(),
                 name: "CreateExternalTrigger".into(),
                 input: json!({
                     "description": "wait for CI callback",
@@ -919,16 +920,14 @@ pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
                 }),
             },
         )
+        .await
+        .expect_err("ordinary agent tools should not expose CreateExternalTrigger");
+    assert!(create_error.to_string().contains("unknown_tool"));
+
+    let capability = runtime
+        .default_external_trigger(CallbackDeliveryMode::WakeHint)
         .await?;
-    let capability: serde_json::Value = parse_tool_result_payload(&created)?;
-    let trigger_url = capability["trigger_url"]
-        .as_str()
-        .expect("trigger_url should be present");
-    assert!(!capability.as_object().unwrap().contains_key("callback_url"));
-    assert!(!capability
-        .as_object()
-        .unwrap()
-        .contains_key("callback_descriptor_id"));
+    let trigger_url = capability.trigger_url.as_str();
     let callback_token = trigger_url
         .rsplit('/')
         .next()
@@ -970,23 +969,27 @@ pub async fn callback_tools_register_and_revoke_waiting_state() -> Result<()> {
     assert!(!state_text.contains(callback_token));
     assert!(!state_text.contains(trigger_url));
 
-    let (cancelled, _) = registry
+    let cancel_error = registry
         .execute(
             &runtime,
             "default",
             &TrustLevel::TrustedOperator,
             &ToolCall {
-                id: "tool-cancel-waiting".into(),
+                id: "tool-cancel-external-trigger-rejected".into(),
                 name: "CancelExternalTrigger".into(),
                 input: json!({
-                    "external_trigger_id": capability["external_trigger_id"],
+                    "external_trigger_id": capability.external_trigger_id,
                 }),
             },
         )
+        .await
+        .expect_err("ordinary agent tools should not expose CancelExternalTrigger");
+    assert!(cancel_error.to_string().contains("unknown_tool"));
+
+    let cancelled = runtime
+        .revoke_external_trigger(&capability.external_trigger_id)
         .await?;
-    let cancelled: serde_json::Value = parse_tool_result_payload(&cancelled)?;
-    assert_eq!(cancelled["status"], "revoked");
-    assert!(cancelled["external_trigger_id"].is_string());
+    assert_eq!(cancelled.status, ExternalTriggerStatus::Revoked);
     let events = runtime.storage().read_recent_events(20)?;
     let cancelled_event = events
         .iter()

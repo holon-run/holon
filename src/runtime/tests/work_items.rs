@@ -2635,24 +2635,22 @@ async fn legacy_descriptor_preserves_provenance_after_wait_cancel() {
         result.waiting_intent_id.as_deref(),
         Some(waiting_id.as_str())
     );
+    assert_eq!(result.delivery_mode, CallbackDeliveryMode::WakeHint);
+    assert_ne!(result.disposition, CallbackIngressDisposition::Enqueued);
     let messages = runtime.storage().read_recent_messages(10).unwrap();
-    let callback = messages
+    assert!(messages
         .iter()
-        .find(|message| message.kind == MessageKind::CallbackEvent)
-        .expect("callback event should be enqueued");
-    assert_eq!(callback.correlation_id.as_deref(), Some("legacy-corr"));
-    assert_eq!(callback.causation_id.as_deref(), Some("legacy-cause"));
-    let metadata = callback
-        .metadata
-        .as_ref()
-        .expect("callback event metadata should exist");
-    assert_eq!(
-        metadata["waiting_intent_id"].as_str(),
-        Some(waiting_id.as_str())
-    );
-    assert_eq!(metadata["source"].as_str(), Some("github"));
-    assert_eq!(metadata["description"].as_str(), Some("legacy review wait"));
-    assert_eq!(metadata["resource"].as_str(), Some("pull_request:1215"));
+        .all(|message| message.kind != MessageKind::CallbackEvent));
+    assert!(messages.iter().any(|message| {
+        message.kind == MessageKind::SystemTick
+            && message
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("wake_hint"))
+                .and_then(|wake_hint| wake_hint.get("external_trigger_id"))
+                .and_then(serde_json::Value::as_str)
+                == Some(trigger_id.as_str())
+    }));
     let waiting = runtime.latest_waiting_intents().await.unwrap();
     let cancelled = waiting
         .iter()

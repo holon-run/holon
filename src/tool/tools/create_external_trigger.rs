@@ -33,6 +33,7 @@ pub(crate) struct CreateExternalTriggerArgs {
     pub(crate) delivery_mode: CallbackDeliveryModeArgs,
 }
 
+#[allow(dead_code)]
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::ExternalTrigger,

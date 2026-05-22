@@ -45,7 +45,7 @@ runtime_async_tests!(
     notify_operator_prefers_reply_route_for_delivery,
     notify_operator_ignores_reply_route_when_binding_no_longer_matches,
     notify_operator_falls_back_to_default_route_without_reply_route,
-    callback_tools_register_and_revoke_waiting_state,
+    default_external_ingress_register_and_revoke_state,
     timer_wait_surfaces_waiting_reason,
 );
 
