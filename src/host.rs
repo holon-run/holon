@@ -614,7 +614,17 @@ impl RuntimeHost {
             &self.runtime_context_config(),
             &agent,
         );
-        let scheduling_posture = storage.agent_posture_projection(&agent)?;
+        let scheduling_posture = match storage.agent_posture_projection(&agent) {
+            Ok(posture) => posture,
+            Err(error) => {
+                warn!(
+                    agent_id = %identity.agent_id,
+                    error = %error,
+                    "failed to read agent posture for /agents/list; using unknown placeholder"
+                );
+                crate::types::AgentPostureProjection::default()
+            }
+        };
         let waiting_reason = crate::runtime::lightweight_agent_list_waiting_reason(&agent);
         Ok(AgentListEntry {
             identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),
@@ -1514,10 +1524,10 @@ mod tests {
         storage::AppStorage,
         system::WorkspaceProjectionKind,
         types::{
-            AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
-            AgentVisibility, ControlAction, MessageBody, MessageEnvelope, MessageKind,
-            MessageOrigin, Priority, TaskRecord, TaskRecoverySpec, TaskStatus, TrustLevel,
-            TurnTerminalKind,
+            AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
+            AgentSchedulingPosture, AgentStatus, AgentVisibility, ControlAction, MessageBody,
+            MessageEnvelope, MessageKind, MessageOrigin, Priority, TaskRecord, TaskRecoverySpec,
+            TaskStatus, TrustLevel, TurnTerminalKind,
         },
     };
 
@@ -1678,6 +1688,37 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(listed.contains(&host.config().default_agent_id));
         assert!(listed.contains(&"release-bot".to_string()));
+    }
+
+    #[tokio::test]
+    async fn list_agent_entries_tolerates_corrupt_stored_posture_ledgers() {
+        let (_home, host) = test_host();
+        host.create_named_agent("release-bot", None).await.unwrap();
+        let agent_home = host.agent_data_dir("release-bot");
+        let work_items_path = agent_home.join(".holon/ledger/work_items.jsonl");
+        std::fs::write(&work_items_path, "not json\n").unwrap();
+
+        let entries = host.list_agent_entries().await.unwrap();
+        let loaded_release_bot = entries
+            .iter()
+            .find(|entry| entry.identity.agent_id == "release-bot")
+            .expect("release-bot should still be listed");
+        assert_eq!(
+            loaded_release_bot.scheduling_posture.posture,
+            AgentSchedulingPosture::Unknown
+        );
+
+        host.unload_runtime("release-bot").await;
+
+        let entries = host.list_agent_entries().await.unwrap();
+        let stored_release_bot = entries
+            .iter()
+            .find(|entry| entry.identity.agent_id == "release-bot")
+            .expect("unloaded release-bot should still be listed");
+        assert_eq!(
+            stored_release_bot.scheduling_posture.posture,
+            AgentSchedulingPosture::Unknown
+        );
     }
 
     #[tokio::test]
