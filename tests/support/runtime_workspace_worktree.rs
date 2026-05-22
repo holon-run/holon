@@ -475,6 +475,7 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
 pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
     let config = test_config();
     let workspace = config.workspace_dir.clone();
+    let agent_home_id = holon::types::agent_home_workspace_id(config.default_agent_id.as_str());
     std::fs::create_dir_all(&workspace)?;
     init_git_repo(&workspace)?;
     let branch_name = "feature-exit-remove";
@@ -484,7 +485,7 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
         Arc::new(WorktreeLifecycleProvider::new(
             workspace.clone(),
             branch_name,
-            "\"workspace_id\":\"agent_home\"",
+            format!("\"workspace_id\":\"{agent_home_id}\""),
         )),
     )?;
     attach_default_workspace(&host).await?;
@@ -533,7 +534,7 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
             .as_ref()
             .map(|e| e.workspace_id.clone())
             .as_deref(),
-        Some("agent_home")
+        Some(agent_home_id.as_str())
     );
     assert!(worktree.worktree_path.exists());
 
@@ -547,7 +548,7 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
             .as_ref()
             .map(|e| e.workspace_id.clone())
             .as_deref(),
-        Some("agent_home")
+        Some(agent_home_id.as_str())
     );
     assert!(restarted_state.worktree_session.is_none());
     Ok(())
@@ -556,6 +557,7 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
 pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
     let config = test_config();
     let workspace = config.workspace_dir.clone();
+    let agent_home_id = holon::types::agent_home_workspace_id(config.default_agent_id.as_str());
     std::fs::create_dir_all(&workspace)?;
     init_git_repo(&workspace)?;
     let branch_name = "feature-exit-refuse";
@@ -565,7 +567,7 @@ pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
         Arc::new(WorktreeLifecycleProvider::new(
             workspace.clone(),
             branch_name,
-            "\"workspace_id\":\"agent_home\"",
+            format!("\"workspace_id\":\"{agent_home_id}\""),
         )),
     )?;
     attach_default_workspace(&host).await?;
@@ -615,7 +617,7 @@ pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
             .as_ref()
             .map(|e| e.workspace_id.clone())
             .as_deref(),
-        Some("agent_home")
+        Some(agent_home_id.as_str())
     );
     assert!(session.active_workspace_entry.is_some());
     assert!(worktree.worktree_path.exists());
@@ -633,7 +635,7 @@ pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
             .as_ref()
             .map(|e| e.workspace_id.clone())
             .as_deref(),
-        Some("agent_home")
+        Some(agent_home_id.as_str())
     );
     assert!(restarted_state.worktree_session.is_none());
     Ok(())
