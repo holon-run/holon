@@ -309,6 +309,7 @@ pub async fn enter_workspace_conflict_preserves_existing_occupancy() -> Result<(
 pub async fn detach_workspace_persists_empty_binding_across_restart() -> Result<()> {
     let config = test_config();
     let workspace = config.workspace_dir.clone();
+    let agent_home_id = holon::types::agent_home_workspace_id(config.default_agent_id.as_str());
     std::fs::create_dir_all(&workspace)?;
     init_git_repo(&workspace)?;
 
@@ -332,10 +333,10 @@ pub async fn detach_workspace_persists_empty_binding_across_restart() -> Result<
             .active_workspace_entry
             .as_ref()
             .map(|e| e.workspace_id.as_str()),
-        Some("agent_home")
+        Some(agent_home_id.as_str())
     );
     assert!(state.active_workspace_entry.is_some());
-    assert_eq!(state.attached_workspaces, vec!["agent_home".to_string()]);
+    assert_eq!(state.attached_workspaces, vec![agent_home_id.clone()]);
 
     let restarted_host =
         RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused")))?;
@@ -347,7 +348,7 @@ pub async fn detach_workspace_persists_empty_binding_across_restart() -> Result<
             .as_ref()
             .map(|e| e.workspace_id.clone())
             .as_deref(),
-        Some("agent_home")
+        Some(agent_home_id.as_str())
     );
     assert!(restarted_state.active_workspace_entry.is_some());
     Ok(())
@@ -392,6 +393,7 @@ pub async fn enter_worktree_projection_honors_requested_cwd() -> Result<()> {
 pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Result<()> {
     let config = test_config();
     let workspace = config.workspace_dir.clone();
+    let agent_home_id = holon::types::agent_home_workspace_id(config.default_agent_id.as_str());
     std::fs::create_dir_all(&workspace)?;
     init_git_repo(&workspace)?;
     let branch_name = "feature-exit-keep";
@@ -401,7 +403,7 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
         Arc::new(WorktreeLifecycleProvider::new(
             workspace.clone(),
             branch_name,
-            "\"workspace_id\":\"agent_home\"",
+            format!("\"workspace_id\":\"{agent_home_id}\""),
         )),
     )?;
     attach_default_workspace(&host).await?;
@@ -450,7 +452,7 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
             .as_ref()
             .map(|e| e.workspace_id.clone())
             .as_deref(),
-        Some("agent_home")
+        Some(agent_home_id.as_str())
     );
     assert!(worktree.worktree_path.exists());
 
@@ -464,7 +466,7 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
             .as_ref()
             .map(|e| e.workspace_id.clone())
             .as_deref(),
-        Some("agent_home")
+        Some(agent_home_id.as_str())
     );
     assert!(restarted_state.worktree_session.is_none());
     Ok(())

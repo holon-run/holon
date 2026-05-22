@@ -8,9 +8,10 @@ fn openai_max_output_tokens_stop_reason_triggers_recovery() {
 
 #[tokio::test]
 async fn detached_host_runtime_starts_in_agent_home_workspace() {
-    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let (_home, host, runtime) = host_backed_test_runtime().await;
     let snapshot = runtime.execution_snapshot().await.unwrap();
-    let expected_workspace_id = crate::types::agent_home_workspace_id("default");
+    let default_agent_id = host.config().default_agent_id.as_str();
+    let expected_workspace_id = crate::types::agent_home_workspace_id(default_agent_id);
 
     assert_eq!(
         snapshot.workspace_id.as_deref(),
@@ -57,14 +58,15 @@ async fn use_workspace_path_activates_project_workspace() {
 
 #[tokio::test]
 async fn use_workspace_agent_home_returns_to_fallback_without_deleting_project() {
-    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+    let default_agent_id = host.config().default_agent_id.as_str();
     let workspace = tempdir().unwrap();
     let retained_file = workspace.path().join("retained.txt");
     std::fs::write(&retained_file, "keep").unwrap();
 
     crate::tool::tools::execute_builtin_tool(
         &runtime,
-        "default",
+        default_agent_id,
         &TrustLevel::TrustedOperator,
         &crate::tool::ToolCall {
             id: "use-project".into(),
@@ -76,7 +78,7 @@ async fn use_workspace_agent_home_returns_to_fallback_without_deleting_project()
     .unwrap();
     crate::tool::tools::execute_builtin_tool(
         &runtime,
-        "default",
+        default_agent_id,
         &TrustLevel::TrustedOperator,
         &crate::tool::ToolCall {
             id: "use-home".into(),
@@ -87,7 +89,7 @@ async fn use_workspace_agent_home_returns_to_fallback_without_deleting_project()
     .await
     .unwrap();
     let snapshot = runtime.execution_snapshot().await.unwrap();
-    let expected_workspace_id = crate::types::agent_home_workspace_id("default");
+    let expected_workspace_id = crate::types::agent_home_workspace_id(default_agent_id);
 
     assert_eq!(
         snapshot.workspace_id.as_deref(),
@@ -100,6 +102,7 @@ async fn use_workspace_agent_home_returns_to_fallback_without_deleting_project()
 #[tokio::test]
 async fn agent_home_workspace_ids_are_unique_per_agent_while_alias_remains_local() {
     let (_home, host, default_runtime) = host_backed_test_runtime().await;
+    let default_agent_id = host.config().default_agent_id.as_str();
     host.create_named_agent("worker", None).await.unwrap();
     let worker_runtime = host.get_or_create_agent("worker").await.unwrap();
 
@@ -108,7 +111,7 @@ async fn agent_home_workspace_ids_are_unique_per_agent_while_alias_remains_local
 
     assert_eq!(
         default_snapshot.workspace_id.as_deref(),
-        Some(crate::types::agent_home_workspace_id("default").as_str())
+        Some(crate::types::agent_home_workspace_id(default_agent_id).as_str())
     );
     assert_eq!(
         worker_snapshot.workspace_id.as_deref(),
