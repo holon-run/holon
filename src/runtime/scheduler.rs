@@ -2,9 +2,11 @@ use super::*;
 use crate::runtime::closure::runtime_error_active;
 use crate::storage::{AppStorage, WorkQueuePromptProjection};
 use crate::types::{
-    AgentStatus, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint, Priority,
-    TaskRecord, TaskStatus, TimerStatus, TrustLevel, TurnTerminalKind, WaitingIntentStatus,
-    WorkItemRecord, WorkItemSchedulingState, WorkReactivationMode, WorkReactivationSignal,
+    AgentPostureProjection, AgentSchedulingPosture, AgentStatus, ExternalWaitRecoverability,
+    MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint, Priority, TaskRecord, TaskStatus,
+    TimerStatus, TrustLevel, TurnTerminalKind, WaitConditionRecord, WaitConditionStatus,
+    WaitingIntentRecord, WaitingIntentStatus, WorkItemRecord, WorkItemSchedulingState,
+    WorkReactivationMode, WorkReactivationSignal,
 };
 use chrono::{DateTime, Utc};
 
@@ -180,6 +182,262 @@ impl SchedulerProjection {
 
     pub(crate) fn current_work_item_waits_for_operator(&self) -> bool {
         self.current_work_item_scheduling_state == Some(WorkItemSchedulingState::WaitingOperator)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchedulerDiagnostic {
+    pub kind: String,
+    pub severity: SchedulerDiagnosticSeverity,
+    pub message: String,
+    pub work_item_id: Option<String>,
+    pub waiting_intent_id: Option<String>,
+    pub wait_condition_id: Option<String>,
+    pub evidence: Vec<String>,
+}
+
+impl SchedulerDiagnostic {
+    fn warning(kind: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            severity: SchedulerDiagnosticSeverity::Warning,
+            message: message.into(),
+            work_item_id: None,
+            waiting_intent_id: None,
+            wait_condition_id: None,
+            evidence: Vec::new(),
+        }
+    }
+
+    fn work_item_id(mut self, work_item_id: impl Into<String>) -> Self {
+        self.work_item_id = Some(work_item_id.into());
+        self
+    }
+
+    fn waiting_intent_id(mut self, waiting_intent_id: impl Into<String>) -> Self {
+        self.waiting_intent_id = Some(waiting_intent_id.into());
+        self
+    }
+
+    fn wait_condition_id(mut self, wait_condition_id: impl Into<String>) -> Self {
+        self.wait_condition_id = Some(wait_condition_id.into());
+        self
+    }
+
+    fn evidence(mut self, evidence: impl Into<String>) -> Self {
+        self.evidence.push(evidence.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SchedulerDiagnosticSeverity {
+    Warning,
+}
+
+impl SchedulerDiagnosticSeverity {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+        }
+    }
+}
+
+/// Derive evidence-based scheduler diagnostics from authoritative runtime facts.
+///
+/// Diagnostics are advisory observability signals only. They must not be used as
+/// scheduler decisions or as a replacement for the posture/work-item state
+/// derivation itself.
+#[cfg(test)]
+pub(crate) fn scheduling_diagnostics(
+    storage: &AppStorage,
+    agent: &AgentState,
+) -> Result<Vec<SchedulerDiagnostic>> {
+    scheduling_diagnostics_with_queue_len(storage, agent, agent.pending)
+}
+
+pub(crate) fn scheduling_diagnostics_with_queue_len(
+    storage: &AppStorage,
+    agent: &AgentState,
+    queue_len: usize,
+) -> Result<Vec<SchedulerDiagnostic>> {
+    let projection = SchedulerProjection::from_state_with_queue_len(storage, agent, queue_len)?;
+    let posture = storage.agent_posture_projection(agent)?;
+    let work_queue = storage.work_queue_prompt_projection()?;
+    let wait_conditions = storage.latest_wait_conditions()?;
+    let waiting_intents = storage.latest_waiting_intents()?;
+
+    Ok(scheduling_diagnostics_for_facts(
+        agent,
+        &projection,
+        &posture,
+        &work_queue,
+        &wait_conditions,
+        &waiting_intents,
+    ))
+}
+
+pub(crate) fn scheduling_diagnostics_for_facts(
+    agent: &AgentState,
+    projection: &SchedulerProjection,
+    posture: &AgentPostureProjection,
+    work_queue: &WorkQueuePromptProjection,
+    wait_conditions: &[WaitConditionRecord],
+    waiting_intents: &[WaitingIntentRecord],
+) -> Vec<SchedulerDiagnostic> {
+    let mut diagnostics = Vec::new();
+
+    if posture.posture == AgentSchedulingPosture::Idle {
+        if let Some(signal) = projection.work_reactivation_signal() {
+            diagnostics.push(
+                SchedulerDiagnostic::warning(
+                    "idle_posture_has_runnable_work",
+                    "agent posture is idle while scheduler facts contain runnable work",
+                )
+                .work_item_id(signal.work_item_id)
+                .evidence("posture=Idle")
+                .evidence(format!("reactivation_mode={:?}", signal.reactivation_mode)),
+            );
+        } else if projection.queue_len > 0 {
+            diagnostics.push(
+                SchedulerDiagnostic::warning(
+                    "idle_posture_has_queued_input",
+                    "agent posture is idle while scheduler facts contain queued input",
+                )
+                .evidence("posture=Idle")
+                .evidence(format!("queue_len={}", projection.queue_len)),
+            );
+        }
+    }
+
+    for condition in wait_conditions.iter().filter(|condition| {
+        condition.agent_id == agent.id && condition.status == WaitConditionStatus::Active
+    }) {
+        match condition.external_recoverability() {
+            Some(ExternalWaitRecoverability::Weak) => {
+                diagnostics.push(
+                    SchedulerDiagnostic::warning(
+                        "external_wait_has_weak_recoverability",
+                        "active external wait lacks a durable recovery path",
+                    )
+                    .wait_condition_id(condition.id.clone())
+                    .maybe_work_item_id(condition.work_item_id.clone())
+                    .evidence("external_recoverability=Weak")
+                    .evidence(format!("wake_sources={:?}", condition.wake_sources)),
+                );
+            }
+            Some(ExternalWaitRecoverability::ExplicitNoFallback) => {
+                let mut diagnostic = SchedulerDiagnostic::warning(
+                    "external_wait_has_no_fallback",
+                    "active external wait explicitly has no fallback recovery path",
+                )
+                .wait_condition_id(condition.id.clone())
+                .maybe_work_item_id(condition.work_item_id.clone())
+                .evidence("external_recoverability=ExplicitNoFallback")
+                .evidence(format!("wake_sources={:?}", condition.wake_sources));
+                if let Some(reason) = condition.no_fallback_reason() {
+                    diagnostic = diagnostic.evidence(format!("no_fallback_reason={reason}"));
+                }
+                diagnostics.push(diagnostic);
+            }
+            Some(ExternalWaitRecoverability::Recoverable) | None => {}
+        }
+    }
+
+    for item in work_queue.readiness.iter().filter(|item| {
+        item.scheduling_state == WorkItemSchedulingState::Blocked
+            && item.work_item.agent_id == agent.id
+            && item.work_item.blocked_by.is_some()
+            && item.work_item.recheck_at.is_none()
+            && !item.has_active_waits
+            && !item.has_active_task_waits
+    }) {
+        diagnostics.push(
+            SchedulerDiagnostic::warning(
+                "blocked_work_item_without_recheck_or_wait",
+                "blocked WorkItem has no recheck deadline or active wait condition",
+            )
+            .work_item_id(item.work_item.id.clone())
+            .evidence("scheduling_state=Blocked")
+            .evidence("blocked_by_present=true")
+            .evidence("recheck_at=None")
+            .evidence("has_active_waits=false"),
+        );
+    }
+
+    for intent in waiting_intents.iter().filter(|intent| {
+        intent.agent_id == agent.id
+            && intent.status == WaitingIntentStatus::Active
+            && intent.external_trigger_id.trim().is_empty()
+    }) {
+        diagnostics.push(
+            SchedulerDiagnostic::warning(
+                "waiting_intent_without_external_trigger",
+                "active waiting intent has no external trigger id",
+            )
+            .waiting_intent_id(intent.id.clone())
+            .maybe_work_item_id(intent.work_item_id.clone())
+            .evidence(format!("scope={:?}", intent.scope))
+            .evidence("external_trigger_id_empty=true"),
+        );
+    }
+
+    diagnostics
+}
+
+pub(crate) fn scheduler_diagnostic_event(diagnostic: &SchedulerDiagnostic) -> AuditEvent {
+    AuditEvent::new(
+        "scheduler_diagnostic",
+        serde_json::json!({
+            "kind": &diagnostic.kind,
+            "severity": diagnostic.severity.as_str(),
+            "message": &diagnostic.message,
+            "work_item_id": &diagnostic.work_item_id,
+            "waiting_intent_id": &diagnostic.waiting_intent_id,
+            "wait_condition_id": &diagnostic.wait_condition_id,
+            "evidence": &diagnostic.evidence,
+        }),
+    )
+}
+
+pub(crate) fn append_scheduling_diagnostics(
+    storage: &AppStorage,
+    agent: &AgentState,
+    queue_len: usize,
+) -> Result<usize> {
+    let diagnostics = scheduling_diagnostics_with_queue_len(storage, agent, queue_len)?;
+    let recent_events = storage.read_recent_events(64)?;
+    let mut seen_data = Vec::new();
+    let mut appended = 0;
+
+    for diagnostic in diagnostics {
+        let event = scheduler_diagnostic_event(&diagnostic);
+        if seen_data.iter().any(|data| data == &event.data) {
+            continue;
+        }
+        seen_data.push(event.data.clone());
+
+        let duplicate = recent_events
+            .iter()
+            .any(|latest| latest.kind == event.kind && latest.data == event.data);
+        if duplicate {
+            continue;
+        }
+        storage.append_event(&event)?;
+        appended += 1;
+    }
+
+    Ok(appended)
+}
+
+trait SchedulerDiagnosticExt {
+    fn maybe_work_item_id(self, work_item_id: Option<String>) -> Self;
+}
+
+impl SchedulerDiagnosticExt for SchedulerDiagnostic {
+    fn maybe_work_item_id(mut self, work_item_id: Option<String>) -> Self {
+        self.work_item_id = work_item_id;
+        self
     }
 }
 

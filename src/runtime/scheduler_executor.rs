@@ -336,6 +336,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 continuation_resolution: dispatch_plan.continuation_resolution.as_ref(),
             },
         );
+        scheduler::append_scheduling_diagnostics(
+            &self.runtime.inner.storage,
+            &candidate.prior_state,
+            candidate.queue_len,
+        )?;
 
         let (message, running_state) = {
             let mut guard = self.runtime.inner.agent.lock().await;
