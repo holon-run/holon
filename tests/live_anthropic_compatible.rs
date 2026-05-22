@@ -22,6 +22,21 @@ fn provider_model_env(provider: &str, default_model: &str) -> String {
     std::env::var(env_name).unwrap_or_else(|_| default_model.into())
 }
 
+fn configured_provider_model(
+    provider_candidates: &[&str],
+    default_provider: &str,
+    default_model: &str,
+) -> Result<(String, String)> {
+    let config = live_config()?;
+    for model_ref in config.provider_chain() {
+        let provider = model_ref.provider.as_str();
+        if provider_candidates.contains(&provider) {
+            return Ok((provider.to_string(), model_ref.model));
+        }
+    }
+    Ok((default_provider.into(), default_model.into()))
+}
+
 async fn provider_accepts_context_management(provider_id: &str, model: &str) -> Result<()> {
     let mut config = live_config()?;
     let provider_id = ProviderId::parse(provider_id)?;
@@ -293,6 +308,17 @@ async fn live_bigmodel_anthropic_accepts_context_management() -> Result<()> {
         &provider_model_env("bigmodel-anthropic", "glm-4.7"),
     )
     .await
+}
+
+#[tokio::test]
+#[ignore = "requires BIGMODEL_API_KEY and network access"]
+async fn live_bigmodel_anthropic_builtin_web_search_reports_backend() -> Result<()> {
+    let (provider, model) = configured_provider_model(
+        &["bigmodel", "bigmodel-anthropic"],
+        "bigmodel-anthropic",
+        "glm-4.7",
+    )?;
+    provider_builtin_web_search_reports_backend(&provider, &model, "bigmodel_web_search").await
 }
 
 #[tokio::test]
