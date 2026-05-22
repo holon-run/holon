@@ -496,8 +496,8 @@ fn openai_codex_request_payload_validates_full_tool_matrix_in_strict_mode() {
 
     assert!(emitted_tools
         .iter()
-        .all(|tool| tool["name"] != "CreateExternalTrigger"));
+        .any(|tool| tool["name"] == "CreateExternalTrigger"));
     assert!(emitted_tools
         .iter()
-        .all(|tool| tool["name"] != "CancelExternalTrigger"));
+        .any(|tool| tool["name"] == "CancelExternalTrigger"));
 }

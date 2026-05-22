@@ -441,7 +441,8 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
         .await?;
     assert!(first.status().is_success());
     let first_payload: serde_json::Value = first.json().await?;
-    assert_eq!(first_payload["disposition"], "enqueued");
+    assert_eq!(first_payload["delivery_mode"], "wake_hint");
+    assert_eq!(first_payload["disposition"], "triggered");
 
     wait_until(|| {
         let descriptors = runtime.storage().latest_external_triggers()?;
@@ -494,9 +495,7 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
         let descriptors = runtime2.storage().latest_external_triggers()?;
         Ok(messages
             .iter()
-            .filter(|message| message.kind == MessageKind::CallbackEvent)
-            .count()
-            == 1
+            .all(|message| message.kind != MessageKind::CallbackEvent)
             && descriptors
                 .first()
                 .map(|item| item.delivery_count == 1)

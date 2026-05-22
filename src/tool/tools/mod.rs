@@ -62,6 +62,8 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         complete_work_item::definition()?,
         memory_search::definition()?,
         memory_get::definition()?,
+        create_external_trigger::definition()?,
+        cancel_external_trigger::definition()?,
         apply_patch_tool::definition()?,
         exec_command::definition()?,
         exec_command_batch::definition()?,

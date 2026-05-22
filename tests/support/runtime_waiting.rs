@@ -702,7 +702,7 @@ pub async fn notify_operator_prefers_reply_route_for_delivery() -> Result<()> {
         async move {
             Ok(runtime
                 .storage()
-                .read_recent_events(20)?
+                .read_recent_events(200)?
                 .iter()
                 .any(|event| event.kind == "message_processing_started"))
         }
@@ -766,7 +766,7 @@ pub async fn notify_operator_ignores_reply_route_when_binding_no_longer_matches(
         async move {
             Ok(runtime
                 .storage()
-                .read_recent_events(20)?
+                .read_recent_events(200)?
                 .iter()
                 .any(|event| event.kind == "message_processing_started"))
         }
@@ -830,7 +830,7 @@ pub async fn notify_operator_falls_back_to_default_route_without_reply_route() -
         async move {
             Ok(runtime
                 .storage()
-                .read_recent_events(20)?
+                .read_recent_events(200)?
                 .iter()
                 .any(|event| event.kind == "message_processing_started"))
         }
