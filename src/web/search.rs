@@ -684,14 +684,16 @@ async fn command_search(
         ));
     }
     let stdout = String::from_utf8(stdout.bytes).map_err(|error| {
-        search_error(
+        command_search_error(
             "parse_failed",
             format!("WebSearch command provider returned non-UTF-8 stdout: {error}"),
             provider_id,
             "configure the command provider to emit UTF-8 JSON",
+            command_attempt.clone(),
         )
     })?;
     parse_command_results(&stdout, output, provider_id, max_results)
+        .map_err(|error| command_parse_error_with_attempt(error, command_attempt.clone()))
         .map(|results| ProviderSearchOutput::command(results, command_attempt))
 }
 
@@ -1737,6 +1739,27 @@ fn command_search_error(
     )
 }
 
+fn command_parse_error_with_attempt(
+    error: anyhow::Error,
+    command: WebSearchCommandAttempt,
+) -> anyhow::Error {
+    let original = ToolError::from_anyhow(&error);
+    let mut details = original
+        .details
+        .unwrap_or_else(|| json!({}))
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    details.insert("command".to_string(), json!(command));
+    let mut tool_error = ToolError::new(original.kind, original.message)
+        .with_details(Value::Object(details))
+        .with_retryable(original.retryable);
+    if let Some(recovery_hint) = original.recovery_hint {
+        tool_error = tool_error.with_recovery_hint(recovery_hint);
+    }
+    anyhow::Error::from(tool_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2106,6 +2129,68 @@ mod tests {
             tool_error.details.as_ref().unwrap()["provider"],
             json!("cmd")
         );
+        assert_eq!(
+            tool_error.details.as_ref().unwrap()["command"]["argv_template"],
+            json!(["false"])
+        );
+    }
+
+    #[tokio::test]
+    async fn command_provider_invalid_json_keeps_command_attempt() {
+        let provider = command_test_provider(vec!["printf".into(), "not-json".into()]);
+
+        let err = command_search("holon", 3, "cmd", &provider)
+            .await
+            .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+
+        assert_eq!(tool_error.kind, "parse_failed");
+        let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["provider"], json!("cmd"));
+        assert_eq!(
+            details["command"]["argv_template"],
+            json!(["printf", "not-json"])
+        );
+        assert_eq!(details["command"]["exit_status"], json!(0));
+    }
+
+    #[tokio::test]
+    async fn command_provider_invalid_utf8_keeps_command_attempt() {
+        let provider = command_test_provider(vec!["printf".into(), "\\377".into()]);
+
+        let err = command_search("holon", 3, "cmd", &provider)
+            .await
+            .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+
+        assert_eq!(tool_error.kind, "parse_failed");
+        let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["provider"], json!("cmd"));
+        assert_eq!(
+            details["command"]["argv_template"],
+            json!(["printf", "\\377"])
+        );
+        assert_eq!(details["command"]["exit_status"], json!(0));
+    }
+
+    #[tokio::test]
+    async fn command_provider_mapping_failure_keeps_command_attempt() {
+        let provider =
+            command_test_provider(vec!["printf".into(), r#"[{"title":"No URL"}]"#.into()]);
+
+        let err = command_search("holon", 3, "cmd", &provider)
+            .await
+            .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&err);
+
+        assert_eq!(tool_error.kind, "parse_failed");
+        let details = tool_error.details.as_ref().unwrap();
+        assert_eq!(details["provider"], json!("cmd"));
+        assert_eq!(
+            details["command"]["argv_template"],
+            json!(["printf", r#"[{"title":"No URL"}]"#])
+        );
+        assert_eq!(details["command"]["exit_status"], json!(0));
     }
 
     #[test]

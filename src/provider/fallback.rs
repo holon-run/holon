@@ -13,7 +13,7 @@ use super::{
         provider_retry_backoff, RetryDisposition,
     },
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
-    ProviderAttemptTimeline, ProviderContextManagementPolicy, ProviderNativeWebSearchKind,
+    ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
     ProviderTurnRequest, ProviderTurnResponse,
 };
 use crate::prompt::PromptStability;
@@ -484,13 +484,19 @@ impl AgentProvider for FallbackProvider {
                 .all(|candidate| candidate.provider.supports_freeform_grammar_tools())
     }
 
-    fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
-        let mut kinds = self
+    fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
+        let mut capabilities = self
             .candidates
             .iter()
-            .map(|candidate| candidate.provider.native_web_search_kind());
-        let first = kinds.next().flatten()?;
-        if kinds.all(|kind| kind == Some(first)) {
+            .map(|candidate| candidate.provider.builtin_web_search());
+        let first = capabilities.next().flatten()?;
+        if capabilities.all(|capability| {
+            capability.as_ref().is_some_and(|capability| {
+                capability.kind == first.kind
+                    && capability.advertised_tool_type == first.advertised_tool_type
+                    && capability.backend_kind == first.backend_kind
+            })
+        }) {
             Some(first)
         } else {
             None

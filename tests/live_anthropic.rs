@@ -1,11 +1,12 @@
 use anyhow::Result;
 use holon::{
-    config::AppConfig,
+    config::{AppConfig, ProviderId, ProviderTransportKind},
     host::RuntimeHost,
     prompt::PromptStability,
     provider::{
         AgentProvider, AnthropicProvider, ConversationMessage, ModelBlock, PromptContentBlock,
-        ProviderPromptCache, ProviderPromptFrame, ProviderTurnRequest, ToolResultBlock,
+        ProviderNativeWebSearchRequest, ProviderPromptCache, ProviderPromptFrame,
+        ProviderTurnRequest, ToolResultBlock,
     },
     tool::ToolRegistry,
     types::{
@@ -17,6 +18,14 @@ use std::path::PathBuf;
 
 fn live_config() -> Result<AppConfig> {
     AppConfig::load()
+}
+
+fn provider_model_env(provider: &str, default_model: &str) -> String {
+    let env_name = format!(
+        "HOLON_LIVE_{}_MODEL",
+        provider.replace('-', "_").to_ascii_uppercase()
+    );
+    std::env::var(env_name).unwrap_or_else(|_| default_model.into())
 }
 
 async fn wait_until_asleep(runtime: &holon::runtime::RuntimeHandle) -> Result<AgentStatus> {
@@ -44,6 +53,64 @@ async fn live_provider_returns_real_response() -> Result<()> {
             vec![],
         ))
         .await?;
+    assert!(!output.blocks.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires ANTHROPIC_AUTH_TOKEN and network access"]
+async fn live_anthropic_builtin_web_search_reports_backend() -> Result<()> {
+    let mut config = live_config()?;
+    let provider_id = ProviderId::anthropic();
+    let model = provider_model_env("anthropic", "claude-sonnet-4-6");
+    let runtime_max_output_tokens = config.runtime_max_output_tokens;
+    let provider_config = config
+        .providers
+        .get_mut(&provider_id)
+        .expect("built-in anthropic provider should exist");
+    assert_eq!(
+        provider_config.transport,
+        ProviderTransportKind::AnthropicMessages
+    );
+    let trace_home_dir = tempfile::tempdir()?;
+    let provider = AnthropicProvider::from_runtime_config(
+        provider_config,
+        &model,
+        runtime_max_output_tokens,
+        trace_home_dir.path(),
+    )?;
+    let capability = provider
+        .builtin_web_search()
+        .expect("anthropic provider should declare builtin search");
+    assert_eq!(capability.backend_kind, "anthropic_web_search");
+
+    let output = provider
+        .complete_turn(ProviderTurnRequest {
+            prompt_frame: ProviderPromptFrame::plain(
+                "Use web search if needed. Reply in one short sentence.",
+            ),
+            conversation: vec![ConversationMessage::UserText(
+                "Search the web and name today's date.".into(),
+            )],
+            tools: vec![],
+            native_web_search: Some(ProviderNativeWebSearchRequest {
+                kind: capability.kind,
+                provider_id: "anthropic-native".into(),
+                provider_model_ref: capability.provider_model_ref,
+                advertised_tool_type: capability.advertised_tool_type,
+                backend_kind: capability.backend_kind,
+                max_results: Some(3),
+            }),
+        })
+        .await?;
+    let diagnostics = output
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.native_web_search.as_ref())
+        .expect("native web search diagnostics should be recorded");
+    assert!(diagnostics.lowered);
+    assert_eq!(diagnostics.backend_kind, "anthropic_web_search");
+    assert_eq!(diagnostics.advertised_tool_type, "web_search_20250305");
     assert!(!output.blocks.is_empty());
     Ok(())
 }

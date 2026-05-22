@@ -2583,6 +2583,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
                     external: credential_external,
                 },
                 reasoning_effort: None,
+                builtin_web_search: None,
             };
             validate_provider_config(&id, &provider_config)?;
 

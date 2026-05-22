@@ -1368,6 +1368,7 @@ fn build_provider_from_config_uses_custom_openai_responses_provider() {
             originator: None,
             reasoning_effort: None,
             context_management: Default::default(),
+            builtin_web_search: None,
         },
     );
 
@@ -1411,6 +1412,7 @@ fn build_candidate_accepts_openai_responses_without_auth() {
             originator: None,
             reasoning_effort: None,
             context_management: Default::default(),
+            builtin_web_search: None,
         },
     );
 

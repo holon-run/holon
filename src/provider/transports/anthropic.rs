@@ -11,16 +11,16 @@ use twox_hash::XxHash64;
 
 use crate::{
     config::{
-        AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig, ProviderId,
-        ProviderRuntimeConfig,
+        AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig,
+        ProviderBuiltinWebSearchConfig, ProviderId, ProviderRuntimeConfig,
     },
     prompt::PromptStability,
     provider::{
         http_trace::ProviderHttpTrace, AgentProvider, AnthropicPromptCacheDiagnostics,
         CacheBreakpointInfo, ConversationMessage, ModelBlock, PromptContentBlock,
-        ProviderCacheUsage, ProviderContextManagementPolicy, ProviderNativeWebSearchDiagnostics,
-        ProviderNativeWebSearchKind, ProviderPromptCapability, ProviderTurnRequest,
-        ProviderTurnResponse,
+        ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderContextManagementPolicy,
+        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind, ProviderPromptCapability,
+        ProviderTurnRequest, ProviderTurnResponse,
     },
 };
 
@@ -33,11 +33,13 @@ use crate::provider::retry::{
 #[derive(Clone)]
 pub struct AnthropicProvider {
     client: Client,
+    provider_id: String,
     base_url: String,
     auth_token: String,
     model: String,
     max_output_tokens: u32,
     context_management: AnthropicContextManagementConfig,
+    builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     trace_home_dir: PathBuf,
 }
 
@@ -157,11 +159,13 @@ impl AnthropicProvider {
             })?;
         Ok(Self {
             client,
+            provider_id: provider_config.id.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             auth_token,
             model: model.to_string(),
             max_output_tokens,
             context_management: provider_config.context_management.clone(),
+            builtin_web_search: provider_config.builtin_web_search.clone(),
             trace_home_dir: trace_home_dir.to_path_buf(),
         })
     }
@@ -348,8 +352,15 @@ impl AgentProvider for AnthropicProvider {
         capabilities
     }
 
-    fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
-        Some(ProviderNativeWebSearchKind::Anthropic)
+    fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
+        let config = self.builtin_web_search.as_ref()?;
+        Some(ProviderBuiltinWebSearchCapability {
+            kind: config.kind,
+            provider_id: self.provider_id.clone(),
+            provider_model_ref: format!("{}/{}", self.provider_id, self.model),
+            advertised_tool_type: config.advertised_tool_type.clone(),
+            backend_kind: config.backend_kind.clone(),
+        })
     }
 
     fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {
@@ -578,7 +589,11 @@ fn build_anthropic_tools(request: &ProviderTurnRequest) -> Vec<Value> {
         Some(ProviderNativeWebSearchKind::Anthropic)
     ) {
         tools.push(json!({
-            "type": "web_search_20250305",
+            "type": request
+                .native_web_search
+                .as_ref()
+                .map(|native| native.advertised_tool_type.as_str())
+                .unwrap_or("web_search_20250305"),
             "name": "web_search"
         }));
     }
@@ -593,6 +608,9 @@ fn native_web_search_diagnostics(
     Some(ProviderNativeWebSearchDiagnostics {
         kind: native.kind,
         provider_id: native.provider_id.clone(),
+        provider_model_ref: native.provider_model_ref.clone(),
+        advertised_tool_type: native.advertised_tool_type.clone(),
+        backend_kind: native.backend_kind.clone(),
         lowered,
         fallback_reason: (!lowered)
             .then(|| "anthropic transport only supports Anthropic-native web search".into()),
@@ -1762,6 +1780,9 @@ mod tests {
         request.native_web_search = Some(ProviderNativeWebSearchRequest {
             kind: ProviderNativeWebSearchKind::Anthropic,
             provider_id: "anthropic_native".into(),
+            provider_model_ref: "anthropic/claude-test".into(),
+            advertised_tool_type: "web_search_20250305".into(),
+            backend_kind: "anthropic_web_search".into(),
             max_results: None,
         });
 
