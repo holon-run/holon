@@ -29,15 +29,17 @@ impl RuntimeHandle {
 
     pub async fn default_external_trigger(
         &self,
-        delivery_mode: CallbackDeliveryMode,
+        _delivery_mode: CallbackDeliveryMode,
     ) -> Result<ExternalTriggerCapability> {
-        self.ensure_default_external_ingress(delivery_mode).await
+        self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+            .await
     }
 
     pub async fn ensure_default_external_ingress(
         &self,
-        delivery_mode: CallbackDeliveryMode,
+        _delivery_mode: CallbackDeliveryMode,
     ) -> Result<ExternalTriggerCapability> {
+        let delivery_mode = CallbackDeliveryMode::WakeHint;
         let agent_id = self.agent_id().await?;
         let now = Utc::now();
         if let Some(descriptor) =
@@ -122,68 +124,29 @@ impl RuntimeHandle {
                 .and_then(|waiting| waiting.causation_id.clone())
         });
 
-        let disposition = match descriptor.delivery_mode {
-            CallbackDeliveryMode::EnqueueMessage => {
-                let body = payload
-                    .body
-                    .clone()
-                    .ok_or_else(|| anyhow!("enqueue_message callback requires a request body"))?;
-                let external_trigger_id = descriptor.external_trigger_id.clone();
-
-                let mut message = MessageEnvelope::new(
-                    agent_id.clone(),
-                    MessageKind::CallbackEvent,
-                    MessageOrigin::Callback {
-                        descriptor_id: descriptor.external_trigger_id.clone(),
-                        source: waiting.as_ref().map(|waiting| waiting.source.clone()),
-                    },
-                    TrustLevel::TrustedIntegration,
-                    Priority::Next,
-                    body,
-                )
-                .with_admission(
-                    crate::types::MessageDeliverySurface::HttpCallbackEnqueue,
-                    crate::types::AdmissionContext::ExternalTriggerCapability,
-                );
-                message.metadata = Some(serde_json::json!({
-                    "waiting_intent_id": waiting.as_ref().map(|waiting| waiting.id.clone()),
-                    "external_trigger_id": external_trigger_id,
-                    "work_item_id": waiting.as_ref().and_then(|waiting| waiting.work_item_id.clone()),
-                    "description": waiting.as_ref().map(|waiting| waiting.description.clone()),
-                    "source": waiting.as_ref().map(|waiting| waiting.source.clone()),
-                    "scope": descriptor.scope,
-                    "resource": waiting.as_ref().and_then(|waiting| waiting.resource.clone()),
-                    "content_type": payload.content_type,
-                }));
-                message.correlation_id = correlation_id.clone();
-                message.causation_id = causation_id.clone();
-                self.enqueue(message).await?;
-                CallbackIngressDisposition::Enqueued
-            }
-            CallbackDeliveryMode::WakeHint => {
-                let disposition = self
-                    .submit_wake_hint(WakeHint {
-                        agent_id: agent_id.clone(),
-                        reason: callback_wake_reason(waiting.as_ref(), payload.body.as_ref()),
-                        description: waiting.as_ref().map(|waiting| waiting.description.clone()),
-                        source: waiting.as_ref().map(|waiting| waiting.source.clone()),
-                        scope: Some(descriptor.scope.clone()),
-                        waiting_intent_id: waiting.as_ref().map(|waiting| waiting.id.clone()),
-                        external_trigger_id: Some(descriptor.external_trigger_id.clone()),
-                        resource: waiting
-                            .as_ref()
-                            .and_then(|waiting| waiting.resource.clone()),
-                        body: payload.body.clone(),
-                        content_type: payload.content_type.clone(),
-                        correlation_id: correlation_id.clone(),
-                        causation_id: causation_id.clone(),
-                    })
-                    .await?;
-                match disposition {
-                    WakeDisposition::Triggered => CallbackIngressDisposition::Triggered,
-                    WakeDisposition::Coalesced => CallbackIngressDisposition::Coalesced,
-                    WakeDisposition::Ignored => CallbackIngressDisposition::Ignored,
-                }
+        let disposition = {
+            let disposition = self
+                .submit_wake_hint(WakeHint {
+                    agent_id: agent_id.clone(),
+                    reason: callback_wake_reason(waiting.as_ref(), payload.body.as_ref()),
+                    description: waiting.as_ref().map(|waiting| waiting.description.clone()),
+                    source: waiting.as_ref().map(|waiting| waiting.source.clone()),
+                    scope: Some(descriptor.scope.clone()),
+                    waiting_intent_id: waiting.as_ref().map(|waiting| waiting.id.clone()),
+                    external_trigger_id: Some(descriptor.external_trigger_id.clone()),
+                    resource: waiting
+                        .as_ref()
+                        .and_then(|waiting| waiting.resource.clone()),
+                    body: payload.body.clone(),
+                    content_type: payload.content_type.clone(),
+                    correlation_id: correlation_id.clone(),
+                    causation_id: causation_id.clone(),
+                })
+                .await?;
+            match disposition {
+                WakeDisposition::Triggered => CallbackIngressDisposition::Triggered,
+                WakeDisposition::Coalesced => CallbackIngressDisposition::Coalesced,
+                WakeDisposition::Ignored => CallbackIngressDisposition::Ignored,
             }
         };
 
@@ -214,14 +177,9 @@ impl RuntimeHandle {
             .append_external_trigger(&updated_descriptor)?;
 
         let updated_descriptor_id = updated_descriptor.external_trigger_id.clone();
-        let delivery_surface = match &updated_descriptor.delivery_mode {
-            CallbackDeliveryMode::EnqueueMessage => {
-                crate::types::MessageDeliverySurface::HttpCallbackEnqueue
-            }
-            CallbackDeliveryMode::WakeHint => {
-                crate::types::MessageDeliverySurface::HttpCallbackWake
-            }
-        };
+        let descriptor_delivery_mode = updated_descriptor.delivery_mode.clone();
+        let deprecated_enqueue_message_mapped_to_wake_hint =
+            descriptor_delivery_mode == CallbackDeliveryMode::EnqueueMessage;
         self.inner.storage.append_event(&AuditEvent::new(
             "callback_delivered",
             serde_json::json!({
@@ -230,12 +188,14 @@ impl RuntimeHandle {
                 "work_item_id": waiting.as_ref().and_then(|waiting| waiting.work_item_id.clone()),
                 "external_trigger_id": updated_descriptor_id,
                 "scope": updated_descriptor.scope,
-                "delivery_mode": updated_descriptor.delivery_mode,
+                "delivery_mode": CallbackDeliveryMode::WakeHint,
+                "descriptor_delivery_mode": descriptor_delivery_mode,
+                "deprecated_enqueue_message_mapped_to_wake_hint": deprecated_enqueue_message_mapped_to_wake_hint,
                 "source": waiting.as_ref().map(|waiting| waiting.source.clone()),
                 "resource": waiting.as_ref().and_then(|waiting| waiting.resource.clone()),
                 "trigger_count": updated_waiting.as_ref().map(|waiting| waiting.trigger_count),
                 "origin": "callback",
-                "delivery_surface": delivery_surface,
+                "delivery_surface": crate::types::MessageDeliverySurface::HttpCallbackWake,
                 "disposition": disposition,
                 "admission_context": crate::types::AdmissionContext::ExternalTriggerCapability,
                 "authority_class": crate::types::AuthorityClass::IntegrationSignal,
@@ -247,7 +207,7 @@ impl RuntimeHandle {
             waiting_intent_id: waiting.map(|waiting| waiting.id),
             external_trigger_id: updated_descriptor.external_trigger_id,
             scope: updated_descriptor.scope,
-            delivery_mode: updated_descriptor.delivery_mode,
+            delivery_mode: CallbackDeliveryMode::WakeHint,
             disposition,
         })
     }

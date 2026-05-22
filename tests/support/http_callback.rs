@@ -62,7 +62,8 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
             None,
         )
         .await?;
-    assert!(capability.trigger_url.contains("/callbacks/enqueue/"));
+    assert_eq!(capability.delivery_mode, CallbackDeliveryMode::WakeHint);
+    assert!(capability.trigger_url.contains("/callbacks/wake/"));
     let callback_path = callback_path(&capability.trigger_url);
     let client = reqwest::Client::new();
 
@@ -73,7 +74,8 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
         .await?;
     assert!(first.status().is_success());
     let first_payload: serde_json::Value = first.json().await?;
-    assert_eq!(first_payload["disposition"], "enqueued");
+    assert_eq!(first_payload["delivery_mode"], "wake_hint");
+    assert_ne!(first_payload["disposition"], "enqueued");
     assert_eq!(
         first_payload["external_trigger_id"].as_str(),
         Some(capability.external_trigger_id.as_str())
@@ -92,9 +94,7 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
         let descriptors = runtime.storage().latest_external_triggers()?;
         Ok(messages
             .iter()
-            .filter(|message| message.kind == MessageKind::CallbackEvent)
-            .count()
-            >= 2
+            .all(|message| message.kind != MessageKind::CallbackEvent)
             && descriptors
                 .first()
                 .map(|item| item.delivery_count == 2)
@@ -103,29 +103,9 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
     .await?;
 
     let messages = runtime.storage().read_recent_messages(20)?;
-    let callback_message = messages
+    assert!(messages
         .iter()
-        .find(|message| message.kind == MessageKind::CallbackEvent)
-        .expect("callback message");
-    assert_eq!(
-        callback_message.delivery_surface,
-        Some(MessageDeliverySurface::HttpCallbackEnqueue)
-    );
-    assert_eq!(
-        callback_message.admission_context,
-        Some(AdmissionContext::ExternalTriggerCapability)
-    );
-    assert_eq!(
-        callback_message.authority_class,
-        AuthorityClass::IntegrationSignal
-    );
-    assert_eq!(
-        callback_message
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata["external_trigger_id"].as_str()),
-        Some(capability.external_trigger_id.as_str())
-    );
+        .all(|message| message.kind != MessageKind::CallbackEvent));
 
     let events = runtime.storage().read_recent_events(100)?;
     let delivered = events
@@ -134,7 +114,8 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
         .find(|event| event.kind == "callback_delivered")
         .expect("callback delivered event");
     assert_eq!(delivered.data["origin"], "callback");
-    assert_eq!(delivered.data["delivery_surface"], "http_callback_enqueue");
+    assert_eq!(delivered.data["delivery_surface"], "http_callback_wake");
+    assert_eq!(delivered.data["delivery_mode"], "wake_hint");
     assert_eq!(
         delivered.data["admission_context"],
         "external_trigger_capability"
@@ -314,7 +295,7 @@ pub async fn callback_mode_mismatch_is_rejected() -> Result<()> {
             "wait for CI callback".into(),
             "github".into(),
             ExternalTriggerScope::Agent,
-            CallbackDeliveryMode::EnqueueMessage,
+            CallbackDeliveryMode::WakeHint,
             None,
             None,
         )
@@ -323,7 +304,7 @@ pub async fn callback_mode_mismatch_is_rejected() -> Result<()> {
     let client = reqwest::Client::new();
 
     let response = client
-        .post(format!("{base}/callbacks/wake/{token}"))
+        .post(format!("{base}/callbacks/enqueue/{token}"))
         .json(&serde_json::json!({ "status": "checks_passed" }))
         .send()
         .await?;

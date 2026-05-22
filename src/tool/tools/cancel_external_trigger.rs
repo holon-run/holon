@@ -23,6 +23,7 @@ pub(crate) struct CancelExternalTriggerArgs {
     pub(crate) waiting_intent_id: Option<String>,
 }
 
+#[allow(dead_code)]
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::ExternalTrigger,

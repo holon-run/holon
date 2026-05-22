@@ -21,6 +21,8 @@ impl RuntimeHandle {
         self.persist_brief(&ack).await?;
         let context_build_started = std::time::Instant::now();
         let identity = self.agent_identity_view().await?;
+        self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+            .await?;
         let context_config = self.current_context_config().await;
 
         let built = {
@@ -164,6 +166,8 @@ impl RuntimeHandle {
         let continuation = ContinuationTrigger::from_message(&message, None)
             .map(|trigger| resolve_continuation(&prior_closure, &trigger));
         let identity = self.agent_identity_view().await?;
+        self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+            .await?;
         let (provider, available_tools, _) = self.provider_tool_selection(&identity).await?;
         let prompt_tools = provider.prompt_tool_specs(&available_tools);
         let execution = self.execution_snapshot().await?;

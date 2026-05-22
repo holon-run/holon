@@ -9,12 +9,12 @@ use crate::{
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::helpers::truncate_text,
     types::{
-        AdmissionContext, AgentState, AuthorityClass, BriefRecord, ContextEpisodeRecord,
-        ContinuationClass, ContinuationResolution, ExternalTriggerScope, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView,
-        TodoItemState, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel,
-        WaitingIntentRecord, WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta,
-        WorkingMemorySnapshot,
+        AdmissionContext, AgentState, AuthorityClass, BriefRecord, CallbackDeliveryMode,
+        ContextEpisodeRecord, ContinuationClass, ContinuationResolution, ExternalTriggerRecord,
+        ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
+        MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TodoItemState,
+        ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentRecord,
+        WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
 
@@ -88,6 +88,16 @@ pub fn build_context(
         &mut remaining_budget,
         section("agent", format!("Agent id: {}", agent.id)),
     );
+    if let Some(default_ingress) = default_external_ingress(storage, &agent.id)? {
+        push_budgeted_section(
+            &mut sections,
+            &mut remaining_budget,
+            section(
+                "default_external_ingress",
+                render_default_external_ingress(&default_ingress),
+            ),
+        );
+    }
     let execution_summary = execution_policy_summary_lines(execution).join("\n");
     push_budgeted_section(
         &mut sections,
@@ -408,6 +418,35 @@ fn header_label_value(value: &str) -> String {
             _ => '_',
         })
         .collect()
+}
+
+fn default_external_ingress(
+    storage: &AppStorage,
+    agent_id: &str,
+) -> Result<Option<ExternalTriggerRecord>> {
+    Ok(storage
+        .latest_external_triggers()?
+        .into_iter()
+        .find(|record| {
+            record.target_agent_id == agent_id
+                && record.scope == ExternalTriggerScope::Agent
+                && record.delivery_mode == CallbackDeliveryMode::WakeHint
+                && record.status == ExternalTriggerStatus::Active
+        }))
+}
+
+fn render_default_external_ingress(record: &ExternalTriggerRecord) -> String {
+    let url = record.trigger_url.as_deref().unwrap_or("<unavailable>");
+    format!(
+        "Default external ingress:\n\
+         - url: {url}\n\
+         - mode: wake_hint\n\
+         - status: active\n\
+         - external_trigger_id: {}\n\
+         - capability_secret: true\n\
+         - handling: Treat this URL as a capability secret. Do not repeat, store, or forward it unless the current task is explicitly configuring an external system to wake this agent.",
+        record.external_trigger_id
+    )
 }
 
 pub fn maybe_compact_agent(
@@ -3197,6 +3236,69 @@ mod tests {
         assert!(execution_section
             .content
             .contains("child_process_containment: not_enforced"));
+    }
+
+    #[test]
+    fn build_context_includes_default_external_wake_ingress() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage
+            .append_external_trigger(&ExternalTriggerRecord {
+                external_trigger_id: "wake-default".into(),
+                target_agent_id: "default".into(),
+                waiting_intent_id: None,
+                scope: ExternalTriggerScope::Agent,
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/token".into()),
+                token_hash: "redacted-token-hash".into(),
+                status: ExternalTriggerStatus::Active,
+                created_at: chrono::Utc::now(),
+                revoked_at: None,
+                last_delivered_at: None,
+                delivery_count: 0,
+            })
+            .unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Inspect ingress".to_string(),
+            },
+        );
+        let session = AgentState::new("default");
+
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 4,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 4,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let ingress = built
+            .sections
+            .iter()
+            .find(|section| section.name == "default_external_ingress")
+            .expect("default external ingress section should be present");
+        assert!(ingress
+            .content
+            .contains("http://127.0.0.1:7878/callbacks/wake/token"));
+        assert!(ingress.content.contains("- mode: wake_hint"));
+        assert!(ingress.content.contains("- status: active"));
+        assert!(ingress.content.contains("capability_secret: true"));
     }
 
     #[test]

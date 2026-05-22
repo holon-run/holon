@@ -2226,37 +2226,42 @@ type ExternalTriggerCapability = {
   externalTriggerId: string
   triggerUrl: string
   targetAgentId: string
-  delivery_mode: 'wake_hint' | 'enqueue_message'
+  delivery_mode: 'wake_hint'
   status: 'active'
 }
 ```
 
-The descriptor is keyed by target agent and delivery mode. The runtime should
-provision or return an existing active descriptor for that pair instead of
-minting duplicate callback URLs. Provisioning may happen at agent creation, on
-first descriptor access, or when a provider adapter needs the descriptor.
+The default descriptor is keyed by target agent and has fixed `wake_hint`
+semantics. The runtime should provision or return the existing active descriptor
+instead of minting duplicate callback URLs. Provisioning may happen at agent
+creation, during agent state/context materialization, or when a provider adapter
+needs the descriptor.
 
 ### Default External Ingress Flow
 
 The normal flow does not require the model to call a trigger-creation tool:
 
 1. Runtime provisions, or lazily ensures, the default
-   `ExternalTriggerRecord` for the target agent and delivery mode:
+   `ExternalTriggerRecord` for the target agent:
    - an `ExternalTriggerRecord` with a secure token
    - a signed callback URL for external delivery
+   - fixed `wake_hint` delivery mode
 
-2. Runtime exposes descriptor status or the callback capability through agent
-   context, status, provider configuration, or another trusted integration
-   surface.
+2. Runtime exposes descriptor status and URL through agent context, status,
+   provider configuration, or another trusted integration surface. Prompt/context
+   rendering must mark the URL as a capability secret: agents should not repeat,
+   store, or forward it unless the current task is explicitly configuring an
+   external system to wake that agent.
 
 3. Provider adapters, skills, MCP servers, or external services register their
    watches using the callback capability.
 
 4. External system calls back when the condition changes.
 
-`CreateExternalTrigger`, if retained, is a compatibility or diagnostic alias for
-returning this default ingress capability for a `delivery_mode`. `source`,
-`description`, and `scope` are not capability creation fields.
+`CreateExternalTrigger` and `CancelExternalTrigger`, if retained internally, are
+compatibility, diagnostic, or control-plane/admin surfaces. They are not ordinary
+agent-facing tools. The model should not need to choose a `delivery_mode` or call
+a tool before configuring an external system with its default wake URL.
 
 This flow does not create a `WaitingIntentRecord`.
 
@@ -2272,13 +2277,16 @@ When an external system delivers to the trigger URL:
 1. Runtime validates the token against stored descriptors
 2. Checks that the descriptor is active and targets an agent that can receive
    the delivery
-3. Based on `delivery_mode`:
-   - `enqueue_message`: enqueues structured content as a message
-   - `wake_hint`: submits a wake hint (may become `SystemTick`)
+3. Submits a wake hint (may become `SystemTick`).
+   - Generic callbacks must not enqueue callback payloads as agent messages.
+   - Legacy `enqueue_message` descriptors or URLs, if still accepted for
+     migration, are mapped to wake-hint behavior and recorded with deprecated
+     provenance.
 4. Updates delivery tracking (trigger count, last triggered at)
 5. Records callback provenance including external trigger id, target agent id,
-   delivery mode, optional source/resource metadata supplied by the delivery or
-   correlated wait, and correlated waiting/work-item ids when present
+   effective delivery mode, descriptor delivery mode when different, optional
+   source/resource metadata supplied by the delivery or correlated wait, and
+   correlated waiting/work-item ids when present
 
 External trigger delivery does not require an active waiting intent. It also
 does not automatically clear `blocked_by`, cancel waiting state, complete the
