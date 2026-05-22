@@ -1699,13 +1699,24 @@ mod tests {
         std::fs::write(&work_items_path, "not json\n").unwrap();
 
         let entries = host.list_agent_entries().await.unwrap();
-        let release_bot = entries
+        let loaded_release_bot = entries
             .iter()
             .find(|entry| entry.identity.agent_id == "release-bot")
             .expect("release-bot should still be listed");
-
         assert_eq!(
-            release_bot.scheduling_posture.posture,
+            loaded_release_bot.scheduling_posture.posture,
+            AgentSchedulingPosture::Unknown
+        );
+
+        host.unload_runtime("release-bot").await;
+
+        let entries = host.list_agent_entries().await.unwrap();
+        let stored_release_bot = entries
+            .iter()
+            .find(|entry| entry.identity.agent_id == "release-bot")
+            .expect("unloaded release-bot should still be listed");
+        assert_eq!(
+            stored_release_bot.scheduling_posture.posture,
             AgentSchedulingPosture::Unknown
         );
     }
