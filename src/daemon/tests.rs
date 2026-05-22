@@ -63,6 +63,14 @@ fn test_config() -> AppConfig {
     }
 }
 
+#[cfg(unix)]
+fn dead_pid() -> u32 {
+    let mut child = Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
 #[test]
 fn config_fingerprint_changes_when_effective_config_changes() {
     let mut left = test_config();
@@ -390,10 +398,11 @@ async fn probe_runtime_treats_non_socket_path_as_stale() {
 async fn daemon_status_surfaces_dead_pid_and_leftover_socket_as_stale() {
     let config = test_config();
     let paths = daemon_paths(&config);
+    let pid = dead_pid();
     fs::create_dir_all(config.run_dir()).unwrap();
-    fs::write(&paths.pid_path, b"999999\n").unwrap();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
     let metadata = RuntimeServiceMetadata {
-        pid: 999_999,
+        pid,
         home_dir: config.home_dir.clone(),
         socket_path: config.socket_path.clone(),
         http_addr: config.http_addr.clone(),
@@ -407,7 +416,7 @@ async fn daemon_status_surfaces_dead_pid_and_leftover_socket_as_stale() {
     let status = daemon_status(&config).await.unwrap();
 
     assert_eq!(status.state, DaemonLifecycleState::Stale);
-    assert_eq!(status.pid, Some(999_999));
+    assert_eq!(status.pid, Some(pid));
     assert!(!status.control_connectivity);
     assert_eq!(status.message, "stale daemon state detected");
     assert!(status.stale_files.contains(&paths.pid_path));
@@ -420,10 +429,11 @@ async fn daemon_status_surfaces_dead_pid_and_leftover_socket_as_stale() {
 async fn serve_preflight_cleans_dead_pid_and_leftover_socket_state() {
     let config = test_config();
     let paths = daemon_paths(&config);
+    let pid = dead_pid();
     fs::create_dir_all(config.run_dir()).unwrap();
-    fs::write(&paths.pid_path, b"999999\n").unwrap();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
     let metadata = RuntimeServiceMetadata {
-        pid: 999_999,
+        pid,
         home_dir: config.home_dir.clone(),
         socket_path: config.socket_path.clone(),
         http_addr: config.http_addr.clone(),
@@ -501,10 +511,11 @@ async fn daemon_stop_refuses_foreign_socket_cleanup() {
 async fn daemon_stop_treats_missing_pid_process_as_stale_state() {
     let config = test_config();
     let paths = daemon_paths(&config);
+    let pid = dead_pid();
     fs::create_dir_all(config.run_dir()).unwrap();
-    fs::write(&paths.pid_path, b"999999\n").unwrap();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
     let metadata = RuntimeServiceMetadata {
-        pid: 999_999,
+        pid,
         home_dir: config.home_dir.clone(),
         socket_path: config.socket_path.clone(),
         http_addr: config.http_addr.clone(),
