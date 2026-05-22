@@ -2335,7 +2335,7 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
             originator: Some("codex_cli_rs".into()),
             reasoning_effort: openai_codex_reasoning_effort,
             context_management: Default::default(),
-            builtin_web_search: None,
+            builtin_web_search: Some(openai_codex_builtin_web_search_config()),
         },
     );
     let openai = ProviderId::openai();
@@ -2826,6 +2826,15 @@ fn openai_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
     }
 }
 
+fn openai_codex_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
+    ProviderBuiltinWebSearchConfig {
+        enabled: true,
+        kind: ProviderNativeWebSearchKind::OpenAi,
+        advertised_tool_type: "web_search".to_string(),
+        backend_kind: "openai_codex_web_search".to_string(),
+    }
+}
+
 fn anthropic_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
     ProviderBuiltinWebSearchConfig {
         enabled: true,
@@ -2961,6 +2970,16 @@ fn validate_provider_builtin_web_search(
             } else {
                 Err(anyhow!(
                     "providers.{}.builtin_web_search.advertised_tool_type must be web_search_preview for OpenAI Responses native search",
+                    provider_id.as_str()
+                ))
+            }
+        }
+        (ProviderTransportKind::OpenAiCodexResponses, ProviderNativeWebSearchKind::OpenAi) => {
+            if search.advertised_tool_type == "web_search" {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "providers.{}.builtin_web_search.advertised_tool_type must be web_search for OpenAI Codex Responses native search",
                     provider_id.as_str()
                 ))
             }
@@ -3106,7 +3125,7 @@ pub fn provider_registry_for_tests(
             originator: Some("codex_cli_rs".into()),
             reasoning_effort: Some("low".into()),
             context_management: Default::default(),
-            builtin_web_search: None,
+            builtin_web_search: Some(openai_codex_builtin_web_search_config()),
         },
     );
     let openai = ProviderId::openai();
@@ -4419,6 +4438,15 @@ mod tests {
     fn built_in_provider_registry_declares_provider_specific_builtin_search() {
         let registry = built_in_provider_registry(&HashMap::new()).unwrap();
 
+        let openai_codex = registry.get(&ProviderId::openai_codex()).unwrap();
+        let openai_codex_search = openai_codex.builtin_web_search.as_ref().unwrap();
+        assert_eq!(
+            openai_codex_search.kind,
+            ProviderNativeWebSearchKind::OpenAi
+        );
+        assert_eq!(openai_codex_search.advertised_tool_type, "web_search");
+        assert_eq!(openai_codex_search.backend_kind, "openai_codex_web_search");
+
         let anthropic = registry.get(&ProviderId::anthropic()).unwrap();
         let anthropic_search = anthropic.builtin_web_search.as_ref().unwrap();
         assert_eq!(
@@ -4570,6 +4598,57 @@ mod tests {
 
         let err = validate_provider_config(&id, &config).unwrap_err();
         assert!(err.to_string().contains("web_search_preview"));
+    }
+
+    #[test]
+    fn provider_builtin_web_search_accepts_codex_tool_type() {
+        let id = ProviderId::openai_codex();
+        let config = ProviderConfigFile {
+            transport: ProviderTransportKind::OpenAiCodexResponses,
+            base_url: "https://chatgpt.com/backend-api/codex".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::ExternalCli,
+                kind: CredentialKind::SessionToken,
+                env: None,
+                profile: None,
+                external: Some("codex_cli".into()),
+            },
+            reasoning_effort: None,
+            builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
+                enabled: true,
+                kind: ProviderNativeWebSearchKind::OpenAi,
+                advertised_tool_type: "web_search".into(),
+                backend_kind: "openai_codex_web_search".into(),
+            }),
+        };
+
+        validate_provider_config(&id, &config).unwrap();
+    }
+
+    #[test]
+    fn provider_builtin_web_search_rejects_wrong_codex_tool_type() {
+        let id = ProviderId::openai_codex();
+        let config = ProviderConfigFile {
+            transport: ProviderTransportKind::OpenAiCodexResponses,
+            base_url: "https://chatgpt.com/backend-api/codex".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::ExternalCli,
+                kind: CredentialKind::SessionToken,
+                env: None,
+                profile: None,
+                external: Some("codex_cli".into()),
+            },
+            reasoning_effort: None,
+            builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
+                enabled: true,
+                kind: ProviderNativeWebSearchKind::OpenAi,
+                advertised_tool_type: "web_search_preview".into(),
+                backend_kind: "openai_codex_web_search".into(),
+            }),
+        };
+
+        let err = validate_provider_config(&id, &config).unwrap_err();
+        assert!(err.to_string().contains("web_search for OpenAI Codex"));
     }
 
     #[test]

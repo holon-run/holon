@@ -10,6 +10,7 @@ use super::*;
 use crate::config::{ModelRef, ProviderId};
 use crate::model_catalog::ModelRuntimeOverride;
 use crate::provider::transports::set_stream_idle_timeout_override_for_tests;
+use crate::provider::ProviderNativeWebSearchKind;
 use axum::{http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use serde_json::{json, Value};
 
@@ -192,6 +193,21 @@ fn provider_text_followup_with_prompt_frame(previous_text: &str) -> ProviderTurn
         ConversationMessage::UserText("continue".into()),
     ]);
     request
+}
+
+#[test]
+fn openai_codex_provider_declares_builtin_web_search_capability() {
+    let fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    let provider = OpenAiCodexProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    let capability = provider
+        .builtin_web_search()
+        .expect("openai codex provider should declare builtin search");
+    assert_eq!(capability.kind, ProviderNativeWebSearchKind::OpenAi);
+    assert_eq!(capability.provider_id, "openai-codex");
+    assert_eq!(capability.provider_model_ref, "openai-codex/gpt-5.4");
+    assert_eq!(capability.advertised_tool_type, "web_search");
+    assert_eq!(capability.backend_kind, "openai_codex_web_search");
 }
 
 #[tokio::test]

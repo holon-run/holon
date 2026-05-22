@@ -55,12 +55,14 @@ pub struct OpenAiProvider {
 #[derive(Clone)]
 pub struct OpenAiCodexProvider {
     client: Client,
+    provider_id: String,
     base_url: String,
     codex_home: std::path::PathBuf,
     originator: String,
     model: String,
     max_output_tokens: u32,
     reasoning_effort: Option<String>,
+    builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     compaction_policy: OpenAiCompactionPolicy,
     trace_home_dir: PathBuf,
     continuation: Arc<Mutex<OpenAiContinuationState>>,
@@ -341,6 +343,7 @@ impl OpenAiCodexProvider {
         load_codex_cli_credential(&codex_home)?;
         Ok(Self {
             client,
+            provider_id: provider_config.id.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             codex_home,
             originator: provider_config
@@ -350,6 +353,7 @@ impl OpenAiCodexProvider {
             model: model.to_string(),
             max_output_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
+            builtin_web_search: provider_config.builtin_web_search.clone(),
             compaction_policy,
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
@@ -658,6 +662,17 @@ impl AgentProvider for OpenAiCodexProvider {
     fn supports_freeform_grammar_tools(&self) -> bool {
         true
     }
+
+    fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
+        let config = self.builtin_web_search.as_ref()?;
+        Some(ProviderBuiltinWebSearchCapability {
+            kind: config.kind,
+            provider_id: self.provider_id.clone(),
+            provider_model_ref: format!("{}/{}", self.provider_id, self.model),
+            advertised_tool_type: config.advertised_tool_type.clone(),
+            backend_kind: config.backend_kind.clone(),
+        })
+    }
 }
 
 #[async_trait]
@@ -853,6 +868,7 @@ fn plan_chat_completion_request(
                     full_message_count,
                     None,
                     None,
+                    None,
                 ),
             },
         ));
@@ -878,6 +894,7 @@ fn plan_chat_completion_request(
                     "not_applicable_initial_request",
                     None,
                     full_message_count,
+                    None,
                     None,
                     None,
                 ),
@@ -907,6 +924,7 @@ fn plan_chat_completion_request(
                         ..OpenAiContinuationMismatchDiagnostics::default()
                     }),
                     None,
+                    None,
                 ),
             },
         ));
@@ -935,6 +953,7 @@ fn plan_chat_completion_request(
                     request_shape_hash: Some(request_shape_hash),
                     ..OpenAiContinuationMismatchDiagnostics::default()
                 }),
+                None,
                 None,
             ),
         },
@@ -1188,6 +1207,7 @@ fn plan_openai_responses_request(
                 full_input_items,
                 None,
                 request_controls,
+                native_web_search_diagnostics(request),
             ),
         });
     };
@@ -1209,6 +1229,7 @@ fn plan_openai_responses_request(
                 full_input_items,
                 None,
                 request_controls,
+                native_web_search_diagnostics(request),
             ),
         });
     };
@@ -1231,6 +1252,7 @@ fn plan_openai_responses_request(
                     ..OpenAiContinuationMismatchDiagnostics::default()
                 }),
                 request_controls,
+                native_web_search_diagnostics(request),
             ),
         });
     }
@@ -1258,6 +1280,7 @@ fn plan_openai_responses_request(
                 full_input_items,
                 Some(mismatch),
                 request_controls,
+                native_web_search_diagnostics(request),
             ),
         });
     }
@@ -1568,6 +1591,7 @@ fn incremental_diagnostics(
     full_input_items: usize,
     mismatch: Option<OpenAiContinuationMismatchDiagnostics>,
     openai_request_controls: Option<ProviderOpenAiRequestControlsDiagnostics>,
+    native_web_search: Option<ProviderNativeWebSearchDiagnostics>,
 ) -> ProviderRequestDiagnostics {
     let mismatch = mismatch.unwrap_or_default();
     ProviderRequestDiagnostics {
@@ -1593,7 +1617,7 @@ fn incremental_diagnostics(
             first_mismatch_path: mismatch.first_mismatch_path,
             mismatch_kind: mismatch.mismatch_kind,
         }),
-        native_web_search: None,
+        native_web_search,
     }
 }
 
@@ -4240,7 +4264,8 @@ mod tests {
         build_openai_responses_request, chat_completions_url, incremental_diagnostics,
         latest_openai_compaction_index, openai_compaction_trigger_for_request_plan,
         openai_compaction_trigger_for_window, openai_provider_window_compaction_candidate,
-        OpenAiCompactionPolicy, OpenAiProviderWindow, OpenAiRequestPlan, OpenAiRequestShape,
+        plan_openai_responses_request, OpenAiCompactionPolicy, OpenAiContinuationState,
+        OpenAiProviderWindow, OpenAiRequestPlan, OpenAiRequestShape,
         OpenAiResponsesTransportContract, ToolSchemaContract,
     };
     use crate::provider::{
@@ -4248,6 +4273,7 @@ mod tests {
         ProviderTurnRequest,
     };
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn chat_completions_url_accepts_openai_compatible_base_urls() {
@@ -4308,6 +4334,82 @@ mod tests {
             .expect("tools should be an array")
             .iter()
             .any(|tool| tool == &json!({ "type": "web_search_preview" })));
+    }
+
+    #[test]
+    fn openai_codex_responses_request_lowers_native_web_search_tool() {
+        let mut request = ProviderTurnRequest::plain(
+            "system",
+            vec![ConversationMessage::UserText("search the web".into())],
+            vec![],
+        );
+        request.native_web_search = Some(ProviderNativeWebSearchRequest {
+            kind: ProviderNativeWebSearchKind::OpenAi,
+            provider_id: "openai_codex_native".into(),
+            provider_model_ref: "openai-codex/gpt-codex-test".into(),
+            advertised_tool_type: "web_search".into(),
+            backend_kind: "openai_codex_web_search".into(),
+            max_results: Some(5),
+        });
+
+        let body = build_openai_responses_request(
+            "gpt-codex-test",
+            1024,
+            &request,
+            OpenAiResponsesTransportContract::CodexStreaming,
+            ToolSchemaContract::Relaxed,
+            Some("low"),
+        )
+        .expect("openai codex responses request should build");
+
+        assert!(body["tools"]
+            .as_array()
+            .expect("tools should be an array")
+            .iter()
+            .any(|tool| tool == &json!({ "type": "web_search" })));
+        assert_eq!(body["stream"], json!(true));
+    }
+
+    #[test]
+    fn openai_responses_full_request_records_native_web_search_diagnostics() {
+        let mut request = ProviderTurnRequest::plain(
+            "system",
+            vec![ConversationMessage::UserText("search the web".into())],
+            vec![],
+        );
+        request.native_web_search = Some(ProviderNativeWebSearchRequest {
+            kind: ProviderNativeWebSearchKind::OpenAi,
+            provider_id: "openai_codex_native".into(),
+            provider_model_ref: "openai-codex/gpt-codex-test".into(),
+            advertised_tool_type: "web_search".into(),
+            backend_kind: "openai_codex_web_search".into(),
+            max_results: Some(5),
+        });
+
+        let body = build_openai_responses_request(
+            "gpt-codex-test",
+            1024,
+            &request,
+            OpenAiResponsesTransportContract::CodexStreaming,
+            ToolSchemaContract::Relaxed,
+            Some("low"),
+        )
+        .expect("openai codex responses request should build");
+        let plan = plan_openai_responses_request(
+            body,
+            &request,
+            &Arc::new(Mutex::new(OpenAiContinuationState::default())),
+            false,
+        )
+        .expect("openai codex responses request should plan");
+
+        let diagnostics = plan
+            .diagnostics
+            .native_web_search
+            .expect("native web search diagnostics should be recorded");
+        assert!(diagnostics.lowered);
+        assert_eq!(diagnostics.advertised_tool_type, "web_search");
+        assert_eq!(diagnostics.backend_kind, "openai_codex_web_search");
     }
 
     #[test]
@@ -4429,6 +4531,7 @@ mod tests {
                 "test",
                 None,
                 0,
+                None,
                 None,
                 None,
             ),

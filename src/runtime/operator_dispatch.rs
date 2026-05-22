@@ -380,4 +380,27 @@ mod tests {
         assert_eq!(request.advertised_tool_type, "web_search_preview");
         assert_eq!(request.backend_kind, "openai_web_search");
     }
+
+    #[test]
+    fn native_web_search_request_uses_codex_provider_capability_metadata() {
+        let native_provider = ("openai-native".to_string(), WebProviderKind::OpenAiNative);
+
+        let request = native_web_search_request_for_config(
+            Some(crate::provider::ProviderBuiltinWebSearchCapability {
+                kind: ProviderNativeWebSearchKind::OpenAi,
+                provider_id: "openai-codex".into(),
+                provider_model_ref: "openai-codex/gpt-codex-test".into(),
+                advertised_tool_type: "web_search".into(),
+                backend_kind: "openai_codex_web_search".into(),
+            }),
+            Some(&native_provider),
+            5,
+        )
+        .unwrap();
+
+        assert_eq!(request.provider_id, "openai-native");
+        assert_eq!(request.provider_model_ref, "openai-codex/gpt-codex-test");
+        assert_eq!(request.advertised_tool_type, "web_search");
+        assert_eq!(request.backend_kind, "openai_codex_web_search");
+    }
 }
