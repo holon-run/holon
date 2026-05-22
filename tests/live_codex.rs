@@ -4,7 +4,8 @@ use holon::{
     prompt::PromptStability,
     provider::{
         AgentProvider, ConversationMessage, ModelBlock, OpenAiCodexProvider, PromptContentBlock,
-        ProviderPromptCache, ProviderPromptFrame, ProviderTurnRequest,
+        ProviderNativeWebSearchRequest, ProviderPromptCache, ProviderPromptFrame,
+        ProviderTurnRequest,
     },
     tool::ToolSpec,
 };
@@ -93,6 +94,48 @@ async fn live_openai_codex_provider_returns_real_response() -> Result<()> {
             vec![],
         ))
         .await?;
+    assert!(!output.blocks.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires real Codex auth state, network access, and Codex builtin web search support"]
+async fn live_openai_codex_builtin_web_search_reports_backend() -> Result<()> {
+    let config = live_config()?;
+    let provider = OpenAiCodexProvider::from_config(&config, &live_openai_codex_model())?;
+    let capability = provider
+        .builtin_web_search()
+        .expect("openai codex provider should declare builtin search");
+    assert_eq!(capability.advertised_tool_type, "web_search");
+    assert_eq!(capability.backend_kind, "openai_codex_web_search");
+
+    let output = provider
+        .complete_turn(ProviderTurnRequest {
+            prompt_frame: ProviderPromptFrame::plain(
+                "Use web search if needed. Reply in one short sentence.",
+            ),
+            conversation: vec![ConversationMessage::UserText(
+                "Search the web and name today's date.".into(),
+            )],
+            tools: vec![],
+            native_web_search: Some(ProviderNativeWebSearchRequest {
+                kind: capability.kind,
+                provider_id: "openai-codex-native".into(),
+                provider_model_ref: capability.provider_model_ref,
+                advertised_tool_type: capability.advertised_tool_type,
+                backend_kind: capability.backend_kind,
+                max_results: Some(3),
+            }),
+        })
+        .await?;
+    let diagnostics = output
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.native_web_search.as_ref())
+        .expect("native web search diagnostics should be recorded");
+    assert!(diagnostics.lowered);
+    assert_eq!(diagnostics.advertised_tool_type, "web_search");
+    assert_eq!(diagnostics.backend_kind, "openai_codex_web_search");
     assert!(!output.blocks.is_empty());
     Ok(())
 }
