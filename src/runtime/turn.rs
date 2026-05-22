@@ -1331,16 +1331,6 @@ fn is_context_management_excluded_tool(tool_name: Option<&str>) -> bool {
     matches!(tool_name, Some("ApplyPatch" | "NotifyOperator"))
 }
 
-fn tool_result_error_envelope(tool_name: &str, error: ToolError) -> ToolResultEnvelope {
-    ToolResultEnvelope {
-        tool_name: tool_name.to_string(),
-        status: ToolResultStatus::Error,
-        summary_text: Some(error.message.clone()),
-        result: None,
-        error: Some(error),
-    }
-}
-
 impl RuntimeHandle {
     async fn maybe_handle_context_length_exceeded(
         &self,
@@ -2595,7 +2585,9 @@ impl TurnExecution<'_> {
                         "request the current tool list again and call only tools exposed in this round",
                     )
                     .with_retryable(false);
-                    let message = error.render();
+                    let audit_error = error.render();
+                    let result = crate::tool::ToolResult::error(&tool_name, error.clone());
+                    let result_content = crate::tool::tools::render_tool_result_for_model(&result)?;
                     let (turn_index, run_id) = {
                         let guard = runtime.inner.agent.lock().await;
                         (guard.state.turn_index, guard.state.current_run_id.clone())
@@ -2614,7 +2606,7 @@ impl TurnExecution<'_> {
                                 runtime.inner.default_tool_output_tokens,
                                 runtime.inner.max_tool_output_tokens
                             ),
-                            "error": message,
+                            "error": audit_error,
                             "error_kind": error.kind.clone(),
                             "tool_error": error.clone(),
                             "reason": "tool_not_exposed_for_round",
@@ -2622,11 +2614,11 @@ impl TurnExecution<'_> {
                     ))?;
                     tool_results.push(ToolResultBlock {
                         tool_use_id: tool_call_id.clone(),
-                        content: message,
+                        content: result_content,
                         is_error: true,
                         error: Some(error.clone()),
                     });
-                    tool_result_envelopes.push(tool_result_error_envelope(&tool_name, error));
+                    tool_result_envelopes.push(result.envelope);
                     continue;
                 }
                 if is_max_output_stop_reason(stop_reason.as_deref())
@@ -2776,7 +2768,10 @@ impl TurnExecution<'_> {
                             return Err(err);
                         }
                         let error = ToolError::from_anyhow(&err);
-                        let message = error.render();
+                        let audit_error = error.render();
+                        let result = crate::tool::ToolResult::error(&tool_name, error.clone());
+                        let result_content =
+                            crate::tool::tools::render_tool_result_for_model(&result)?;
                         let (turn_index, run_id) = {
                             let guard = runtime.inner.agent.lock().await;
                             (guard.state.turn_index, guard.state.current_run_id.clone())
@@ -2795,18 +2790,18 @@ impl TurnExecution<'_> {
                                     runtime.inner.default_tool_output_tokens,
                                     runtime.inner.max_tool_output_tokens
                                 ),
-                                "error": message,
+                                "error": audit_error,
                                 "error_kind": error.kind.clone(),
                                 "tool_error": error.clone(),
                             }),
                         ))?;
                         tool_results.push(ToolResultBlock {
                             tool_use_id: tool_call_id,
-                            content: message,
+                            content: result_content,
                             is_error: true,
                             error: Some(error.clone()),
                         });
-                        tool_result_envelopes.push(tool_result_error_envelope(&tool_name, error));
+                        tool_result_envelopes.push(result.envelope);
                     }
                 }
             }

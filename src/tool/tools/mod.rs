@@ -146,6 +146,13 @@ pub(crate) async fn execute_builtin_tool(
 }
 
 pub(crate) fn render_tool_result_for_model(result: &ToolResult) -> Result<String> {
+    if result.is_error() {
+        let error = result
+            .tool_error()
+            .ok_or_else(|| anyhow!("tool error result missing error payload"))?;
+        return Ok(error.render_for_model(Some(&result.envelope.tool_name)));
+    }
+
     match result.envelope.tool_name.as_str() {
         apply_patch_tool::NAME => apply_patch_tool::render_for_model(result),
         exec_command::NAME => exec_command::render_for_model(result),
@@ -187,5 +194,23 @@ mod tests {
         );
         let rendered = render_tool_result_for_model(&result).unwrap();
         assert!(rendered.starts_with("{\"tool_name\":\"AgentGet\""));
+    }
+
+    #[test]
+    fn tool_errors_use_shared_model_visible_receipt() {
+        let result = ToolResult::error(
+            "ExecCommand",
+            crate::tool::ToolError::new("invalid_tool_input", "missing required field")
+                .with_details(serde_json::json!({ "field": "cmd" }))
+                .with_recovery_hint("provide `cmd`"),
+        );
+        let rendered = render_tool_result_for_model(&result).unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(receipt["ok"], false);
+        assert_eq!(receipt["tool_name"], "ExecCommand");
+        assert_eq!(receipt["kind"], "invalid_tool_input");
+        assert_eq!(receipt["field"], "cmd");
+        assert_eq!(receipt["hint"], "provide `cmd`");
     }
 }
