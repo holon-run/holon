@@ -7,7 +7,7 @@ use super::state::{
 };
 use super::{
     clear_persisted_daemon_lifecycle_failures, config_fingerprint, daemon_log_hint, daemon_logs,
-    daemon_paths, daemon_status, daemon_stop, load_last_runtime_failure,
+    daemon_paths, daemon_status, daemon_stop, ensure_serve_preflight, load_last_runtime_failure,
     persist_daemon_lifecycle_failure, runtime_activity_summary, DaemonLifecycleState,
     RuntimeActivityState, RuntimeConfigSurface, RuntimeControlAuthMode, RuntimeServiceMetadata,
     RuntimeStartupSurface, RuntimeStatusResponse,
@@ -383,6 +383,62 @@ async fn probe_runtime_treats_non_socket_path_as_stale() {
             panic!("expected stale runtime probe, got incompatible: {details}")
         }
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_status_surfaces_dead_pid_and_leftover_socket_as_stale() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(&paths.pid_path, b"999999\n").unwrap();
+    let metadata = RuntimeServiceMetadata {
+        pid: 999_999,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+    };
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+    drop(listener);
+
+    let status = daemon_status(&config).await.unwrap();
+
+    assert_eq!(status.state, DaemonLifecycleState::Stale);
+    assert_eq!(status.pid, Some(999_999));
+    assert!(!status.control_connectivity);
+    assert_eq!(status.message, "stale daemon state detected");
+    assert!(status.stale_files.contains(&paths.pid_path));
+    assert!(status.stale_files.contains(&paths.metadata_path));
+    assert!(status.stale_files.contains(&paths.socket_path));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn serve_preflight_cleans_dead_pid_and_leftover_socket_state() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    fs::write(&paths.pid_path, b"999999\n").unwrap();
+    let metadata = RuntimeServiceMetadata {
+        pid: 999_999,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+    };
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+    drop(listener);
+
+    ensure_serve_preflight(&config).await.unwrap();
+
+    assert!(!paths.pid_path.exists());
+    assert!(!paths.metadata_path.exists());
+    assert!(!paths.socket_path.exists());
 }
 
 #[cfg(unix)]

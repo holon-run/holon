@@ -441,6 +441,12 @@ pub async fn ensure_serve_preflight(config: &AppConfig) -> Result<()> {
         }
         ProbeRuntime::Stopped {
             occupied_socket: true,
+        } if recorded_daemon_process_is_missing(config)? => {
+            cleanup_daemon_state(config)?;
+            Ok(())
+        }
+        ProbeRuntime::Stopped {
+            occupied_socket: true,
         } => Err(anyhow!(
             "control socket {} is occupied by a non-Holon process",
             config.socket_path.display()
@@ -455,6 +461,22 @@ pub async fn ensure_serve_preflight(config: &AppConfig) -> Result<()> {
             "runtime is already running but incompatible with the daemon lifecycle contract: {details}; stop or restart it explicitly"
         )),
     }
+}
+
+#[cfg(unix)]
+fn recorded_daemon_process_is_missing(config: &AppConfig) -> Result<bool> {
+    let Some(metadata) = load_daemon_metadata(config)? else {
+        return Ok(false);
+    };
+    Ok(matches!(
+        send_signal(metadata.pid, 0, "0")?,
+        SignalOutcome::MissingProcess
+    ))
+}
+
+#[cfg(not(unix))]
+fn recorded_daemon_process_is_missing(_config: &AppConfig) -> Result<bool> {
+    Ok(false)
 }
 
 pub async fn graceful_runtime_shutdown(
@@ -796,13 +818,11 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
         match tokio::time::timeout(UNIX_PROBE_TIMEOUT, client.runtime_readiness_unix_only()).await {
             Ok(Ok(status)) => return ProbeRuntime::Running(Box::new(status)),
             Ok(Err(err)) => {
-                let occupied_socket = unix_probe_indicates_foreign_process(err.root_cause());
-                return if occupied_socket {
-                    ProbeRuntime::Stopped { occupied_socket }
-                } else {
-                    ProbeRuntime::Incompatible {
+                return match unix_probe_stopped_socket_occupancy(err.root_cause()) {
+                    Some(occupied_socket) => ProbeRuntime::Stopped { occupied_socket },
+                    None => ProbeRuntime::Incompatible {
                         details: err.to_string(),
-                    }
+                    },
                 };
             }
             Err(_) => {
@@ -830,17 +850,17 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
 }
 
 #[cfg(unix)]
-fn unix_probe_indicates_foreign_process(root: &(dyn std::error::Error + 'static)) -> bool {
+fn unix_probe_stopped_socket_occupancy(root: &(dyn std::error::Error + 'static)) -> Option<bool> {
     if let Some(io_error) = root.downcast_ref::<std::io::Error>() {
-        return !matches!(
+        return Some(!matches!(
             io_error.kind(),
             ErrorKind::ConnectionRefused
                 | ErrorKind::ConnectionAborted
                 | ErrorKind::ConnectionReset
                 | ErrorKind::NotFound
-        );
+        ));
     }
-    false
+    None
 }
 
 fn merge_latest_failure(
