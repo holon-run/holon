@@ -122,8 +122,8 @@ impl EffectivePrompt {
         ));
         output.extend(execution_policy_summary_lines(&self.execution));
         output.push(format!(
-            "Global AGENTS.md: {}",
-            describe_agents_md_source(self.loaded_agents_md.global_source.as_ref())
+            "User-global AGENTS.md: {}",
+            describe_agents_md_source(self.loaded_agents_md.user_global_source.as_ref())
         ));
         output.push(format!(
             "Agent AGENTS.md: {}",
@@ -459,7 +459,9 @@ fn build_system_sections(
     if let Some(section) = constrained_repair_section(current_message) {
         sections.push(section);
     }
-    if let Some(section) = global_agents_md_section(loaded_agents_md.global_source.as_ref()) {
+    if let Some(section) =
+        user_global_agents_md_section(loaded_agents_md.user_global_source.as_ref())
+    {
         sections.push(section);
     }
     if let Some(section) = agent_agents_md_section(loaded_agents_md.agent_source.as_ref()) {
@@ -502,13 +504,13 @@ fn agent_agents_md_section(source: Option<&AgentsMdSource>) -> Option<PromptSect
     })
 }
 
-fn global_agents_md_section(source: Option<&AgentsMdSource>) -> Option<PromptSection> {
+fn user_global_agents_md_section(source: Option<&AgentsMdSource>) -> Option<PromptSection> {
     source.map(|source| {
         section(
-            "global_agents_md",
+            "user_global_agents_md",
             PromptStability::Stable,
             format!(
-                "Apply the following global operator AGENTS.md guidance from {}:\n\n{}",
+                "Apply the following user-global AGENTS.md guidance from {}. Treat it as default cross-agent, cross-workspace guidance with lower precedence than agent-scoped, workspace-scoped, or turn-scoped instructions:\n\n{}",
                 source.path.display(),
                 source.content
             ),
@@ -1374,11 +1376,11 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd {
-                global_source: Some(AgentsMdSource {
-                    scope: crate::types::AgentsMdScope::Global,
+                user_global_source: Some(AgentsMdSource {
+                    scope: crate::types::AgentsMdScope::UserGlobal,
                     kind: AgentsMdKind::AgentsMd,
                     path: PathBuf::from("/tmp/user/.agents/AGENTS.md"),
-                    content: "global guidance".into(),
+                    content: "user-global guidance".into(),
                 }),
                 agent_source: Some(AgentsMdSource {
                     scope: crate::types::AgentsMdScope::Agent,
@@ -1417,7 +1419,7 @@ mod tests {
             .collect::<Vec<_>>();
         let global_idx = names
             .iter()
-            .position(|name| *name == "global_agents_md")
+            .position(|name| *name == "user_global_agents_md")
             .unwrap();
         let agent_idx = names
             .iter()
@@ -1461,7 +1463,7 @@ mod tests {
                 worktree_root: None,
             },
             loaded_agents_md: LoadedAgentsMd {
-                global_source: None,
+                user_global_source: None,
                 agent_source: Some(AgentsMdSource {
                     scope: crate::types::AgentsMdScope::Agent,
                     kind: AgentsMdKind::AgentsMd,
@@ -1499,7 +1501,7 @@ mod tests {
         assert!(dump.contains("Workspace anchor: /repo"));
         assert!(dump.contains("Execution root: /repo"));
         assert!(dump.contains("Cwd: /repo/src"));
-        assert!(dump.contains("Global AGENTS.md: none"));
+        assert!(dump.contains("User-global AGENTS.md: none"));
         assert!(dump.contains("Agent AGENTS.md: /tmp/agent-home/AGENTS.md (AGENTS.md)"));
         assert!(dump.contains("Workspace AGENTS.md: /repo/CLAUDE.md (CLAUDE.md fallback)"));
         assert!(dump.contains("Section inventory:"));
@@ -1572,7 +1574,7 @@ mod tests {
                 worktree_root: None,
             },
             loaded_agents_md: LoadedAgentsMd {
-                global_source: None,
+                user_global_source: None,
                 agent_source: Some(AgentsMdSource {
                     scope: crate::types::AgentsMdScope::Agent,
                     kind: AgentsMdKind::AgentsMd,
