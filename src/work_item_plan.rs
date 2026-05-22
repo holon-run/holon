@@ -10,13 +10,21 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
-use crate::types::{WorkItemPlanArtifact, WorkItemRecord};
+use crate::types::{
+    agent_home_workspace_id, WorkItemPlanArtifact, WorkItemRecord, AGENT_HOME_WORKSPACE_ID,
+};
 
 const PLAN_PREVIEW_CHARS: usize = 1600;
 
 pub(crate) fn plan_path(agent_home: &Path, work_item_id: &str) -> PathBuf {
     agent_home
         .join("work-items")
+        .join(work_item_id)
+        .join("plan.md")
+}
+
+pub(crate) fn plan_relative_path(work_item_id: &str) -> PathBuf {
+    PathBuf::from("work-items")
         .join(work_item_id)
         .join("plan.md")
 }
@@ -38,7 +46,7 @@ pub(crate) fn ensure_plan_artifact(
             .as_bytes();
         fs::write(&path, body).with_context(|| format!("failed to write {}", path.display()))?;
     }
-    describe_plan_artifact(&path)
+    describe_plan_artifact(&path, &record.agent_id, &record.id)
 }
 
 pub(crate) fn refresh_plan_artifact_metadata(
@@ -61,7 +69,11 @@ pub(crate) fn refresh_plan_artifact_metadata(
     Ok(had_inline_plan || record.plan_artifact != previous)
 }
 
-pub(crate) fn describe_plan_artifact(path: &Path) -> Result<WorkItemPlanArtifact> {
+pub(crate) fn describe_plan_artifact(
+    path: &Path,
+    owner_agent_id: &str,
+    work_item_id: &str,
+) -> Result<WorkItemPlanArtifact> {
     let mut file =
         File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let metadata = file
@@ -81,6 +93,10 @@ pub(crate) fn describe_plan_artifact(path: &Path) -> Result<WorkItemPlanArtifact
         .map(DateTime::<Utc>::from)
         .unwrap_or_else(|| DateTime::<Utc>::from(SystemTime::UNIX_EPOCH));
     Ok(WorkItemPlanArtifact {
+        owner_agent_id: owner_agent_id.to_string(),
+        workspace_id: agent_home_workspace_id(owner_agent_id),
+        workspace_alias: Some(AGENT_HOME_WORKSPACE_ID.into()),
+        relative_path: plan_relative_path(work_item_id),
         path: path.to_path_buf(),
         hash,
         bytes: metadata.len(),

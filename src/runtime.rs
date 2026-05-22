@@ -305,8 +305,8 @@ impl RuntimeHandle {
         workspace::build_execution_root_id(workspace_id, projection_kind, execution_root)
     }
 
-    fn agent_home_workspace_entry(data_dir: &Path) -> crate::types::WorkspaceEntry {
-        workspace::agent_home_workspace_entry(data_dir)
+    fn agent_home_workspace_entry(data_dir: &Path, agent_id: &str) -> crate::types::WorkspaceEntry {
+        workspace::agent_home_workspace_entry(data_dir, agent_id)
     }
 
     pub fn storage(&self) -> &AppStorage {

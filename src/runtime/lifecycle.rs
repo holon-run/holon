@@ -792,8 +792,10 @@ impl RuntimeHandle {
         workspace_id: &str,
     ) -> Result<Option<WorkspaceEntry>> {
         if workspace_id == AGENT_HOME_WORKSPACE_ID {
+            let agent_id = self.agent_id().await?;
             return Ok(Some(Self::agent_home_workspace_entry(
                 self.inner.storage.data_dir(),
+                &agent_id,
             )));
         }
         if let Some(existing) = self
@@ -814,7 +816,7 @@ impl RuntimeHandle {
         cwd: Option<PathBuf>,
     ) -> Result<()> {
         let state = self.agent_state().await?;
-        let workspace = Self::agent_home_workspace_entry(self.inner.storage.data_dir());
+        let workspace = Self::agent_home_workspace_entry(self.inner.storage.data_dir(), &state.id);
         let execution_root = crate::system::workspace::normalize_path(&workspace.workspace_anchor)?;
         let selected_cwd = resolve_enter_cwd(&execution_root, cwd.as_deref())?;
         let execution_root_id = Self::build_execution_root_id(
@@ -843,12 +845,12 @@ impl RuntimeHandle {
                 .state
                 .attached_workspaces
                 .iter()
-                .any(|id| id == AGENT_HOME_WORKSPACE_ID)
+                .any(|id| id == &workspace.workspace_id)
             {
                 guard
                     .state
                     .attached_workspaces
-                    .push(AGENT_HOME_WORKSPACE_ID.to_string());
+                    .push(workspace.workspace_id.clone());
             }
             let known = self.inner.storage.latest_workspace_entries()?;
             if !known

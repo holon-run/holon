@@ -166,9 +166,10 @@ impl RuntimeHandle {
                     .and_then(|name| name.to_str())
                     .map(ToString::to_string),
             )),
-            InitialWorkspaceBinding::Detached => {
-                Some(workspace::agent_home_workspace_entry(storage.data_dir()))
-            }
+            InitialWorkspaceBinding::Detached => Some(workspace::agent_home_workspace_entry(
+                storage.data_dir(),
+                &agent_id,
+            )),
         };
 
         if let Some(workspace) = initial_workspace_entry.as_ref() {
@@ -246,7 +247,7 @@ impl RuntimeHandle {
                 entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot
             }) {
                 let data_dir = storage.data_dir();
-                let workspace_entry = workspace::agent_home_workspace_entry(&data_dir);
+                let workspace_entry = workspace::agent_home_workspace_entry(&data_dir, &agent_id);
                 let kind = WorkspaceProjectionKind::CanonicalRoot;
                 state.active_workspace_entry = Some(ActiveWorkspaceEntry {
                     workspace_id: workspace_entry.workspace_id.clone(),
