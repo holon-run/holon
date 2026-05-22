@@ -3,7 +3,8 @@ use holon::{
     config::{AppConfig, ProviderId, ProviderTransportKind},
     prompt::PromptStability,
     provider::{
-        AgentProvider, AnthropicProvider, ConversationMessage, ModelBlock, PromptContentBlock,
+        AgentProvider, AnthropicProvider, ConversationMessage, ModelBlock, OpenAiCodexProvider,
+        OpenAiProvider, PromptContentBlock, ProviderNativeWebSearchKind,
         ProviderNativeWebSearchRequest, ProviderPromptCache, ProviderPromptFrame,
         ProviderTurnRequest, ToolResultBlock,
     },
@@ -236,6 +237,159 @@ async fn provider_builtin_web_search_reports_backend(
     assert_eq!(diagnostics.backend_kind, expected_backend);
     assert_eq!(diagnostics.advertised_tool_type, "web_search_20250305");
     assert!(!output.blocks.is_empty());
+    Ok(())
+}
+
+fn forced_native_web_search_request(
+    provider_id: &str,
+    model_ref: &str,
+    transport: ProviderTransportKind,
+) -> Option<ProviderNativeWebSearchRequest> {
+    match transport {
+        ProviderTransportKind::AnthropicMessages => Some(ProviderNativeWebSearchRequest {
+            kind: ProviderNativeWebSearchKind::Anthropic,
+            provider_id: provider_id.into(),
+            provider_model_ref: model_ref.into(),
+            advertised_tool_type: "web_search_20250305".into(),
+            backend_kind: format!("{provider_id}_forced_web_search_probe"),
+            max_results: Some(3),
+        }),
+        ProviderTransportKind::OpenAiResponses => Some(ProviderNativeWebSearchRequest {
+            kind: ProviderNativeWebSearchKind::OpenAi,
+            provider_id: provider_id.into(),
+            provider_model_ref: model_ref.into(),
+            advertised_tool_type: "web_search_preview".into(),
+            backend_kind: format!("{provider_id}_forced_web_search_probe"),
+            max_results: Some(3),
+        }),
+        ProviderTransportKind::OpenAiCodexResponses => Some(ProviderNativeWebSearchRequest {
+            kind: ProviderNativeWebSearchKind::OpenAi,
+            provider_id: provider_id.into(),
+            provider_model_ref: model_ref.into(),
+            advertised_tool_type: "web_search".into(),
+            backend_kind: format!("{provider_id}_forced_web_search_probe"),
+            max_results: Some(3),
+        }),
+        ProviderTransportKind::OpenAiChatCompletions => None,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires configured provider credentials and network access"]
+async fn live_configured_model_chain_builtin_web_search_support() -> Result<()> {
+    let config = live_config()?;
+    let provider_chain = config.provider_chain();
+    let mut tested = Vec::new();
+    let mut declared_failures = Vec::new();
+
+    for model_ref in provider_chain {
+        let provider_id = model_ref.provider.as_str().to_string();
+        let Some(provider_config) = config.providers.get(&model_ref.provider) else {
+            println!("SKIP {}: provider is not configured", model_ref.as_string());
+            continue;
+        };
+
+        let trace_home_dir = tempfile::tempdir()?;
+        let provider: Box<dyn AgentProvider> = match provider_config.transport {
+            ProviderTransportKind::AnthropicMessages => {
+                Box::new(AnthropicProvider::from_runtime_config(
+                    provider_config,
+                    &model_ref.model,
+                    config.runtime_max_output_tokens,
+                    trace_home_dir.path(),
+                )?)
+            }
+            ProviderTransportKind::OpenAiResponses => {
+                Box::new(OpenAiProvider::from_runtime_config(
+                    provider_config,
+                    &model_ref.model,
+                    config.runtime_max_output_tokens,
+                    trace_home_dir.path(),
+                )?)
+            }
+            ProviderTransportKind::OpenAiCodexResponses => {
+                Box::new(OpenAiCodexProvider::from_runtime_config(
+                    provider_config,
+                    &model_ref.model,
+                    config.runtime_max_output_tokens,
+                    trace_home_dir.path(),
+                )?)
+            }
+            ProviderTransportKind::OpenAiChatCompletions => {
+                println!(
+                    "SKIP {}: transport {:?} has no builtin web search lowering",
+                    model_ref.as_string(),
+                    provider_config.transport
+                );
+                continue;
+            }
+        };
+
+        let declared = provider.builtin_web_search();
+        let request = declared
+            .as_ref()
+            .map(|capability| ProviderNativeWebSearchRequest {
+                kind: capability.kind,
+                provider_id: provider_id.clone(),
+                provider_model_ref: capability.provider_model_ref.clone(),
+                advertised_tool_type: capability.advertised_tool_type.clone(),
+                backend_kind: capability.backend_kind.clone(),
+                max_results: Some(3),
+            })
+            .or_else(|| {
+                forced_native_web_search_request(
+                    &provider_id,
+                    &model_ref.as_string(),
+                    provider_config.transport,
+                )
+            });
+        let Some(request) = request else {
+            println!(
+                "SKIP {}: transport {:?} has no builtin web search probe shape",
+                model_ref.as_string(),
+                provider_config.transport
+            );
+            continue;
+        };
+        let source = if declared.is_some() {
+            "declared"
+        } else {
+            "forced"
+        };
+        let backend_kind = request.backend_kind.clone();
+
+        match provider.probe_builtin_web_search(request).await {
+            Ok(()) => {
+                println!(
+                    "PASS {} builtin_web_search source={} backend={}",
+                    model_ref.as_string(),
+                    source,
+                    backend_kind
+                );
+                tested.push(model_ref.as_string());
+            }
+            Err(error) => {
+                println!(
+                    "FAIL {} builtin_web_search source={}: {error}",
+                    model_ref.as_string(),
+                    source
+                );
+                if declared.is_some() {
+                    declared_failures.push(format!("{}: {error}", model_ref.as_string()));
+                }
+            }
+        }
+    }
+
+    assert!(
+        !tested.is_empty(),
+        "configured provider chain did not include any builtin web search providers"
+    );
+    assert!(
+        declared_failures.is_empty(),
+        "declared builtin web search failures:\n{}",
+        declared_failures.join("\n")
+    );
     Ok(())
 }
 

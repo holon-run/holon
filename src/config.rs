@@ -2769,6 +2769,7 @@ fn insert_anthropic_compatible_provider(
     let builtin_web_search = match provider {
         "zai" | "zai-anthropic" => Some(zai_builtin_web_search_config()),
         "bigmodel" | "bigmodel-anthropic" => Some(bigmodel_builtin_web_search_config()),
+        "deepseek" | "deepseek-anthropic" => Some(deepseek_builtin_web_search_config()),
         _ => None,
     };
     insert_builtin_http_provider_with_context_management(
@@ -2897,6 +2898,15 @@ fn bigmodel_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
         kind: ProviderNativeWebSearchKind::Anthropic,
         advertised_tool_type: "web_search_20250305".to_string(),
         backend_kind: "bigmodel_web_search".to_string(),
+    }
+}
+
+fn deepseek_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
+    ProviderBuiltinWebSearchConfig {
+        enabled: true,
+        kind: ProviderNativeWebSearchKind::Anthropic,
+        advertised_tool_type: "web_search_20250305".to_string(),
+        backend_kind: "deepseek_web_search".to_string(),
     }
 }
 
@@ -4515,7 +4525,10 @@ mod tests {
         let deepseek = registry
             .get(&ProviderId::parse("deepseek-anthropic").unwrap())
             .unwrap();
-        assert!(deepseek.builtin_web_search.is_none());
+        let deepseek_search = deepseek.builtin_web_search.as_ref().unwrap();
+        assert_eq!(deepseek_search.kind, ProviderNativeWebSearchKind::Anthropic);
+        assert_eq!(deepseek_search.advertised_tool_type, "web_search_20250305");
+        assert_eq!(deepseek_search.backend_kind, "deepseek_web_search");
     }
 
     #[test]
