@@ -3074,10 +3074,13 @@ impl Default for AgentPostureProjection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkItemPlanArtifact {
+    #[serde(default)]
     pub owner_agent_id: String,
+    #[serde(default = "default_agent_home_workspace_id")]
     pub workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_alias: Option<String>,
+    #[serde(default)]
     pub relative_path: PathBuf,
     pub path: PathBuf,
     pub hash: String,
@@ -4325,6 +4328,29 @@ mod tests {
         work_item.as_object_mut().unwrap().remove("workspace_id");
         let work_item: WorkItemRecord = serde_json::from_value(work_item).unwrap();
         assert_eq!(work_item.workspace_id, AGENT_HOME_WORKSPACE_ID);
+
+        let legacy_work_item = serde_json::json!({
+            "id": "work_legacy",
+            "agent_id": "default",
+            "objective": "ship",
+            "state": "open",
+            "plan_status": "ready",
+            "plan_artifact": {
+                "path": "/tmp/plan.md",
+                "hash": "sha256:abc",
+                "bytes": 12,
+                "updated_at": "2026-04-20T00:00:00Z",
+                "preview": "plan",
+                "preview_complete": true
+            },
+            "created_at": "2026-04-20T00:00:00Z",
+            "updated_at": "2026-04-20T00:00:00Z"
+        });
+        let legacy_work_item: WorkItemRecord = serde_json::from_value(legacy_work_item).unwrap();
+        let legacy_artifact = legacy_work_item.plan_artifact.unwrap();
+        assert_eq!(legacy_artifact.owner_agent_id, "");
+        assert_eq!(legacy_artifact.workspace_id, AGENT_HOME_WORKSPACE_ID);
+        assert_eq!(legacy_artifact.relative_path, PathBuf::new());
 
         let episode = serde_json::json!({
             "id": "episode-1",

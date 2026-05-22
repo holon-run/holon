@@ -415,7 +415,17 @@ impl RuntimeHandle {
     pub async fn agent_list_entry(&self) -> Result<AgentListEntry> {
         let agent = self.agent_state().await?;
         let model = self.model_state_for(&agent);
-        let scheduling_posture = self.inner.storage.agent_posture_projection(&agent)?;
+        let scheduling_posture = match self.inner.storage.agent_posture_projection(&agent) {
+            Ok(posture) => posture,
+            Err(error) => {
+                tracing::warn!(
+                    agent_id = %agent.id,
+                    error = %error,
+                    "failed to read agent posture for /agents/list; using unknown placeholder"
+                );
+                crate::types::AgentPostureProjection::default()
+            }
+        };
         let identity = self.agent_identity_view().await?;
         let waiting_reason = super::lightweight_agent_list_waiting_reason(&agent);
         Ok(AgentListEntry {
