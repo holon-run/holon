@@ -18,6 +18,7 @@ mod transports;
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
 pub use diagnostics::{provider_doctor, resolved_model_availability};
 pub use http_trace::ProviderHttpTraceDiagnostics;
+pub(crate) use retry::sanitize_transport_url;
 pub use transports::{
     AnthropicProvider, OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiProvider,
 };

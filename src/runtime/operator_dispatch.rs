@@ -279,6 +279,13 @@ impl RuntimeHandle {
         let provider = self.current_provider().await;
         let native_search_provider = self.web_config().native_search_provider();
         let builtin_capability = provider.builtin_web_search();
+        let probe_result = builtin_capability
+            .as_ref()
+            .map(probe_builtin_web_search_capability)
+            .unwrap_or(BuiltinWebSearchProbeCacheEntry {
+                status: BuiltinWebSearchProbeStatus::Skipped,
+                reason: Some("active provider does not declare builtin web search".into()),
+            });
         let native_web_search_selection = {
             let mut cache = self.inner.builtin_web_search_probe_cache.lock().await;
             native_web_search_request_for_config(
@@ -286,10 +293,7 @@ impl RuntimeHandle {
                 native_search_provider.as_ref(),
                 &self.web_config().search,
                 &mut cache,
-                BuiltinWebSearchProbeCacheEntry {
-                    status: BuiltinWebSearchProbeStatus::Supported,
-                    reason: None,
-                },
+                probe_result,
             )
         };
         let native_web_search = native_web_search_selection.request;
@@ -318,6 +322,70 @@ impl RuntimeHandle {
             tools.retain(|tool| tool.name != crate::tool::tools::web_search::NAME);
         }
         tools
+    }
+}
+
+fn probe_builtin_web_search_capability(
+    capability: &crate::provider::ProviderBuiltinWebSearchCapability,
+) -> BuiltinWebSearchProbeCacheEntry {
+    if capability.provider_model_ref.trim().is_empty() {
+        return unsupported_builtin_web_search_probe(
+            "builtin web search capability has empty provider model ref",
+        );
+    }
+    if capability.provider_transport.trim().is_empty() {
+        return unsupported_builtin_web_search_probe(
+            "builtin web search capability has empty provider transport",
+        );
+    }
+    if capability.provider_base_url.trim().is_empty() {
+        return unsupported_builtin_web_search_probe(
+            "builtin web search capability has empty provider base URL",
+        );
+    }
+    if capability.advertised_tool_type.trim().is_empty() {
+        return unsupported_builtin_web_search_probe(
+            "builtin web search capability has empty advertised tool type",
+        );
+    }
+    if capability.backend_kind.trim().is_empty() {
+        return unsupported_builtin_web_search_probe(
+            "builtin web search capability has empty backend kind",
+        );
+    }
+
+    let supported = match (
+        capability.kind,
+        capability.provider_transport.as_str(),
+        capability.advertised_tool_type.as_str(),
+    ) {
+        (ProviderNativeWebSearchKind::OpenAi, "openai_responses", "web_search_preview")
+        | (ProviderNativeWebSearchKind::OpenAi, "openai_codex_responses", "web_search")
+        | (ProviderNativeWebSearchKind::Anthropic, "anthropic_messages", "web_search_20250305") => {
+            true
+        }
+        _ => false,
+    };
+
+    if supported {
+        BuiltinWebSearchProbeCacheEntry {
+            status: BuiltinWebSearchProbeStatus::Supported,
+            reason: None,
+        }
+    } else {
+        unsupported_builtin_web_search_probe(format!(
+            "builtin web search capability is incompatible with transport {} and advertised tool type {}",
+            capability.provider_transport, capability.advertised_tool_type
+        ))
+    }
+}
+
+fn unsupported_builtin_web_search_probe(
+    reason: impl Into<String>,
+) -> BuiltinWebSearchProbeCacheEntry {
+    BuiltinWebSearchProbeCacheEntry {
+        status: BuiltinWebSearchProbeStatus::Unsupported,
+        reason: Some(reason.into()),
     }
 }
 
@@ -505,7 +573,9 @@ fn builtin_web_search_selection_diagnostics(
         provider_id: capability.map(|capability| capability.provider_id.clone()),
         provider_model_ref: capability.map(|capability| capability.provider_model_ref.clone()),
         provider_transport: capability.map(|capability| capability.provider_transport.clone()),
-        provider_base_url: capability.map(|capability| capability.provider_base_url.clone()),
+        provider_base_url: capability.map(|capability| {
+            crate::provider::sanitize_transport_url(&capability.provider_base_url)
+        }),
         advertised_tool_type: capability.map(|capability| capability.advertised_tool_type.clone()),
         backend_kind: capability.map(|capability| capability.backend_kind.clone()),
         probe_status,
@@ -714,6 +784,38 @@ mod tests {
     }
 
     #[test]
+    fn native_web_search_request_uses_contract_probe_result_on_cache_miss() {
+        let mut cache = HashMap::new();
+        let unsupported_capability = capability(
+            ProviderNativeWebSearchKind::OpenAi,
+            "openai-codex",
+            "openai-codex/gpt-codex-test",
+            "web_search_preview",
+            "openai_codex_web_search",
+        );
+        let probe_result = probe_builtin_web_search_capability(&unsupported_capability);
+
+        let selection = native_web_search_request_for_config(
+            Some(unsupported_capability),
+            None,
+            &search_config(),
+            &mut cache,
+            probe_result,
+        );
+
+        assert!(selection.request.is_none());
+        assert_eq!(
+            selection.diagnostics.status,
+            BuiltinWebSearchSelectionStatus::Unsupported
+        );
+        assert_eq!(
+            selection.diagnostics.probe_status,
+            BuiltinWebSearchProbeStatus::Unsupported
+        );
+        assert!(!selection.diagnostics.probe_cache_hit);
+    }
+
+    #[test]
     fn native_web_search_request_does_not_cache_transient_probe_failure() {
         let mut cache = HashMap::new();
 
@@ -751,5 +853,31 @@ mod tests {
         );
         assert!(second.request.is_some());
         assert!(!second.diagnostics.probe_cache_hit);
+    }
+
+    #[test]
+    fn builtin_web_search_selection_diagnostics_sanitizes_base_url() {
+        let capability = crate::provider::ProviderBuiltinWebSearchCapability {
+            kind: ProviderNativeWebSearchKind::OpenAi,
+            provider_id: "openai-codex".into(),
+            provider_model_ref: "openai-codex/gpt-codex-test".into(),
+            provider_transport: "openai_codex_responses".into(),
+            provider_base_url: "https://user:secret@example.test/path?token=abc#frag".into(),
+            advertised_tool_type: "web_search".into(),
+            backend_kind: "openai_codex_web_search".into(),
+        };
+
+        let diagnostics = builtin_web_search_selection_diagnostics(
+            Some(&capability),
+            BuiltinWebSearchSelectionStatus::Selected,
+            None,
+            BuiltinWebSearchProbeStatus::Supported,
+            false,
+        );
+
+        assert_eq!(
+            diagnostics.provider_base_url.as_deref(),
+            Some("https://example.test/path")
+        );
     }
 }
