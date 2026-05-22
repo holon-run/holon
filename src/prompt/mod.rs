@@ -122,8 +122,8 @@ impl EffectivePrompt {
         ));
         output.extend(execution_policy_summary_lines(&self.execution));
         output.push(format!(
-            "Global AGENTS.md: {}",
-            describe_agents_md_source(self.loaded_agents_md.global_source.as_ref())
+            "User-global AGENTS.md: {}",
+            describe_agents_md_source(self.loaded_agents_md.user_global_source.as_ref())
         ));
         output.push(format!(
             "Agent AGENTS.md: {}",
@@ -459,7 +459,9 @@ fn build_system_sections(
     if let Some(section) = constrained_repair_section(current_message) {
         sections.push(section);
     }
-    if let Some(section) = global_agents_md_section(loaded_agents_md.global_source.as_ref()) {
+    if let Some(section) =
+        user_global_agents_md_section(loaded_agents_md.user_global_source.as_ref())
+    {
         sections.push(section);
     }
     if let Some(section) = agent_agents_md_section(loaded_agents_md.agent_source.as_ref()) {
@@ -502,13 +504,13 @@ fn agent_agents_md_section(source: Option<&AgentsMdSource>) -> Option<PromptSect
     })
 }
 
-fn global_agents_md_section(source: Option<&AgentsMdSource>) -> Option<PromptSection> {
+fn user_global_agents_md_section(source: Option<&AgentsMdSource>) -> Option<PromptSection> {
     source.map(|source| {
         section(
-            "global_agents_md",
+            "user_global_agents_md",
             PromptStability::Stable,
             format!(
-                "Apply the following global operator AGENTS.md guidance from {}:\n\n{}",
+                "Apply the following user-global AGENTS.md guidance from {}. Treat it as default cross-agent, cross-workspace guidance with lower precedence than agent-scoped, workspace-scoped, or turn-scoped instructions:\n\n{}",
                 source.path.display(),
                 source.content
             ),
@@ -867,6 +869,64 @@ mod tests {
             &tools,
         );
 
+        assert_ne!(
+            prompt_cache_key(&session.id, &first_scope),
+            prompt_cache_key(&session.id, &second_scope)
+        );
+    }
+
+    #[test]
+    fn prompt_cache_key_changes_when_user_global_agents_md_changes() {
+        let session = AgentState::new("default");
+        let execution = sample_execution_snapshot();
+        let mut first_loaded = LoadedAgentsMd::default();
+        first_loaded.user_global_source = Some(AgentsMdSource {
+            scope: crate::types::AgentsMdScope::UserGlobal,
+            kind: AgentsMdKind::AgentsMd,
+            path: PathBuf::from("/tmp/user/.agents/AGENTS.md"),
+            content: "first user-global guidance".into(),
+        });
+        let mut second_loaded = first_loaded.clone();
+        second_loaded
+            .user_global_source
+            .as_mut()
+            .expect("test source")
+            .content = "second user-global guidance".into();
+        let first_system_sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("/tmp/agent-home"),
+            &first_loaded,
+            &SkillsRuntimeView::default(),
+            &[],
+        );
+        let second_system_sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("/tmp/agent-home"),
+            &second_loaded,
+            &SkillsRuntimeView::default(),
+            &[],
+        );
+        let context_sections = Vec::new();
+        let tools = Vec::new();
+
+        let first_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &execution,
+            &first_system_sections,
+            &context_sections,
+            &tools,
+        );
+        let second_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &execution,
+            &second_system_sections,
+            &context_sections,
+            &tools,
+        );
+
+        assert_ne!(first_scope, second_scope);
         assert_ne!(
             prompt_cache_key(&session.id, &first_scope),
             prompt_cache_key(&session.id, &second_scope)
@@ -1374,11 +1434,11 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd {
-                global_source: Some(AgentsMdSource {
-                    scope: crate::types::AgentsMdScope::Global,
+                user_global_source: Some(AgentsMdSource {
+                    scope: crate::types::AgentsMdScope::UserGlobal,
                     kind: AgentsMdKind::AgentsMd,
                     path: PathBuf::from("/tmp/user/.agents/AGENTS.md"),
-                    content: "global guidance".into(),
+                    content: "user-global guidance".into(),
                 }),
                 agent_source: Some(AgentsMdSource {
                     scope: crate::types::AgentsMdScope::Agent,
@@ -1417,7 +1477,7 @@ mod tests {
             .collect::<Vec<_>>();
         let global_idx = names
             .iter()
-            .position(|name| *name == "global_agents_md")
+            .position(|name| *name == "user_global_agents_md")
             .unwrap();
         let agent_idx = names
             .iter()
@@ -1461,7 +1521,7 @@ mod tests {
                 worktree_root: None,
             },
             loaded_agents_md: LoadedAgentsMd {
-                global_source: None,
+                user_global_source: None,
                 agent_source: Some(AgentsMdSource {
                     scope: crate::types::AgentsMdScope::Agent,
                     kind: AgentsMdKind::AgentsMd,
@@ -1499,7 +1559,7 @@ mod tests {
         assert!(dump.contains("Workspace anchor: /repo"));
         assert!(dump.contains("Execution root: /repo"));
         assert!(dump.contains("Cwd: /repo/src"));
-        assert!(dump.contains("Global AGENTS.md: none"));
+        assert!(dump.contains("User-global AGENTS.md: none"));
         assert!(dump.contains("Agent AGENTS.md: /tmp/agent-home/AGENTS.md (AGENTS.md)"));
         assert!(dump.contains("Workspace AGENTS.md: /repo/CLAUDE.md (CLAUDE.md fallback)"));
         assert!(dump.contains("Section inventory:"));
@@ -1572,7 +1632,7 @@ mod tests {
                 worktree_root: None,
             },
             loaded_agents_md: LoadedAgentsMd {
-                global_source: None,
+                user_global_source: None,
                 agent_source: Some(AgentsMdSource {
                     scope: crate::types::AgentsMdScope::Agent,
                     kind: AgentsMdKind::AgentsMd,

@@ -411,7 +411,8 @@ pub struct ChildAgentSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentsMdScope {
-    Global,
+    #[serde(alias = "global")]
+    UserGlobal,
     Agent,
     Workspace,
 }
@@ -434,8 +435,12 @@ pub struct AgentsMdSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct LoadedAgentsMd {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub global_source: Option<AgentsMdSource>,
+    #[serde(
+        default,
+        alias = "global_source",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub user_global_source: Option<AgentsMdSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_source: Option<AgentsMdSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -461,8 +466,12 @@ impl From<&AgentsMdSource> for AgentsMdSourceView {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct LoadedAgentsMdView {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub global_source: Option<AgentsMdSourceView>,
+    #[serde(
+        default,
+        alias = "global_source",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub user_global_source: Option<AgentsMdSourceView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_source: Option<AgentsMdSourceView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -472,7 +481,10 @@ pub struct LoadedAgentsMdView {
 impl From<&LoadedAgentsMd> for LoadedAgentsMdView {
     fn from(value: &LoadedAgentsMd) -> Self {
         Self {
-            global_source: value.global_source.as_ref().map(AgentsMdSourceView::from),
+            user_global_source: value
+                .user_global_source
+                .as_ref()
+                .map(AgentsMdSourceView::from),
             agent_source: value.agent_source.as_ref().map(AgentsMdSourceView::from),
             workspace_source: value
                 .workspace_source
@@ -3895,6 +3907,46 @@ mod tests {
         assert_eq!(
             serde_json::to_value(status).unwrap(),
             serde_json::json!("aborted")
+        );
+    }
+
+    #[test]
+    fn legacy_agents_md_global_names_deserialize_to_user_global() {
+        let loaded: LoadedAgentsMd = serde_json::from_value(serde_json::json!({
+            "global_source": {
+                "scope": "global",
+                "kind": "agents_md",
+                "path": "/tmp/user/.agents/AGENTS.md"
+            }
+        }))
+        .unwrap();
+        let source = loaded
+            .user_global_source
+            .as_ref()
+            .expect("legacy global_source should map to user_global_source");
+        assert_eq!(source.scope, AgentsMdScope::UserGlobal);
+        assert_eq!(source.path, PathBuf::from("/tmp/user/.agents/AGENTS.md"));
+
+        let encoded = serde_json::to_value(&loaded).unwrap();
+        assert!(encoded.get("global_source").is_none());
+        assert_eq!(
+            encoded["user_global_source"]["scope"],
+            serde_json::json!("user_global")
+        );
+
+        let view: LoadedAgentsMdView = serde_json::from_value(serde_json::json!({
+            "global_source": {
+                "scope": "global",
+                "kind": "agents_md",
+                "path": "/tmp/user/.agents/AGENTS.md"
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            view.user_global_source
+                .expect("legacy view global_source should map to user_global_source")
+                .scope,
+            AgentsMdScope::UserGlobal
         );
     }
 

@@ -13,18 +13,18 @@ pub fn load_agents_md(
     workspace_anchor: Option<&Path>,
 ) -> Result<LoadedAgentsMd> {
     Ok(LoadedAgentsMd {
-        global_source: load_global_agents_md(user_home)?,
+        user_global_source: load_user_global_agents_md(user_home)?,
         agent_source: load_agent_agents_md(agent_home)?,
         workspace_source: load_workspace_agents_md(workspace_anchor)?,
     })
 }
 
-fn load_global_agents_md(user_home: Option<&Path>) -> Result<Option<AgentsMdSource>> {
+fn load_user_global_agents_md(user_home: Option<&Path>) -> Result<Option<AgentsMdSource>> {
     let Some(user_home) = user_home else {
         return Ok(None);
     };
     let path = user_home.join(".agents").join(AGENTS_MD_FILENAME);
-    load_source(AgentsMdScope::Global, AgentsMdKind::AgentsMd, &path)
+    load_source(AgentsMdScope::UserGlobal, AgentsMdKind::AgentsMd, &path)
 }
 
 fn load_agent_agents_md(agent_home: &Path) -> Result<Option<AgentsMdSource>> {
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn loaded_agents_md_does_not_serialize_content() {
         let loaded = LoadedAgentsMd {
-            global_source: None,
+            user_global_source: None,
             agent_source: Some(AgentsMdSource {
                 scope: AgentsMdScope::Agent,
                 kind: AgentsMdKind::AgentsMd,
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn loads_global_agent_and_workspace_guidance_layers() {
+    fn loads_user_global_agent_and_workspace_guidance_layers() {
         let dir = tempdir().unwrap();
         let user_home = dir.path().join("user");
         let agent_home = dir.path().join("agent");
@@ -172,17 +172,17 @@ mod tests {
 
         assert_eq!(
             loaded
-                .global_source
+                .user_global_source
                 .as_ref()
                 .map(|source| source.scope.clone()),
-            Some(AgentsMdScope::Global)
+            Some(AgentsMdScope::UserGlobal)
         );
         assert!(loaded.agent_source.is_some());
         assert!(loaded.workspace_source.is_some());
     }
 
     #[test]
-    fn global_and_agent_guidance_survive_workspace_switches() {
+    fn user_global_and_agent_guidance_survive_workspace_switches() {
         let dir = tempdir().unwrap();
         let user_home = dir.path().join("user");
         let agent_home = dir.path().join("agent");
@@ -192,11 +192,11 @@ mod tests {
         std::fs::create_dir_all(&agent_home).unwrap();
         std::fs::create_dir_all(&workspace_a).unwrap();
         std::fs::create_dir_all(&workspace_b).unwrap();
-        let global_path = user_home.join(".agents").join(AGENTS_MD_FILENAME);
+        let user_global_path = user_home.join(".agents").join(AGENTS_MD_FILENAME);
         let agent_path = agent_home.join(AGENTS_MD_FILENAME);
         let workspace_a_path = workspace_a.join(AGENTS_MD_FILENAME);
         let workspace_b_path = workspace_b.join(AGENTS_MD_FILENAME);
-        std::fs::write(&global_path, "global\n").unwrap();
+        std::fs::write(&user_global_path, "global\n").unwrap();
         std::fs::write(&agent_path, "agent\n").unwrap();
         std::fs::write(&workspace_a_path, "workspace a\n").unwrap();
         std::fs::write(&workspace_b_path, "workspace b\n").unwrap();
@@ -205,12 +205,18 @@ mod tests {
         let loaded_b = load_agents_md(Some(&user_home), &agent_home, Some(&workspace_b)).unwrap();
 
         assert_eq!(
-            loaded_a.global_source.as_ref().map(|source| &source.path),
-            Some(&global_path)
+            loaded_a
+                .user_global_source
+                .as_ref()
+                .map(|source| &source.path),
+            Some(&user_global_path)
         );
         assert_eq!(
-            loaded_b.global_source.as_ref().map(|source| &source.path),
-            Some(&global_path)
+            loaded_b
+                .user_global_source
+                .as_ref()
+                .map(|source| &source.path),
+            Some(&user_global_path)
         );
         assert_eq!(
             loaded_a.agent_source.as_ref().map(|source| &source.path),
