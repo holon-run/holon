@@ -16,10 +16,11 @@ use crate::{
     },
     prompt::PromptStability,
     provider::{
-        http_trace::ProviderHttpTrace, AgentProvider, AnthropicPromptCacheDiagnostics,
-        CacheBreakpointInfo, ConversationMessage, ModelBlock, PromptContentBlock,
-        ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderContextManagementPolicy,
-        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind, ProviderPromptCapability,
+        builtin_web_search_probe_turn_request, http_trace::ProviderHttpTrace, AgentProvider,
+        AnthropicPromptCacheDiagnostics, CacheBreakpointInfo, ConversationMessage, ModelBlock,
+        PromptContentBlock, ProviderBuiltinWebSearchCapability, ProviderCacheUsage,
+        ProviderContextManagementPolicy, ProviderNativeWebSearchDiagnostics,
+        ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderPromptCapability,
         ProviderTurnRequest, ProviderTurnResponse,
     },
 };
@@ -358,9 +359,20 @@ impl AgentProvider for AnthropicProvider {
             kind: config.kind,
             provider_id: self.provider_id.clone(),
             provider_model_ref: format!("{}/{}", self.provider_id, self.model),
+            provider_transport: "anthropic_messages".into(),
+            provider_base_url: self.base_url.clone(),
             advertised_tool_type: config.advertised_tool_type.clone(),
             backend_kind: config.backend_kind.clone(),
         })
+    }
+
+    async fn probe_builtin_web_search(
+        &self,
+        request: ProviderNativeWebSearchRequest,
+    ) -> Result<()> {
+        self.complete_turn(builtin_web_search_probe_turn_request(request))
+            .await?;
+        Ok(())
     }
 
     fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +18,7 @@ mod transports;
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
 pub use diagnostics::{provider_doctor, resolved_model_availability};
 pub use http_trace::ProviderHttpTraceDiagnostics;
+pub(crate) use retry::sanitize_transport_url;
 pub use transports::{
     AnthropicProvider, OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiProvider,
 };
@@ -170,6 +171,8 @@ pub struct ProviderBuiltinWebSearchCapability {
     pub kind: ProviderNativeWebSearchKind,
     pub provider_id: String,
     pub provider_model_ref: String,
+    pub provider_transport: String,
+    pub provider_base_url: String,
     pub advertised_tool_type: String,
     pub backend_kind: String,
 }
@@ -379,6 +382,15 @@ pub trait AgentProvider: Send + Sync {
         None
     }
 
+    async fn probe_builtin_web_search(
+        &self,
+        _request: ProviderNativeWebSearchRequest,
+    ) -> Result<()> {
+        Err(anyhow!(
+            "active provider does not support builtin web search probing"
+        ))
+    }
+
     fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
         self.builtin_web_search().map(|capability| capability.kind)
     }
@@ -399,6 +411,19 @@ pub trait AgentProvider: Send + Sync {
     #[cfg(test)]
     fn configured_model_refs(&self) -> Vec<String> {
         Vec::new()
+    }
+}
+
+pub(crate) fn builtin_web_search_probe_turn_request(
+    native_web_search: ProviderNativeWebSearchRequest,
+) -> ProviderTurnRequest {
+    ProviderTurnRequest {
+        prompt_frame: ProviderPromptFrame::plain("Reply with exactly OK."),
+        conversation: vec![ConversationMessage::UserText(
+            "Reply with exactly OK.".into(),
+        )],
+        tools: Vec::new(),
+        native_web_search: Some(native_web_search),
     }
 }
 
@@ -594,6 +619,10 @@ pub(crate) use catalog::build_candidate;
 pub(crate) use retry::classify_provider_error;
 #[cfg(test)]
 pub(crate) use retry::provider_max_attempts;
+#[cfg(test)]
+pub(crate) use retry::{
+    provider_transport_error, ProviderFailureClassification, ProviderFailureKind, RetryDisposition,
+};
 #[cfg(test)]
 pub(crate) use tool_schema::validate_emitted_tool_schema;
 pub(crate) use tool_schema::{emitted_tool_json_schema, ToolSchemaContract};

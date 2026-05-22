@@ -320,6 +320,7 @@ impl RuntimeHandle {
                 default_tool_output_tokens,
                 max_tool_output_tokens,
                 web_config,
+                builtin_web_search_probe_cache: Mutex::new(HashMap::new()),
                 callback_base_url,
                 tools: ToolRegistry::new(PathBuf::new()),
                 system: Arc::new(LocalSystem::new()),

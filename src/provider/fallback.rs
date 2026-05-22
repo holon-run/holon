@@ -14,7 +14,7 @@ use super::{
     },
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
     ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
-    ProviderTurnRequest, ProviderTurnResponse,
+    ProviderNativeWebSearchRequest, ProviderTurnRequest, ProviderTurnResponse,
 };
 use crate::prompt::PromptStability;
 
@@ -174,6 +174,8 @@ mod tests {
             kind: ProviderNativeWebSearchKind::Anthropic,
             provider_id: provider_id.into(),
             provider_model_ref: model_ref.into(),
+            provider_transport: "anthropic_messages".into(),
+            provider_base_url: "https://api.example.test".into(),
             advertised_tool_type: "web_search_20250305".into(),
             backend_kind: backend_kind.into(),
         }
@@ -562,6 +564,18 @@ impl AgentProvider for FallbackProvider {
 
     fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
         self.candidates.first()?.provider.builtin_web_search()
+    }
+
+    async fn probe_builtin_web_search(
+        &self,
+        request: ProviderNativeWebSearchRequest,
+    ) -> Result<()> {
+        self.candidates
+            .first()
+            .ok_or_else(|| anyhow!("fallback provider has no candidates"))?
+            .provider
+            .probe_builtin_web_search(request)
+            .await
     }
 
     fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {

@@ -40,6 +40,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use bootstrap::ProviderReconfigurator;
 use chrono::Utc;
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -59,8 +60,8 @@ use crate::{
     memory::{mark_working_memory_prompted, refresh_episode_memory, refresh_working_memory},
     prompt::{build_effective_prompt, EffectivePrompt},
     provider::{
-        provider_attempt_timeline, AgentProvider, ModelBlock, ProviderNativeWebSearchKind,
-        ProviderNativeWebSearchRequest,
+        provider_attempt_timeline, AgentProvider, ModelBlock, ProviderBuiltinWebSearchCapability,
+        ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
     },
     queue::RuntimeQueue,
     skills::{
@@ -204,6 +205,8 @@ struct RuntimeInner {
     default_tool_output_tokens: u64,
     max_tool_output_tokens: u64,
     web_config: WebConfig,
+    builtin_web_search_probe_cache:
+        Mutex<HashMap<BuiltinWebSearchProbeKey, BuiltinWebSearchProbeCacheEntry>>,
     callback_base_url: String,
     tools: ToolRegistry,
     system: Arc<LocalSystem>,
@@ -214,6 +217,83 @@ struct RuntimeInner {
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BuiltinWebSearchProbeKey {
+    provider_id: String,
+    provider_model_ref: String,
+    provider_transport: String,
+    provider_base_url: String,
+    advertised_tool_type: String,
+    backend_kind: String,
+}
+
+impl BuiltinWebSearchProbeKey {
+    fn from_capability(capability: &ProviderBuiltinWebSearchCapability) -> Self {
+        Self {
+            provider_id: capability.provider_id.clone(),
+            provider_model_ref: capability.provider_model_ref.clone(),
+            provider_transport: capability.provider_transport.clone(),
+            provider_base_url: capability.provider_base_url.clone(),
+            advertised_tool_type: capability.advertised_tool_type.clone(),
+            backend_kind: capability.backend_kind.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BuiltinWebSearchProbeCacheEntry {
+    status: BuiltinWebSearchProbeStatus,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[allow(dead_code)]
+#[serde(rename_all = "snake_case")]
+enum BuiltinWebSearchProbeStatus {
+    Supported,
+    Unsupported,
+    TransientFailure,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum BuiltinWebSearchSelectionStatus {
+    Selected,
+    Disabled,
+    Unsupported,
+    NotDeclared,
+    NotRequested,
+    TransientProbeFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct BuiltinWebSearchSelectionDiagnostics {
+    status: BuiltinWebSearchSelectionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_model_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_transport: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    advertised_tool_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backend_kind: Option<String>,
+    probe_status: BuiltinWebSearchProbeStatus,
+    probe_cache_hit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BuiltinWebSearchSelection {
+    request: Option<ProviderNativeWebSearchRequest>,
+    diagnostics: BuiltinWebSearchSelectionDiagnostics,
 }
 
 #[derive(Debug)]
