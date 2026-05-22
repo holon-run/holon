@@ -49,8 +49,6 @@ struct Cli {
 #[derive(Debug, Clone, PartialEq, Eq, ValueEnum)]
 enum ControlCommandAction {
     Start,
-    Pause,
-    Resume,
     Stop,
     Abort,
 }
@@ -59,8 +57,6 @@ impl ControlCommandAction {
     fn as_control_action(&self) -> Option<ControlAction> {
         match self {
             Self::Start => Some(ControlAction::Start),
-            Self::Pause => Some(ControlAction::Pause),
-            Self::Resume => Some(ControlAction::Resume),
             Self::Stop => Some(ControlAction::Stop),
             Self::Abort => None,
         }
@@ -410,13 +406,7 @@ enum AgentCommands {
         #[arg(long)]
         template: Option<String>,
     },
-    Pause {
-        agent_id: Option<String>,
-    },
     Start {
-        agent_id: Option<String>,
-    },
-    Resume {
         agent_id: Option<String>,
     },
     Stop {
@@ -651,7 +641,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
                     &format!("/control/agents/{agent}/current-run/abort"),
                     &http::AbortCurrentRunRequest {
                         run_id: None,
-                        mode: Some("pause_after_abort".into()),
+                        mode: Some("stop_after_abort".into()),
                         trust: Some(TrustLevel::TrustedOperator),
                     },
                 )
@@ -1268,24 +1258,6 @@ mod tests {
             panic!("expected agent start command");
         };
         assert_eq!(agent_id, None);
-
-        let cli = Cli::parse_from(["holon", "agent", "pause"]);
-        let Commands::Agent {
-            command: Some(AgentCommands::Pause { agent_id }),
-        } = cli.command
-        else {
-            panic!("expected agent pause command");
-        };
-        assert_eq!(agent_id, None);
-
-        let cli = Cli::parse_from(["holon", "agent", "resume", "foo"]);
-        let Commands::Agent {
-            command: Some(AgentCommands::Resume { agent_id }),
-        } = cli.command
-        else {
-            panic!("expected agent resume command");
-        };
-        assert_eq!(agent_id.as_deref(), Some("foo"));
 
         let cli = Cli::parse_from(["holon", "agent", "stop", "foo"]);
         let Commands::Agent {
@@ -2278,14 +2250,8 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
             )
             .await
         }
-        Some(AgentCommands::Pause { agent_id }) => {
-            control_agent_lifecycle(config, agent_id, ControlAction::Pause).await
-        }
         Some(AgentCommands::Start { agent_id }) => {
             control_agent_lifecycle(config, agent_id, ControlAction::Start).await
-        }
-        Some(AgentCommands::Resume { agent_id }) => {
-            control_agent_lifecycle(config, agent_id, ControlAction::Resume).await
         }
         Some(AgentCommands::Stop { agent_id }) => {
             control_agent_lifecycle(config, agent_id, ControlAction::Stop).await
@@ -2297,7 +2263,7 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                 &format!("/control/agents/{agent}/current-run/abort"),
                 &http::AbortCurrentRunRequest {
                     run_id: None,
-                    mode: Some("pause_after_abort".into()),
+                    mode: Some("stop_after_abort".into()),
                     trust: Some(TrustLevel::TrustedOperator),
                 },
             )

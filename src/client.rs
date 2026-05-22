@@ -442,7 +442,7 @@ impl LocalClient {
             &format!("/control/agents/{agent_id}/current-run/abort"),
             &crate::http::AbortCurrentRunRequest {
                 run_id,
-                mode: Some("pause_after_abort".into()),
+                mode: Some("stop_after_abort".into()),
                 trust: Some(TrustLevel::TrustedOperator),
             },
         )

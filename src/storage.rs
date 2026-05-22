@@ -2036,6 +2036,24 @@ mod tests {
     }
 
     #[test]
+    fn read_agent_maps_legacy_paused_status_to_stopped() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Stopped;
+        let mut value = serde_json::to_value(&agent).unwrap();
+        value["status"] = serde_json::json!("paused");
+        std::fs::write(
+            dir.path().join(".holon/state/agent.json"),
+            serde_json::to_string_pretty(&value).unwrap(),
+        )
+        .unwrap();
+
+        let restored = storage.read_agent().unwrap().unwrap();
+        assert_eq!(restored.status, AgentStatus::Stopped);
+    }
+
+    #[test]
     fn latest_active_task_records_reduce_by_id_and_filter_terminal_tasks() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();

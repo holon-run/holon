@@ -630,12 +630,6 @@ fn decide_idle_signal_action(
     boundary: &'static str,
     signal: SchedulerIdleSignal<'_>,
 ) -> SchedulerDecision {
-    if matches!(projection.status, AgentStatus::Paused) {
-        return SchedulerDecision::new(SchedulerDecisionKind::Noop, "paused")
-            .boundary(boundary)
-            .liveness_only(true)
-            .evidence(format!("status={:?}", projection.status));
-    }
     if projection.turn_in_progress {
         return SchedulerDecision::new(SchedulerDecisionKind::Noop, "turn_in_progress")
             .boundary(boundary)
@@ -808,8 +802,6 @@ pub(crate) fn message_processing_decision(
 pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerDecision {
     let (kind, reason) = if matches!(projection.status, AgentStatus::Stopped) {
         (SchedulerDecisionKind::Stop, "stopped")
-    } else if matches!(projection.status, AgentStatus::Paused) {
-        (SchedulerDecisionKind::Noop, "paused")
     } else if matches!(projection.status, AgentStatus::Asleep) {
         (SchedulerDecisionKind::StayIdle, "already_asleep")
     } else if projection.queue_len > 0 {
@@ -908,7 +900,7 @@ pub(crate) fn idle_boundary_decision(
 ) -> SchedulerDecision {
     if matches!(
         projection.status,
-        AgentStatus::Stopped | AgentStatus::Paused | AgentStatus::Asleep
+        AgentStatus::Stopped | AgentStatus::Asleep
     ) {
         return idle_noop_decision(projection).boundary(boundary);
     }
@@ -932,10 +924,7 @@ pub(crate) fn projected_status_for_idle(
     state: &AgentState,
     _storage: &AppStorage,
 ) -> Result<AgentStatus> {
-    if matches!(
-        state.status,
-        AgentStatus::Asleep | AgentStatus::Paused | AgentStatus::Stopped
-    ) {
+    if matches!(state.status, AgentStatus::Asleep | AgentStatus::Stopped) {
         return Ok(state.status.clone());
     }
     Ok(AgentStatus::AwakeIdle)

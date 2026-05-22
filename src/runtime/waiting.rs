@@ -29,7 +29,7 @@ impl RuntimeHandle {
         let disposition = {
             let mut guard = self.inner.agent.lock().await;
             match guard.state.status {
-                AgentStatus::Paused | AgentStatus::Stopped => WakeDisposition::Ignored,
+                AgentStatus::Stopped => WakeDisposition::Ignored,
                 AgentStatus::AwakeRunning | AgentStatus::AwaitingTask => {
                     guard.state.pending_wake_hint = Some(pending.clone());
                     self.inner.storage.write_agent(&guard.state)?;

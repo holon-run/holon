@@ -26,10 +26,7 @@ impl RuntimeHandle {
         let continuation_resolution = continuation_trigger
             .as_ref()
             .map(|trigger| resolve_continuation(&prior_closure, trigger));
-        let model_turn_allowed = !matches!(
-            scheduler_state.status,
-            AgentStatus::Paused | AgentStatus::Stopped
-        );
+        let model_turn_allowed = !matches!(scheduler_state.status, AgentStatus::Stopped);
         Ok(MessageDispatchPlan {
             prior_closure,
             task,
@@ -132,8 +129,7 @@ impl RuntimeHandle {
             }
             MessageKind::Control => {
                 let action = match &message.body {
-                    MessageBody::Text { text } if text == "pause" => ControlAction::Pause,
-                    MessageBody::Text { text } if text == "resume" => ControlAction::Resume,
+                    MessageBody::Text { text } if text == "start" => ControlAction::Start,
                     MessageBody::Text { text } if text == "stop" => ControlAction::Stop,
                     _ => return Err(anyhow!("unknown control action")),
                 };
@@ -152,7 +148,7 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             let status_mutable = !matches!(
                 guard.state.status,
-                AgentStatus::Asleep | AgentStatus::Paused | AgentStatus::Stopped
+                AgentStatus::Asleep | AgentStatus::Stopped
             );
             if status_mutable {
                 scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;

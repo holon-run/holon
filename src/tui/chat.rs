@@ -708,7 +708,6 @@ fn active_activity_speaker(agent: &AgentSummary) -> String {
         _ if !agent.active_children.is_empty() => "Holon (delegating)".into(),
         crate::types::AgentStatus::AwakeIdle => "Holon (idle)".into(),
         crate::types::AgentStatus::Asleep => "Holon (sleeping)".into(),
-        crate::types::AgentStatus::Paused => "Holon (paused)".into(),
         crate::types::AgentStatus::Stopped => "Holon (stopped)".into(),
     }
 }

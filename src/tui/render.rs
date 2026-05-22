@@ -441,9 +441,7 @@ fn slash_argument_hint_lines(
         SlashArgHint::Agent => {
             lines.push(Line::from(vec![
                 Span::styled("  args: ", Style::default().add_modifier(Modifier::DIM)),
-                Span::raw(
-                    "switch <agent-id>  pause [agent-id]  resume [agent-id]  stop [agent-id]",
-                ),
+                Span::raw("switch <agent-id>  start [agent-id]  stop [agent-id]"),
             ]));
             let agents = app
                 .agents

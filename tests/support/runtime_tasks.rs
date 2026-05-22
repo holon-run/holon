@@ -1847,7 +1847,7 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_stopp
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
-    runtime.control(ControlAction::Pause).await?;
+    runtime.control(ControlAction::Stop).await?;
 
     let task = runtime
         .schedule_command_task(
@@ -1903,7 +1903,7 @@ pub async fn blocking_command_task_clears_active_state_while_runtime_stopped() -
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
     let runtime = host.default_runtime().await?;
-    runtime.control(ControlAction::Pause).await?;
+    runtime.control(ControlAction::Stop).await?;
 
     let task = runtime
         .schedule_command_task(

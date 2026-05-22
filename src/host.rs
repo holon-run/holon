@@ -2748,14 +2748,14 @@ mod tests {
         let storage =
             AppStorage::new(host.agent_data_dir(&host.config().default_agent_id)).unwrap();
         let mut state = AgentState::new(&host.config().default_agent_id);
-        state.status = AgentStatus::Paused;
+        state.status = AgentStatus::Stopped;
         storage.write_agent(&state).unwrap();
 
         let _runtime = host.default_runtime().await.unwrap();
         host.shutdown().await.unwrap();
 
         let persisted = storage.read_agent().unwrap().unwrap();
-        assert_eq!(persisted.status, AgentStatus::Paused);
+        assert_eq!(persisted.status, AgentStatus::Stopped);
         let events = storage.read_recent_events(16).unwrap();
         assert!(events
             .iter()

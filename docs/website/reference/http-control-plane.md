@@ -194,19 +194,20 @@ Response:
 
 **`POST /control/agents/:id/control`** — Control action
 
-Sends a control action (pause, resume, or other lifecycle actions). Request body:
+Sends a control action. Request body:
 
 ```json
-{ "action": "pause", "trust": "trusted_operator" }
+{ "action": "stop", "trust": "trusted_operator" }
 ```
 
 **`POST /control/agents/:id/current-run/abort`** — Abort current run
 
-Aborts the current agent run loop. Only `mode: "pause_after_abort"` is
-supported:
+Aborts the current agent run loop. New callers should use
+`mode: "stop_after_abort"`. The legacy `pause_after_abort` value is accepted as
+a compatibility alias and is treated as `stop_after_abort`.
 
 ```json
-{ "mode": "pause_after_abort" }
+{ "mode": "stop_after_abort" }
 ```
 
 **`POST /control/agents/:id/create`** — Create agent
