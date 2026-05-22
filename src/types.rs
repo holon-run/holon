@@ -398,6 +398,7 @@ pub struct ChildAgentSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentsMdScope {
+    Global,
     Agent,
     Workspace,
 }
@@ -420,6 +421,8 @@ pub struct AgentsMdSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct LoadedAgentsMd {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_source: Option<AgentsMdSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_source: Option<AgentsMdSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -446,6 +449,8 @@ impl From<&AgentsMdSource> for AgentsMdSourceView {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct LoadedAgentsMdView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global_source: Option<AgentsMdSourceView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_source: Option<AgentsMdSourceView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_source: Option<AgentsMdSourceView>,
@@ -454,6 +459,7 @@ pub struct LoadedAgentsMdView {
 impl From<&LoadedAgentsMd> for LoadedAgentsMdView {
     fn from(value: &LoadedAgentsMd) -> Self {
         Self {
+            global_source: value.global_source.as_ref().map(AgentsMdSourceView::from),
             agent_source: value.agent_source.as_ref().map(AgentsMdSourceView::from),
             workspace_source: value
                 .workspace_source
