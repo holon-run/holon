@@ -145,6 +145,55 @@ pub fn build_context(
         push_budgeted_section(&mut sections, &mut remaining_budget, section);
     }
 
+    if let Some(delta) = &agent.working_memory.pending_working_memory_delta {
+        if let Some(content) = render_working_memory_delta_with_budget(delta, remaining_budget) {
+            push_budgeted_section(
+                &mut sections,
+                &mut remaining_budget,
+                turn_section("working_memory_delta", content),
+            );
+        }
+    }
+
+    if let Some(work_item) = current_work_item {
+        push_budgeted_section(
+            &mut sections,
+            &mut remaining_budget,
+            turn_section(
+                "current_work_item",
+                render_current_work_item(work_item, storage.data_dir(), &active_waiting_intents),
+            ),
+        );
+    }
+
+    if let Some(work_item) = current_work_item {
+        if let Some(content) =
+            render_current_work_item_process_trace(work_item, &briefs, &tools, &transcript)
+        {
+            push_budgeted_section(
+                &mut sections,
+                &mut remaining_budget,
+                turn_section("current_work_item_process_trace", content),
+            );
+        }
+    }
+
+    if work_queue_projection.has_non_current_candidates() {
+        let candidates = render_work_item_candidates(
+            &work_queue_projection,
+            storage,
+            &agent.id,
+            storage.data_dir(),
+        )?;
+        if let Some(content) = candidates {
+            push_budgeted_section(
+                &mut sections,
+                &mut remaining_budget,
+                turn_section("queued_blocked_work_items", content),
+            );
+        }
+    }
+
     if let Some(worktree) = &agent.worktree_session {
         push_budgeted_section(
             &mut sections,
@@ -250,55 +299,6 @@ pub fn build_context(
         );
     }
 
-    if let Some(delta) = &agent.working_memory.pending_working_memory_delta {
-        if let Some(content) = render_working_memory_delta_with_budget(delta, remaining_budget) {
-            push_budgeted_section(
-                &mut sections,
-                &mut remaining_budget,
-                turn_section("working_memory_delta", content),
-            );
-        }
-    }
-
-    if let Some(work_item) = current_work_item {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
-            turn_section(
-                "current_work_item",
-                render_current_work_item(work_item, storage.data_dir(), &active_waiting_intents),
-            ),
-        );
-    }
-
-    if let Some(work_item) = current_work_item {
-        if let Some(content) =
-            render_current_work_item_process_trace(work_item, &briefs, &tools, &transcript)
-        {
-            push_budgeted_section(
-                &mut sections,
-                &mut remaining_budget,
-                turn_section("current_work_item_process_trace", content),
-            );
-        }
-    }
-
-    if work_queue_projection.has_non_current_candidates() {
-        let candidates = render_work_item_candidates(
-            &work_queue_projection,
-            storage,
-            &agent.id,
-            storage.data_dir(),
-        )?;
-        if let Some(content) = candidates {
-            push_budgeted_section(
-                &mut sections,
-                &mut remaining_budget,
-                turn_section("queued_blocked_work_items", content),
-            );
-        }
-    }
-
     push_budgeted_section(
         &mut sections,
         &mut remaining_budget,
@@ -361,17 +361,26 @@ pub fn build_context(
         );
     }
 
-    if let Some(content) = continuation_context(current_message, continuation) {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
-            turn_section("continuation_context", content),
-        );
-    }
+    let continuation_pushed =
+        if let Some(content) = continuation_context(current_message, continuation) {
+            push_budgeted_section(
+                &mut sections,
+                &mut remaining_budget,
+                turn_section("continuation_context", content),
+            )
+        } else {
+            false
+        };
 
     let mut current_input_budget = current_input_reserved_budget.saturating_add(remaining_budget);
-    let current_input_body =
-        render_current_input_body_with_budget(&current_message.body, current_input_budget);
+    let current_input_body = render_current_input_body_with_budget(
+        &current_message.body,
+        current_input_budget,
+        (!continuation_pushed)
+            .then(|| render_wake_hint_context(current_message))
+            .flatten()
+            .as_deref(),
+    );
     push_budgeted_section(
         &mut sections,
         &mut current_input_budget,
@@ -1149,14 +1158,22 @@ fn body_preview(body: &MessageBody) -> String {
     }
 }
 
-fn render_current_input_body_with_budget(body: &MessageBody, budget: usize) -> String {
-    let rendered = match body {
+fn render_current_input_body_with_budget(
+    body: &MessageBody,
+    budget: usize,
+    wake_hint_fallback: Option<&str>,
+) -> String {
+    let mut rendered = match body {
         MessageBody::Text { text } => text.clone(),
         MessageBody::Json { value } => {
             serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
         }
         MessageBody::Brief { text, .. } => text.clone(),
     };
+    if let Some(wake_hint) = wake_hint_fallback {
+        rendered.push_str("\nwake_hint_context:\n");
+        rendered.push_str(wake_hint);
+    }
     truncate_section_content(
         "",
         &rendered,
