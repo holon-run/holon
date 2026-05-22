@@ -15,6 +15,7 @@ use crate::{
     model_catalog::{
         BuiltInModelCatalog, BuiltInModelMetadata, ModelRuntimeOverride, ResolvedRuntimeModelPolicy,
     },
+    provider::ProviderNativeWebSearchKind,
     web::{WebProviderKind, WebSearchMode},
 };
 
@@ -142,6 +143,7 @@ pub struct ProviderRuntimeConfig {
     pub originator: Option<String>,
     pub reasoning_effort: Option<String>,
     pub context_management: AnthropicContextManagementConfig,
+    pub builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
 }
 
 impl ProviderRuntimeConfig {
@@ -250,6 +252,21 @@ pub struct ProviderConfigFile {
     pub auth: ProviderAuthConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderBuiltinWebSearchConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub kind: ProviderNativeWebSearchKind,
+    pub advertised_tool_type: String,
+    pub backend_kind: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1254,7 +1271,8 @@ pub fn validate_provider_config(
     provider_config: &ProviderConfigFile,
 ) -> Result<()> {
     parse_url_value("providers.<id>.base_url", &provider_config.base_url)?;
-    validate_provider_auth(provider_id, &provider_config.auth)
+    validate_provider_auth(provider_id, &provider_config.auth)?;
+    validate_provider_builtin_web_search(provider_id, provider_config)
 }
 
 pub fn built_in_provider_default_config(
@@ -1276,6 +1294,7 @@ fn built_in_provider_default_config_with_settings(
             base_url: provider.base_url.clone(),
             auth: ProviderAuthConfig::default(),
             reasoning_effort: None,
+            builtin_web_search: None,
         }))
 }
 
@@ -2316,6 +2335,7 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
             originator: Some("codex_cli_rs".into()),
             reasoning_effort: openai_codex_reasoning_effort,
             context_management: Default::default(),
+            builtin_web_search: None,
         },
     );
     let openai = ProviderId::openai();
@@ -2340,6 +2360,7 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
             originator: None,
             reasoning_effort: None,
             context_management: Default::default(),
+            builtin_web_search: Some(openai_builtin_web_search_config()),
         },
     );
     let anthropic = ProviderId::anthropic();
@@ -2362,6 +2383,7 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
             originator: None,
             reasoning_effort: None,
             context_management: resolve_anthropic_context_management_config()?,
+            builtin_web_search: Some(anthropic_builtin_web_search_config()),
         },
     );
     insert_openai_compatible_provider(
@@ -2706,6 +2728,11 @@ fn insert_anthropic_compatible_provider(
     env_names: &[&str],
     settings_env: &HashMap<String, String>,
 ) -> Result<()> {
+    let builtin_web_search = match provider {
+        "zai" | "zai-anthropic" => Some(zai_builtin_web_search_config()),
+        "bigmodel" | "bigmodel-anthropic" => Some(bigmodel_builtin_web_search_config()),
+        _ => None,
+    };
     insert_builtin_http_provider_with_context_management(
         registry,
         provider,
@@ -2714,6 +2741,7 @@ fn insert_anthropic_compatible_provider(
         env_names,
         settings_env,
         resolve_anthropic_compatible_context_management_config()?,
+        builtin_web_search,
     )
 }
 
@@ -2733,6 +2761,7 @@ fn insert_builtin_http_provider(
         env_names,
         settings_env,
         Default::default(),
+        None,
     )
 }
 
@@ -2744,6 +2773,7 @@ fn insert_builtin_http_provider_with_context_management(
     env_names: &[&str],
     settings_env: &HashMap<String, String>,
     context_management: AnthropicContextManagementConfig,
+    builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
 ) -> Result<()> {
     let id = ProviderId::parse(provider)?;
     let base_url_env = format!("HOLON_{}_BASE_URL", env_key_fragment(provider));
@@ -2781,9 +2811,46 @@ fn insert_builtin_http_provider_with_context_management(
             originator: None,
             reasoning_effort: None,
             context_management,
+            builtin_web_search,
         },
     );
     Ok(())
+}
+
+fn openai_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
+    ProviderBuiltinWebSearchConfig {
+        enabled: true,
+        kind: ProviderNativeWebSearchKind::OpenAi,
+        advertised_tool_type: "web_search_preview".to_string(),
+        backend_kind: "openai_web_search".to_string(),
+    }
+}
+
+fn anthropic_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
+    ProviderBuiltinWebSearchConfig {
+        enabled: true,
+        kind: ProviderNativeWebSearchKind::Anthropic,
+        advertised_tool_type: "web_search_20250305".to_string(),
+        backend_kind: "anthropic_web_search".to_string(),
+    }
+}
+
+fn zai_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
+    ProviderBuiltinWebSearchConfig {
+        enabled: true,
+        kind: ProviderNativeWebSearchKind::Anthropic,
+        advertised_tool_type: "web_search_20250305".to_string(),
+        backend_kind: "zai_web_search_prime".to_string(),
+    }
+}
+
+fn bigmodel_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
+    ProviderBuiltinWebSearchConfig {
+        enabled: true,
+        kind: ProviderNativeWebSearchKind::Anthropic,
+        advertised_tool_type: "web_search_20250305".to_string(),
+        backend_kind: "bigmodel_web_search".to_string(),
+    }
 }
 
 fn env_key_fragment(provider: &str) -> String {
@@ -2836,10 +2903,12 @@ fn materialize_provider_config(
         originator: None,
         reasoning_effort: None,
         context_management: Default::default(),
+        builtin_web_search: None,
     });
     if let Some(reasoning_effort) = provider_config.reasoning_effort.as_deref() {
         validate_openai_reasoning_effort(reasoning_effort)?;
     }
+    validate_provider_builtin_web_search(&id, &provider_config)?;
     runtime.id = id;
     runtime.transport = provider_config.transport;
     runtime.base_url = provider_config.base_url;
@@ -2847,6 +2916,9 @@ fn materialize_provider_config(
     runtime.credential = credential;
     if provider_config.reasoning_effort.is_some() {
         runtime.reasoning_effort = provider_config.reasoning_effort;
+    }
+    if let Some(builtin_web_search) = provider_config.builtin_web_search {
+        runtime.builtin_web_search = builtin_web_search.enabled.then_some(builtin_web_search);
     }
     Ok(runtime)
 }
@@ -2856,6 +2928,58 @@ fn validate_openai_reasoning_effort(value: &str) -> Result<()> {
         "low" | "medium" | "high" | "xhigh" => Ok(()),
         _ => Err(anyhow!(
             "invalid OpenAI Codex reasoning_effort '{value}'; must be one of low, medium, high, xhigh"
+        )),
+    }
+}
+
+fn validate_provider_builtin_web_search(
+    provider_id: &ProviderId,
+    provider_config: &ProviderConfigFile,
+) -> Result<()> {
+    let Some(search) = provider_config.builtin_web_search.as_ref() else {
+        return Ok(());
+    };
+    if !search.enabled {
+        return Ok(());
+    }
+    if search.advertised_tool_type.trim().is_empty() {
+        return Err(anyhow!(
+            "providers.{}.builtin_web_search.advertised_tool_type must not be empty",
+            provider_id.as_str()
+        ));
+    }
+    if search.backend_kind.trim().is_empty() {
+        return Err(anyhow!(
+            "providers.{}.builtin_web_search.backend_kind must not be empty",
+            provider_id.as_str()
+        ));
+    }
+    match (provider_config.transport, search.kind) {
+        (ProviderTransportKind::OpenAiResponses, ProviderNativeWebSearchKind::OpenAi) => {
+            if search.advertised_tool_type == "web_search_preview" {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "providers.{}.builtin_web_search.advertised_tool_type must be web_search_preview for OpenAI Responses native search",
+                    provider_id.as_str()
+                ))
+            }
+        }
+        (ProviderTransportKind::AnthropicMessages, ProviderNativeWebSearchKind::Anthropic) => {
+            if search.advertised_tool_type == "web_search_20250305" {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "providers.{}.builtin_web_search.advertised_tool_type must be web_search_20250305 for Anthropic Messages native search",
+                    provider_id.as_str()
+                ))
+            }
+        }
+        _ => Err(anyhow!(
+            "providers.{}.builtin_web_search kind {:?} is incompatible with transport {:?}",
+            provider_id.as_str(),
+            search.kind,
+            provider_config.transport
         )),
     }
 }
@@ -2982,6 +3106,7 @@ pub fn provider_registry_for_tests(
             originator: Some("codex_cli_rs".into()),
             reasoning_effort: Some("low".into()),
             context_management: Default::default(),
+            builtin_web_search: None,
         },
     );
     let openai = ProviderId::openai();
@@ -3003,6 +3128,7 @@ pub fn provider_registry_for_tests(
             originator: None,
             reasoning_effort: None,
             context_management: Default::default(),
+            builtin_web_search: Some(openai_builtin_web_search_config()),
         },
     );
     let anthropic = ProviderId::anthropic();
@@ -3024,6 +3150,7 @@ pub fn provider_registry_for_tests(
             originator: None,
             reasoning_effort: None,
             context_management: Default::default(),
+            builtin_web_search: Some(anthropic_builtin_web_search_config()),
         },
     );
     registry
@@ -3711,17 +3838,19 @@ mod tests {
 
     use crate::context::ContextConfig;
     use crate::model_catalog::ModelRuntimeOverride;
+    use crate::provider::ProviderNativeWebSearchKind;
 
     use super::{
-        config_schema, credential_store_path, default_holon_home, get_config_key, get_config_value,
-        list_credential_profiles_at, load_persisted_config_at, parse_anthropic_cache_strategy,
-        parse_anthropic_cache_strategy_env, parse_comma_separated_values, parse_url_value,
-        persisted_config_path, provider_registry_for_tests,
-        resolve_anthropic_context_management_config, save_persisted_config_at, set_config_key,
-        set_credential_profile_at, unset_config_key, AnthropicCacheStrategy,
-        AnthropicContextManagementConfig, AppConfig, ControlAuthMode, CredentialKind,
-        CredentialSource, CredentialStoreFile, HolonConfigFile, ModelConfigFile, ModelRef,
-        ProviderAuthConfig, ProviderConfigFile, ProviderId, ProviderRegistry,
+        built_in_provider_registry, config_schema, credential_store_path, default_holon_home,
+        get_config_key, get_config_value, list_credential_profiles_at, load_persisted_config_at,
+        parse_anthropic_cache_strategy, parse_anthropic_cache_strategy_env,
+        parse_comma_separated_values, parse_url_value, persisted_config_path,
+        provider_registry_for_tests, resolve_anthropic_context_management_config,
+        save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
+        validate_provider_config, AnthropicCacheStrategy, AnthropicContextManagementConfig,
+        AppConfig, ControlAuthMode, CredentialKind, CredentialSource, CredentialStoreFile,
+        HolonConfigFile, ModelConfigFile, ModelRef, ProviderAuthConfig,
+        ProviderBuiltinWebSearchConfig, ProviderConfigFile, ProviderId, ProviderRegistry,
         ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID,
     };
 
@@ -4287,6 +4416,33 @@ mod tests {
     }
 
     #[test]
+    fn built_in_provider_registry_declares_provider_specific_builtin_search() {
+        let registry = built_in_provider_registry(&HashMap::new()).unwrap();
+
+        let anthropic = registry.get(&ProviderId::anthropic()).unwrap();
+        let anthropic_search = anthropic.builtin_web_search.as_ref().unwrap();
+        assert_eq!(
+            anthropic_search.kind,
+            ProviderNativeWebSearchKind::Anthropic
+        );
+        assert_eq!(anthropic_search.advertised_tool_type, "web_search_20250305");
+        assert_eq!(anthropic_search.backend_kind, "anthropic_web_search");
+
+        let zai = registry
+            .get(&ProviderId::parse("zai-anthropic").unwrap())
+            .unwrap();
+        let zai_search = zai.builtin_web_search.as_ref().unwrap();
+        assert_eq!(zai_search.kind, ProviderNativeWebSearchKind::Anthropic);
+        assert_eq!(zai_search.advertised_tool_type, "web_search_20250305");
+        assert_eq!(zai_search.backend_kind, "zai_web_search_prime");
+
+        let deepseek = registry
+            .get(&ProviderId::parse("deepseek-anthropic").unwrap())
+            .unwrap();
+        assert!(deepseek.builtin_web_search.is_none());
+    }
+
+    #[test]
     fn set_get_and_unset_round_trip_models_catalog_object() {
         let mut config = HolonConfigFile::default();
         set_config_key(
@@ -4338,6 +4494,85 @@ mod tests {
     }
 
     #[test]
+    fn provider_builtin_web_search_rejects_empty_tool_metadata() {
+        let id = ProviderId::parse("custom-anthropic").unwrap();
+        let config = ProviderConfigFile {
+            transport: ProviderTransportKind::AnthropicMessages,
+            base_url: "https://api.example.com".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("CUSTOM_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            reasoning_effort: None,
+            builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
+                enabled: true,
+                kind: ProviderNativeWebSearchKind::Anthropic,
+                advertised_tool_type: String::new(),
+                backend_kind: "custom_backend".into(),
+            }),
+        };
+
+        let err = validate_provider_config(&id, &config).unwrap_err();
+        assert!(err.to_string().contains("advertised_tool_type"));
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn provider_builtin_web_search_rejects_transport_kind_mismatch() {
+        let id = ProviderId::parse("custom-openai").unwrap();
+        let config = ProviderConfigFile {
+            transport: ProviderTransportKind::OpenAiResponses,
+            base_url: "https://api.example.com".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("CUSTOM_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            reasoning_effort: None,
+            builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
+                enabled: true,
+                kind: ProviderNativeWebSearchKind::Anthropic,
+                advertised_tool_type: "web_search_20250305".into(),
+                backend_kind: "custom_backend".into(),
+            }),
+        };
+
+        let err = validate_provider_config(&id, &config).unwrap_err();
+        assert!(err.to_string().contains("incompatible with transport"));
+    }
+
+    #[test]
+    fn provider_builtin_web_search_rejects_wrong_tool_type() {
+        let id = ProviderId::parse("custom-openai").unwrap();
+        let config = ProviderConfigFile {
+            transport: ProviderTransportKind::OpenAiResponses,
+            base_url: "https://api.example.com".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("CUSTOM_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            reasoning_effort: None,
+            builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
+                enabled: true,
+                kind: ProviderNativeWebSearchKind::OpenAi,
+                advertised_tool_type: "web_search_20250305".into(),
+                backend_kind: "custom_backend".into(),
+            }),
+        };
+
+        let err = validate_provider_config(&id, &config).unwrap_err();
+        assert!(err.to_string().contains("web_search_preview"));
+    }
+
+    #[test]
     fn materialize_provider_config_resolves_env_credentials_from_settings() {
         let mut settings_env = HashMap::new();
         settings_env.insert("OPENROUTER_API_KEY".to_string(), "settings-key".to_string());
@@ -4355,6 +4590,7 @@ mod tests {
                     external: None,
                 },
                 reasoning_effort: None,
+                builtin_web_search: None,
             },
             &settings_env,
             &CredentialStoreFile::default(),
@@ -4442,6 +4678,7 @@ mod tests {
                     external: None,
                 },
                 reasoning_effort: None,
+                builtin_web_search: None,
             },
             &settings_env,
             &credential_store,
@@ -4491,6 +4728,7 @@ mod tests {
                     external: None,
                 },
                 reasoning_effort: None,
+                builtin_web_search: None,
             },
         );
         save_persisted_config_at(&persisted_config_path(dir.path()), &config).unwrap();
@@ -4836,6 +5074,7 @@ mod tests {
                     external: Some("codex_cli".into()),
                 },
                 reasoning_effort: None,
+                builtin_web_search: None,
             },
             &settings_env,
             &CredentialStoreFile::default(),
@@ -4983,6 +5222,7 @@ mod tests {
                             external: None,
                         },
                         reasoning_effort: None,
+                        builtin_web_search: None,
                     },
                 )]),
                 ..HolonConfigFile::default()
@@ -5029,6 +5269,7 @@ mod tests {
                 originator: None,
                 reasoning_effort: None,
                 context_management: Default::default(),
+                builtin_web_search: None,
             },
         );
         let mut overrides = HashMap::new();

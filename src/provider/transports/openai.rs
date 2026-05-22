@@ -13,18 +13,20 @@ use std::{
 use crate::{
     auth::load_codex_cli_credential,
     config::{
-        AppConfig, CredentialKind, CredentialSource, ModelRef, ProviderId, ProviderRuntimeConfig,
+        AppConfig, CredentialKind, CredentialSource, ModelRef, ProviderBuiltinWebSearchConfig,
+        ProviderId, ProviderRuntimeConfig,
     },
     context::ContextConfig,
     model_catalog::BuiltInModelCatalog,
     provider::{
         emitted_tool_json_schema,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
-        AgentProvider, ConversationMessage, ModelBlock, ProviderCacheUsage,
-        ProviderIncrementalContinuationDiagnostics, ProviderNativeWebSearchDiagnostics,
-        ProviderNativeWebSearchKind, ProviderOpenAiRemoteCompactionDiagnostics,
-        ProviderOpenAiRequestControlsDiagnostics, ProviderPromptFrame, ProviderRequestDiagnostics,
-        ProviderTurnRequest, ProviderTurnResponse, ToolSchemaContract,
+        AgentProvider, ConversationMessage, ModelBlock, ProviderBuiltinWebSearchCapability,
+        ProviderCacheUsage, ProviderIncrementalContinuationDiagnostics,
+        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
+        ProviderOpenAiRemoteCompactionDiagnostics, ProviderOpenAiRequestControlsDiagnostics,
+        ProviderPromptFrame, ProviderRequestDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
+        ToolSchemaContract,
     },
     token_estimate::estimate_json_tokens,
 };
@@ -39,10 +41,12 @@ use crate::provider::retry::{
 #[derive(Clone)]
 pub struct OpenAiProvider {
     client: Client,
+    provider_id: String,
     base_url: String,
     api_key: Option<String>,
     model: String,
     max_output_tokens: u32,
+    builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     compaction_policy: OpenAiCompactionPolicy,
     trace_home_dir: PathBuf,
     continuation: Arc<Mutex<OpenAiContinuationState>>,
@@ -275,10 +279,12 @@ impl OpenAiProvider {
         };
         Ok(Self {
             client,
+            provider_id: provider_config.id.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             api_key,
             model: model.to_string(),
             max_output_tokens,
+            builtin_web_search: provider_config.builtin_web_search.clone(),
             compaction_policy,
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
@@ -542,8 +548,15 @@ impl AgentProvider for OpenAiProvider {
         true
     }
 
-    fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
-        Some(ProviderNativeWebSearchKind::OpenAi)
+    fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
+        let config = self.builtin_web_search.as_ref()?;
+        Some(ProviderBuiltinWebSearchCapability {
+            kind: config.kind,
+            provider_id: self.provider_id.clone(),
+            provider_model_ref: format!("{}/{}", self.provider_id, self.model),
+            advertised_tool_type: config.advertised_tool_type.clone(),
+            backend_kind: config.backend_kind.clone(),
+        })
     }
 }
 
@@ -1112,7 +1125,7 @@ fn openai_native_web_search_tool(request: &ProviderTurnRequest) -> Option<Value>
     if native.kind != ProviderNativeWebSearchKind::OpenAi {
         return None;
     }
-    Some(json!({ "type": "web_search_preview" }))
+    Some(json!({ "type": native.advertised_tool_type }))
 }
 
 fn openai_request_controls_diagnostics(body: &Value) -> ProviderOpenAiRequestControlsDiagnostics {
@@ -1592,6 +1605,9 @@ fn native_web_search_diagnostics(
     Some(ProviderNativeWebSearchDiagnostics {
         kind: native.kind,
         provider_id: native.provider_id.clone(),
+        provider_model_ref: native.provider_model_ref.clone(),
+        advertised_tool_type: native.advertised_tool_type.clone(),
+        backend_kind: native.backend_kind.clone(),
         lowered,
         fallback_reason: (!lowered)
             .then(|| "openai responses transport only supports OpenAI-native web search".into()),
@@ -4271,6 +4287,9 @@ mod tests {
         request.native_web_search = Some(ProviderNativeWebSearchRequest {
             kind: ProviderNativeWebSearchKind::OpenAi,
             provider_id: "openai_native".into(),
+            provider_model_ref: "openai/gpt-test".into(),
+            advertised_tool_type: "web_search_preview".into(),
+            backend_kind: "openai_web_search".into(),
             max_results: Some(5),
         });
 

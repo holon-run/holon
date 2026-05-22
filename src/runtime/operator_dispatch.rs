@@ -294,7 +294,7 @@ impl RuntimeHandle {
         native_search_provider: Option<&(String, WebProviderKind)>,
     ) -> Option<ProviderNativeWebSearchRequest> {
         native_web_search_request_for_config(
-            provider.native_web_search_kind(),
+            provider.builtin_web_search(),
             native_search_provider,
             self.web_config().search.max_results,
         )
@@ -313,7 +313,7 @@ impl RuntimeHandle {
 }
 
 fn native_web_search_request_for_config(
-    provider_native_kind: Option<ProviderNativeWebSearchKind>,
+    provider_capability: Option<crate::provider::ProviderBuiltinWebSearchCapability>,
     native_search_provider: Option<&(String, WebProviderKind)>,
     max_results: usize,
 ) -> Option<ProviderNativeWebSearchRequest> {
@@ -325,9 +325,13 @@ fn native_web_search_request_for_config(
         _ => return None,
     };
 
-    (provider_native_kind == Some(kind)).then_some(ProviderNativeWebSearchRequest {
+    let capability = provider_capability?;
+    (capability.kind == kind).then_some(ProviderNativeWebSearchRequest {
         kind,
         provider_id: provider_id.clone(),
+        provider_model_ref: capability.provider_model_ref,
+        advertised_tool_type: capability.advertised_tool_type,
+        backend_kind: capability.backend_kind,
         max_results: Some(max_results.max(1)),
     })
 }
@@ -341,7 +345,13 @@ mod tests {
         let native_provider = ("openai-native".to_string(), WebProviderKind::OpenAiNative);
 
         assert!(native_web_search_request_for_config(
-            Some(ProviderNativeWebSearchKind::Anthropic),
+            Some(crate::provider::ProviderBuiltinWebSearchCapability {
+                kind: ProviderNativeWebSearchKind::Anthropic,
+                provider_id: "anthropic".into(),
+                provider_model_ref: "anthropic/claude-test".into(),
+                advertised_tool_type: "web_search_20250305".into(),
+                backend_kind: "anthropic_web_search".into(),
+            }),
             Some(&native_provider),
             5,
         )
@@ -353,12 +363,21 @@ mod tests {
         let native_provider = ("openai-native".to_string(), WebProviderKind::OpenAiNative);
 
         let request = native_web_search_request_for_config(
-            Some(ProviderNativeWebSearchKind::OpenAi),
+            Some(crate::provider::ProviderBuiltinWebSearchCapability {
+                kind: ProviderNativeWebSearchKind::OpenAi,
+                provider_id: "openai".into(),
+                provider_model_ref: "openai/gpt-test".into(),
+                advertised_tool_type: "web_search_preview".into(),
+                backend_kind: "openai_web_search".into(),
+            }),
             Some(&native_provider),
             0,
         )
         .unwrap();
 
         assert_eq!(request.max_results, Some(1));
+        assert_eq!(request.provider_model_ref, "openai/gpt-test");
+        assert_eq!(request.advertised_tool_type, "web_search_preview");
+        assert_eq!(request.backend_kind, "openai_web_search");
     }
 }

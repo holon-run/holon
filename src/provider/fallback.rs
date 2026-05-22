@@ -13,7 +13,7 @@ use super::{
         provider_retry_backoff, RetryDisposition,
     },
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
-    ProviderAttemptTimeline, ProviderContextManagementPolicy, ProviderNativeWebSearchKind,
+    ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
     ProviderTurnRequest, ProviderTurnResponse,
 };
 use crate::prompt::PromptStability;
@@ -32,7 +32,9 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::*;
-    use crate::provider::{ModelBlock, ProviderCacheUsage, ProviderPromptFrame};
+    use crate::provider::{
+        ModelBlock, ProviderCacheUsage, ProviderNativeWebSearchKind, ProviderPromptFrame,
+    };
 
     #[derive(Clone)]
     struct PolicyProvider {
@@ -45,6 +47,11 @@ mod tests {
         fail: bool,
         prompts: Arc<Mutex<Vec<String>>>,
         system_blocks: Arc<Mutex<Vec<Vec<PromptContentBlock>>>>,
+    }
+
+    #[derive(Clone)]
+    struct SearchProvider {
+        capability: Option<ProviderBuiltinWebSearchCapability>,
     }
 
     #[async_trait]
@@ -102,6 +109,30 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl AgentProvider for SearchProvider {
+        async fn complete_turn(
+            &self,
+            _request: ProviderTurnRequest,
+        ) -> Result<ProviderTurnResponse> {
+            Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::Text { text: "ok".into() }],
+                stop_reason: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_usage: Some(ProviderCacheUsage {
+                    read_input_tokens: 0,
+                    creation_input_tokens: 0,
+                }),
+                request_diagnostics: None,
+            })
+        }
+
+        fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
+            self.capability.clone()
+        }
+    }
+
     fn policy(trigger_input_tokens: u32) -> ProviderContextManagementPolicy {
         ProviderContextManagementPolicy {
             provider: "anthropic".into(),
@@ -134,6 +165,20 @@ mod tests {
         }
     }
 
+    fn search_capability(
+        provider_id: &str,
+        model_ref: &str,
+        backend_kind: &str,
+    ) -> ProviderBuiltinWebSearchCapability {
+        ProviderBuiltinWebSearchCapability {
+            kind: ProviderNativeWebSearchKind::Anthropic,
+            provider_id: provider_id.into(),
+            provider_model_ref: model_ref.into(),
+            advertised_tool_type: "web_search_20250305".into(),
+            backend_kind: backend_kind.into(),
+        }
+    }
+
     #[test]
     fn context_management_policy_requires_full_policy_match() {
         let provider = FallbackProvider {
@@ -144,6 +189,37 @@ mod tests {
         };
 
         assert_eq!(provider.context_management_policy(), None);
+    }
+
+    #[test]
+    fn builtin_web_search_uses_current_turn_candidate() {
+        let provider = FallbackProvider {
+            candidates: vec![
+                ProviderCandidate {
+                    model_ref: "zai-anthropic/glm-4.7".into(),
+                    provider_name: "zai-anthropic".into(),
+                    provider: Arc::new(SearchProvider {
+                        capability: Some(search_capability(
+                            "zai-anthropic",
+                            "zai-anthropic/glm-4.7",
+                            "zai_web_search_prime",
+                        )),
+                    }),
+                },
+                ProviderCandidate {
+                    model_ref: "deepseek-anthropic/deepseek-chat".into(),
+                    provider_name: "deepseek-anthropic".into(),
+                    provider: Arc::new(SearchProvider { capability: None }),
+                },
+            ],
+        };
+
+        let capability = provider
+            .builtin_web_search()
+            .expect("active candidate should expose builtin search");
+        assert_eq!(capability.provider_id, "zai-anthropic");
+        assert_eq!(capability.provider_model_ref, "zai-anthropic/glm-4.7");
+        assert_eq!(capability.backend_kind, "zai_web_search_prime");
     }
 
     #[tokio::test]
@@ -484,17 +560,8 @@ impl AgentProvider for FallbackProvider {
                 .all(|candidate| candidate.provider.supports_freeform_grammar_tools())
     }
 
-    fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
-        let mut kinds = self
-            .candidates
-            .iter()
-            .map(|candidate| candidate.provider.native_web_search_kind());
-        let first = kinds.next().flatten()?;
-        if kinds.all(|kind| kind == Some(first)) {
-            Some(first)
-        } else {
-            None
-        }
+    fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
+        self.candidates.first()?.provider.builtin_web_search()
     }
 
     fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {

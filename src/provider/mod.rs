@@ -146,6 +146,9 @@ pub enum ProviderNativeWebSearchKind {
 pub struct ProviderNativeWebSearchRequest {
     pub kind: ProviderNativeWebSearchKind,
     pub provider_id: String,
+    pub provider_model_ref: String,
+    pub advertised_tool_type: String,
+    pub backend_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_results: Option<usize>,
 }
@@ -154,9 +157,21 @@ pub struct ProviderNativeWebSearchRequest {
 pub struct ProviderNativeWebSearchDiagnostics {
     pub kind: ProviderNativeWebSearchKind,
     pub provider_id: String,
+    pub provider_model_ref: String,
+    pub advertised_tool_type: String,
+    pub backend_kind: String,
     pub lowered: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderBuiltinWebSearchCapability {
+    pub kind: ProviderNativeWebSearchKind,
+    pub provider_id: String,
+    pub provider_model_ref: String,
+    pub advertised_tool_type: String,
+    pub backend_kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -360,8 +375,12 @@ pub trait AgentProvider: Send + Sync {
             .collect()
     }
 
-    fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
+    fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
         None
+    }
+
+    fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
+        self.builtin_web_search().map(|capability| capability.kind)
     }
 
     fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {

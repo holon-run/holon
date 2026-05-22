@@ -4,7 +4,8 @@ use holon::{
     prompt::PromptStability,
     provider::{
         AgentProvider, AnthropicProvider, ConversationMessage, ModelBlock, PromptContentBlock,
-        ProviderPromptCache, ProviderPromptFrame, ProviderTurnRequest, ToolResultBlock,
+        ProviderNativeWebSearchRequest, ProviderPromptCache, ProviderPromptFrame,
+        ProviderTurnRequest, ToolResultBlock,
     },
     tool::ToolSpec,
 };
@@ -161,6 +162,68 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
     Ok(())
 }
 
+async fn provider_builtin_web_search_reports_backend(
+    provider_id: &str,
+    model: &str,
+    expected_backend: &str,
+) -> Result<()> {
+    let mut config = live_config()?;
+    let provider_id = ProviderId::parse(provider_id)?;
+    let provider_id_text = provider_id.as_str().to_string();
+    let runtime_max_output_tokens = config.runtime_max_output_tokens;
+    let provider_config = config
+        .providers
+        .get_mut(&provider_id)
+        .with_context(|| format!("missing {provider_id_text} provider config"))?;
+    assert_eq!(
+        provider_config.transport,
+        ProviderTransportKind::AnthropicMessages,
+        "{provider_id_text} is not configured with Anthropic Messages transport"
+    );
+
+    let trace_home_dir = tempfile::tempdir()?;
+    let provider = AnthropicProvider::from_runtime_config(
+        provider_config,
+        model,
+        runtime_max_output_tokens,
+        trace_home_dir.path(),
+    )?;
+    let capability = provider.builtin_web_search().with_context(|| {
+        format!("{provider_id_text}/{model} did not declare builtin web search")
+    })?;
+    assert_eq!(capability.backend_kind, expected_backend);
+
+    let output = provider
+        .complete_turn(ProviderTurnRequest {
+            prompt_frame: ProviderPromptFrame::plain(
+                "Use web search if needed. Reply in one short sentence.",
+            ),
+            conversation: vec![ConversationMessage::UserText(
+                "Search the web and name today's date.".into(),
+            )],
+            tools: vec![],
+            native_web_search: Some(ProviderNativeWebSearchRequest {
+                kind: capability.kind,
+                provider_id: format!("{provider_id_text}-native"),
+                provider_model_ref: capability.provider_model_ref,
+                advertised_tool_type: capability.advertised_tool_type,
+                backend_kind: capability.backend_kind,
+                max_results: Some(3),
+            }),
+        })
+        .await?;
+    let diagnostics = output
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.native_web_search.as_ref())
+        .expect("native web search diagnostics should be recorded");
+    assert!(diagnostics.lowered);
+    assert_eq!(diagnostics.backend_kind, expected_backend);
+    assert_eq!(diagnostics.advertised_tool_type, "web_search_20250305");
+    assert!(!output.blocks.is_empty());
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "requires DEEPSEEK_API_KEY and network access"]
 async fn live_deepseek_anthropic_accepts_context_management() -> Result<()> {
@@ -207,6 +270,17 @@ async fn live_zai_anthropic_accepts_context_management() -> Result<()> {
     provider_accepts_context_management(
         "zai-anthropic",
         &provider_model_env("zai-anthropic", "glm-4.7"),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore = "requires ZAI_API_KEY and network access"]
+async fn live_zai_anthropic_builtin_web_search_reports_prime_backend() -> Result<()> {
+    provider_builtin_web_search_reports_backend(
+        "zai-anthropic",
+        &provider_model_env("zai-anthropic", "glm-4.7"),
+        "zai_web_search_prime",
     )
     .await
 }
