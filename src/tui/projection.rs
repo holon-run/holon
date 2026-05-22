@@ -889,9 +889,11 @@ impl TuiProjection {
 
         self.workspace.active_workspace_entry = Some(entry.clone());
         self.workspace.active_workspace_occupancy = None;
+        self.workspace.worktree_session = None;
 
         self.agent.agent.active_workspace_entry = Some(entry);
         self.agent.active_workspace_occupancy = None;
+        self.agent.agent.worktree_session = None;
         true
     }
 
@@ -908,32 +910,34 @@ impl TuiProjection {
     }
 
     fn apply_provider_round_model_event(&mut self, payload: &Value) -> bool {
-        let requested_model = payload
-            .get("requested_model")
-            .cloned()
-            .and_then(decode_value::<crate::config::ModelRef>);
-        let active_model = payload
-            .get("active_model")
-            .cloned()
-            .and_then(decode_value::<crate::config::ModelRef>);
+        let has_requested_model = payload.get("requested_model").is_some();
+        let has_active_model = payload.get("active_model").is_some();
+        let requested_model = payload.get("requested_model").and_then(|value| {
+            decode_value::<Option<crate::config::ModelRef>>(value.clone()).unwrap_or(None)
+        });
+        let active_model = payload.get("active_model").and_then(|value| {
+            decode_value::<Option<crate::config::ModelRef>>(value.clone()).unwrap_or(None)
+        });
+        let fallback_active = payload.get("fallback_active").and_then(Value::as_bool);
 
-        if requested_model.is_none() && active_model.is_none() {
+        if !has_requested_model && !has_active_model && fallback_active.is_none() {
             return false;
         }
 
-        if let Some(requested_model) = requested_model {
-            self.agent.model.requested_model = Some(requested_model);
+        if has_requested_model {
+            self.agent.model.requested_model = requested_model;
         }
-        if let Some(active_model) = active_model {
-            self.agent.model.active_model = Some(active_model);
+        if has_active_model {
+            self.agent.model.active_model = active_model;
         }
-        self.agent.model.fallback_active = self
-            .agent
-            .model
-            .requested_model
-            .as_ref()
-            .zip(self.agent.model.active_model.as_ref())
-            .is_some_and(|(requested, active)| requested != active);
+        self.agent.model.fallback_active = fallback_active.unwrap_or_else(|| {
+            self.agent
+                .model
+                .requested_model
+                .as_ref()
+                .zip(self.agent.model.active_model.as_ref())
+                .is_some_and(|(requested, active)| requested != active)
+        });
         true
     }
 
@@ -2373,6 +2377,7 @@ mod tests {
     #[test]
     fn projection_updates_workspace_from_workspace_used_event() {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        projection.agent.agent.worktree_session = projection.workspace.worktree_session.clone();
 
         projection.apply_event(
             sample_event(
@@ -2410,6 +2415,16 @@ mod tests {
         assert!(projection
             .stale_slices
             .contains(&ProjectionSlice::Workspace));
+        assert_eq!(
+            projection
+                .workspace
+                .active_workspace_entry
+                .as_ref()
+                .map(|entry| entry.cwd.as_path()),
+            Some(PathBuf::from("/tmp/agent-home").as_path())
+        );
+        assert!(projection.workspace.worktree_session.is_none());
+        assert!(projection.agent.agent.worktree_session.is_none());
     }
 
     #[test]
@@ -2487,6 +2502,23 @@ mod tests {
         );
         assert!(projection.agent.model.fallback_active);
         assert!(!projection.stale_slices.contains(&ProjectionSlice::Agent));
+
+        projection.apply_event(
+            sample_event_with_id(
+                "evt-provider-round-completed-clear",
+                "provider_round_completed",
+                json!({
+                    "requested_model": null,
+                    "active_model": null,
+                    "fallback_active": false,
+                }),
+            ),
+            &test_log_writer(),
+        );
+
+        assert!(projection.agent.model.requested_model.is_none());
+        assert!(projection.agent.model.active_model.is_none());
+        assert!(!projection.agent.model.fallback_active);
     }
 
     #[test]
