@@ -52,10 +52,7 @@ impl RuntimeHandle {
         self.inner.storage.append_task(task)?;
         {
             let mut guard = self.inner.agent.lock().await;
-            if !matches!(
-                guard.state.status,
-                AgentStatus::Paused | AgentStatus::Stopped
-            ) {
+            if !matches!(guard.state.status, AgentStatus::Stopped) {
                 if guard.state.current_run_id.is_none() {
                     scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
                 }

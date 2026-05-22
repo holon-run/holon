@@ -232,20 +232,20 @@ struct CurrentRunAbortHandle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CurrentRunAbortMode {
-    PauseAfterAbort,
+    StopAfterAbort,
 }
 
 impl CurrentRunAbortMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::PauseAfterAbort => "pause_after_abort",
+            Self::StopAfterAbort => "stop_after_abort",
         }
     }
 }
 
 impl Default for CurrentRunAbortMode {
     fn default() -> Self {
-        Self::PauseAfterAbort
+        Self::StopAfterAbort
     }
 }
 
@@ -1023,10 +1023,7 @@ impl RuntimeHandle {
                 }
                 let failed_state = {
                     let mut guard = self.inner.agent.lock().await;
-                    if !matches!(
-                        guard.state.status,
-                        AgentStatus::Paused | AgentStatus::Stopped
-                    ) {
+                    if !matches!(guard.state.status, AgentStatus::Stopped) {
                         scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
                     }
                     guard.current_run_abort = None;

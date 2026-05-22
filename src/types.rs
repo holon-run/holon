@@ -1187,7 +1187,7 @@ pub enum AgentStatus {
     AwakeRunning,
     AwaitingTask,
     Asleep,
-    Paused,
+    #[serde(alias = "paused")]
     Stopped,
 }
 
@@ -3507,22 +3507,16 @@ impl AuditEvent {
 #[serde(rename_all = "snake_case")]
 pub enum ControlAction {
     Start,
-    Pause,
-    Resume,
     Stop,
 }
 
 impl ControlAction {
     pub fn canonical(&self) -> Self {
-        match self {
-            Self::Pause => Self::Stop,
-            Self::Resume => Self::Start,
-            action => action.clone(),
-        }
+        self.clone()
     }
 
     pub fn is_start(&self) -> bool {
-        matches!(self.canonical(), Self::Start)
+        matches!(self, Self::Start)
     }
 }
 

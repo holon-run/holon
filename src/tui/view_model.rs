@@ -56,7 +56,6 @@ fn agent_status_label(agent: &AgentSummary) -> &'static str {
         AgentStatus::AwakeRunning => "running",
         AgentStatus::AwaitingTask => "waiting for task",
         AgentStatus::Asleep => "sleeping",
-        AgentStatus::Paused => "paused",
         AgentStatus::Stopped => "stopped",
     }
 }

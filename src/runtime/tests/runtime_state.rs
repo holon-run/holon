@@ -506,52 +506,49 @@ async fn message_admission_wakes_asleep_and_booting_agents() {
 }
 
 #[tokio::test]
-async fn message_admission_does_not_wake_stopped_or_paused_agents() {
-    for status in [AgentStatus::Stopped, AgentStatus::Paused] {
-        let dir = tempdir().unwrap();
-        let workspace = tempdir().unwrap();
-        let runtime = RuntimeHandle::new(
-            "default",
-            dir.path().to_path_buf(),
-            workspace.path().to_path_buf(),
-            "http://127.0.0.1:7878".into(),
-            Arc::new(CountingProvider {
-                calls: Mutex::new(0),
-                reply: "unused",
-            }),
-            "default".into(),
-            context_config(),
-        )
-        .unwrap();
-        {
-            let mut guard = runtime.inner.agent.lock().await;
-            guard.state.status = status.clone();
-            runtime.storage().write_agent(&guard.state).unwrap();
-        }
-
-        runtime
-            .enqueue(MessageEnvelope::new(
-                "default",
-                MessageKind::OperatorPrompt,
-                MessageOrigin::Operator { actor_id: None },
-                TrustLevel::TrustedOperator,
-                Priority::Normal,
-                MessageBody::Text {
-                    text: "do not wake".into(),
-                },
-            ))
-            .await
-            .unwrap();
-
-        let state = runtime.agent_state().await.unwrap();
-        assert_eq!(state.status, status);
-        assert_eq!(state.pending, 1);
-        let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
-        assert!(!events.iter().any(|event| {
-            event.kind == "scheduler_posture_decision"
-                && event.data["boundary"] == "message_admission"
-        }));
+async fn message_admission_does_not_wake_stopped_agents() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::Stopped;
+        runtime.storage().write_agent(&guard.state).unwrap();
     }
+
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            TrustLevel::TrustedOperator,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "do not wake".into(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::Stopped);
+    assert_eq!(state.pending, 1);
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(!events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision" && event.data["boundary"] == "message_admission"
+    }));
 }
 
 #[tokio::test]
@@ -663,44 +660,6 @@ async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
             && event.data["reason"] == "stop"
             && event.data["previous_status"] == "asleep"
             && event.data["next_status"] == "stopped"
-    }));
-}
-
-#[tokio::test]
-async fn control_pause_is_deprecated_stop_alias() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(CountingProvider {
-            calls: Mutex::new(0),
-            reply: "unused",
-        }),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-
-    runtime
-        .control(crate::types::ControlAction::Pause)
-        .await
-        .unwrap();
-
-    let state = runtime.agent_state().await.unwrap();
-    assert_eq!(state.status, AgentStatus::Stopped);
-    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
-    assert!(events.iter().any(|event| {
-        event.kind == "scheduler_posture_decision"
-            && event.data["boundary"] == "lifecycle_control"
-            && event.data["reason"] == "stop"
-            && event.data["evidence"].as_array().is_some_and(|entries| {
-                entries
-                    .iter()
-                    .any(|entry| entry.as_str() == Some("requested_action=Pause"))
-            })
     }));
 }
 
@@ -1208,7 +1167,7 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
     let outcome = runtime
         .abort_current_run(CurrentRunAbortRequest {
             run_id: Some(run_id.clone()),
-            mode: CurrentRunAbortMode::PauseAfterAbort,
+            mode: CurrentRunAbortMode::StopAfterAbort,
         })
         .await
         .unwrap();
@@ -1423,7 +1382,7 @@ async fn abort_current_run_rejects_stale_run_id() {
     let err = runtime
         .abort_current_run(CurrentRunAbortRequest {
             run_id: Some("stale-run".into()),
-            mode: CurrentRunAbortMode::PauseAfterAbort,
+            mode: CurrentRunAbortMode::StopAfterAbort,
         })
         .await
         .unwrap_err();
@@ -1438,7 +1397,7 @@ async fn abort_current_run_rejects_stale_run_id() {
     runtime
         .abort_current_run(CurrentRunAbortRequest {
             run_id: None,
-            mode: CurrentRunAbortMode::PauseAfterAbort,
+            mode: CurrentRunAbortMode::StopAfterAbort,
         })
         .await
         .unwrap();
@@ -1895,7 +1854,7 @@ async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
         .unwrap();
     {
         let mut guard = runtime.inner.agent.lock().await;
-        guard.state.status = AgentStatus::Paused;
+        guard.state.status = AgentStatus::Stopped;
         runtime.storage().write_agent(&guard.state).unwrap();
     }
 
@@ -1930,7 +1889,7 @@ async fn task_result_persists_reduced_state_when_agent_status_is_not_mutable() {
         .read_agent()
         .unwrap()
         .expect("agent state should be persisted");
-    assert_eq!(persisted.status, AgentStatus::Paused);
+    assert_eq!(persisted.status, AgentStatus::Stopped);
     let active_tasks = runtime.active_tasks(10).await.unwrap();
     assert!(!active_tasks.iter().any(|task| task.id == "task-1"));
 }
@@ -1973,12 +1932,8 @@ async fn unknown_control_action_fails_without_mutating_runtime_state() {
 }
 
 #[tokio::test]
-async fn final_status_rewrite_preserves_paused_stopped_and_asleep_states() {
-    for status in [
-        AgentStatus::Paused,
-        AgentStatus::Stopped,
-        AgentStatus::Asleep,
-    ] {
+async fn final_status_rewrite_preserves_stopped_and_asleep_states() {
+    for status in [AgentStatus::Stopped, AgentStatus::Asleep] {
         let dir = tempdir().unwrap();
         let workspace = tempdir().unwrap();
         let runtime = RuntimeHandle::new(

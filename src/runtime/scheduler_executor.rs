@@ -114,9 +114,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 }
                 scheduler::apply_stop_projection(&mut guard.state);
             }
-            ControlAction::Pause | ControlAction::Resume => {
-                unreachable!("control actions are canonicalized before posture application")
-            }
         }
 
         self.append_posture_decision(
@@ -124,7 +121,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             match action {
                 ControlAction::Start => "start",
                 ControlAction::Stop => "stop",
-                ControlAction::Pause | ControlAction::Resume => unreachable!(),
             },
             &previous_status,
             &guard.state.status,
@@ -230,7 +226,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let mut guard = self.runtime.inner.agent.lock().await;
         if matches!(
             guard.state.status,
-            AgentStatus::Asleep | AgentStatus::Paused | AgentStatus::Stopped
+            AgentStatus::Asleep | AgentStatus::Stopped
         ) || !guard.queue.is_empty()
         {
             return Ok(None);
@@ -286,9 +282,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
             if guard.state.status == AgentStatus::Stopped {
                 return Ok(RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len()));
-            }
-            if guard.state.status == AgentStatus::Paused {
-                return Ok(RunLoopPoll::Idle);
             }
             let Some(message) = guard.queue.peek().cloned() else {
                 return Ok(RunLoopPoll::Idle);
@@ -347,15 +340,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
                 return self.shutdown(guard);
             }
-            if matches!(
-                guard.state.status,
-                AgentStatus::Paused | AgentStatus::Stopped
-            ) {
-                return Ok(if guard.state.status == AgentStatus::Stopped {
-                    RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len())
-                } else {
-                    RunLoopPoll::Idle
-                });
+            if matches!(guard.state.status, AgentStatus::Stopped) {
+                return Ok(RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len()));
             }
             if !guard
                 .queue
@@ -417,7 +403,7 @@ pub(super) fn apply_bootstrap_recovered_projection(
     state: &mut AgentState,
     facts: BootstrapRecoveryFacts,
 ) -> bool {
-    if matches!(state.status, AgentStatus::Paused | AgentStatus::Stopped) {
+    if matches!(state.status, AgentStatus::Stopped) {
         return false;
     }
 
@@ -470,17 +456,15 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_recovery_preserves_stopped_and_paused_gates() {
-        for status in [AgentStatus::Stopped, AgentStatus::Paused] {
-            let mut state = bootstrap_state(status.clone());
-            state.current_run_id = Some("run-1".into());
-            assert!(!apply_bootstrap_recovered_projection(
-                &mut state,
-                BootstrapRecoveryFacts { queued_messages: 1 },
-            ));
-            assert_eq!(state.status, status);
-            assert_eq!(state.current_run_id.as_deref(), Some("run-1"));
-        }
+    fn bootstrap_recovery_preserves_stopped_gate() {
+        let mut state = bootstrap_state(AgentStatus::Stopped);
+        state.current_run_id = Some("run-1".into());
+        assert!(!apply_bootstrap_recovered_projection(
+            &mut state,
+            BootstrapRecoveryFacts { queued_messages: 1 },
+        ));
+        assert_eq!(state.status, AgentStatus::Stopped);
+        assert_eq!(state.current_run_id.as_deref(), Some("run-1"));
     }
 
     #[test]

@@ -309,7 +309,7 @@ fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
         ));
     };
     match first.as_str() {
-        "start" | "pause" | "resume" | "stop" => {
+        "start" | "stop" => {
             if args.len() > 2 {
                 return Err(anyhow!(
                     "/agent {first} accepts at most one agent id; usage: /agent {first} [agent-id]"
@@ -317,8 +317,6 @@ fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
             }
             let action = match first.as_str() {
                 "start" => crate::types::ControlAction::Start,
-                "pause" => crate::types::ControlAction::Pause,
-                "resume" => crate::types::ControlAction::Resume,
                 "stop" => crate::types::ControlAction::Stop,
                 _ => unreachable!("matched lifecycle action"),
             };
@@ -343,6 +341,12 @@ fn parse_agent_slash_action(args: &[String]) -> Result<AgentSlashAction> {
             }
             Ok(AgentSlashAction::Create(args[1].clone()))
         }
+        "pause" => Err(anyhow!(
+            "/agent pause has been removed; use /agent stop [agent-id] instead"
+        )),
+        "resume" => Err(anyhow!(
+            "/agent resume has been removed; use /agent start [agent-id] instead"
+        )),
         _ => Err(anyhow!(
             "unknown /agent subcommand '{first}'; use /agent switch {first} to switch agents"
         )),
@@ -739,10 +743,8 @@ impl TuiApp {
                     self.status_line = format!(
                         "{} agent {agent_id}",
                         match action {
-                            crate::types::ControlAction::Start
-                            | crate::types::ControlAction::Resume => "Started",
-                            crate::types::ControlAction::Pause
-                            | crate::types::ControlAction::Stop => "Stopped",
+                            crate::types::ControlAction::Start => "Started",
+                            crate::types::ControlAction::Stop => "Stopped",
                         }
                     );
                     if self.selected_agent_id() == Some(agent_id.as_str()) {
@@ -1628,13 +1630,6 @@ mod tests {
             ))
         );
         assert_eq!(
-            parse_composer_submission("/agent resume foo").unwrap(),
-            Some(ComposerSubmission::Slash(
-                SlashCommand::Agent,
-                vec!["resume".into(), "foo".into()]
-            ))
-        );
-        assert_eq!(
             parse_composer_submission("/agent stop").unwrap(),
             Some(ComposerSubmission::Slash(
                 SlashCommand::Agent,
@@ -1716,13 +1711,6 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_agent_slash_action(&["resume".into(), "foo".into()]).unwrap(),
-            AgentSlashAction::Control {
-                action: crate::types::ControlAction::Resume,
-                agent_id: Some("foo".into()),
-            }
-        );
-        assert_eq!(
             parse_agent_slash_action(&["stop".into()]).unwrap(),
             AgentSlashAction::Control {
                 action: crate::types::ControlAction::Stop,
@@ -1741,6 +1729,10 @@ mod tests {
         assert!(err
             .to_string()
             .contains("unknown /agent subcommand 'status'"));
+        let err = parse_agent_slash_action(&["pause".into()]).unwrap_err();
+        assert!(err.to_string().contains("use /agent stop [agent-id]"));
+        let err = parse_agent_slash_action(&["resume".into()]).unwrap_err();
+        assert!(err.to_string().contains("use /agent start [agent-id]"));
     }
 
     #[test]

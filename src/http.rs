@@ -1967,11 +1967,12 @@ pub async fn abort_current_run(
     Json(request): Json<AbortCurrentRunRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
-    let mode = match request.mode.as_deref().unwrap_or("pause_after_abort") {
-        "pause_after_abort" => CurrentRunAbortMode::PauseAfterAbort,
+    let mode = match request.mode.as_deref().unwrap_or("stop_after_abort") {
+        "stop_after_abort" => CurrentRunAbortMode::StopAfterAbort,
+        "pause_after_abort" => CurrentRunAbortMode::StopAfterAbort,
         other => {
             return Err(bad_request(format!(
-                "unsupported abort mode {other}; expected pause_after_abort"
+                "unsupported abort mode {other}; expected stop_after_abort or deprecated alias pause_after_abort"
             )))
         }
     };
