@@ -336,6 +336,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 continuation_resolution: dispatch_plan.continuation_resolution.as_ref(),
             },
         );
+        scheduler::append_scheduling_diagnostics(
+            &self.runtime.inner.storage,
+            &candidate.prior_state,
+            candidate.queue_len,
+        )?;
 
         let (message, running_state) = {
             let mut guard = self.runtime.inner.agent.lock().await;
@@ -360,7 +365,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Ok(RunLoopPoll::Idle);
             }
 
-            scheduler::append_scheduling_diagnostics(&self.runtime.inner.storage, &guard.state)?;
             scheduler::append_scheduler_decision(&self.runtime.inner.storage, &decision)?;
             let message = guard
                 .queue

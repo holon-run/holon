@@ -248,11 +248,20 @@ impl SchedulerDiagnosticSeverity {
 /// Diagnostics are advisory observability signals only. They must not be used as
 /// scheduler decisions or as a replacement for the posture/work-item state
 /// derivation itself.
+#[cfg(test)]
 pub(crate) fn scheduling_diagnostics(
     storage: &AppStorage,
     agent: &AgentState,
 ) -> Result<Vec<SchedulerDiagnostic>> {
-    let projection = SchedulerProjection::from_state(storage, agent)?;
+    scheduling_diagnostics_with_queue_len(storage, agent, agent.pending)
+}
+
+pub(crate) fn scheduling_diagnostics_with_queue_len(
+    storage: &AppStorage,
+    agent: &AgentState,
+    queue_len: usize,
+) -> Result<Vec<SchedulerDiagnostic>> {
+    let projection = SchedulerProjection::from_state_with_queue_len(storage, agent, queue_len)?;
     let posture = storage.agent_posture_projection(agent)?;
     let work_queue = storage.work_queue_prompt_projection()?;
     let wait_conditions = storage.latest_wait_conditions()?;
@@ -394,18 +403,23 @@ pub(crate) fn scheduler_diagnostic_event(diagnostic: &SchedulerDiagnostic) -> Au
 pub(crate) fn append_scheduling_diagnostics(
     storage: &AppStorage,
     agent: &AgentState,
+    queue_len: usize,
 ) -> Result<usize> {
-    let diagnostics = scheduling_diagnostics(storage, agent)?;
+    let diagnostics = scheduling_diagnostics_with_queue_len(storage, agent, queue_len)?;
     let recent_events = storage.read_recent_events(64)?;
+    let mut seen_data = Vec::new();
     let mut appended = 0;
 
     for diagnostic in diagnostics {
         let event = scheduler_diagnostic_event(&diagnostic);
+        if seen_data.iter().any(|data| data == &event.data) {
+            continue;
+        }
+        seen_data.push(event.data.clone());
+
         let duplicate = recent_events
             .iter()
-            .rev()
-            .find(|latest| latest.kind == event.kind)
-            .is_some_and(|latest| latest.data == event.data);
+            .any(|latest| latest.kind == event.kind && latest.data == event.data);
         if duplicate {
             continue;
         }

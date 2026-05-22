@@ -998,6 +998,24 @@ fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() 
 }
 
 #[test]
+fn scheduling_diagnostics_use_authoritative_queue_len() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+
+    let diagnostics =
+        scheduler::scheduling_diagnostics_with_queue_len(&storage, &agent, 1).unwrap();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].kind, "idle_posture_has_queued_input");
+    assert!(diagnostics[0]
+        .evidence
+        .iter()
+        .any(|entry| entry == "queue_len=1"));
+}
+
+#[test]
 fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
@@ -1043,6 +1061,75 @@ fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
         diagnostics.is_empty(),
         "expected no diagnostics for legal waits, got {diagnostics:?}"
     );
+}
+
+#[test]
+fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    let now = Utc::now();
+
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-weak".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("pr-1".into()),
+            waiting_for: "review".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-1".into()),
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+        })
+        .unwrap();
+    storage
+        .append_waiting_intent(&WaitingIntentRecord {
+            id: "intent-missing-trigger".into(),
+            agent_id: "default".into(),
+            scope: ExternalTriggerScope::Agent,
+            work_item_id: None,
+            description: "fixture waiting intent".into(),
+            source: "github".into(),
+            resource: Some("pr-1".into()),
+            condition: Some("review".into()),
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "".into(),
+            created_at: now,
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        })
+        .unwrap();
+
+    let appended = scheduler::append_scheduling_diagnostics(&storage, &agent, 0).unwrap();
+    assert!(appended >= 2);
+    assert_eq!(
+        scheduler::append_scheduling_diagnostics(&storage, &agent, 0).unwrap(),
+        0
+    );
+
+    let events = storage.read_recent_events(10).unwrap();
+    let diagnostic_kinds = events
+        .iter()
+        .filter(|event| event.kind == "scheduler_diagnostic")
+        .map(|event| event.data["kind"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostic_kinds.len(), appended);
+    assert!(diagnostic_kinds.contains(&"external_wait_has_weak_recoverability"));
+    assert!(diagnostic_kinds.contains(&"waiting_intent_without_external_trigger"));
 }
 
 #[test]
