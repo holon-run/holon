@@ -1867,9 +1867,13 @@ mod tests {
         fs::write(template_dir.join("AGENTS.md"), "role only").unwrap();
 
         let agent_home = home.path().join("agent");
-        initialize_agent_home_from_template(&agent_home, template_dir.to_str().unwrap())
-            .await
-            .unwrap();
+        initialize_agent_home_from_template_with_home(
+            &agent_home,
+            home.path(),
+            template_dir.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
 
         let agents_md = fs::read_to_string(agent_home.join("AGENTS.md")).unwrap();
         assert!(agents_md.starts_with("role only"));
