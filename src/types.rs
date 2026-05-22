@@ -15,6 +15,10 @@ use crate::system::{
 
 pub const AGENT_HOME_WORKSPACE_ID: &str = "agent_home";
 
+pub fn agent_home_workspace_id(agent_id: &str) -> String {
+    format!("{AGENT_HOME_WORKSPACE_ID}:{agent_id}")
+}
+
 fn default_agent_home_workspace_id() -> String {
     AGENT_HOME_WORKSPACE_ID.to_string()
 }
@@ -26,6 +30,12 @@ fn default_work_item_revision() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceEntry {
     pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_agent_id: Option<String>,
     pub workspace_anchor: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_name: Option<String>,
@@ -42,6 +52,9 @@ impl WorkspaceEntry {
         let now = Utc::now();
         Self {
             workspace_id: workspace_id.into(),
+            workspace_alias: None,
+            workspace_kind: None,
+            owner_agent_id: None,
             workspace_anchor,
             repo_name,
             created_at: now,
@@ -3049,6 +3062,11 @@ impl Default for AgentPostureProjection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkItemPlanArtifact {
+    pub owner_agent_id: String,
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_alias: Option<String>,
+    pub relative_path: PathBuf,
     pub path: PathBuf,
     pub hash: String,
     pub bytes: u64,
@@ -3094,10 +3112,11 @@ impl WorkItemRecord {
         state: WorkItemState,
     ) -> Self {
         let now = Utc::now();
+        let agent_id = agent_id.into();
         Self {
             id: format!("work_{}", Uuid::new_v4().simple()),
-            agent_id: agent_id.into(),
-            workspace_id: AGENT_HOME_WORKSPACE_ID.to_string(),
+            workspace_id: agent_home_workspace_id(&agent_id),
+            agent_id,
             revision: 1,
             objective: objective.into(),
             state,
@@ -3472,10 +3491,11 @@ impl BriefRecord {
         related_message_id: Option<String>,
         related_task_id: Option<String>,
     ) -> Self {
+        let agent_id = agent_id.into();
         Self {
             id: Uuid::new_v4().to_string(),
-            agent_id: agent_id.into(),
-            workspace_id: AGENT_HOME_WORKSPACE_ID.to_string(),
+            workspace_id: agent_home_workspace_id(&agent_id),
+            agent_id,
             work_item_id: None,
             kind,
             created_at: Utc::now(),

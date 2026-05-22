@@ -10,13 +10,19 @@ fn openai_max_output_tokens_stop_reason_triggers_recovery() {
 async fn detached_host_runtime_starts_in_agent_home_workspace() {
     let (_home, _host, runtime) = host_backed_test_runtime().await;
     let snapshot = runtime.execution_snapshot().await.unwrap();
+    let expected_workspace_id = crate::types::agent_home_workspace_id("default");
 
     assert_eq!(
         snapshot.workspace_id.as_deref(),
-        Some(AGENT_HOME_WORKSPACE_ID)
+        Some(expected_workspace_id.as_str())
     );
+    assert_ne!(expected_workspace_id, AGENT_HOME_WORKSPACE_ID);
     assert_eq!(snapshot.workspace_anchor, runtime.agent_home());
     assert_eq!(snapshot.execution_root, runtime.agent_home());
+    assert_eq!(
+        snapshot.execution_root_id.as_deref(),
+        Some(format!("canonical_root:{expected_workspace_id}").as_str())
+    );
 }
 
 #[tokio::test]
@@ -81,13 +87,60 @@ async fn use_workspace_agent_home_returns_to_fallback_without_deleting_project()
     .await
     .unwrap();
     let snapshot = runtime.execution_snapshot().await.unwrap();
+    let expected_workspace_id = crate::types::agent_home_workspace_id("default");
 
     assert_eq!(
         snapshot.workspace_id.as_deref(),
-        Some(AGENT_HOME_WORKSPACE_ID)
+        Some(expected_workspace_id.as_str())
     );
     assert_eq!(snapshot.execution_root, runtime.agent_home());
     assert!(retained_file.is_file());
+}
+
+#[tokio::test]
+async fn agent_home_workspace_ids_are_unique_per_agent_while_alias_remains_local() {
+    let (_home, host, default_runtime) = host_backed_test_runtime().await;
+    host.create_named_agent("worker", None).await.unwrap();
+    let worker_runtime = host.get_or_create_agent("worker").await.unwrap();
+
+    let default_snapshot = default_runtime.execution_snapshot().await.unwrap();
+    let worker_snapshot = worker_runtime.execution_snapshot().await.unwrap();
+
+    assert_eq!(
+        default_snapshot.workspace_id.as_deref(),
+        Some(crate::types::agent_home_workspace_id("default").as_str())
+    );
+    assert_eq!(
+        worker_snapshot.workspace_id.as_deref(),
+        Some(crate::types::agent_home_workspace_id("worker").as_str())
+    );
+    assert_ne!(default_snapshot.workspace_id, worker_snapshot.workspace_id);
+    assert_ne!(
+        default_snapshot.execution_root_id,
+        worker_snapshot.execution_root_id
+    );
+
+    crate::tool::tools::execute_builtin_tool(
+        &worker_runtime,
+        "worker",
+        &TrustLevel::TrustedOperator,
+        &crate::tool::ToolCall {
+            id: "use-worker-home".into(),
+            name: "UseWorkspace".into(),
+            input: serde_json::json!({ "workspace_id": AGENT_HOME_WORKSPACE_ID }),
+        },
+    )
+    .await
+    .unwrap();
+    let worker_snapshot = worker_runtime.execution_snapshot().await.unwrap();
+    assert_eq!(
+        worker_snapshot.workspace_id.as_deref(),
+        Some(crate::types::agent_home_workspace_id("worker").as_str())
+    );
+    assert_eq!(
+        worker_snapshot.workspace_anchor,
+        worker_runtime.agent_home()
+    );
 }
 
 #[tokio::test]

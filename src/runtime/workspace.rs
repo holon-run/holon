@@ -11,7 +11,7 @@ use crate::{
         EffectiveExecution, ExecutionProfile, ExecutionScopeKind, ExecutionSnapshot,
         WorkspaceAccessMode, WorkspaceProjectionKind, WorkspaceView,
     },
-    types::{AgentState, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID},
+    types::{agent_home_workspace_id, AgentState, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID},
 };
 
 pub(crate) fn build_execution_root_id(
@@ -30,12 +30,16 @@ pub(crate) fn build_execution_root_id(
     })
 }
 
-pub(crate) fn agent_home_workspace_entry(data_dir: &Path) -> WorkspaceEntry {
-    WorkspaceEntry::new(
-        AGENT_HOME_WORKSPACE_ID,
+pub(crate) fn agent_home_workspace_entry(data_dir: &Path, agent_id: &str) -> WorkspaceEntry {
+    let mut entry = WorkspaceEntry::new(
+        agent_home_workspace_id(agent_id),
         data_dir.to_path_buf(),
         Some("AgentHome".into()),
-    )
+    );
+    entry.workspace_alias = Some(AGENT_HOME_WORKSPACE_ID.into());
+    entry.workspace_kind = Some("agent_home".into());
+    entry.owner_agent_id = Some(agent_id.to_string());
+    entry
 }
 
 pub(crate) fn detached_execution_root(storage: &AppStorage) -> PathBuf {

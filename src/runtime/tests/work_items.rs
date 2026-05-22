@@ -2,7 +2,7 @@ use super::super::*;
 use super::support::*;
 use crate::types::{
     WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemPlanStatus,
-    WorkItemReadiness, WorkItemSchedulingState,
+    WorkItemReadiness, WorkItemSchedulingState, AGENT_HOME_WORKSPACE_ID,
 };
 
 fn blocking_task_for_work_item(task_id: &str, work_item_id: Option<&str>) -> TaskRecord {
@@ -824,6 +824,22 @@ async fn work_item_tools_use_objective_plan_and_todo_list_shape() {
         .unwrap();
     assert!(std::path::Path::new(plan_path).is_file());
     assert_eq!(
+        create_payload["work_item"]["plan_artifact"]["owner_agent_id"].as_str(),
+        Some("default")
+    );
+    assert_eq!(
+        create_payload["work_item"]["plan_artifact"]["workspace_id"].as_str(),
+        Some(crate::types::agent_home_workspace_id("default").as_str())
+    );
+    assert_eq!(
+        create_payload["work_item"]["plan_artifact"]["workspace_alias"].as_str(),
+        Some(AGENT_HOME_WORKSPACE_ID)
+    );
+    assert_eq!(
+        create_payload["work_item"]["plan_artifact"]["relative_path"].as_str(),
+        Some(format!("work-items/{work_item_id}/plan.md").as_str())
+    );
+    assert_eq!(
         create_payload["work_item"]["todo_list"][0]["state"].as_str(),
         Some("completed")
     );
@@ -1127,7 +1143,9 @@ async fn complete_work_item_refreshes_latest_plan_artifact_snapshot() {
         .unwrap();
     let plan_path = work.plan_artifact.as_ref().unwrap().path.clone();
     std::fs::write(&plan_path, "completion plan after direct edit").unwrap();
-    let expected = crate::work_item_plan::describe_plan_artifact(&plan_path).unwrap();
+    let expected =
+        crate::work_item_plan::describe_plan_artifact(&plan_path, &work.agent_id, &work.id)
+            .unwrap();
 
     let completed = runtime
         .complete_work_item(work.id.clone(), Vec::new())
@@ -1292,7 +1310,9 @@ async fn update_work_item_materializes_and_clears_legacy_inline_plan() {
         std::fs::read_to_string(&plan_path).unwrap(),
         "Keep this legacy plan body in the artifact."
     );
-    let artifact = crate::work_item_plan::describe_plan_artifact(&plan_path).unwrap();
+    let artifact =
+        crate::work_item_plan::describe_plan_artifact(&plan_path, &legacy.agent_id, &legacy.id)
+            .unwrap();
     assert_eq!(
         artifact.preview,
         "Keep this legacy plan body in the artifact."
