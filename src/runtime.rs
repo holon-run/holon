@@ -585,6 +585,7 @@ impl RuntimeHandle {
 
     fn loaded_agents_md_for_state(&self, state: &AgentState) -> Result<LoadedAgentsMd> {
         load_agents_md(
+            self.user_home().as_deref(),
             self.agent_home().as_path(),
             self.workspace_anchor_for_state_ref(state),
         )

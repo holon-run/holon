@@ -122,6 +122,10 @@ impl EffectivePrompt {
         ));
         output.extend(execution_policy_summary_lines(&self.execution));
         output.push(format!(
+            "Global AGENTS.md: {}",
+            describe_agents_md_source(self.loaded_agents_md.global_source.as_ref())
+        ));
+        output.push(format!(
             "Agent AGENTS.md: {}",
             describe_agents_md_source(self.loaded_agents_md.agent_source.as_ref())
         ));
@@ -296,10 +300,7 @@ fn prompt_cache_scope_fingerprint(
         .collect::<Vec<_>>();
     let payload = json!({
         "agent_id": session.id,
-        "workspace_id": execution.workspace_id,
-        "execution_root_id": execution.execution_root_id,
-        "workspace_anchor": execution.workspace_anchor,
-        "execution_root": execution.execution_root,
+        "execution_semantics": execution_semantic_cache_payload(execution),
         "stable_system_sections": stable_system_sections,
         "stable_context_sections": stable_context_sections,
         "tools": available_tools,
@@ -321,10 +322,7 @@ fn prompt_context_fingerprint(
         "compacted_message_count": session.compacted_message_count,
         "working_memory_revision": session.working_memory.working_memory_revision,
         "compression_epoch": session.working_memory.compression_epoch,
-        "workspace_id": execution.workspace_id,
-        "execution_root_id": execution.execution_root_id,
-        "workspace_anchor": execution.workspace_anchor,
-        "execution_root": execution.execution_root,
+        "execution_semantics": execution_semantic_cache_payload(execution),
         "system_sections": system_sections,
         "context_sections": context_sections,
         "tools": available_tools,
@@ -332,6 +330,23 @@ fn prompt_context_fingerprint(
     let canonical =
         serde_json::to_vec(&payload).expect("prompt cache fingerprint should serialize");
     format!("{:x}", Sha256::digest(canonical))
+}
+
+fn execution_semantic_cache_payload(execution: &ExecutionSnapshot) -> serde_json::Value {
+    json!({
+        // `workspace_id` is included because it is rendered in the execution environment summary.
+        "rendered_workspace_id": execution.workspace_id,
+        // Attached workspace ids and anchors are rendered when multiple workspaces are visible.
+        "rendered_attached_workspaces": execution.attached_workspaces,
+        // These paths are rendered and define default cwd / relative path tool behavior.
+        "workspace_anchor": execution.workspace_anchor,
+        "execution_root": execution.execution_root,
+        "cwd": execution.cwd,
+        "worktree_root": execution.worktree_root,
+        // These shape relative path and workspace projection semantics; bookkeeping ids do not.
+        "projection_kind": execution.projection_kind,
+        "access_mode": execution.access_mode,
+    })
 }
 
 fn build_system_sections(
@@ -444,6 +459,9 @@ fn build_system_sections(
     if let Some(section) = constrained_repair_section(current_message) {
         sections.push(section);
     }
+    if let Some(section) = global_agents_md_section(loaded_agents_md.global_source.as_ref()) {
+        sections.push(section);
+    }
     if let Some(section) = agent_agents_md_section(loaded_agents_md.agent_source.as_ref()) {
         sections.push(section);
     }
@@ -477,6 +495,20 @@ fn agent_agents_md_section(source: Option<&AgentsMdSource>) -> Option<PromptSect
             PromptStability::Stable,
             format!(
                 "Apply the following agent-scoped AGENTS.md guidance from {}:\n\n{}",
+                source.path.display(),
+                source.content
+            ),
+        )
+    })
+}
+
+fn global_agents_md_section(source: Option<&AgentsMdSource>) -> Option<PromptSection> {
+    source.map(|source| {
+        section(
+            "global_agents_md",
+            PromptStability::Stable,
+            format!(
+                "Apply the following global operator AGENTS.md guidance from {}:\n\n{}",
                 source.path.display(),
                 source.content
             ),
@@ -839,6 +871,81 @@ mod tests {
             prompt_cache_key(&session.id, &first_scope),
             prompt_cache_key(&session.id, &second_scope)
         );
+    }
+
+    #[test]
+    fn prompt_cache_key_ignores_execution_root_bookkeeping_id_changes() {
+        let session = AgentState::new("default");
+        let mut first_execution = sample_execution_snapshot();
+        let mut second_execution = sample_execution_snapshot();
+        first_execution.execution_root_id = Some("canonical_root:workspace-1".into());
+        second_execution.execution_root_id = Some("canonical_root:workspace-2".into());
+        let system_sections = vec![section(
+            "identity",
+            PromptStability::Stable,
+            "stable system".into(),
+        )];
+        let context_sections = vec![section(
+            "working_memory",
+            PromptStability::AgentScoped,
+            "durable plan".into(),
+        )];
+        let tools = Vec::new();
+
+        let first_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &first_execution,
+            &system_sections,
+            &context_sections,
+            &tools,
+        );
+        let second_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &second_execution,
+            &system_sections,
+            &context_sections,
+            &tools,
+        );
+
+        assert_eq!(first_scope, second_scope);
+    }
+
+    #[test]
+    fn prompt_cache_key_changes_when_workspace_path_semantics_change() {
+        let session = AgentState::new("default");
+        let first_execution = sample_execution_snapshot();
+        let mut second_execution = sample_execution_snapshot();
+        second_execution.workspace_anchor = PathBuf::from("/other-repo");
+        second_execution.execution_root = PathBuf::from("/other-repo");
+        second_execution.cwd = PathBuf::from("/other-repo/src");
+        let system_sections = vec![section(
+            "identity",
+            PromptStability::Stable,
+            "stable system".into(),
+        )];
+        let context_sections = vec![section(
+            "working_memory",
+            PromptStability::AgentScoped,
+            "durable plan".into(),
+        )];
+        let tools = Vec::new();
+
+        let first_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &first_execution,
+            &system_sections,
+            &context_sections,
+            &tools,
+        );
+        let second_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &second_execution,
+            &system_sections,
+            &context_sections,
+            &tools,
+        );
+
+        assert_ne!(first_scope, second_scope);
     }
 
     #[test]
@@ -1267,6 +1374,12 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd {
+                global_source: Some(AgentsMdSource {
+                    scope: crate::types::AgentsMdScope::Global,
+                    kind: AgentsMdKind::AgentsMd,
+                    path: PathBuf::from("/tmp/user/.agents/AGENTS.md"),
+                    content: "global guidance".into(),
+                }),
                 agent_source: Some(AgentsMdSource {
                     scope: crate::types::AgentsMdScope::Agent,
                     kind: AgentsMdKind::AgentsMd,
@@ -1302,6 +1415,10 @@ mod tests {
             .iter()
             .map(|section| section.name.as_str())
             .collect::<Vec<_>>();
+        let global_idx = names
+            .iter()
+            .position(|name| *name == "global_agents_md")
+            .unwrap();
         let agent_idx = names
             .iter()
             .position(|name| *name == "agent_agents_md")
@@ -1319,6 +1436,7 @@ mod tests {
             .position(|name| *name == "tool_exec_command")
             .unwrap();
 
+        assert!(global_idx < agent_idx);
         assert!(agent_idx < workspace_idx);
         assert!(workspace_idx < skills_idx);
         assert!(skills_idx < tools_idx);
@@ -1343,6 +1461,7 @@ mod tests {
                 worktree_root: None,
             },
             loaded_agents_md: LoadedAgentsMd {
+                global_source: None,
                 agent_source: Some(AgentsMdSource {
                     scope: crate::types::AgentsMdScope::Agent,
                     kind: AgentsMdKind::AgentsMd,
@@ -1380,6 +1499,7 @@ mod tests {
         assert!(dump.contains("Workspace anchor: /repo"));
         assert!(dump.contains("Execution root: /repo"));
         assert!(dump.contains("Cwd: /repo/src"));
+        assert!(dump.contains("Global AGENTS.md: none"));
         assert!(dump.contains("Agent AGENTS.md: /tmp/agent-home/AGENTS.md (AGENTS.md)"));
         assert!(dump.contains("Workspace AGENTS.md: /repo/CLAUDE.md (CLAUDE.md fallback)"));
         assert!(dump.contains("Section inventory:"));
@@ -1452,6 +1572,7 @@ mod tests {
                 worktree_root: None,
             },
             loaded_agents_md: LoadedAgentsMd {
+                global_source: None,
                 agent_source: Some(AgentsMdSource {
                     scope: crate::types::AgentsMdScope::Agent,
                     kind: AgentsMdKind::AgentsMd,

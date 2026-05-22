@@ -209,6 +209,7 @@ impl RuntimeHandle {
             AdmissionContext::RuntimeOwned,
         );
         let loaded_agents_md = load_agents_md(
+            self.user_home().as_deref(),
             self.agent_home().as_path(),
             execution
                 .workspace
