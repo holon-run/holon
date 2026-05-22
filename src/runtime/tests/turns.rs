@@ -383,7 +383,11 @@ async fn max_output_mutation_tool_call_is_rejected_without_side_effects() {
     let content = tool_results.data["results"][0]["content"]
         .as_str()
         .expect("tool result content");
-    assert!(content.contains("ApplyPatch failed"));
+    let receipt: serde_json::Value = serde_json::from_str(content).expect("tool error receipt");
+    assert_eq!(receipt["ok"], false);
+    assert_eq!(receipt["tool_name"], "ApplyPatch");
+    assert_eq!(receipt["kind"], "truncated_mutation_tool_call");
+    assert_eq!(receipt["retryable"], true);
     assert!(content.contains("truncated_mutation_tool_call"));
     assert!(content.contains("max_tokens"));
     assert!(content.contains("was not executed"));
@@ -392,7 +396,6 @@ async fn max_output_mutation_tool_call_is_rejected_without_side_effects() {
     assert!(content.contains("bounded ExecCommand/scripted rewrite"));
     assert!(content.contains("Inspect only the necessary context"));
     assert!(!content.contains("inspect the target file before retrying"));
-    assert!(content.contains("retryable: true"));
     assert!(content.len() < 800);
 }
 

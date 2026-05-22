@@ -397,6 +397,18 @@ The envelope fields are:
 - `recovery_hint`: optional concise next-step guidance
 - `retryable`: whether retrying the same logical action is expected to help
 
+The shared model-visible error receipt renders as bounded JSON:
+
+- `ok: false`
+- `tool_name`: built-in tool name when known
+- `kind`: stable machine-readable failure kind
+- `message`: concise human-readable summary
+- `hint`: optional corrective guidance derived from `recovery_hint`
+- `field`: optional input field/path when present in `details.field`
+- `retryable`: whether retrying the same logical action is expected to help
+- `details`: optional bounded detail; oversized detail is replaced by a
+  preview plus digest instead of echoing the full payload
+
 Runtime expectations:
 
 - the provider-facing `tool_result.content` remains a plain string, but it
