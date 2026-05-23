@@ -1,97 +1,98 @@
 # Holon
 
-Holon is a local-first AI agent runtime for long-running work in local
-workspaces.
+Holon lets AI agents keep working in your local workspace across prompts,
+terminal sessions, and external events.
 
-It is built for agents that should keep working across time: read and edit a
-local repository, run commands, wait for external changes, wake up later, and
-return explicit operator-facing results.
+Most AI agent tools optimize for a conversation surface, a hosted assistant, or
+one active coding session. Holon focuses on the lifecycle around the work
+itself. It runs as a local, headless server-client runtime: clients can connect,
+submit work, disconnect, reconnect, inspect progress, and receive final briefs
+while the runtime keeps the work alive.
 
-The project is part of the Holon Run local-first AI infrastructure stack.
+Each Holon agent owns one durable work session inside that runtime. Its queue,
+workspace context, WorkItems, sleep/wake state, execution history, and delivery
+path stay attached to the agent instead of being lost with a single client
+connection.
 
-## Current Status
-
-Holon is under active development.
-
-The current `main` branch is a Rust rewrite of the original Holon line. It
-intentionally replaces the earlier Go implementation and does not guarantee
-compatibility with older `main` snapshots or Go-line behavior.
-
-If you need the old Go implementation, use the latest Go-line release
-(`v0.12.0`). The Rust line starts from `v0.13.0`.
-
-Expect breaking changes while the runtime, CLI, and daemon surfaces are being
-stabilized.
-
-## What Holon Is
-
-Holon is:
-
-- a local-first runtime for AI agents
-- a headless execution layer for local workspaces
-- a control plane for agent state, tasks, wakeups, and daemon lifecycle
-- a foundation for coding agents, review agents, and event-driven continuation
-
-Holon is not:
-
-- a chat UI
-- an all-in-one agent platform
-- a connector marketplace
-- a workflow automation GUI
-- a full VM or container sandbox product
-
-The core question Holon explores is:
-
-> How can an agent keep making progress in a local workspace across time
-> without losing execution boundaries, task state, or trust boundaries?
+Holon is part of the Holon Run local-first AI infrastructure stack.
 
 ## Install
 
-Build the current checkout from source:
-
-```bash
-cargo install --path .
-holon --help
-```
-
-Released binaries are published as GitHub Release assets for Linux amd64,
-macOS amd64, and macOS arm64. Once a release is tagged, install with Homebrew:
+Install the latest release with Homebrew:
 
 ```bash
 brew tap holon-run/tap
 brew install holon
+holon --help
 ```
 
-The command examples below assume `holon` is installed on `PATH`. When working
-directly from a source checkout, run `cargo install --path .` first so the
-quickstart matches the released binary surface.
+Direct binaries are also available from the
+[latest GitHub Release](https://github.com/holon-run/holon/releases/latest) for
+Linux amd64, macOS amd64, and macOS arm64.
 
-## Core Commands
+The command examples below assume `holon` is installed on `PATH`.
 
-Run a one-shot local task:
+## Provider setup
+
+Holon needs a model provider before it can run agent turns. For the fastest
+local setup, export a provider key and choose a model:
 
 ```bash
-holon run "fix the failing test" --json
-holon run "review this repository" --mode analysis
-holon run "analyze this workspace" --workspace-root /path/to/repo --cwd /path/to/repo/src
+# Anthropic-compatible provider
+export ANTHROPIC_AUTH_TOKEN="your-api-key"
+holon config set model.default "anthropic/claude-sonnet-4-6"
+
+# Or OpenAI Responses
+export OPENAI_API_KEY="your-api-key"
+holon config set model.default "openai/gpt-5.4"
 ```
 
-Start the long-running runtime in the foreground:
+You can inspect the configured provider state with:
 
 ```bash
-holon serve
-holon serve --access lan --host 192.168.1.10 --port 7878 --token-file ~/.config/holon/remote.token
+holon config doctor
+holon config models list
 ```
 
-Manage the runtime as a local daemon:
+For persistent credentials that avoid shell history and process arguments, use
+the credential store and point the provider at that credential profile:
+
+```bash
+printf '%s' "$ANTHROPIC_AUTH_TOKEN" \
+  | holon config credentials set --kind api_key --stdin anthropic
+
+holon config providers set anthropic \
+  --credential-source credential_profile \
+  --credential-kind api_key \
+  --credential-profile anthropic
+```
+
+Holon can also use OpenAI Codex subscription credentials from an existing local
+`codex login` session when an `openai-codex/...` model is selected.
+
+## Quickstart
+
+Run a one-shot task in the current repository:
+
+```bash
+holon run \
+  "inspect this repository, find one failing or missing check, and report the smallest next fix" \
+  --json
+```
+
+Run against a specific workspace and working directory:
+
+```bash
+holon run "analyze this package" \
+  --workspace-root /path/to/repo \
+  --cwd /path/to/repo/src
+```
+
+Start the long-running local runtime:
 
 ```bash
 holon daemon start
-holon daemon start --access lan --host 192.168.1.10 --port 7878 --token-file ~/.config/holon/remote.token
-holon daemon status
-holon daemon logs
-holon daemon stop
-holon daemon restart --access lan --host 192.168.1.10 --port 7878 --token-file ~/.config/holon/remote.token
+holon status
 ```
 
 Open the local operator console:
@@ -100,7 +101,83 @@ Open the local operator console:
 holon tui
 ```
 
-Inspect state:
+Stop the daemon:
+
+```bash
+holon daemon stop
+```
+
+## Feature list
+
+Holon is runtime infrastructure for agent work that must survive beyond one
+client session. The main capability surface is:
+
+- **Durable agent sessions**: agents keep their queue, workspace context,
+  execution history, and delivery state across client disconnects and later
+  reconnects.
+- **Runtime WorkItems**: long-running objectives carry a plan, progress
+  checklist, blockers, waiting state, and completion report inside the runtime
+  instead of living only in chat history.
+- **Event-driven continuation**: agents can sleep, wait for callbacks, timers,
+  webhooks, task results, or other external events, then wake and continue the
+  same work.
+- **Local workspace execution**: agents read files, edit code, run commands, and
+  verify changes in the repositories you explicitly attach.
+- **Worktree-isolated coding work**: coding subtasks and child agents can run in
+  managed git worktrees so longer or riskier work stays separate from the main
+  checkout.
+- **Supervised background tasks and delegation**: agents can delegate commands
+  or child agents as explicit tasks, inspect their status and output, and rejoin
+  results without losing the parent work context.
+- **Local behavior loading**: agents can use repository instructions, agent
+  templates, and local skills without being tied to one hosted assistant
+  product.
+- **Clear trust and delivery boundaries**: Holon preserves input origin and
+  trust metadata, separates internal execution traces from user-facing briefs,
+  and returns explicit final results.
+
+## Core concepts
+
+Holon is organized around a few runtime primitives:
+
+- `agent`: a long-lived runtime identity with local state
+- `WorkItem`: a durable objective with plan, progress, blockers, and completion
+  state
+- `queue`: all inputs become queued work
+- `origin`: each input carries source and trust metadata
+- `task`: an execution handle for commands, child agents, and other asynchronous
+  work while a WorkItem or turn is being advanced
+- `sleep` / `wake`: the runtime can wait and resume from explicit signals
+- `workspace`: local repositories are attached and projected explicitly
+- `brief`: user-facing output is distinct from internal reasoning and logs
+
+## Common commands
+
+Run local agent work:
+
+```bash
+holon run "fix the failing test" --json
+holon run "review this repository"
+```
+
+Start the runtime in the foreground:
+
+```bash
+holon serve
+holon serve --access lan --host 192.168.1.10 --port 7878 --token-file ~/.config/holon/remote.token
+```
+
+Manage the runtime as a daemon:
+
+```bash
+holon daemon start
+holon daemon status
+holon daemon logs
+holon daemon restart
+holon daemon stop
+```
+
+Inspect local state:
 
 ```bash
 holon status
@@ -108,36 +185,44 @@ holon agent list
 holon transcript --limit 50
 ```
 
-## Runtime Model
+## Current release
 
-Holon is organized around a few runtime primitives:
+The current Rust-line release is
+[`v0.14.0`](https://github.com/holon-run/holon/releases/tag/v0.14.0).
 
-- `agent`: a long-lived runtime identity with local state
-- `queue`: all inputs become queued work
-- `origin`: each input carries source and trust metadata
-- `task`: long-running or delegated work is modeled explicitly
-- `sleep` / `wake`: the runtime can wait and resume from explicit signals
-- `workspace`: local repositories are attached and projected explicitly
-- `brief`: operator-facing output is distinct from internal reasoning
+Highlights:
 
-The runtime currently supports:
+- more reliable event-driven scheduling
+- stronger long-lived WorkItem, task, and agent state
+- provider routing and web-search improvements
+- TUI, daemon, and remote transport hardening
+- improved workspace, worktree, and tool diagnostics
 
-- local file inspection and mutation
-- shell-first repository work
-- agent-scoped queues and state
-- daemon lifecycle management
-- timers, callbacks, webhooks, and remote ingress
-- background task orchestration
-- managed worktree workflows
-- local skill and instruction loading
-- Anthropic-compatible providers
-- OpenAI Responses via `OPENAI_API_KEY`
-- Codex subscription use through existing local `codex login` credentials
+See the [v0.14.0 release notes](https://github.com/holon-run/holon/releases/tag/v0.14.0)
+for the full changelog and release assets.
 
-## Project Boundaries
+## Status and compatibility
 
-Holon focuses on runtime meaning: agent identity, task continuity, execution
+Holon is under active development. The current line is the Rust runtime line,
+starting from `v0.13.0`.
+
+The old Go implementation is available as `v0.12.0`, but new runtime work is
+happening on the Rust line.
+
+Expect breaking changes while the CLI, daemon, and runtime contracts stabilize.
+
+## Project boundaries
+
+Holon focuses on runtime meaning: agent identity, work continuity, execution
 state, local workspace projection, and operator-visible results.
+
+Holon is not:
+
+- a chat UI
+- an all-in-one agent platform
+- a connector marketplace
+- a workflow automation GUI
+- a full VM or container sandbox product
 
 Adjacent Holon Run projects cover other layers:
 
@@ -148,12 +233,22 @@ Adjacent Holon Run projects cover other layers:
 When used together, AgentInbox should wake Holon; Holon should decide what the
 runtime event means.
 
+## Build from source
+
+For contributors working from a source checkout:
+
+```bash
+cargo install --path .
+holon --help
+```
+
 ## Development
 
 Run checks:
 
 ```bash
 cargo fmt --all -- --check
+RUSTFLAGS="-D warnings" cargo check --all-targets
 cargo test --all-targets -- --test-threads=1
 ```
 
