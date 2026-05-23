@@ -233,7 +233,16 @@ impl<'a> SchedulerDecisionExecutor<'a> {
 
         let previous_status = guard.state.status.clone();
         let previous_run_id = guard.state.current_run_id.clone();
-        scheduler::apply_sleep_projection(&mut guard.state, sleeping_until);
+        let next_sleeping_until = if matches!(previous_status, AgentStatus::Asleep) {
+            match (guard.state.sleeping_until, sleeping_until) {
+                (Some(current), Some(proposed)) => Some(current.min(proposed)),
+                (Some(current), None) => Some(current),
+                (None, proposed) => proposed,
+            }
+        } else {
+            sleeping_until
+        };
+        scheduler::apply_sleep_projection(&mut guard.state, next_sleeping_until);
         self.append_posture_decision(
             SleepTransitionBoundary::RunLoopIdle.as_str(),
             "sleep",
