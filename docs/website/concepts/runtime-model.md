@@ -98,16 +98,15 @@ background behavior.
 
 ### External Triggers
 
-External triggers let an agent wait for events from outside the runtime:
+External triggers let an agent wait for events from outside the runtime.
+Triggers are configured at the runtime level (via a URL endpoint or integration
+config) rather than created by the agent as tool calls:
 
 ```text
-Agent waits ──► External trigger created ──► Event arrives ──► Agent wakes
+Agent waits ──► Trigger URL configured ──► External event arrives ──► Agent wakes
 ```
 
-Use `CreateExternalTrigger` to register a waiting intent and
-`CancelExternalTrigger` to revoke it when no longer needed.
-
-**Delivery modes:**
+**Delivery modes** control how the trigger interacts with the agent:
 
 | Mode | Behavior |
 |------|----------|
@@ -118,19 +117,22 @@ Choose `wake_hint` when the external system already has a query API (GitHub
 API, CI status endpoints). Choose `enqueue_message` when the callback payload
 itself contains the actionable information.
 
-External trigger capabilities are agent-scoped. The same agent ingress can be
-reused across PRs, CI runs, issues, and WorkItems; WorkItems record their
-waiting state separately through `blocked_by`, `plan_status`, and todo state.
+Triggers are agent-scoped capability URLs. The same agent ingress can be reused
+across PRs, CI runs, issues, and WorkItems; WorkItems record their waiting
+state separately through `blocked_by`, `plan_status`, and todo state.
 
 Common integration patterns:
 
-- **Waiting for CI** — `CreateExternalTrigger` with `source="github"`,
-  `delivery_mode=wake_hint`. Agent wakes when CI completes and checks the run
-  status for the currently relevant WorkItem or queue entry.
-- **Webhook callbacks** — `delivery_mode=enqueue_message` so the webhook body
-  enters the agent queue with provenance preserved.
-
-Cancel external triggers only when explicitly revoking or rotating a capability.
+- **Waiting for CI** — Configure a `wake_hint` trigger for GitHub CI events.
+  The agent sets `blocked_by` on the WorkItem and sleeps. When CI completes,
+  the trigger wakes the agent, which checks the run status and continues or
+  updates the WorkItem.
+- **Webhook callbacks** — Configure an `enqueue_message` trigger so the
+  webhook body enters the agent queue with provenance preserved. The agent
+  sets `blocked_by` on the WorkItem and processes the payload on wake.
+- **Operator input** — No external trigger needed. Set
+  `plan_status=needs_input` on the WorkItem and sleep. The operator's next
+  prompt wakes the agent.
 
 ### Delivery
 
