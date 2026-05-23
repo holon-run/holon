@@ -206,7 +206,7 @@ async fn run_loop_idle_sleep_rechecks_queue_before_transition() {
     }
 
     let transition = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .transition_run_loop_idle_to_sleep()
+        .transition_run_loop_idle_to_sleep(None)
         .await
         .unwrap();
 

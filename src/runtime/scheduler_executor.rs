@@ -222,7 +222,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         Ok(guard.state.clone())
     }
 
-    pub(super) async fn transition_run_loop_idle_to_sleep(&self) -> Result<Option<AgentState>> {
+    pub(super) async fn transition_run_loop_idle_to_sleep(
+        &self,
+        sleeping_until: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Option<AgentState>> {
         let mut guard = self.runtime.inner.agent.lock().await;
         if matches!(
             guard.state.status,
@@ -234,7 +237,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
 
         let previous_status = guard.state.status.clone();
         let previous_run_id = guard.state.current_run_id.clone();
-        scheduler::apply_sleep_projection(&mut guard.state, None);
+        scheduler::apply_sleep_projection(&mut guard.state, sleeping_until);
         self.append_posture_decision(
             SleepTransitionBoundary::RunLoopIdle.as_str(),
             "sleep",
