@@ -6,48 +6,13 @@ public contract.
 For a short architecture map and reading path, see
 [Holon Architecture Overview](../architecture-overview.md).
 
-## Recommended reading path
+## Current runtime specs
 
-New contributors should read RFCs in this order rather than randomly:
-
-### 1. Product and runtime map
-
-- [README.md](../../README.md) — project entry and install
-- [Architecture overview](../architecture-overview.md) — runtime map
-- [Runtime model](../../docs/website/concepts/runtime-model.md) — user-facing
-  concept page
-
-### 2. Agent, work, and scheduler core
-
-- [Agent State Model And Runtime Projection](./agent-state-model.md)
-- [Work Item Runtime Model](./work-item-runtime-model.md)
-- [Work Item Centered Agent Runtime](./work-item-centered-agent-runtime.md)
-- [Runtime Scheduler Contract](./runtime-scheduler-contract.md)
-- [Scheduler Wait State And Recoverable Agent Continuation](./scheduler-wait-state.md)
-
-### 3. Waiting, wake, and external events
-
-- [Continuation Trigger](./continuation-trigger.md)
-- [Waiting Plane And Reactivation](./waiting-plane-and-reactivation.md)
-- [Operator Notification and Intervention](./operator-wait-and-intervention.md)
-- [External Trigger Capability And Providerless Ingress](./external-trigger-capability.md)
-
-### 4. Tools and delegation
-
-- [Tool Surface Layering](./tool-surface-layering.md)
-- [Command Tool Family](./command-tool-family.md)
-- [Agent Delegation Tool Plane](./agent-delegation-tool-plane.md)
-
-### 5. Workspace, execution, and trust
-
-- [Workspace Binding And Execution Roots](./workspace-binding-and-execution-roots.md)
-- [Execution Policy And Virtual Execution Boundary](./execution-policy-and-virtual-execution-boundary.md)
-- [Default Trust Authorization And Access Control](./default-trust-auth-and-control.md)
-
-### 6. Provider, configuration, and context
-
-- [Runtime Configuration Surface](./runtime-configuration-surface.md)
-- [Long-Lived Context Memory](./long-lived-context-memory.md)
+RFCs are design records and historical decisions. For the current
+implementation-facing runtime contract, see the spec pages under
+[`docs/website/spec/`](../website/spec/). Specs are extracted from RFCs once
+the design stabilizes into runtime behavior and are verified against
+implementation and tests.
 
 ## Runtime And Work Model
 

@@ -1,114 +1,100 @@
 ---
 title: Documentation layers
-summary: How Holon separates user-facing docs, current-contract reference, and maintainer design records — and which layer to read for which question.
-order: 30
+summary: How Holon separates product docs, current-contract reference, and maintainer design records.
+order: 20
 ---
 
 # Documentation layers
 
-Holon's documentation is organized into three layers with clear boundaries.
-This page helps you find the right layer for your question.
+Holon's documentation is organized into four layers with clear boundaries.
+This prevents drift between what users see, what the runtime actually does, and
+what maintainers are designing next.
 
-## Quick guide: which docs should I read?
+## Layer 1: Product website (`docs/website/`)
 
-| I want to... | Start here |
-|-------------|-----------|
-| Install and run Holon | [Getting started](/getting-started/) |
-| Understand core concepts | [Concepts overview](/concepts/) |
-| Find a CLI command or config key | [Reference](/reference/) |
-| Integrate Holon into another system | [Integration guide](/guides/integration/) |
-| Understand a runtime contract | [RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs) |
-| See why a design choice was made | [Implementation decisions](https://github.com/holon-run/holon/tree/main/docs/implementation-decisions) |
-| Contribute to the runtime | [Architecture overview](https://github.com/holon-run/holon/blob/main/docs/architecture-overview.md) |
+**Audience:** New users, evaluators, integrators, and contributors learning Holon.
 
-## The three layers
+**Goal:** Explain why Holon exists, guide first success, and expose stable-enough
+concepts without overwhelming readers with RFC detail.
 
-### Layer 1: User-facing website (`docs/website/`)
-
-**Audience:** New users, evaluators, integrators, and operators.
-
-**Goal:** Explain what Holon is, guide first success, and document the current
-surface without requiring RFC knowledge.
+**Structure:**
 
 | Section | Purpose |
 |---------|---------|
-| Home | Product promise, audiences, brand hierarchy |
-| Getting started | Shortest path from install to first agent interaction |
-| Concepts | Mental model: agents, work items, tasks, queues, trust boundaries |
+| Home | Product promise, audiences, brand hierarchy, first CTA |
+| Getting started | Shortest path from clone to first agent interaction |
+| Concepts | Four-object mental model before deep lifecycle vocabulary |
 | Guides | Task-oriented workflows grouped by user job |
-| Reference | Current-contract CLI, config, and HTTP control-plane snapshots |
+| Reference | Current-contract CLI, config, and control-plane snapshots |
+| Roadmap | User-facing milestones and stability expectations |
 
-**Rule:** Website pages explain *what* and *how*. Link to RFCs for *why the
-design works that way*.
+**Rule:** Website pages should explain *what* and *how*, not *why the design
+works that way*. Link to RFCs for design rationale.
 
-### Layer 2: Current public contract
+## Layer 2: Runtime specs (`docs/website/spec/`)
+
+**Audience:** Maintainers and contributors who need the current runtime contract.
+
+**Goal:** Describe the current implementation-facing contract — what Holon
+actually does today, verified against implementation and tests.
+
+**Rule:** Spec pages are not user tutorials. They are authoritative contracts.
+Each spec page links to the source RFCs that motivated the design and tracks
+known implementation/RFC/test gaps. When runtime behavior changes, the spec
+page and the RFC should be updated together.
+
+## Layer 3: Current public contract
 
 **Audience:** Users running, configuring, integrating, or troubleshooting Holon.
 
-**Goal:** Describe only behavior that is current or explicitly marked as changing.
+**Goal:** Describe only behavior that is current or explicitly marked stable.
 
 **Includes:**
 
 - `docs/website/reference/` — CLI, configuration, and HTTP control-plane pages
-  verified against the compiled runtime
-- `README.md` — high-level project entry with install, provider setup, and docs
-  navigation
-- `docs/runtime-spec.md` — implementation-facing aggregate spec (not the sole
-  authority; accepted RFCs and reference pages are more specific)
+- `README.md` — high-level repository entry and contributor orientation
+- `docs/website/spec/` — current implementation-facing contracts
+- `docs/runtime-spec.md` — implementation-facing spec (not a user tutorial)
 
-**Rule:** Reference pages track a specific release version. If behavior is
-experimental, the page says so.
+**Rule:** Reference pages should be verified against the compiled runtime
+(`holon --help`, `holon config schema`). Mark the version each page was last
+checked against. If behavior is experimental, say so.
 
-### Layer 3: Maintainer design (`docs/rfcs/`, `docs/implementation-decisions/`, `docs/archive/`)
+## Layer 4: Maintainer design (`docs/`, `docs/rfcs/`, `docs/implementation-decisions/`)
 
-**Audience:** Maintainers and contributors changing runtime behavior.
+**Audience:** Maintainers and contributors changing runtime semantics.
 
 **Goal:** Preserve architecture contracts, design rationale, and historical
-decisions.
+decisions. These are the canonical source of truth for runtime behavior.
+
+**Structure:**
 
 | Location | Content type |
 |----------|-------------|
 | `docs/rfcs/` | Canonical design contracts — one RFC per runtime concept |
 | `docs/implementation-decisions/` | ADR-style records — one decision per file |
-| `docs/archive/` | Superseded notes and historical design docs |
-| `docs/architecture-overview.md` | Short architecture map with RFC reading path |
+| `docs/archive/` | Superseded notes, historical design docs |
+| `docs/documentation-cleanup-audit.md` | Maintenance audit tracking drift between layers |
 
 **Rule:** When a runtime concept changes, update the RFC first. Implementation
-decisions capture *why*. Archives preserve history.
-
-## Authority boundaries
-
-When sources conflict, prefer the more specific and current document:
-
-1. **Accepted RFC** (specific domain) over `runtime-spec.md` (aggregate)
-2. **Reference page** (current release) over RFC (design intent)
-3. **Website concept page** (user explanation) over RFC (design detail)
-4. **Implementation decision** (rationale) over archived notes (history)
-
-`docs/runtime-spec.md` is an early aggregate contract, not the single source of
-truth. When a domain has a more specific accepted RFC or a current reference
-page, prefer that more specific document.
+decisions capture *why* a choice was made. Archives preserve history without
+cluttering the active surface.
 
 ## Cross-layer links
 
-- Website pages link to RFCs as deeper design background — not as required reading.
-- The repository `README.md` links to the website as the user-facing entry point.
-- The architecture overview (`docs/architecture-overview.md`) points to RFCs for
-  detailed contracts.
+- Website pages link to RFCs as "deeper design background" — not as required
+  reading.
+- The repository `README.md` links to the website as the product entry point.
+- The documentation cleanup audit (`docs/documentation-cleanup-audit.md`)
+  tracks stale references and vocabulary drift across layers.
 
 ## When to update which layer
 
 | Change | Primary target | Secondary |
 |--------|---------------|-----------|
 | New CLI command | Reference page | Guides, getting-started |
-| Config key change | Reference page, config schema | Guides that reference it |
-| Runtime concept change | RFC | Concepts page |
+| Config key change | Reference page, config schema | Reference page in site |
+| Runtime concept change | RFC | Concepts page, reference |
 | New user workflow | Guides | Getting-started |
 | Product messaging | Homepage | README |
 | Design rationale | Implementation decision | RFC if normative |
-
-## See also
-
-- [Architecture overview](https://github.com/holon-run/holon/blob/main/docs/architecture-overview.md) — repository architecture map
-- [RFC index](https://github.com/holon-run/holon/tree/main/docs/rfcs) — all current RFCs
-- [Implementation decisions](https://github.com/holon-run/holon/tree/main/docs/implementation-decisions) — design rationale records

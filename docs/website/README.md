@@ -89,15 +89,18 @@ contribute, see [Getting started](/getting-started/). Next, follow the
 - [Reference](/reference/) — current CLI, configuration, and control-plane
   surface documentation.
   experimental.
+- [Specs](/spec/) — current implementation-facing runtime contracts for
+  maintainers and contributors.
 
 ## For contributors
 
 Holon's internal design material lives in the [repository `docs/`
 directory](https://github.com/holon-run/holon/tree/main/docs): RFCs define
-runtime contracts, implementation decisions record architecture rationale, and
-archived notes preserve historical context. These are maintainer-facing
-documents; you do not need to read them to use Holon, but they are the
-canonical source when you need to understand or change runtime behavior.
+runtime contracts, [spec pages](/spec/) extract current verified contracts,
+implementation decisions record architecture rationale, and archived notes
+preserve historical context. These are maintainer-facing documents; you do not
+need to read them to use Holon, but they are the canonical source when you
+need to understand or change runtime behavior.
 
 ## About this site
 
@@ -121,6 +124,9 @@ guide](/guides/documentation-workflow/). The production `siteUrl` is
 `https://holon.run`.
 
 <!-- INDEX:START -->
+
+- [Runtime specs](./spec/)
+  <!-- mdorigin:index kind=directory -->
 
 - [Getting started](./getting-started/)
   <!-- mdorigin:index kind=directory -->

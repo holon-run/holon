@@ -98,41 +98,30 @@ background behavior.
 
 ### External Triggers
 
-External triggers let an agent wait for events from outside the runtime.
-Triggers are configured at the runtime level (via a URL endpoint or integration
-config) rather than created by the agent as tool calls:
+External triggers let an agent wait for events from outside the runtime:
 
 ```text
-Agent waits ──► Trigger URL configured ──► External event arrives ──► Agent wakes
+Agent waits ──► External ingress provisioned ──► Event arrives ──► Agent wakes
 ```
 
-**Delivery modes** control how the trigger interacts with the agent:
+Holon provisions a default external ingress capability for each agent. The
+agent uses this capability to receive wake hints and contentful external
+events without creating or cancelling triggers on every wait cycle.
+
+**Delivery modes:**
 
 | Mode | Behavior |
 |------|----------|
-| `wake_hint` | Wakes the agent so it can inspect external state (e.g., check a CI run). The trigger payload is not enqueued as a message. |
-| `enqueue_message` | Wakes the agent **and** delivers the trigger payload as a message in the agent's queue. |
+| `wake_hint` | Wakes the agent so it can inspect external state (e.g., check a CI run). The hint payload is not enqueued as a message. |
+| `enqueue_message` | Wakes the agent **and** delivers the event payload as a message in the agent's queue. |
 
 Choose `wake_hint` when the external system already has a query API (GitHub
 API, CI status endpoints). Choose `enqueue_message` when the callback payload
 itself contains the actionable information.
 
-Triggers are agent-scoped capability URLs. The same agent ingress can be reused
-across PRs, CI runs, issues, and WorkItems; WorkItems record their waiting
-state separately through `blocked_by`, `plan_status`, and todo state.
-
-Common integration patterns:
-
-- **Waiting for CI** — Configure a `wake_hint` trigger for GitHub CI events.
-  The agent sets `blocked_by` on the WorkItem and sleeps. When CI completes,
-  the trigger wakes the agent, which checks the run status and continues or
-  updates the WorkItem.
-- **Webhook callbacks** — Configure an `enqueue_message` trigger so the
-  webhook body enters the agent queue with provenance preserved. The agent
-  sets `blocked_by` on the WorkItem and processes the payload on wake.
-- **Operator input** — No external trigger needed. Set
-  `plan_status=needs_input` on the WorkItem and sleep. The operator's next
-  prompt wakes the agent.
+External ingress capabilities are agent-scoped. The same agent ingress can be
+reused across PRs, CI runs, issues, and WorkItems; WorkItems record their
+waiting state separately through `blocked_by`, `plan_status`, and todo state.
 
 ### Delivery
 

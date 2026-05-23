@@ -1,5 +1,17 @@
 # Holon Runtime Spec v0
 
+> **Status:** This is the original v0 aggregate runtime spec. It remains the
+> implementation-facing baseline, but individual topic contracts are gradually
+> extracted into focused spec pages under
+> [`docs/website/spec/`](./website/spec/). When a topic has a dedicated spec
+> page, that page is the current authority; this document is the fallback for
+> topics not yet extracted.
+>
+> **Reading path:** For user-facing documentation, start at the
+> [documentation website](https://holon.run). For design rationale and
+> historical decisions, see [`docs/rfcs/`](./rfcs/). For current
+> implementation-facing contracts, see [`docs/website/spec/`](./website/spec/).
+
 This document defines the first runtime contract for `Holon`.
 
 The goal of v0 is not to solve every future integration. The goal is to make
