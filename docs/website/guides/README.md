@@ -44,6 +44,8 @@ Work with multiple agents, durable objectives, and reusable skills.
   agents, supervision contracts, and workspace modes.
 - **[Work items guide](/guides/work-items/)** — tracking durable objectives
   with plans, todo lists, and lifecycle management.
+- **[Durable agent workflow](/guides/durable-agent-workflow/)** — the end-to-end
+  durable agent story: WorkItems, wait/wake/resume, and final briefs.
 - **[Skills guide](/guides/skills/)** — reusable SKILL.md workflows, skill
   locations, and custom skill development.
 
@@ -105,6 +107,10 @@ Edit and build the Holon documentation website.
   <!-- mdorigin:index kind=article -->
 
 - [Work items guide](./work-items.md)
+
+- [Durable agent workflow](./durable-agent-workflow.md)
+  The end-to-end durable agent story: create an agent, start long-running work, survive disconnects, wait for events, and deliver final briefs.
+  <!-- mdorigin:index kind=article -->
   Durable objective tracking with work items, plans, todo lists, and lifecycle management.
   <!-- mdorigin:index kind=article -->
 

@@ -42,6 +42,7 @@ gives you the full interactive experience. For one-shot runs, see the
 If you're already familiar with Holon or want to jump straight into specifics:
 
 - **[Quick examples](/guides/quick-examples/)** — one-shot and common task patterns
+- **[Durable agent workflow](/guides/durable-agent-workflow/)** — the full lifecycle of durable agent work
 - **[Concepts](/concepts/)** — the mental model before diving into internals
 - **[CLI reference](/reference/cli.md)** — full command surface
 - **[Troubleshooting](/guides/troubleshooting/)** — diagnose common setup issues
