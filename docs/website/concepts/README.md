@@ -88,7 +88,7 @@ These are maintainer-facing documents; you do not need them to use Holon.
   <!-- mdorigin:index kind=article -->
 
 - [Documentation layers](./documentation-layers.md)
-  How Holon separates product docs, current-contract reference, and maintainer design records.
+  How Holon separates user-facing docs, current-contract reference, and maintainer design records — and which layer to read for which question.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

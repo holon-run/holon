@@ -65,6 +65,18 @@ contribute, see [Getting started](/getting-started/). Next, follow the
 > [reference pages](/reference/) for the current surface and the repository
 > [RFC index](https://github.com/holon-run/holon/tree/main/docs/rfcs) for design direction.
 
+## Which docs should I read?
+
+- **I want to install and run Holon** → [Getting started](/getting-started/)
+- **I want to understand the concepts** → [Concepts](/concepts/), especially
+  [runtime model](/concepts/runtime-model/) and
+  [documentation layers](/concepts/documentation-layers/)
+- **I want to find a command or config key** → [Reference](/reference/)
+- **I want to integrate Holon** → [Integration guide](/guides/integration/)
+- **I want to contribute to the runtime** →
+  [Architecture overview](https://github.com/holon-run/holon/blob/main/docs/architecture-overview.md)
+  and [RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs)
+
 ## Documentation map
 
 - [Getting started](/getting-started/) — your first Holon agent run, from
