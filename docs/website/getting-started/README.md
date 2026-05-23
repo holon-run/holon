@@ -6,20 +6,19 @@ order: 10
 
 # Getting started
 
-Holon is currently built from source as a Rust binary. This section gives you
-the shortest path from clone to a running agent, then shows where to branch
+Holon ships as an installable release. This section gives you
+the shortest path from install to a running agent, then shows where to branch
 based on what you want to do next.
 
 ## New to Holon?
 
 If this is your first time using Holon, follow our step-by-step tutorial:
 
-- **[Create your first agent](first-agent.md)** - Build, start, connect with TUI, create an agent, and configure models in ~15 minutes
+- **[Create your first agent](first-agent.md)** - Install, start, connect with TUI, create an agent, and configure models in ~15 minutes
 
-This hands-on guide covers:
+The tutorial covers:
 
-- Building and verifying the Holon binary
-- Starting the runtime in daemon mode
+- Installing Holon and starting the runtime
 - Connecting with the Terminal UI
 - Creating an agent and sending your first prompt
 - Configuring models and providers
@@ -43,6 +42,7 @@ gives you the full interactive experience. For one-shot runs, see the
 If you're already familiar with Holon or want to jump straight into specifics:
 
 - **[Quick examples](/guides/quick-examples/)** — one-shot and common task patterns
+- **[Durable agent workflow](/guides/durable-agent-workflow/)** — the full lifecycle of durable agent work
 - **[Concepts](/concepts/)** — the mental model before diving into internals
 - **[CLI reference](/reference/cli.md)** — full command surface
 - **[Troubleshooting](/guides/troubleshooting/)** — diagnose common setup issues
@@ -58,11 +58,21 @@ If you plan to modify or contribute to Holon itself:
 
 ## Requirements
 
-- Rust toolchain with Cargo (build from source; pre-built binaries not yet available)
+- Holon installed on `PATH` (Homebrew or direct binary; see [first agent](first-agent.md) for step-by-step)
 - A model provider API key (Anthropic, OpenAI, or compatible)
-- Node.js and mdorigin (only needed for building this documentation site)
 
-## Repository orientation
+### Build from source
+
+If you prefer to build from source or want to contribute:
+
+- Rust toolchain with Cargo
+- Clone the repository: `git clone https://github.com/holon-run/holon.git && cd holon`
+- Build: `cargo build`
+- When building from source, replace `holon` commands in examples with `cargo run --`
+
+## Repository orientation (contributors)
+
+This is a short orientation for contributors. End users don't need to know the repository layout.
 
 - `src/` contains the Rust runtime implementation and executable entrypoints.
 - `tests/` contains Rust integration tests and shared support.
@@ -70,6 +80,7 @@ If you plan to modify or contribute to Holon itself:
   notes.
 - `builtin_templates/` contains runtime-managed agent templates.
 - `docs/website/` contains this mdorigin documentation site.
+
 
 <!-- INDEX:START -->
 

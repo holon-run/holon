@@ -51,30 +51,43 @@ contracts are visible.
 ## Try Holon
 
 ```bash
-git clone https://github.com/holon-run/holon.git
-cd holon
-cargo build
-cargo run -- --help
+brew tap holon-run/tap
+brew install holon
+holon --help
 ```
 
-This gets you from zero to a running Holon binary. Next, follow the
+This gets you from zero to a running Holon binary. To build from source or
+contribute, see [Getting started](/getting-started/). Next, follow the
 [getting started guide](/getting-started/) to create your first agent.
 
 > **Holon is early-stage software.** The runtime model is stabilizing, but CLI
 > shapes, config schemas, and provider surfaces may change. See the
-> [roadmap](/roadmap/) for what's stable today and what's still experimental.
+> [reference pages](/reference/) for the current surface and the repository
+> [RFC index](https://github.com/holon-run/holon/tree/main/docs/rfcs) for design direction.
+
+## Which docs should I read?
+
+- **I want to install and run Holon** → [Getting started](/getting-started/)
+- **I want to understand the concepts** → [Concepts](/concepts/), especially
+  [runtime model](/concepts/runtime-model/) and
+  [documentation layers](/concepts/documentation-layers/)
+- **I want to find a command or config key** → [Reference](/reference/)
+- **I want to integrate Holon** → [Integration guide](/guides/integration/)
+- **I want to contribute to the runtime** →
+  [Architecture overview](https://github.com/holon-run/holon/blob/main/docs/architecture-overview.md)
+  and [RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs)
 
 ## Documentation map
 
 - [Getting started](/getting-started/) — your first Holon agent run, from
   install to first interaction.
 - [Concepts](/concepts/) — the mental model: agents, work items, tasks, queues,
+- **[Security and execution boundaries](/concepts/security-and-execution-boundaries/)** — what Holon guards and what you must guard.
   and trust boundaries.
 - [Guides](/guides/) — task-oriented workflows for operating, integrating, and
   extending Holon.
 - [Reference](/reference/) — current CLI, configuration, and control-plane
   surface documentation.
-- [Roadmap](/roadmap/) — what's stable now, what's next, and what's still
   experimental.
 
 ## For contributors
@@ -119,9 +132,6 @@ guide](/guides/documentation-workflow/). The production `siteUrl` is
   <!-- mdorigin:index kind=directory -->
 
 - [Reference](./reference/)
-  <!-- mdorigin:index kind=directory -->
-
-- [Roadmap](./roadmap/)
   <!-- mdorigin:index kind=directory -->
 
 <!-- INDEX:END -->

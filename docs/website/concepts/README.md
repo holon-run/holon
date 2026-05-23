@@ -71,20 +71,24 @@ These are maintainer-facing documents; you do not need them to use Holon.
 
 <!-- INDEX:START -->
 
-- [Memory system](./memory.md)
-  How Holon's memory layers preserve continuity — working memory, episodes, durable ledger, and indexed search.
-  <!-- mdorigin:index kind=article -->
-
 - [Runtime model](./runtime-model.md)
   Agents, tasks, work items, workspaces, and the execution loop that make up Holon's runtime.
+  <!-- mdorigin:index kind=article -->
+
+- [Memory system](./memory.md)
+  How Holon's memory layers preserve continuity across turns — working memory, episodes, durable ledger, and indexed search.
   <!-- mdorigin:index kind=article -->
 
 - [Trust boundaries](./trust-boundaries.md)
   How Holon classifies origin, trust, and priority to keep long-lived agents secure.
   <!-- mdorigin:index kind=article -->
 
+- [Security and execution boundaries](./security-and-execution-boundaries.md)
+  What Holon does and does not sandbox and how to run agents safely.
+  <!-- mdorigin:index kind=article -->
+
 - [Documentation layers](./documentation-layers.md)
-  How Holon separates product docs, current-contract reference, and maintainer design records.
+  How Holon separates user-facing docs, current-contract reference, and maintainer design records — and which layer to read for which question.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

@@ -1,6 +1,6 @@
 ---
 title: CLI reference
-summary: Holon's current command-line interface as compiled — verified against `holon --help`.
+summary: Holon's current command-line interface — verified against holon --help (v0.14.0).
 order: 10
 ---
 <!-- maintenance: regenerate from `holon --help` output when commands change -->
@@ -12,47 +12,18 @@ Holon's command-line interface. All commands accept `--help` for detailed flag d
 ## Command Tree
 
 ```
-holon (v0.13.0)
-├── run          One-shot agent interaction
-├── prompt       Send a prompt to an agent (lightweight)
-├── status       Show agent status
-├── tail         Show recent log tail
-├── transcript   Show conversation transcript
-├── task         Run a command as a background task
-├── timer        Create a delayed or recurring timer
-├── control      [deprecated] use `holon agent start|stop|abort`
+holon (v0.14.0)
+├── serve        Start HTTP control plane server
 ├── daemon       Background daemon lifecycle
 │   ├── start    Start the daemon
 │   ├── stop     Stop the daemon
 │   ├── status   Check daemon status
 │   ├── restart  Restart the daemon
 │   └── logs     View daemon logs
-├── agent        Agent management
-│   ├── list     List all agents
-│   ├── status   Show agent status
-│   ├── create   Create a new agent
-│   ├── start    Start an agent
-│   ├── pause    Deprecated alias for stop
-│   ├── resume   Deprecated alias for start
-│   ├── stop     Stop an agent
-│   ├── abort Abort current run
-│   └── model    Per-agent model configuration
-│       ├── get  Get agent model override
-│       ├── set  Set agent model override
-│       └── clear Clear agent model override
-├── serve        Start HTTP control plane server
-├── skills       Manage skills
-│   ├── list     List installed skills
-│   ├── install  Install a skill
-│   └── uninstall Uninstall a skill
-├── tui          Launch interactive terminal UI
 ├── config       Runtime configuration
 │   ├── get      Read a config key
 │   ├── set      Write a config key
 │   ├── unset    Remove a config key
-│   ├── list     List all current config
-│   ├── schema   Show all config keys with types and defaults
-│   ├── doctor   Full system health check
 │   ├── providers Provider management
 │   │   ├── set    Add/update a provider
 │   │   ├── get    Show a provider
@@ -63,16 +34,51 @@ holon (v0.13.0)
 │   │   ├── set    Store a credential
 │   │   ├── list   List stored credentials
 │   │   └── remove Remove a credential
-│   └── models  Model catalog
-│       └── list List available models
+│   ├── models  Model catalog
+│   │   └── list List available models
+│   ├── list     List all current config
+│   ├── schema   Show all config keys with types and defaults
+│   └── doctor   Full system health check
+├── prompt       Send a prompt to an agent (lightweight)
+├── status       Show agent status
+├── tail         Show recent log tail
+├── transcript   Show conversation transcript
+├── task         Run a command as a background task
+├── timer        Create a delayed or recurring timer
+├── control      [deprecated] use `holon agent start|stop|abort`
+├── agent        Agent management
+│   ├── list     List all agents
+│   ├── status   Show agent status
+│   ├── create   Create a new agent
+│   ├── start    Start an agent
+│   ├── stop     Stop an agent
+│   ├── abort    Abort current run
+│   └── model    Per-agent model configuration
+│       ├── get  Get agent model override
+│       ├── set  Set agent model override
+│       └── clear Clear agent model override
+├── skills       Manage skills
+│   ├── list     List installed skills
+│   ├── install  Install a skill
+│   └── uninstall Uninstall a skill
+├── run          One-shot agent interaction
 ├── solve        Solve a GitHub issue or similar target
 ├── workspace    Workspace management (attach, exit, detach)
+│   ├── attach   Attach to an existing workspace
+│   ├── exit     Exit current workspace
+│   └── detach   Detach from a workspace
+├── tui          Launch interactive terminal UI
 ├── debug        Debug utilities
 │   ├── prompt   Debug-mode prompt
 │   ├── latency  Show latency metrics
-│   └── scheduler-fixture Generate scheduler fixture data (--agent, --output)
+│   └── scheduler-fixture Generate scheduler fixture data
 └── help         Print help
 ```
+
+> **Note:** This reference reflects the latest release. If you are running a
+> source build from `main`, some commands or flags may differ. Always run
+> `holon --help` and `holon <COMMAND> --help` for the live command reference
+> of your installed version.
 
 ## Common Workflows
 

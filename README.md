@@ -260,12 +260,26 @@ npm install
 npm test
 ```
 
-Useful docs:
+## Documentation
 
-- [Architecture overview](docs/architecture-overview.md)
-- [Runtime spec](docs/runtime-spec.md)
-- [Release process](docs/release.md)
-- [RFCs](docs/rfcs/README.md)
-- [Implementation decisions](docs/implementation-decisions/README.md)
+Holon's documentation is organized into three layers. See
+[documentation layers](docs/website/concepts/documentation-layers.md) for the
+full map.
+
+**Using Holon:**
+
+- [Website docs](https://holon.run) — install, getting started, concepts,
+  guides, and current reference
+- [Security and execution boundaries](docs/website/concepts/security-and-execution-boundaries.md)
+
+**Integrating and operating Holon:**
+
 - [Local operator troubleshooting](docs/local-operator-troubleshooting.md)
-- [Benchmark design](docs/benchmark-plan.md)
+- [Release process](docs/release.md)
+
+**Contributing to the runtime:**
+
+- [Architecture overview](docs/architecture-overview.md) — start here
+- [RFCs](docs/rfcs/README.md) — canonical design contracts
+- [Implementation decisions](docs/implementation-decisions/README.md) — design
+  rationale
