@@ -51,13 +51,13 @@ contracts are visible.
 ## Try Holon
 
 ```bash
-git clone https://github.com/holon-run/holon.git
-cd holon
-cargo build
-cargo run -- --help
+brew tap holon-run/tap
+brew install holon
+holon --help
 ```
 
-This gets you from zero to a running Holon binary. Next, follow the
+This gets you from zero to a running Holon binary. To build from source or
+contribute, see [Getting started](/getting-started/). Next, follow the
 [getting started guide](/getting-started/) to create your first agent.
 
 > **Holon is early-stage software.** The runtime model is stabilizing, but CLI
