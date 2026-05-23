@@ -1037,13 +1037,27 @@ impl RuntimeHandle {
                     ) {
                         scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                     }
+                    let next_recheck_at = self.next_blocked_work_item_recheck_at().await?;
                     let idle_state = scheduler_executor::SchedulerDecisionExecutor::new(&self)
-                        .transition_run_loop_idle_to_sleep()
+                        .transition_run_loop_idle_to_sleep(next_recheck_at)
                         .await?;
                     if let Some(idle_state) = idle_state {
                         self.append_state_changed_events(&idle_state)?;
                     }
-                    self.inner.notify.notified().await;
+                    if let Some(next_recheck_at) = next_recheck_at {
+                        let now = Utc::now();
+                        if next_recheck_at > now {
+                            let wait = (next_recheck_at - now)
+                                .to_std()
+                                .unwrap_or_else(|_| Duration::from_millis(0));
+                            tokio::select! {
+                                _ = self.inner.notify.notified() => {}
+                                _ = tokio::time::sleep(wait) => {}
+                            }
+                        }
+                    } else {
+                        self.inner.notify.notified().await;
+                    }
                     continue;
                 }
             };

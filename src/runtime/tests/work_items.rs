@@ -144,6 +144,57 @@ async fn update_work_item_sets_and_preserves_blocked_recheck_deadline() {
 }
 
 #[tokio::test]
+async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut blocked = WorkItemRecord::new(
+        "default",
+        "blocked work with fallback recheck",
+        WorkItemState::Open,
+    );
+    blocked.blocked_by = Some("waiting for external wake".into());
+    blocked.recheck_at = Some(Utc::now() + chrono::Duration::milliseconds(50));
+    storage.append_work_item(&blocked).unwrap();
+
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("recheck observed")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let runtime_task = tokio::spawn(runtime.clone().run());
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(
+        events.iter().any(|event| {
+            event.kind == "system_tick_emitted"
+                && event.data.get("subsystem").and_then(|value| value.as_str())
+                    == Some("work_item_recheck")
+        }),
+        "runtime should emit a work_item_recheck tick without external input"
+    );
+    let latest = runtime
+        .storage()
+        .latest_work_item(&blocked.id)
+        .unwrap()
+        .expect("blocked work item exists");
+    assert!(
+        latest
+            .recheck_consumed_at
+            .zip(latest.recheck_at)
+            .is_some_and(|(consumed_at, recheck_at)| consumed_at >= recheck_at),
+        "deadline wake should consume the due blocked recheck"
+    );
+    runtime_task.abort();
+}
+
+#[tokio::test]
 async fn work_queue_projection_derives_scheduling_state_per_work_item() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
