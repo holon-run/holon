@@ -1047,12 +1047,13 @@ impl RuntimeHandle {
                     if let Some(next_recheck_at) = next_recheck_at {
                         let now = Utc::now();
                         if next_recheck_at > now {
-                            let wait = (next_recheck_at - now)
-                                .to_std()
-                                .unwrap_or_else(|_| Duration::from_millis(0));
-                            tokio::select! {
-                                _ = self.inner.notify.notified() => {}
-                                _ = tokio::time::sleep(wait) => {}
+                            if let Ok(wait) = (next_recheck_at - now).to_std() {
+                                tokio::select! {
+                                    _ = self.inner.notify.notified() => {}
+                                    _ = tokio::time::sleep(wait) => {}
+                                }
+                            } else {
+                                self.inner.notify.notified().await;
                             }
                         }
                     } else {
