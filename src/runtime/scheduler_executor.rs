@@ -227,11 +227,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         sleeping_until: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Option<AgentState>> {
         let mut guard = self.runtime.inner.agent.lock().await;
-        if matches!(
-            guard.state.status,
-            AgentStatus::Asleep | AgentStatus::Stopped
-        ) || !guard.queue.is_empty()
-        {
+        if matches!(guard.state.status, AgentStatus::Stopped) || !guard.queue.is_empty() {
             return Ok(None);
         }
 
