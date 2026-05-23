@@ -71,12 +71,12 @@ These are maintainer-facing documents; you do not need them to use Holon.
 
 <!-- INDEX:START -->
 
-- [Memory system](./memory.md)
-  How Holon's memory layers preserve continuity — working memory, episodes, durable ledger, and indexed search.
-  <!-- mdorigin:index kind=article -->
-
 - [Runtime model](./runtime-model.md)
   Agents, tasks, work items, workspaces, and the execution loop that make up Holon's runtime.
+  <!-- mdorigin:index kind=article -->
+
+- [Memory system](./memory.md)
+  How Holon's memory layers preserve continuity across turns — working memory, episodes, durable ledger, and indexed search.
   <!-- mdorigin:index kind=article -->
 
 - [Trust boundaries](./trust-boundaries.md)

@@ -13,8 +13,8 @@ behavior changes.
 
 > **Stability note:** The runtime is pre-1.0. CLI shapes, config keys, and HTTP
 > endpoints may change without prior notice. Each reference page records the
-> version it was last regenerated against where applicable. See the [roadmap](/roadmap/) for what is
-> considered stable.
+> version it was last regenerated against where applicable. See the repository
+> [RFC index](https://github.com/holon-run/holon/tree/main/docs/rfcs) for design direction and stability status.
 
 <!-- INDEX:START -->
 

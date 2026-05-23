@@ -62,7 +62,8 @@ contribute, see [Getting started](/getting-started/). Next, follow the
 
 > **Holon is early-stage software.** The runtime model is stabilizing, but CLI
 > shapes, config schemas, and provider surfaces may change. See the
-> [roadmap](/roadmap/) for what's stable today and what's still experimental.
+> [reference pages](/reference/) for the current surface and the repository
+> [RFC index](https://github.com/holon-run/holon/tree/main/docs/rfcs) for design direction.
 
 ## Documentation map
 
@@ -74,7 +75,6 @@ contribute, see [Getting started](/getting-started/). Next, follow the
   extending Holon.
 - [Reference](/reference/) — current CLI, configuration, and control-plane
   surface documentation.
-- [Roadmap](/roadmap/) — what's stable now, what's next, and what's still
   experimental.
 
 ## For contributors
@@ -119,9 +119,6 @@ guide](/guides/documentation-workflow/). The production `siteUrl` is
   <!-- mdorigin:index kind=directory -->
 
 - [Reference](./reference/)
-  <!-- mdorigin:index kind=directory -->
-
-- [Roadmap](./roadmap/)
   <!-- mdorigin:index kind=directory -->
 
 <!-- INDEX:END -->
