@@ -16,12 +16,12 @@ blocking behavior, terminal re-entry, and supervision surfaces.
 
 ## Source RFCs
 
-- [Command Tool Family](../rfcs/command-tool-family.md)
-- [Task Surface Narrowing](../rfcs/task-surface-narrowing.md)
-- [Interactive Command Continuation](../rfcs/interactive-command-continuation.md)
-- [Agent Delegation Tool Plane](../rfcs/agent-delegation-tool-plane.md)
-- [Agent Control Plane Model](../rfcs/agent-control-plane-model.md)
-- [Runtime Scheduler Contract](../rfcs/runtime-scheduler-contract.md)
+- [Command Tool Family](https://github.com/holon-run/holon/blob/main/docs/rfcs/command-tool-family.md)
+- [Task Surface Narrowing](https://github.com/holon-run/holon/blob/main/docs/rfcs/task-surface-narrowing.md)
+- [Interactive Command Continuation](https://github.com/holon-run/holon/blob/main/docs/rfcs/interactive-command-continuation.md)
+- [Agent Delegation Tool Plane](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-delegation-tool-plane.md)
+- [Agent Control Plane Model](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-control-plane-model.md)
+- [Runtime Scheduler Contract](https://github.com/holon-run/holon/blob/main/docs/rfcs/runtime-scheduler-contract.md)
 
 ## Task kinds
 

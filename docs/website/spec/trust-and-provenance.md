@@ -16,12 +16,12 @@ the runtime.
 
 ## Source RFCs
 
-- [Provenance, Admission, and Authority](../rfcs/default-trust-auth-and-control.md)
-- [Event Stream Interface Design](../rfcs/event-stream-interface.md)
-- [Remote Operator Transport and Delivery](../rfcs/remote-operator-transport-and-delivery.md)
-- [Operator Display Levels and Event Presentation](../rfcs/operator-display-levels-and-event-presentation.md)
-- [Tool Surface Layering](../rfcs/tool-surface-layering.md)
-- [Continuation Trigger](../rfcs/continuation-trigger.md)
+- [Provenance, Admission, and Authority](https://github.com/holon-run/holon/blob/main/docs/rfcs/default-trust-auth-and-control.md)
+- [Event Stream Interface Design](https://github.com/holon-run/holon/blob/main/docs/rfcs/event-stream-interface.md)
+- [Remote Operator Transport and Delivery](https://github.com/holon-run/holon/blob/main/docs/rfcs/remote-operator-transport-and-delivery.md)
+- [Operator Display Levels and Event Presentation](https://github.com/holon-run/holon/blob/main/docs/rfcs/operator-display-levels-and-event-presentation.md)
+- [Tool Surface Layering](https://github.com/holon-run/holon/blob/main/docs/rfcs/tool-surface-layering.md)
+- [Continuation Trigger](https://github.com/holon-run/holon/blob/main/docs/rfcs/continuation-trigger.md)
 
 ## Message envelope
 

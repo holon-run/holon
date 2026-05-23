@@ -17,11 +17,11 @@ as of the last review date noted below.
 
 ## Source RFCs
 
-- [Agent State Model And Runtime Projection](../rfcs/agent-state-model.md)
-- [Agent Lifecycle Control Posture](../rfcs/agent-lifecycle-control-posture.md)
-- [Agent Control Plane Model](../rfcs/agent-control-plane-model.md)
-- [Agent Profile Model](../rfcs/agent-profile-model.md)
-- [Agent Initialization and Template](../rfcs/agent-initialization-and-template.md)
+- [Agent State Model And Runtime Projection](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-state-model.md)
+- [Agent Lifecycle Control Posture](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-lifecycle-control-posture.md)
+- [Agent Control Plane Model](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-control-plane-model.md)
+- [Agent Profile Model](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-profile-model.md)
+- [Agent Initialization and Template](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-initialization-and-template.md)
 
 ## Authoritative records vs projections
 

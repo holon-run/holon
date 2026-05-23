@@ -16,13 +16,13 @@ result envelope conventions.
 
 ## Source RFCs
 
-- [Tool Surface Layering](../rfcs/tool-surface-layering.md)
-- [Tool Contract Consistency](../rfcs/tool-contract-consistency.md)
-- [Tool Result Envelope](../rfcs/tool-result-envelope.md)
-- [Task Surface Narrowing](../rfcs/task-surface-narrowing.md)
-- [Command Tool Family](../rfcs/command-tool-family.md)
-- [Apply Patch Unified Diff Contract](../rfcs/apply-patch-unified-diff-contract.md)
-- [Exec Command Batch](../rfcs/exec-command-batch.md)
+- [Tool Surface Layering](https://github.com/holon-run/holon/blob/main/docs/rfcs/tool-surface-layering.md)
+- [Tool Contract Consistency](https://github.com/holon-run/holon/blob/main/docs/rfcs/tool-contract-consistency.md)
+- [Tool Result Envelope](https://github.com/holon-run/holon/blob/main/docs/rfcs/tool-result-envelope.md)
+- [Task Surface Narrowing](https://github.com/holon-run/holon/blob/main/docs/rfcs/task-surface-narrowing.md)
+- [Command Tool Family](https://github.com/holon-run/holon/blob/main/docs/rfcs/command-tool-family.md)
+- [Apply Patch Unified Diff Contract](https://github.com/holon-run/holon/blob/main/docs/rfcs/apply-patch-unified-diff-contract.md)
+- [Exec Command Batch](https://github.com/holon-run/holon/blob/main/docs/rfcs/exec-command-batch.md)
 
 ## Tool families (`ToolCapabilityFamily`)
 

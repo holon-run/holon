@@ -15,12 +15,12 @@ roots, worktree isolation, and host-local execution policy.
 
 ## Source RFCs
 
-- [Workspace Binding and Execution Roots](../rfcs/workspace-binding-and-execution-roots.md)
-- [Workspace Entry and Projection](../rfcs/workspace-entry-and-projection.md)
-- [Execution Policy and Virtual Execution Boundary](../rfcs/execution-policy-and-virtual-execution-boundary.md)
-- [Agent Home Directory Layout](../rfcs/agent-home-directory-layout.md)
-- [Instruction Loading](../rfcs/instruction-loading.md)
-- [Agent and Workspace Memory](../rfcs/agent-and-workspace-memory.md)
+- [Workspace Binding and Execution Roots](https://github.com/holon-run/holon/blob/main/docs/rfcs/workspace-binding-and-execution-roots.md)
+- [Workspace Entry and Projection](https://github.com/holon-run/holon/blob/main/docs/rfcs/workspace-entry-and-projection.md)
+- [Execution Policy and Virtual Execution Boundary](https://github.com/holon-run/holon/blob/main/docs/rfcs/execution-policy-and-virtual-execution-boundary.md)
+- [Agent Home Directory Layout](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-home-directory-layout.md)
+- [Instruction Loading](https://github.com/holon-run/holon/blob/main/docs/rfcs/instruction-loading.md)
+- [Agent and Workspace Memory](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-and-workspace-memory.md)
 
 ## Core model
 
@@ -32,8 +32,8 @@ Every agent has exactly one **active workspace**. The active workspace defines:
 | `workspace_anchor` | Filesystem path to the workspace root |
 | `execution_root` | The root for process execution (may differ from anchor) |
 | `cwd` | Current working directory for shell commands |
-| `projection_kind` | How the workspace is projected (`CanonicalRoot`, `Isolated`) |
-| `access_mode` | How the agent holds the workspace (`ReadWrite`, `ReadOnly`) |
+| `projection_kind` | How the workspace is projected (`CanonicalRoot`, `GitWorktreeRoot`) |
+| `access_mode` | How the agent holds the workspace (`SharedRead`, `ExclusiveWrite`) |
 
 ### Active workspace vs shell `cd`
 

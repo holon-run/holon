@@ -47,7 +47,7 @@ page and the RFC should be updated together.
 
 **Audience:** Users running, configuring, integrating, or troubleshooting Holon.
 
-**Goal:** Describe only behavior that is current or explicitly marked stable.
+**Goal:** Describe current behavior. Mark experimental or unstable behavior clearly.
 
 **Includes:**
 

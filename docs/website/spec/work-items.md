@@ -16,11 +16,11 @@ lifecycle, focus, readiness, planning, blocking, and completion semantics.
 
 ## Source RFCs
 
-- [Work Item Runtime Model](../rfcs/work-item-runtime-model.md)
-- [Work Item Centered Agent Runtime](../rfcs/work-item-centered-agent-runtime.md)
-- [Objective, Delta, and Acceptance Boundary](../rfcs/objective-delta-and-acceptance-boundary.md)
-- [Long-Lived Context Memory](../rfcs/long-lived-context-memory.md)
-- [Turn-Local Context Compaction](../rfcs/turn-local-context-compaction.md)
+- [Work Item Runtime Model](https://github.com/holon-run/holon/blob/main/docs/rfcs/work-item-runtime-model.md)
+- [Work Item Centered Agent Runtime](https://github.com/holon-run/holon/blob/main/docs/rfcs/work-item-centered-agent-runtime.md)
+- [Objective, Delta, and Acceptance Boundary](https://github.com/holon-run/holon/blob/main/docs/rfcs/objective-delta-and-acceptance-boundary.md)
+- [Long-Lived Context Memory](https://github.com/holon-run/holon/blob/main/docs/rfcs/long-lived-context-memory.md)
+- [Turn-Local Context Compaction](https://github.com/holon-run/holon/blob/main/docs/rfcs/turn-local-context-compaction.md)
 
 ## Core model
 
@@ -30,14 +30,18 @@ A WorkItem is a durable objective record owned by an agent. It tracks:
 |-------|---------|
 | `objective` | Short human-readable target (required) |
 | `state` | `Open` or `Completed` |
-| `plan_status` | `Draft`, `Ready`, or `NeedsInput` |
+| `plan_status` | `draft`, `ready`, or `needs_input` |
 | `plan_artifact` | Path to the durable plan.md artifact in agent home |
 | `todo_list` | Progress checklist snapshot |
 | `blocked_by` | Human-readable blocker description |
 | `recheck_at` | Fallback deadline for blocked re-evaluation |
 | `result_summary` | Completion summary (optional) |
 
-## Lifeycle states
+The Rust enum `WorkItemPlanStatus` uses PascalCase variants (`Draft`, `Ready`,
+`NeedsInput`), but all tool input/output uses snake_case (`draft`, `ready`,
+`needs_input`).
+
+## Lifecycle states
 
 ```text
                     CreateWorkItem
@@ -71,7 +75,8 @@ A WorkItem is a durable objective record owned by an agent. It tracks:
   scheduler must wait for operator input.
 - `blocked_by` is a human-readable string; when set, the WorkItem is
   non-runnable. A `recheck_after` millisecond fallback deadline can be set
-  alongside the blocker.
+  alongside the blocker via `UpdateWorkItem.recheck_after`. The stored field
+  is `recheck_at` (an absolute timestamp).
 
 ## Readiness and scheduling
 

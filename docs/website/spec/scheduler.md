@@ -15,11 +15,11 @@ consumes, how it derives posture and runnability, and what decisions it emits.
 
 ## Source RFCs
 
-- [Runtime Scheduler Contract](../rfcs/runtime-scheduler-contract.md)
-- [Scheduler Wait State And Recoverable Agent Continuation](../rfcs/scheduler-wait-state.md)
-- [Waiting Plane And Reactivation](../rfcs/waiting-plane-and-reactivation.md)
-- [Continuation Trigger](../rfcs/continuation-trigger.md)
-- [Work Item Centered Agent Runtime](../rfcs/work-item-centered-agent-runtime.md)
+- [Runtime Scheduler Contract](https://github.com/holon-run/holon/blob/main/docs/rfcs/runtime-scheduler-contract.md)
+- [Scheduler Wait State And Recoverable Agent Continuation](https://github.com/holon-run/holon/blob/main/docs/rfcs/scheduler-wait-state.md)
+- [Waiting Plane And Reactivation](https://github.com/holon-run/holon/blob/main/docs/rfcs/waiting-plane-and-reactivation.md)
+- [Continuation Trigger](https://github.com/holon-run/holon/blob/main/docs/rfcs/continuation-trigger.md)
+- [Work Item Centered Agent Runtime](https://github.com/holon-run/holon/blob/main/docs/rfcs/work-item-centered-agent-runtime.md)
 
 ## Core model
 

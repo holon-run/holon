@@ -17,12 +17,12 @@ receive external events, and resolve continuation decisions.
 
 ## Source RFCs
 
-- [Continuation Trigger](../rfcs/continuation-trigger.md)
-- [External Trigger Capability And Providerless Ingress](../rfcs/external-trigger-capability.md)
-- [Waiting Plane And Reactivation](../rfcs/waiting-plane-and-reactivation.md)
-- [Operator Wait And Intervention](../rfcs/operator-wait-and-intervention.md)
-- [Remote Operator Transport and Delivery](../rfcs/remote-operator-transport-and-delivery.md)
-- [Event Stream Interface Design](../rfcs/event-stream-interface.md)
+- [Continuation Trigger](https://github.com/holon-run/holon/blob/main/docs/rfcs/continuation-trigger.md)
+- [External Trigger Capability And Providerless Ingress](https://github.com/holon-run/holon/blob/main/docs/rfcs/external-trigger-capability.md)
+- [Waiting Plane And Reactivation](https://github.com/holon-run/holon/blob/main/docs/rfcs/waiting-plane-and-reactivation.md)
+- [Operator Wait And Intervention](https://github.com/holon-run/holon/blob/main/docs/rfcs/operator-wait-and-intervention.md)
+- [Remote Operator Transport and Delivery](https://github.com/holon-run/holon/blob/main/docs/rfcs/remote-operator-transport-and-delivery.md)
+- [Event Stream Interface Design](https://github.com/holon-run/holon/blob/main/docs/rfcs/event-stream-interface.md)
 
 ## Trigger classification
 

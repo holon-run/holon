@@ -41,6 +41,38 @@ Each spec page follows a consistent shape:
 
 <!-- INDEX:START -->
 
+- [Agent state](./agent-state.md)
+  Current agent state, lifecycle labels, runtime projection, and user-facing display contract.
+  <!-- mdorigin:index kind=article -->
+
+- [Work items](./work-items.md)
+  Current WorkItem lifecycle, focus, readiness, planning, blocking, and completion contract.
+  <!-- mdorigin:index kind=article -->
+
+- [Scheduler](./scheduler.md)
+  Current scheduler input, runnable/waiting decisions, WorkItem readiness, and wake/sleep boundaries.
+  <!-- mdorigin:index kind=article -->
+
+- [Wake and continuation](./wake-and-continuation.md)
+  Current trigger classification, external ingress capabilities, continuation resolution, and wake/sleep lifecycle.
+  <!-- mdorigin:index kind=article -->
+
+- [Tasks](./tasks.md)
+  Current task lifecycle, background blocking, terminal re-entry, and command/child-agent supervision contract.
+  <!-- mdorigin:index kind=article -->
+
+- [Tools](./tools.md)
+  Current model-facing tool families, authority boundaries, input/result contracts, and deprecated surfaces.
+  <!-- mdorigin:index kind=article -->
+
+- [Workspace and execution](./workspace-and-execution.md)
+  Current workspace identity, agent home, execution roots, worktrees, and host-local policy contract.
+  <!-- mdorigin:index kind=article -->
+
+- [Trust and provenance](./trust-and-provenance.md)
+  Current origin classification, admission/authentication, authority, and provenance tracking contract.
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->
 
 ## Relationship to `docs/runtime-spec.md`
