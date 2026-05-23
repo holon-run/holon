@@ -106,11 +106,11 @@ Edit and build the Holon documentation website.
   Reusable SKILL.md workflows, skill locations, and how to develop custom skills.
   <!-- mdorigin:index kind=article -->
 
-- [Work items guide](./work-items.md)
-
 - [Durable agent workflow](./durable-agent-workflow.md)
   The end-to-end durable agent story: create an agent, start long-running work, survive disconnects, wait for events, and deliver final briefs.
   <!-- mdorigin:index kind=article -->
+
+- [Work items guide](./work-items.md)
   Durable objective tracking with work items, plans, todo lists, and lifecycle management.
   <!-- mdorigin:index kind=article -->
 

@@ -14,7 +14,7 @@ based on what you want to do next.
 
 If this is your first time using Holon, follow our step-by-step tutorial:
 
-- **[Create your first agent](first-agent.md)** - Build, start, connect with TUI, create an agent, and configure models in ~15 minutes
+- **[Create your first agent](first-agent.md)** - Install, start, connect with TUI, create an agent, and configure models in ~15 minutes
 
 The tutorial covers:
 

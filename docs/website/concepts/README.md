@@ -80,11 +80,11 @@ These are maintainer-facing documents; you do not need them to use Holon.
   <!-- mdorigin:index kind=article -->
 
 - [Trust boundaries](./trust-boundaries.md)
+  How Holon classifies origin, trust, and priority to keep long-lived agents secure.
+  <!-- mdorigin:index kind=article -->
 
 - [Security and execution boundaries](./security-and-execution-boundaries.md)
   What Holon does and does not sandbox and how to run agents safely.
-  <!-- mdorigin:index kind=article -->
-  How Holon classifies origin, trust, and priority to keep long-lived agents secure.
   <!-- mdorigin:index kind=article -->
 
 - [Documentation layers](./documentation-layers.md)

@@ -2,22 +2,19 @@
 
 This document is a short entry point for Holon's current architecture.
 
-Canonical contracts live in `docs/rfcs/`. This overview should not introduce
+Canonical contracts live in `docs/rfcs/`. This overview should not introduce new normative behavior. If this document conflicts with an RFC, the RFC wins.
 
 ## How to use this document
 
-This document is a map of the runtime architecture, not an introduction or a
-normative contract. Use it to:
+Use it to:
 
 - Orient yourself before diving into specific RFCs.
 - Find which RFCs cover a particular runtime concept.
 - Understand how the architecture themes connect.
 
 For canonical contracts, see [RFCs](rfcs/README.md). For a user-facing
-explanation, see the [website concepts](/docs/website/concepts/).
+explanation, see the [website concepts](./website/concepts/README.md).
 For the contributor reading path, see the [RFC README](rfcs/README.md#recommended-reading-path).
-
-new normative behavior. If this document conflicts with an RFC, the RFC wins.
 
 ## One Sentence
 

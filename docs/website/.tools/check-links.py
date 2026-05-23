@@ -11,7 +11,7 @@ Run from the repository root:
 
 import os, re, sys
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 WEBSITE_DIR = os.path.join(REPO_ROOT, "docs/website")
 LINK_RE = re.compile(r'\[([^\]]*)\]\(([^)]*\.md[^)]*)\)')
 
