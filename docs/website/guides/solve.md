@@ -85,14 +85,23 @@ base is `main`.
 
 ## Configuration
 
-Solve reads the standard Holon configuration. At minimum you need:
+Solve reads the standard Holon runtime configuration (`~/.holon/config.json`).
+At minimum you need a model and credentials. Use the CLI to configure:
 
-```toml
-# ~/.config/holon/config.toml
-[models.default]
-provider = "anthropic"
-model = "claude-sonnet-4-20250514"
-api_key = "sk-ant-..."
+```bash
+# Set the default model
+holon config set model.default "anthropic/claude-sonnet-4-6"
+
+# Store credentials securely (recommended)
+holon config credentials set --kind api_key --stdin anthropic
+# Paste your API key and press Enter, then Ctrl+D
+```
+
+Or use environment variables for quick setup:
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="your-api-key"
+holon config set model.default "anthropic/claude-sonnet-4-6"
 ```
 
 Holon also needs a GitHub token. It reads `GITHUB_TOKEN` or `GH_TOKEN` from
@@ -101,6 +110,13 @@ the environment:
 ```bash
 export GITHUB_TOKEN="ghp_..."
 holon solve holon-run/holon#42
+```
+
+Verify your configuration is complete:
+
+```bash
+holon config doctor
+holon config models list
 ```
 
 ## How solve works
