@@ -70,6 +70,7 @@ contribute, see [Getting started](/getting-started/). Next, follow the
 - [Getting started](/getting-started/) — your first Holon agent run, from
   install to first interaction.
 - [Concepts](/concepts/) — the mental model: agents, work items, tasks, queues,
+- **[Security and execution boundaries](/concepts/security-and-execution-boundaries/)** — what Holon guards and what you must guard.
   and trust boundaries.
 - [Guides](/guides/) — task-oriented workflows for operating, integrating, and
   extending Holon.
