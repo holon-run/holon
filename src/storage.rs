@@ -1139,6 +1139,30 @@ impl AppStorage {
         Ok(due)
     }
 
+    pub fn next_blocked_work_item_recheck_at(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<DateTime<Utc>>> {
+        Ok(self
+            .latest_work_items()?
+            .into_iter()
+            .filter(|item| item.agent_id == agent_id)
+            .filter(|item| item.state == WorkItemState::Open)
+            .filter(|item| item.blocked_by.is_some())
+            .filter_map(|item| {
+                let recheck_at = item.recheck_at?;
+                if item
+                    .recheck_consumed_at
+                    .is_some_and(|consumed_at| consumed_at >= recheck_at)
+                {
+                    None
+                } else {
+                    Some(recheck_at)
+                }
+            })
+            .min())
+    }
+
     pub fn latest_work_item(&self, work_item_id: &str) -> Result<Option<WorkItemRecord>> {
         if !self.work_items_path.exists() {
             return Ok(None);

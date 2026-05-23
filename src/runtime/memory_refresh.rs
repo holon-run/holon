@@ -299,6 +299,15 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    pub(super) async fn next_blocked_work_item_recheck_at(
+        &self,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let agent_id = self.agent_id().await?;
+        self.inner
+            .storage
+            .next_blocked_work_item_recheck_at(&agent_id)
+    }
+
     fn duplicate_queued_available_message_id(
         &self,
         work_item: &crate::types::WorkItemRecord,
