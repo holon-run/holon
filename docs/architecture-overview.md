@@ -131,7 +131,6 @@ These documents remain useful but are not the normative architecture source:
 - [Runtime Spec](./runtime-spec.md)
 - [Next Phase Direction](./next-phase-direction.md)
 - [Local Operator Troubleshooting](./local-operator-troubleshooting.md)
-- [Documentation Cleanup Audit](./documentation-cleanup-audit.md)
 - [Implementation Decisions](./implementation-decisions/README.md)
 
 ## Historical Context
