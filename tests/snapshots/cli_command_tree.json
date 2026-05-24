@@ -1,0 +1,1317 @@
+[
+  {
+    "path": "agent",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.abort",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.create",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "template",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "agent.list",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.model",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.model.clear",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.model.get",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.model.set",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "required": false
+      },
+      {
+        "name": "model",
+        "value_name": "MODEL",
+        "required": true
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.start",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.status",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "agent.stop",
+    "positionals": [
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "required": false
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.credentials",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.credentials.list",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.credentials.remove",
+    "positionals": [
+      {
+        "name": "profile",
+        "value_name": "PROFILE",
+        "required": true
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.credentials.set",
+    "positionals": [
+      {
+        "name": "profile",
+        "value_name": "PROFILE",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "kind",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      },
+      {
+        "long": "material",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "stdin",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "config.doctor",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.get",
+    "positionals": [
+      {
+        "name": "key",
+        "value_name": "KEY",
+        "required": true
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.list",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.models",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.models.list",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.providers",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.providers.doctor",
+    "positionals": [
+      {
+        "name": "provider",
+        "value_name": "PROVIDER",
+        "required": true
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.providers.get",
+    "positionals": [
+      {
+        "name": "provider",
+        "value_name": "PROVIDER",
+        "required": true
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.providers.list",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.providers.remove",
+    "positionals": [
+      {
+        "name": "provider",
+        "value_name": "PROVIDER",
+        "required": true
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.providers.set",
+    "positionals": [
+      {
+        "name": "provider",
+        "value_name": "PROVIDER",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "base-url",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "credential-env",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "credential-external",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "credential-kind",
+        "short": null,
+        "default_value": "none",
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "credential-profile",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "credential-source",
+        "short": null,
+        "default_value": "none",
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "transport",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "config.schema",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.set",
+    "positionals": [
+      {
+        "name": "key",
+        "value_name": "KEY",
+        "required": true
+      },
+      {
+        "name": "value",
+        "value_name": "VALUE",
+        "required": true
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.unset",
+    "positionals": [
+      {
+        "name": "key",
+        "value_name": "KEY",
+        "required": true
+      }
+    ],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "control",
+    "positionals": [
+      {
+        "name": "action",
+        "value_name": "ACTION",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "daemon",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "daemon.logs",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "tail",
+        "short": null,
+        "default_value": "80",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "daemon.restart",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "access",
+        "short": null,
+        "default_value": "local",
+        "possible_values": [
+          "local",
+          "tunnel",
+          "lan",
+          "tailnet"
+        ],
+        "required": false
+      },
+      {
+        "long": "advertise",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "host",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "listen",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "port",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "token",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "token-file",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "daemon.start",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "access",
+        "short": null,
+        "default_value": "local",
+        "possible_values": [
+          "local",
+          "tunnel",
+          "lan",
+          "tailnet"
+        ],
+        "required": false
+      },
+      {
+        "long": "advertise",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "host",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "listen",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "port",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "token",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "token-file",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "daemon.status",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "daemon.stop",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "debug",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "debug.latency",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "events-limit",
+        "short": null,
+        "default_value": "5000",
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "limit",
+        "short": null,
+        "default_value": "10",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "debug.prompt",
+    "positionals": [
+      {
+        "name": "text",
+        "value_name": "TEXT",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "trust",
+        "short": null,
+        "default_value": "trusted-operator",
+        "possible_values": [
+          "trusted-operator",
+          "trusted-system",
+          "trusted-integration",
+          "untrusted-external"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "debug.scheduler-fixture",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "output",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "prompt",
+    "positionals": [
+      {
+        "name": "text",
+        "value_name": "TEXT",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "run",
+    "positionals": [
+      {
+        "name": "text",
+        "value_name": "TEXT",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "create-agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "cwd",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "home",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "max-turns",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "no-wait-for-tasks",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "template",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "trust",
+        "short": null,
+        "default_value": "trusted-operator",
+        "possible_values": [
+          "trusted-operator",
+          "trusted-system",
+          "trusted-integration",
+          "untrusted-external"
+        ],
+        "required": false
+      },
+      {
+        "long": "workspace-root",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "serve",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "access",
+        "short": null,
+        "default_value": "local",
+        "possible_values": [
+          "local",
+          "tunnel",
+          "lan",
+          "tailnet"
+        ],
+        "required": false
+      },
+      {
+        "long": "advertise",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "host",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "listen",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "port",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "token",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "token-file",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "skills",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "skills.install",
+    "positionals": [
+      {
+        "name": "name_or_path",
+        "value_name": "NAME_OR_PATH",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "builtin",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "copy",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "remote",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "skill",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "skills.list",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "skills.uninstall",
+    "positionals": [
+      {
+        "name": "name",
+        "value_name": "NAME",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "solve",
+    "positionals": [
+      {
+        "name": "target_ref",
+        "value_name": "REF",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "base",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "cwd",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "goal",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "home",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "input",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "max-turns",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "model",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "output",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "repo",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "role",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "template",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "trust",
+        "short": null,
+        "default_value": "trusted-operator",
+        "possible_values": [
+          "trusted-operator",
+          "trusted-system",
+          "trusted-integration",
+          "untrusted-external"
+        ],
+        "required": false
+      },
+      {
+        "long": "workspace",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "workspace-root",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "status",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "tail",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "limit",
+        "short": null,
+        "default_value": "20",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "task",
+    "positionals": [
+      {
+        "name": "summary",
+        "value_name": "SUMMARY",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "cmd",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      },
+      {
+        "long": "login",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "max-output-tokens",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "shell",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "tty",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "workdir",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "yield-time-ms",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "timer",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "after-ms",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      },
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "every-ms",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "summary",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "transcript",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "limit",
+        "short": null,
+        "default_value": "50",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "tui",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "connect",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "no-alt-screen",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "token",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "token-file",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "token-profile",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "workspace",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "workspace.attach",
+    "positionals": [
+      {
+        "name": "path",
+        "value_name": "PATH",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "workspace.detach",
+    "positionals": [
+      {
+        "name": "workspace_id",
+        "value_name": "WORKSPACE_ID",
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "workspace.exit",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  }
+]

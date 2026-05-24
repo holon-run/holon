@@ -4,6 +4,7 @@ mod auth;
 mod callbacks;
 
 pub mod brief;
+pub mod cli;
 pub mod client;
 pub mod config;
 pub mod context;
