@@ -6,6 +6,9 @@ authors = ["Holon Contributors"]
 description = "A headless, event-driven runtime for long-lived agents"
 license = "Apache-2.0"
 readme = "README.md"
+homepage = "https://holon.run"
+repository = "https://github.com/holon-run/holon"
+documentation = "https://holon.run"
 
 [dependencies]
 anyhow = "1.0"
