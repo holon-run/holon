@@ -621,14 +621,14 @@
         "required": false
       },
       {
-        "long": "trust",
+        "long": "authority-class",
         "short": null,
-        "default_value": "trusted-operator",
+        "default_value": "operator-instruction",
         "possible_values": [
-          "trusted-operator",
-          "trusted-system",
-          "trusted-integration",
-          "untrusted-external"
+          "operator-instruction",
+          "runtime-instruction",
+          "integration-signal",
+          "external-evidence"
         ],
         "required": false
       }
@@ -696,6 +696,18 @@
         "required": false
       },
       {
+        "long": "authority-class",
+        "short": null,
+        "default_value": "operator-instruction",
+        "possible_values": [
+          "operator-instruction",
+          "runtime-instruction",
+          "integration-signal",
+          "external-evidence"
+        ],
+        "required": false
+      },
+      {
         "long": "create-agent",
         "short": null,
         "default_value": null,
@@ -751,18 +763,6 @@
         "short": null,
         "default_value": null,
         "possible_values": null,
-        "required": false
-      },
-      {
-        "long": "trust",
-        "short": null,
-        "default_value": "trusted-operator",
-        "possible_values": [
-          "trusted-operator",
-          "trusted-system",
-          "trusted-integration",
-          "untrusted-external"
-        ],
         "required": false
       },
       {
@@ -954,6 +954,18 @@
         "required": false
       },
       {
+        "long": "authority-class",
+        "short": null,
+        "default_value": "operator-instruction",
+        "possible_values": [
+          "operator-instruction",
+          "runtime-instruction",
+          "integration-signal",
+          "external-evidence"
+        ],
+        "required": false
+      },
+      {
         "long": "base",
         "short": null,
         "default_value": null,
@@ -1038,18 +1050,6 @@
         "short": null,
         "default_value": null,
         "possible_values": null,
-        "required": false
-      },
-      {
-        "long": "trust",
-        "short": null,
-        "default_value": "trusted-operator",
-        "possible_values": [
-          "trusted-operator",
-          "trusted-system",
-          "trusted-integration",
-          "untrusted-external"
-        ],
         "required": false
       },
       {

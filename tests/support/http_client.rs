@@ -502,7 +502,7 @@ pub async fn local_client_over_http_can_stream_events_with_cursor_query() -> Res
             .as_ref()
             .and_then(|provenance| provenance.get("authority_class"))
             .and_then(|authority_class| authority_class.as_str()),
-        Some("trusted_operator")
+        Some("operator_instruction")
     );
 
     server.abort();
