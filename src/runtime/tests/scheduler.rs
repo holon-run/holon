@@ -334,7 +334,7 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
             "default",
             message_fixture.kind,
             origin,
-            TrustLevel::TrustedIntegration,
+            AuthorityClass::IntegrationSignal,
             message_fixture.priority.unwrap_or(Priority::Normal),
             MessageBody::Text {
                 text: message_fixture.text,
@@ -378,7 +378,7 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
                 created_at: Utc::now(),
                 completed_at: Some(Utc::now()),
                 duration_ms: 1,
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 status: tool.status,
                 input: serde_json::json!({ "fixture": true }),
                 output: serde_json::json!({ "fixture": true }),
@@ -1170,7 +1170,7 @@ fn scheduler_decision_event_records_evidence_and_bindings() {
         MessageOrigin::System {
             subsystem: "work_queue".into(),
         },
-        TrustLevel::TrustedSystem,
+        AuthorityClass::RuntimeInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "continue".into(),
@@ -1213,7 +1213,7 @@ fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
             TaskRecoverySpec::SubagentTask {
                 summary: "legacy inherited".into(),
                 prompt: "resume".into(),
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
             },
         ),
         (
@@ -1222,7 +1222,7 @@ fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
             TaskRecoverySpec::WorktreeSubagentTask {
                 summary: "legacy worktree".into(),
                 prompt: "resume".into(),
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
             },
         ),
     ] {
@@ -1282,7 +1282,7 @@ fn operator_interjection_classifier_requires_trusted_operator_interjection_promp
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Interject,
         MessageBody::Text {
             text: "interject".into(),
@@ -1296,7 +1296,7 @@ fn operator_interjection_classifier_requires_trusted_operator_interjection_promp
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "normal".into(),
@@ -1313,7 +1313,7 @@ fn operator_interjection_classifier_requires_trusted_operator_interjection_promp
             source: "test".into(),
             event_type: None,
         },
-        TrustLevel::TrustedIntegration,
+        AuthorityClass::IntegrationSignal,
         Priority::Interject,
         MessageBody::Text {
             text: "webhook".into(),

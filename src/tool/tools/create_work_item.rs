@@ -7,7 +7,7 @@ use crate::{
     runtime::RuntimeHandle,
     tool::helpers::{normalize_optional_non_empty, validate_non_empty},
     tool::spec::typed_spec,
-    types::{ToolCapabilityFamily, TrustLevel, WorkItemPlanStatus},
+    types::{AuthorityClass, ToolCapabilityFamily, WorkItemPlanStatus},
 };
 
 use super::{
@@ -65,7 +65,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    _trust: &TrustLevel,
+    _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: CreateWorkItemArgs = parse_work_item_action_args(NAME, input)?;

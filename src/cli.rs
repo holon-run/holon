@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
-use crate::types::TrustLevel;
+use crate::types::AuthorityClass;
 
 // ---------------------------------------------------------------------------
 // Top-level CLI
@@ -107,8 +107,12 @@ pub enum Commands {
     },
     Run {
         text: String,
-        #[arg(long, default_value = "trusted-operator")]
-        trust: TrustLevel,
+        #[arg(
+            long = "authority-class",
+            alias = "trust",
+            default_value = "operator-instruction"
+        )]
+        authority_class: AuthorityClass,
         #[arg(long)]
         json: bool,
         #[arg(long)]
@@ -147,8 +151,12 @@ pub enum Commands {
         model: Option<String>,
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         max_turns: Option<u64>,
-        #[arg(long, default_value = "trusted-operator")]
-        trust: TrustLevel,
+        #[arg(
+            long = "authority-class",
+            alias = "trust",
+            default_value = "operator-instruction"
+        )]
+        authority_class: AuthorityClass,
         #[arg(long)]
         json: bool,
         #[arg(long)]
@@ -368,8 +376,12 @@ pub enum DebugCommands {
         text: String,
         #[arg(long)]
         agent: Option<String>,
-        #[arg(long, default_value = "trusted-operator")]
-        trust: TrustLevel,
+        #[arg(
+            long = "authority-class",
+            alias = "trust",
+            default_value = "operator-instruction"
+        )]
+        authority_class: AuthorityClass,
     },
     Latency {
         #[arg(long)]

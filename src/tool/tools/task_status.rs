@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::{
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{TaskStatusResult, ToolCapabilityFamily, TrustLevel},
+    types::{AuthorityClass, TaskStatusResult, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -30,7 +30,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    _trust: &TrustLevel,
+    _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: TaskStatusArgs = parse_tool_args(NAME, input)?;

@@ -23,7 +23,7 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction, MessageBody,
         MessageDeliverySurface, MessageKind, MessageOrigin, Priority, TodoItem, TodoItemState,
-        TrustLevel, WorkItemState,
+        WorkItemState,
     },
 };
 use reqwest::Client;
@@ -1143,7 +1143,7 @@ pub async fn runtime_status_route_reports_waiting_activity_summary() -> Result<(
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1208,7 +1208,7 @@ pub async fn runtime_status_route_reports_last_runtime_failure_summary() -> Resu
             "default",
             MessageKind::OperatorPrompt,
             holon::types::MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::Priority::Normal,
             holon::types::MessageBody::Text {
                 text: "trigger runtime failure".into(),

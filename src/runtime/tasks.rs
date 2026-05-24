@@ -142,16 +142,16 @@ impl RuntimeHandle {
         &self,
         summary: String,
         prompt: String,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         workspace_mode: ChildAgentWorkspaceMode,
     ) -> Result<TaskRecord> {
         match workspace_mode {
             ChildAgentWorkspaceMode::Inherit => {
-                self.schedule_inherited_child_agent_task(summary, prompt, trust)
+                self.schedule_inherited_child_agent_task(summary, prompt, authority_class)
                     .await
             }
             ChildAgentWorkspaceMode::Worktree => {
-                self.schedule_worktree_child_agent_task(summary, prompt, trust)
+                self.schedule_worktree_child_agent_task(summary, prompt, authority_class)
                     .await
             }
         }
@@ -161,7 +161,7 @@ impl RuntimeHandle {
         &self,
         summary: String,
         prompt: String,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
     ) -> Result<TaskRecord> {
         self.ensure_background_tasks_allowed(CHILD_AGENT_TASK_KIND)
             .await?;
@@ -171,7 +171,7 @@ impl RuntimeHandle {
         let recovery = TaskRecoverySpec::ChildAgentTask {
             summary: summary.clone(),
             prompt: prompt.clone(),
-            trust: trust.clone(),
+            authority_class: authority_class.clone(),
             workspace_mode,
         };
         let task = TaskRecord {
@@ -194,7 +194,7 @@ impl RuntimeHandle {
         .await?;
 
         if self.inner.host_bridge.is_some() {
-            self.spawn_child_agent_task(task.clone(), prompt, trust, false, false)
+            self.spawn_child_agent_task(task.clone(), prompt, authority_class, false, false)
                 .await?;
             return Ok(task);
         }
@@ -219,7 +219,7 @@ impl RuntimeHandle {
                     MessageOrigin::Task {
                         task_id: task_record.id.clone(),
                     },
-                    trust.clone(),
+                    authority_class.clone(),
                     Priority::Background,
                     MessageBody::Text {
                         text: format!(
@@ -236,7 +236,7 @@ impl RuntimeHandle {
             let _ = runtime.enqueue(running_message).await;
 
             let subagent_result = runtime
-                .run_subagent_prompt(&agent_id, &prompt, &trust)
+                .run_subagent_prompt(&agent_id, &prompt, &authority_class)
                 .await;
             let (text, status) = match subagent_result {
                 Ok(text) => (text, TaskStatus::Completed),
@@ -271,7 +271,7 @@ impl RuntimeHandle {
                     MessageOrigin::Task {
                         task_id: task_record.id.clone(),
                     },
-                    TrustLevel::TrustedSystem,
+                    AuthorityClass::RuntimeInstruction,
                     Priority::Next,
                     MessageBody::Text { text },
                 )
@@ -300,7 +300,7 @@ impl RuntimeHandle {
     pub async fn spawn_agent(
         &self,
         initial_message: Option<String>,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         preset: AgentProfilePreset,
         agent_id: Option<String>,
         worktree: bool,
@@ -341,7 +341,7 @@ impl RuntimeHandle {
                     .create_child_supervision_task(
                         task_label,
                         initial_message.clone(),
-                        trust.clone(),
+                        authority_class.clone(),
                         worktree,
                     )
                     .await?;
@@ -351,7 +351,7 @@ impl RuntimeHandle {
                         self.clone(),
                         &task,
                         initial_message,
-                        trust.clone(),
+                        authority_class.clone(),
                         worktree,
                         template.clone(),
                     )
@@ -391,7 +391,7 @@ impl RuntimeHandle {
                     let _ = runtime
                         .monitor_spawned_child_agent_task(
                             task_record.clone(),
-                            trust,
+                            authority_class,
                             worktree,
                             false,
                             child_agent_id,
@@ -438,7 +438,7 @@ impl RuntimeHandle {
                         self.clone(),
                         &agent_id,
                         initial_message,
-                        trust,
+                        authority_class,
                         template,
                     )
                     .await?;
@@ -465,7 +465,7 @@ impl RuntimeHandle {
         &self,
         summary: String,
         prompt: String,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
     ) -> Result<TaskRecord> {
         self.ensure_background_tasks_allowed(CHILD_AGENT_TASK_KIND)
             .await?;
@@ -495,7 +495,7 @@ impl RuntimeHandle {
         let recovery = TaskRecoverySpec::ChildAgentTask {
             summary: summary.clone(),
             prompt: prompt.clone(),
-            trust: trust.clone(),
+            authority_class: authority_class.clone(),
             workspace_mode,
         };
         let task = TaskRecord {
@@ -518,7 +518,7 @@ impl RuntimeHandle {
         .await?;
 
         if self.inner.host_bridge.is_some() {
-            self.spawn_child_agent_task(task.clone(), prompt, trust, true, false)
+            self.spawn_child_agent_task(task.clone(), prompt, authority_class, true, false)
                 .await?;
             return Ok(task);
         }
@@ -531,7 +531,7 @@ impl RuntimeHandle {
                 .run_subagent_prompt_in_dedicated_worktree(
                     &agent_id,
                     &prompt,
-                    &trust,
+                    &authority_class,
                     &task_record.id,
                 )
                 .await;
@@ -626,7 +626,7 @@ impl RuntimeHandle {
                     MessageOrigin::Task {
                         task_id: task_record.id.clone(),
                     },
-                    TrustLevel::TrustedSystem,
+                    AuthorityClass::RuntimeInstruction,
                     Priority::Next,
                     MessageBody::Text { text },
                 )
@@ -656,7 +656,7 @@ impl RuntimeHandle {
         &self,
         task_record: TaskRecord,
         prompt: String,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         worktree: bool,
         recovered: bool,
     ) -> Result<()> {
@@ -693,7 +693,7 @@ impl RuntimeHandle {
                                 runtime.clone(),
                                 &task_record,
                                 prompt,
-                                trust.clone(),
+                                authority_class.clone(),
                                 worktree,
                                 None,
                             )
@@ -710,7 +710,7 @@ impl RuntimeHandle {
                             runtime.clone(),
                             &task_record,
                             prompt,
-                            trust.clone(),
+                            authority_class.clone(),
                             worktree,
                             None,
                         )
@@ -743,7 +743,7 @@ impl RuntimeHandle {
                             MessageOrigin::Task {
                                 task_id: task_record.id.clone(),
                             },
-                            TrustLevel::TrustedSystem,
+                            AuthorityClass::RuntimeInstruction,
                             Priority::Next,
                             MessageBody::Text {
                                 text: format!("child agent failed: {err:#}"),
@@ -782,7 +782,7 @@ impl RuntimeHandle {
             let _ = runtime
                 .monitor_spawned_child_agent_task(
                     task_record,
-                    trust,
+                    authority_class,
                     worktree,
                     recovered,
                     child_agent_id,
@@ -809,7 +809,7 @@ impl RuntimeHandle {
         &self,
         summary: String,
         prompt: String,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         worktree: bool,
     ) -> Result<TaskRecord> {
         let workspace_mode = if worktree {
@@ -847,7 +847,7 @@ impl RuntimeHandle {
         let recovery = TaskRecoverySpec::ChildAgentTask {
             summary: summary.clone(),
             prompt,
-            trust: trust.clone(),
+            authority_class: authority_class.clone(),
             workspace_mode,
         };
         let task = TaskRecord {
@@ -874,7 +874,7 @@ impl RuntimeHandle {
     async fn monitor_spawned_child_agent_task(
         &self,
         task_record: TaskRecord,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         worktree: bool,
         recovered: bool,
         child_agent_id: String,
@@ -902,7 +902,7 @@ impl RuntimeHandle {
                 MessageOrigin::Task {
                     task_id: task_record.id.clone(),
                 },
-                trust.clone(),
+                authority_class.clone(),
                 Priority::Background,
                 MessageBody::Text {
                     text: if recovered {
@@ -1051,7 +1051,7 @@ impl RuntimeHandle {
                 MessageOrigin::Task {
                     task_id: task_record.id.clone(),
                 },
-                TrustLevel::TrustedSystem,
+                AuthorityClass::RuntimeInstruction,
                 Priority::Next,
                 MessageBody::Text { text },
             )
@@ -1083,19 +1083,27 @@ impl RuntimeHandle {
         let mut remaining = Vec::new();
 
         for task in tasks {
-            let (prompt, trust, worktree) = match task.recovery.as_ref() {
+            let (prompt, authority_class, worktree) = match task.recovery.as_ref() {
                 Some(TaskRecoverySpec::ChildAgentTask {
                     prompt,
-                    trust,
+                    authority_class,
                     workspace_mode,
                     ..
-                }) => (prompt.clone(), trust.clone(), workspace_mode.is_worktree()),
-                Some(TaskRecoverySpec::SubagentTask { prompt, trust, .. }) => {
-                    (prompt.clone(), trust.clone(), false)
-                }
-                Some(TaskRecoverySpec::WorktreeSubagentTask { prompt, trust, .. }) => {
-                    (prompt.clone(), trust.clone(), true)
-                }
+                }) => (
+                    prompt.clone(),
+                    authority_class.clone(),
+                    workspace_mode.is_worktree(),
+                ),
+                Some(TaskRecoverySpec::SubagentTask {
+                    prompt,
+                    authority_class,
+                    ..
+                }) => (prompt.clone(), authority_class.clone(), false),
+                Some(TaskRecoverySpec::WorktreeSubagentTask {
+                    prompt,
+                    authority_class,
+                    ..
+                }) => (prompt.clone(), authority_class.clone(), true),
                 _ => {
                     remaining.push(task);
                     continue;
@@ -1114,7 +1122,7 @@ impl RuntimeHandle {
             }
 
             match self
-                .spawn_child_agent_task(task.clone(), prompt, trust, worktree, true)
+                .spawn_child_agent_task(task.clone(), prompt, authority_class, worktree, true)
                 .await
             {
                 Ok(()) => reattached.push(task),
@@ -1508,7 +1516,11 @@ impl RuntimeHandle {
         }
     }
 
-    pub async fn stop_task(&self, task_id: &str, trust: &TrustLevel) -> Result<TaskRecord> {
+    pub async fn stop_task(
+        &self,
+        task_id: &str,
+        authority_class: &AuthorityClass,
+    ) -> Result<TaskRecord> {
         let existing = self.task_record(task_id).await?;
         let is_command_task = existing
             .as_ref()
@@ -1643,7 +1655,9 @@ impl RuntimeHandle {
         self.persist_task_status_direct(&stopped, "task_status_updated")
             .await?;
         if stopped.kind != TaskKind::CommandTask {
-            return self.finish_stopped_task(agent_id, stopped, trust).await;
+            return self
+                .finish_stopped_task(agent_id, stopped, authority_class)
+                .await;
         }
         Ok(stopped)
     }
@@ -1688,7 +1702,7 @@ impl RuntimeHandle {
         &self,
         task_id: &str,
         input: &str,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
     ) -> Result<TaskInputResult> {
         let task = self
             .task_record(task_id)
@@ -1719,7 +1733,7 @@ impl RuntimeHandle {
         }
         if task.is_child_agent_task() {
             return self
-                .deliver_child_task_input(&task, snapshot, input, trust)
+                .deliver_child_task_input(&task, snapshot, input, authority_class)
                 .await;
         }
         Ok(TaskInputResult {
@@ -1814,7 +1828,7 @@ impl RuntimeHandle {
         task: &TaskRecord,
         snapshot: TaskStatusSnapshot,
         input: &str,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
     ) -> Result<TaskInputResult> {
         let Some(child_agent_id) = detail_string(&task.detail, "child_agent_id") else {
             return Ok(TaskInputResult {
@@ -1842,7 +1856,7 @@ impl RuntimeHandle {
                 &task.id,
                 &child_agent_id,
                 input,
-                trust.clone(),
+                authority_class.clone(),
             )
             .await?;
         if !delivered {
@@ -1884,7 +1898,7 @@ impl RuntimeHandle {
         &self,
         agent_id: String,
         stopped: TaskRecord,
-        _trust: &TrustLevel,
+        _authority_class: &AuthorityClass,
     ) -> Result<TaskRecord> {
         if stopped.kind != TaskKind::CommandTask {
             let message = MessageEnvelope {
@@ -1902,7 +1916,7 @@ impl RuntimeHandle {
                     MessageOrigin::Task {
                         task_id: stopped.id.clone(),
                     },
-                    TrustLevel::TrustedSystem,
+                    AuthorityClass::RuntimeInstruction,
                     Priority::Next,
                     MessageBody::Text {
                         text: "task cancelled by operator".into(),

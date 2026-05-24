@@ -10,7 +10,7 @@ use holon::{
     provider::{AgentProvider, ModelBlock, ProviderTurnRequest, ProviderTurnResponse},
     runtime::RuntimeHandle,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
-    types::{MessageKind, TaskRecord, TaskStatus, TrustLevel, WorkspaceEntry},
+    types::{AuthorityClass, MessageKind, TaskRecord, TaskStatus, WorkspaceEntry},
 };
 use tempfile::tempdir;
 use tokio::time::{sleep, Duration};
@@ -115,7 +115,7 @@ async fn discover_managed_root(runtime: &RuntimeHandle) -> Result<PathBuf> {
         .schedule_child_agent_task(
             "probe managed root".into(),
             "Create a probe worktree".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -333,7 +333,7 @@ async fn worktree_task_cleanup_and_review_retention_stay_distinct() -> Result<()
         .schedule_child_agent_task(
             "retain candidate".into(),
             "Try the retained variant".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -341,7 +341,7 @@ async fn worktree_task_cleanup_and_review_retention_stay_distinct() -> Result<()
         .schedule_child_agent_task(
             "clean candidate".into(),
             "Try the cleaned variant".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -413,7 +413,7 @@ async fn failed_worktree_task_keeps_metadata_and_summary_consistent() -> Result<
         .schedule_child_agent_task(
             "failing candidate".into(),
             "This attempt should fail after creating a worktree".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;

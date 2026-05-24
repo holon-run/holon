@@ -301,7 +301,7 @@ impl RuntimeHandle {
                 serde_json::json!({
                     "kind": message.kind,
                     "origin": message.origin,
-                    "trust": message.trust,
+                    "authority_class": message.authority_class,
                     "authority_class": message.authority_class,
                     "delivery_surface": message.delivery_surface,
                     "admission_context": message.admission_context,

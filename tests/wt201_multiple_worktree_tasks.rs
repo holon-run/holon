@@ -11,7 +11,7 @@ use holon::{
     host::RuntimeHost,
     provider::{AgentProvider, ProviderTurnRequest, ProviderTurnResponse},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
-    types::{MessageKind, TaskStatus, TrustLevel},
+    types::{AuthorityClass, MessageKind, TaskStatus},
 };
 use tempfile::tempdir;
 use tokio::time::{sleep, Duration};
@@ -161,7 +161,7 @@ async fn wt201_one_session_can_coordinate_multiple_worktree_tasks() -> Result<()
         .schedule_child_agent_task(
             "Implement approach A in worktree".into(),
             "Implement the first approach".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -170,7 +170,7 @@ async fn wt201_one_session_can_coordinate_multiple_worktree_tasks() -> Result<()
         .schedule_child_agent_task(
             "Implement approach B in worktree".into(),
             "Implement the second approach".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -179,7 +179,7 @@ async fn wt201_one_session_can_coordinate_multiple_worktree_tasks() -> Result<()
         .schedule_child_agent_task(
             "Implement approach C in worktree".into(),
             "Implement the third approach".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;

@@ -93,7 +93,7 @@ impl RuntimeHandle {
         let outcome = self
             .run_agent_loop(
                 &message.agent_id,
-                message.trust.clone(),
+                message.authority_class.clone(),
                 built,
                 loop_control,
             )
@@ -144,14 +144,18 @@ impl RuntimeHandle {
             .collect())
     }
 
-    pub async fn preview_prompt(&self, text: String, trust: TrustLevel) -> Result<EffectivePrompt> {
+    pub async fn preview_prompt(
+        &self,
+        text: String,
+        authority_class: AuthorityClass,
+    ) -> Result<EffectivePrompt> {
         let message = MessageEnvelope::new(
             self.agent_id().await?,
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: Some("debug_prompt".into()),
             },
-            trust.clone(),
+            authority_class.clone(),
             Priority::Normal,
             MessageBody::Text { text },
         )
@@ -193,7 +197,7 @@ impl RuntimeHandle {
         &self,
         agent_id: &str,
         prompt: &str,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
         execution: &EffectiveExecution,
     ) -> Result<EffectivePrompt> {
         let message = MessageEnvelope::new(
@@ -202,7 +206,7 @@ impl RuntimeHandle {
             MessageOrigin::System {
                 subsystem: "subagent".into(),
             },
-            trust.clone(),
+            authority_class.clone(),
             Priority::Next,
             MessageBody::Text {
                 text: prompt.to_string(),

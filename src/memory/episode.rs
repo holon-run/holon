@@ -390,7 +390,7 @@ mod tests {
 
     use super::*;
     use crate::types::{
-        ClosureOutcome, MessageBody, MessageOrigin, Priority, RuntimePosture, TrustLevel,
+        AuthorityClass, ClosureOutcome, MessageBody, MessageOrigin, Priority, RuntimePosture,
         WaitingReason,
     };
 
@@ -399,7 +399,7 @@ mod tests {
             "default",
             kind,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "continue".into(),

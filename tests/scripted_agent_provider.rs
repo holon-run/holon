@@ -8,7 +8,7 @@ use holon::{
         test_support::{ScriptedAgentProvider, ScriptedProviderStep},
         ConversationMessage,
     },
-    types::{MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, TrustLevel},
+    types::{AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority},
 };
 use serde_json::json;
 use tempfile::tempdir;
@@ -103,7 +103,7 @@ async fn scripted_agent_provider_drives_tool_loop_and_captures_requests() -> Res
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "inspect agent state".into(),

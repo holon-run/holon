@@ -34,10 +34,10 @@ use crate::{
     types::{
         AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
         AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus,
-        AgentSummary, AgentVisibility, ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord,
-        ExternalTriggerStatus, OperatorNotificationRecord, RuntimeFailureSummary, TaskRecord,
-        TaskStatus, TranscriptEntry, TranscriptEntryKind, TrustLevel, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        AgentSummary, AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome,
+        ExternalTriggerRecord, ExternalTriggerStatus, OperatorNotificationRecord,
+        RuntimeFailureSummary, TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind,
+        WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -904,7 +904,7 @@ impl RuntimeHost {
         parent_runtime: RuntimeHandle,
         task: &TaskRecord,
         prompt: String,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         worktree: bool,
         template: Option<String>,
     ) -> Result<ChildTaskSpawn> {
@@ -948,7 +948,7 @@ impl RuntimeHost {
                     None,
                     json!({
                         "prompt": prompt,
-                        "trust": trust,
+                        "authority_class": authority_class,
                         "task_id": task.id,
                         "workspace_root": seed.worktree_path,
                     }),
@@ -973,7 +973,7 @@ impl RuntimeHost {
             crate::types::MessageOrigin::Task {
                 task_id: task.id.clone(),
             },
-            trust,
+            authority_class,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text { text: prompt },
         )
@@ -1003,7 +1003,7 @@ impl RuntimeHost {
         parent_runtime: RuntimeHandle,
         agent_id: &str,
         initial_message: Option<String>,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         template: Option<String>,
     ) -> Result<String> {
         let parent_state = parent_runtime.agent_state().await?;
@@ -1033,7 +1033,7 @@ impl RuntimeHost {
             crate::types::MessageOrigin::System {
                 subsystem: "spawn_agent".into(),
             },
-            trust,
+            authority_class,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text {
                 text: initial_message,
@@ -1345,12 +1345,19 @@ impl RuntimeHostBridge {
         parent_runtime: RuntimeHandle,
         task: &TaskRecord,
         prompt: String,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         worktree: bool,
         template: Option<String>,
     ) -> Result<ChildTaskSpawn> {
         self.host()?
-            .spawn_child_task(parent_runtime, task, prompt, trust, worktree, template)
+            .spawn_child_task(
+                parent_runtime,
+                task,
+                prompt,
+                authority_class,
+                worktree,
+                template,
+            )
             .await
     }
 
@@ -1359,11 +1366,17 @@ impl RuntimeHostBridge {
         parent_runtime: RuntimeHandle,
         agent_id: &str,
         initial_message: Option<String>,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         template: Option<String>,
     ) -> Result<String> {
         self.host()?
-            .spawn_public_named_agent(parent_runtime, agent_id, initial_message, trust, template)
+            .spawn_public_named_agent(
+                parent_runtime,
+                agent_id,
+                initial_message,
+                authority_class,
+                template,
+            )
             .await
     }
 
@@ -1414,7 +1427,7 @@ impl RuntimeHostBridge {
         task_id: &str,
         child_agent_id: &str,
         input: &str,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
     ) -> Result<bool> {
         if !self.reusable_agent_exists(child_agent_id).await? {
             return Ok(false);
@@ -1434,7 +1447,7 @@ impl RuntimeHostBridge {
             crate::types::MessageOrigin::Task {
                 task_id: task_id.to_string(),
             },
-            trust,
+            authority_class,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text {
                 text: input.to_string(),
@@ -1525,9 +1538,9 @@ mod tests {
         system::WorkspaceProjectionKind,
         types::{
             AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-            AgentSchedulingPosture, AgentStatus, AgentVisibility, ControlAction, MessageBody,
-            MessageEnvelope, MessageKind, MessageOrigin, Priority, TaskRecord, TaskRecoverySpec,
-            TaskStatus, TrustLevel, TurnTerminalKind,
+            AgentSchedulingPosture, AgentStatus, AgentVisibility, AuthorityClass, ControlAction,
+            MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, TaskRecord,
+            TaskRecoverySpec, TaskStatus, TurnTerminalKind,
         },
     };
 
@@ -1806,7 +1819,7 @@ mod tests {
             parent,
             "release-bot",
             Some("continue release work".into()),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             None,
         )
         .await
@@ -1828,7 +1841,7 @@ mod tests {
             parent,
             "release-bot",
             Some("coordinate release work".into()),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             None,
         )
         .await
@@ -1867,7 +1880,7 @@ mod tests {
         let spawned = parent
             .spawn_agent(
                 Some(initial_message.clone()),
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 AgentProfilePreset::PrivateChild,
                 None,
                 false,
@@ -1932,7 +1945,7 @@ mod tests {
         let error = parent
             .spawn_agent(
                 Some("   \n\t  ".into()),
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 AgentProfilePreset::PrivateChild,
                 None,
                 false,
@@ -1982,7 +1995,7 @@ mod tests {
             parent.clone(),
             "release-bot",
             None,
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             None,
         )
         .await
@@ -2011,7 +2024,7 @@ mod tests {
             parent,
             "release-bot",
             Some("bootstrap release lane".into()),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             None,
         )
         .await
@@ -2070,7 +2083,7 @@ mod tests {
             parent,
             "worker-bot",
             None,
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Some("worker".into()),
         )
         .await
@@ -2485,7 +2498,7 @@ mod tests {
                 recovery: Some(TaskRecoverySpec::ChildAgentTask {
                     summary: "delegated child".into(),
                     prompt: "continue delegated child".into(),
-                    trust: TrustLevel::TrustedOperator,
+                    authority_class: AuthorityClass::OperatorInstruction,
                     workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
                 }),
             })
@@ -2735,7 +2748,7 @@ mod tests {
         let runtime = restarted.default_runtime().await.unwrap();
 
         let stopped = runtime
-            .stop_task("task-stop", &TrustLevel::TrustedOperator)
+            .stop_task("task-stop", &AuthorityClass::OperatorInstruction)
             .await
             .unwrap();
         assert_eq!(stopped.status, TaskStatus::Cancelled);
@@ -2822,7 +2835,7 @@ mod tests {
                 &agent_id,
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator { actor_id: None },
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
                     text: "block until daemon shutdown".into(),
@@ -2908,7 +2921,7 @@ mod tests {
                 &agent_id,
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator { actor_id: None },
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
                     text: "before shutdown".into(),
@@ -2935,7 +2948,7 @@ mod tests {
                 &agent_id,
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator { actor_id: None },
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
                     text: "after restart".into(),
@@ -3059,7 +3072,7 @@ mod tests {
                 &agent_id,
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator { actor_id: None },
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
                     text: "start me".into(),

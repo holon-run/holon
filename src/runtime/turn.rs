@@ -24,10 +24,11 @@ use crate::{
         ToolCall, ToolError, ToolSpec,
     },
     types::{
-        AdmissionContext, AuditEvent, MessageBody, MessageDeliverySurface, MessageEnvelope,
-        MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TodoItemState,
-        TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, TurnTerminalCheckpointRecord,
-        TurnTerminalKind, TurnTerminalRecord, WorkItemPlanStatus, WorkItemRecord,
+        AdmissionContext, AuditEvent, AuthorityClass, MessageBody, MessageDeliverySurface,
+        MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
+        TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+        TurnTerminalCheckpointRecord, TurnTerminalKind, TurnTerminalRecord, WorkItemPlanStatus,
+        WorkItemRecord,
     },
 };
 
@@ -237,7 +238,7 @@ fn render_operator_interjection_text(message: &MessageEnvelope) -> String {
         "{OPERATOR_INTERJECTION_HEADER}\nmessage_id={}\norigin={}\ntrust={}\nauthority_class={}\ndelivery_surface={}\nadmission_context={}\n\n{}",
         message.id,
         render_metadata_value(&message.origin),
-        render_metadata_value(&message.trust),
+        render_metadata_value(&message.authority_class),
         render_metadata_value(&message.authority_class),
         render_metadata_value(&message.delivery_surface),
         render_metadata_value(&message.admission_context),
@@ -1487,7 +1488,7 @@ impl RuntimeHandle {
             MessageOrigin::System {
                 subsystem: "model_lineage_recovery".into(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Next,
             MessageBody::Text {
                 text: "Runtime recovery: the previous turn stopped after the active provider failed. Continue from the persisted transcript, current work item, and workspace state. Do not assume hidden provider continuation state is still available. Do not repeat completed tool work unless current evidence shows it is necessary.".into(),
@@ -1670,7 +1671,7 @@ impl RuntimeHandle {
                         "boundary": boundary,
                         "message_id": message.id,
                         "origin": message.origin,
-                        "trust": message.trust,
+                        "authority_class": message.authority_class,
                         "authority_class": message.authority_class,
                         "priority": message.priority,
                         "delivery_surface": message.delivery_surface,
@@ -1717,14 +1718,14 @@ impl RuntimeHandle {
     pub(super) async fn run_agent_loop(
         &self,
         agent_id: &str,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         effective_prompt: EffectivePrompt,
         loop_control: LoopControlOptions,
     ) -> Result<AgentLoopOutcome> {
         TurnExecution {
             runtime: self,
             agent_id,
-            trust,
+            authority_class,
             effective_prompt,
             loop_control,
         }
@@ -1736,7 +1737,7 @@ impl RuntimeHandle {
 struct TurnExecution<'a> {
     runtime: &'a RuntimeHandle,
     agent_id: &'a str,
-    trust: TrustLevel,
+    authority_class: AuthorityClass,
     effective_prompt: EffectivePrompt,
     loop_control: LoopControlOptions,
 }
@@ -1746,7 +1747,7 @@ impl TurnExecution<'_> {
         let TurnExecution {
             runtime,
             agent_id,
-            trust,
+            authority_class,
             effective_prompt,
             loop_control,
         } = self;
@@ -2672,7 +2673,7 @@ impl TurnExecution<'_> {
                 let tool_execution = if let Some(snapshot) = runtime.current_run_abort_token().await
                 {
                     tokio::select! {
-                        result = runtime.inner.tools.execute(runtime, agent_id, &trust, &call) => result,
+                        result = runtime.inner.tools.execute(runtime, agent_id, &authority_class, &call) => result,
                         _ = snapshot.token.cancelled() => Err(CurrentRunAborted {
                             run_id: snapshot.run_id.clone(),
                             reason: snapshot.reason(),
@@ -2682,7 +2683,7 @@ impl TurnExecution<'_> {
                     runtime
                         .inner
                         .tools
-                        .execute(runtime, agent_id, &trust, &call)
+                        .execute(runtime, agent_id, &authority_class, &call)
                         .await
                 };
                 match tool_execution {

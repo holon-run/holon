@@ -34,7 +34,7 @@ async fn use_workspace_path_activates_project_workspace() {
     crate::tool::tools::execute_builtin_tool(
         &runtime,
         "default",
-        &TrustLevel::TrustedOperator,
+        &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "use-workspace".into(),
             name: "UseWorkspace".into(),
@@ -67,7 +67,7 @@ async fn use_workspace_agent_home_returns_to_fallback_without_deleting_project()
     crate::tool::tools::execute_builtin_tool(
         &runtime,
         default_agent_id,
-        &TrustLevel::TrustedOperator,
+        &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "use-project".into(),
             name: "UseWorkspace".into(),
@@ -79,7 +79,7 @@ async fn use_workspace_agent_home_returns_to_fallback_without_deleting_project()
     crate::tool::tools::execute_builtin_tool(
         &runtime,
         default_agent_id,
-        &TrustLevel::TrustedOperator,
+        &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "use-home".into(),
             name: "UseWorkspace".into(),
@@ -126,7 +126,7 @@ async fn agent_home_workspace_ids_are_unique_per_agent_while_alias_remains_local
     crate::tool::tools::execute_builtin_tool(
         &worker_runtime,
         "worker",
-        &TrustLevel::TrustedOperator,
+        &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "use-worker-home".into(),
             name: "UseWorkspace".into(),
@@ -158,7 +158,7 @@ async fn use_workspace_rejects_nonexistent_path() {
     let result = crate::tool::tools::execute_builtin_tool(
         &runtime,
         "default",
-        &TrustLevel::TrustedOperator,
+        &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "use-workspace".into(),
             name: "UseWorkspace".into(),
@@ -204,7 +204,7 @@ async fn use_workspace_nonexistent_path_preserves_existing_workspace() {
     crate::tool::tools::execute_builtin_tool(
         &runtime,
         "default",
-        &TrustLevel::TrustedOperator,
+        &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "use-valid".into(),
             name: "UseWorkspace".into(),
@@ -225,7 +225,7 @@ async fn use_workspace_nonexistent_path_preserves_existing_workspace() {
     let result = crate::tool::tools::execute_builtin_tool(
         &runtime,
         "default",
-        &TrustLevel::TrustedOperator,
+        &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "use-bad".into(),
             name: "UseWorkspace".into(),
@@ -262,7 +262,7 @@ async fn use_workspace_regular_file_preserves_existing_workspace() {
     crate::tool::tools::execute_builtin_tool(
         &runtime,
         "default",
-        &TrustLevel::TrustedOperator,
+        &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "use-valid".into(),
             name: "UseWorkspace".into(),
@@ -281,7 +281,7 @@ async fn use_workspace_regular_file_preserves_existing_workspace() {
     let result = crate::tool::tools::execute_builtin_tool(
         &runtime,
         "default",
-        &TrustLevel::TrustedOperator,
+        &AuthorityClass::OperatorInstruction,
         &crate::tool::ToolCall {
             id: "use-file".into(),
             name: "UseWorkspace".into(),

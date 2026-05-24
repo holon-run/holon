@@ -79,7 +79,7 @@ async fn recovered_duplicate_wake_hint_clears_pending_without_new_tick() {
         MessageOrigin::System {
             subsystem: "wake_hint".into(),
         },
-        TrustLevel::TrustedSystem,
+        AuthorityClass::RuntimeInstruction,
         Priority::Next,
         MessageBody::Text {
             text: "wake hint: restart duplicate wake".into(),

@@ -50,19 +50,19 @@ use crate::{
     },
     host::{PublicAgentError, RuntimeHost},
     ingress::{InboundRequest, WakeDisposition, WakeHint},
-    policy::{default_trust_for_origin, validate_message_kind_for_origin},
+    policy::{default_authority_for_origin, validate_message_kind_for_origin},
     runtime::{CurrentRunAbortError, CurrentRunAbortMode, CurrentRunAbortRequest},
     storage::FileActivityMarker,
     system::{ExecutionScopeKind, ExecutionSnapshot, HostLocalBoundary},
     types::{
         ActiveWorkspaceEntry, AdmissionContext, AgentRegistryStatus, AgentSummary, AgentVisibility,
-        AuditEvent, CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
+        AuditEvent, AuthorityClass, CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
         ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageKind,
         MessageOrigin, OperatorNotificationRecord, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
-        TimerRecord, TrustLevel, TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord,
-        WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
+        TimerRecord, TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord, WorkItemState,
+        WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -266,7 +266,7 @@ pub fn router(state: AppState) -> Router {
 pub struct EnqueueRequest {
     pub kind: Option<MessageKind>,
     pub priority: Option<Priority>,
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
     pub body: Option<MessageBody>,
     pub text: Option<String>,
     pub json: Option<Value>,
@@ -369,7 +369,7 @@ pub struct OperatorIngressRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DebugPromptRequest {
     pub text: String,
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -431,8 +431,6 @@ struct EventsPageResponse {
 struct EventReplayProvenance {
     #[serde(skip_serializing_if = "Option::is_none")]
     origin: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    trust: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     authority_class: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -522,13 +520,13 @@ pub struct CreateCommandTaskRequest {
     pub yield_time_ms: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub accepts_input: Option<bool>,
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateWorkItemRequest {
     pub objective: String,
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -536,40 +534,40 @@ pub struct CreateTimerRequest {
     pub duration_ms: u64,
     pub interval_ms: Option<u64>,
     pub summary: Option<String>,
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ControlRequest {
     pub action: ControlAction,
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AbortCurrentRunRequest {
     pub run_id: Option<String>,
     pub mode: Option<String>,
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AttachWorkspaceRequest {
     pub path: String,
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExitWorkspaceRequest {
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DetachWorkspaceRequest {
     pub workspace_id: String,
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -577,17 +575,17 @@ pub struct SetAgentModelRequest {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ClearAgentModelRequest {
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateAgentRequest {
-    pub trust: Option<TrustLevel>,
+    pub authority_class: Option<AuthorityClass>,
     pub template: Option<String>,
 }
 
@@ -832,16 +830,16 @@ async fn enqueue_internal(
                 })
         }
     };
-    let trust = match ingress {
+    let authority_class = match ingress {
         EnqueueIngress::Public => {
-            if request.trust.is_some() {
-                return Err(forbidden("public enqueue may not override trust"));
+            if request.authority_class.is_some() {
+                return Err(forbidden("public enqueue may not override authority_class"));
             }
-            default_trust_for_origin(&origin)
+            default_authority_for_origin(&origin)
         }
         EnqueueIngress::Trusted { .. } => request
-            .trust
-            .unwrap_or_else(|| default_trust_for_origin(&origin)),
+            .authority_class
+            .unwrap_or_else(|| default_authority_for_origin(&origin)),
     };
     let (delivery_surface, admission_context) = match ingress {
         EnqueueIngress::Public => (
@@ -873,7 +871,7 @@ async fn enqueue_internal(
         kind,
         priority,
         origin,
-        trust,
+        authority_class,
         body,
         delivery_surface,
         admission_context,
@@ -1611,7 +1609,6 @@ fn project_event_payload_for_replay(
 fn event_replay_provenance(payload: &Value) -> EventReplayProvenance {
     EventReplayProvenance {
         origin: clone_payload_field(payload, "origin"),
-        trust: clone_payload_field(payload, "trust"),
         authority_class: clone_payload_field(payload, "authority_class"),
         delivery_surface: clone_payload_field(payload, "delivery_surface"),
         admission_context: clone_payload_field(payload, "admission_context"),
@@ -1714,10 +1711,10 @@ pub async fn create_command_task(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let admission_context = control_admission_context(&state);
-    let provided_trust = request.trust;
+    let provided_trust = request.authority_class;
     let effective_trust = provided_trust
         .clone()
-        .unwrap_or(TrustLevel::TrustedOperator);
+        .unwrap_or(AuthorityClass::OperatorInstruction);
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -1769,7 +1766,7 @@ pub async fn create_work_item(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let admission_context = control_admission_context(&state);
-    let provided_trust = request.trust;
+    let provided_trust = request.authority_class;
     let objective = request.objective.trim().to_string();
     if objective.is_empty() {
         return Err(bad_request("objective must not be empty"));
@@ -1825,7 +1822,7 @@ pub async fn create_timer(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let admission_context = control_admission_context(&state);
-    let provided_trust = request.trust;
+    let provided_trust = request.authority_class;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -1945,7 +1942,7 @@ pub async fn create_agent(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let admission_context = control_admission_context(&state);
-    let provided_trust = request.trust;
+    let provided_trust = request.authority_class;
     let agent = state
         .host
         .create_named_agent(&agent_id, request.template.as_deref())
@@ -1981,7 +1978,7 @@ pub async fn control(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let admission_context = control_admission_context(&state);
-    let provided_trust = request.trust;
+    let provided_trust = request.authority_class;
     let action = request.action.clone();
     let runtime = state
         .host
@@ -2023,7 +2020,7 @@ pub async fn abort_current_run(
         }
     };
     let admission_context = control_admission_context(&state);
-    let provided_trust = request.trust.clone();
+    let provided_trust = request.authority_class.clone();
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2055,7 +2052,7 @@ pub async fn attach_workspace(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let admission_context = control_admission_context(&state);
-    let provided_trust = request.trust;
+    let provided_trust = request.authority_class;
     let workspace = state
         .host
         .ensure_workspace_entry(std::path::PathBuf::from(&request.path))
@@ -2100,7 +2097,7 @@ pub async fn exit_workspace(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let admission_context = control_admission_context(&state);
-    let provided_trust = request.trust;
+    let provided_trust = request.authority_class;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2135,7 +2132,7 @@ pub async fn detach_workspace(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let admission_context = control_admission_context(&state);
-    let provided_trust = request.trust;
+    let provided_trust = request.authority_class;
     let workspace_id = request.workspace_id.trim().to_string();
     let runtime = state
         .host
@@ -2179,7 +2176,7 @@ pub async fn set_agent_model(
         validate_reasoning_effort(reasoning_effort)?;
     }
     let admission_context = control_admission_context(&state);
-    let provided_trust = request.trust;
+    let provided_trust = request.authority_class;
     let model = ModelRef::parse(&request.model).map_err(error_response)?;
     let runtime = state
         .host
@@ -2230,7 +2227,7 @@ pub async fn clear_agent_model(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let admission_context = control_admission_context(&state);
-    let provided_trust = request.trust;
+    let provided_trust = request.authority_class;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2276,7 +2273,7 @@ pub async fn control_prompt(
         EnqueueRequest {
             kind: Some(MessageKind::OperatorPrompt),
             priority: Some(Priority::Interject),
-            trust: Some(TrustLevel::TrustedOperator),
+            authority_class: Some(AuthorityClass::OperatorInstruction),
             body: Some(MessageBody::Text { text: request.text }),
             text: None,
             json: None,
@@ -2413,7 +2410,7 @@ pub async fn operator_ingress(
         origin: MessageOrigin::Operator {
             actor_id: Some(actor_id),
         },
-        trust: TrustLevel::TrustedOperator,
+        authority_class: AuthorityClass::OperatorInstruction,
         body: MessageBody::Text { text },
         delivery_surface: MessageDeliverySurface::RemoteOperatorTransport,
         admission_context: AdmissionContext::OperatorTransportAuthenticated,
@@ -2438,7 +2435,10 @@ pub async fn control_debug_prompt(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let admission_context = control_admission_context(&state);
-    let effective_trust = request.trust.clone().unwrap_or(TrustLevel::TrustedOperator);
+    let effective_trust = request
+        .authority_class
+        .clone()
+        .unwrap_or(AuthorityClass::OperatorInstruction);
     let runtime = state
         .host
         .get_public_agent(&agent_id)
@@ -2715,7 +2715,7 @@ pub async fn generic_webhook(
         EnqueueRequest {
             kind: Some(MessageKind::WebhookEvent),
             priority: Some(Priority::Normal),
-            trust: Some(TrustLevel::TrustedIntegration),
+            authority_class: Some(AuthorityClass::IntegrationSignal),
             body: Some(MessageBody::Json { value: payload }),
             text: None,
             json: None,

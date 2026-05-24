@@ -143,7 +143,7 @@ impl RuntimeHandle {
         &self,
         agent_id: &str,
         prompt: &str,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
     ) -> Result<String> {
         let execution = self
             .effective_execution(ExecutionScopeKind::SubagentTask)
@@ -151,11 +151,11 @@ impl RuntimeHandle {
         self.run_subagent_prompt_for_workspace(
             agent_id,
             prompt,
-            trust,
+            authority_class,
             &execution,
             serde_json::json!({
                 "prompt": prompt,
-                "trust": trust,
+                "authority_class": authority_class,
                 "execution_root": execution.workspace.execution_root(),
             }),
             None,
@@ -167,11 +167,11 @@ impl RuntimeHandle {
         &self,
         agent_id: &str,
         prompt: &str,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
         task_id: &str,
     ) -> Result<WorktreeSubagentResult> {
         let seed = self.prepare_managed_worktree_for_task(task_id).await?;
-        self.emit_worktree_child_task_running_status(agent_id, task_id, trust)
+        self.emit_worktree_child_task_running_status(agent_id, task_id, authority_class)
             .await?;
 
         let worktree_execution = self
@@ -189,11 +189,11 @@ impl RuntimeHandle {
             .run_subagent_prompt_for_workspace(
                 agent_id,
                 prompt,
-                trust,
+                authority_class,
                 &worktree_execution,
                 serde_json::json!({
                     "prompt": prompt,
-                    "trust": trust,
+                    "authority_class": authority_class,
                     "task_id": task_id,
                     "workspace_root": seed.worktree_path,
                 }),
@@ -227,7 +227,7 @@ impl RuntimeHandle {
         &self,
         agent_id: &str,
         task_id: &str,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
     ) -> Result<()> {
         let Some(task) = self.inner.storage.latest_task_record(task_id)? else {
             return Ok(());
@@ -248,7 +248,7 @@ impl RuntimeHandle {
                 MessageOrigin::Task {
                     task_id: task_id.to_string(),
                 },
-                trust.clone(),
+                authority_class.clone(),
                 Priority::Background,
                 MessageBody::Text {
                     text: format!("worktree child agent task started: {task_summary}"),
@@ -266,13 +266,13 @@ impl RuntimeHandle {
         &self,
         agent_id: &str,
         prompt: &str,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
         execution: &crate::system::EffectiveExecution,
         prompt_metadata: serde_json::Value,
         assistant_metadata: Option<serde_json::Value>,
     ) -> Result<String> {
         let effective_prompt = self
-            .build_subagent_prompt_for_workspace(agent_id, prompt, trust, execution)
+            .build_subagent_prompt_for_workspace(agent_id, prompt, authority_class, execution)
             .await?;
         self.inner
             .storage

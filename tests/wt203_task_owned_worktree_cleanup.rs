@@ -9,7 +9,7 @@ use holon::{
     host::RuntimeHost,
     provider::{AgentProvider, ModelBlock, ProviderTurnRequest, ProviderTurnResponse},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
-    types::{TaskStatus, TrustLevel},
+    types::{AuthorityClass, TaskStatus},
 };
 use tempfile::tempdir;
 use tokio::time::{sleep, Duration};
@@ -216,7 +216,7 @@ async fn wt203_task_owned_cleanup_removes_clean_terminal_worktree_and_branch() -
         .schedule_child_agent_task(
             "Create a clean task-owned worktree".into(),
             "Return without changing files".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -254,7 +254,7 @@ async fn wt203_task_owned_cleanup_treats_already_removed_worktree_as_completed()
         .schedule_child_agent_task(
             "Create a manually removed worktree".into(),
             "Return after the worktree is removed externally".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -303,7 +303,7 @@ async fn wt203_task_owned_cleanup_records_branch_mismatch_without_blocking() -> 
         .schedule_child_agent_task(
             "Create a mismatched worktree".into(),
             "Return after branch metadata is made stale".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -349,14 +349,14 @@ async fn wt203_task_stop_cleans_clean_task_owned_worktree() -> Result<()> {
         .schedule_child_agent_task(
             "Create a stopped worktree".into(),
             "Keep running until stopped".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
     let expected_worktree = wait_for_worktree(&runtime, &workspace, &task.id).await?;
 
     let stopped = runtime
-        .stop_task(&task.id, &TrustLevel::TrustedOperator)
+        .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
     assert_eq!(stopped.status, TaskStatus::Cancelled);
     assert!(!expected_worktree.exists());

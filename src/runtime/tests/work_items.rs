@@ -348,7 +348,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "active".into(),
                 name: "ListWorkItems".into(),
@@ -413,7 +413,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "active-wait".into(),
                 name: "ListWorkItems".into(),
@@ -435,7 +435,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "agent-get".into(),
                 name: "AgentGet".into(),
@@ -453,7 +453,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "list".into(),
                 name: "ListWorkItems".into(),
@@ -479,7 +479,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "completed".into(),
                 name: "GetWorkItem".into(),
@@ -519,7 +519,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "fallback-active".into(),
                 name: "ListWorkItems".into(),
@@ -582,7 +582,7 @@ async fn work_item_query_tools_fall_back_to_delivery_summary_report() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "completed".into(),
                 name: "GetWorkItem".into(),
@@ -760,7 +760,7 @@ async fn work_item_query_tools_return_readiness_views() {
                 .execute(
                     runtime,
                     "default",
-                    &TrustLevel::TrustedOperator,
+                    &AuthorityClass::OperatorInstruction,
                     &crate::tool::ToolCall {
                         id: format!("list-{filter}"),
                         name: "ListWorkItems".into(),
@@ -842,7 +842,7 @@ async fn work_item_tools_use_objective_plan_and_todo_list_shape() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "create".into(),
                 name: "CreateWorkItem".into(),
@@ -908,7 +908,7 @@ async fn work_item_tools_use_objective_plan_and_todo_list_shape() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "get".into(),
                 name: "GetWorkItem".into(),
@@ -937,7 +937,7 @@ async fn work_item_tools_use_objective_plan_and_todo_list_shape() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "update".into(),
                 name: "UpdateWorkItem".into(),
@@ -986,7 +986,7 @@ async fn work_item_plan_artifact_refreshes_after_direct_file_edit() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "first".into(),
                 name: "GetWorkItem".into(),
@@ -1012,7 +1012,7 @@ async fn work_item_plan_artifact_refreshes_after_direct_file_edit() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "second".into(),
                 name: "GetWorkItem".into(),
@@ -1244,7 +1244,7 @@ async fn work_item_read_tools_reject_legacy_include_plan_argument() {
             .execute(
                 &runtime,
                 "default",
-                &TrustLevel::TrustedOperator,
+                &AuthorityClass::OperatorInstruction,
                 &crate::tool::ToolCall {
                     id: format!("{tool_name}-legacy-include-plan"),
                     name: tool_name.into(),
@@ -1289,7 +1289,7 @@ async fn update_work_item_can_refine_objective() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "refine-target".into(),
                 name: "UpdateWorkItem".into(),
@@ -1427,7 +1427,7 @@ async fn update_work_item_can_refine_objective_and_todo_list_together() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "refine-target-and-plan".into(),
                 name: "UpdateWorkItem".into(),
@@ -1482,7 +1482,7 @@ async fn update_work_item_rejects_empty_objective() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "empty-target".into(),
                 name: "UpdateWorkItem".into(),
@@ -1519,7 +1519,7 @@ async fn update_work_item_old_plan_shape_returns_state_example_hint() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "bad-update".into(),
                 name: "UpdateWorkItem".into(),
@@ -1569,7 +1569,7 @@ async fn update_work_item_missing_id_returns_top_level_field_hint() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "missing-id".into(),
                 name: "UpdateWorkItem".into(),
@@ -1691,7 +1691,7 @@ async fn interactive_tool_execution_binds_current_turn_work_item() {
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "run one verification command".into(),
@@ -1760,7 +1760,7 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "finish the tracked work".into(),
@@ -1868,7 +1868,7 @@ async fn complete_work_item_without_same_round_report_warns_without_summary() {
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "finish the tracked work".into(),
@@ -1968,7 +1968,7 @@ async fn repeated_complete_work_item_does_not_overwrite_existing_report() {
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "repeat completion".into(),
@@ -2062,7 +2062,7 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "complete".into(),
                 name: "CompleteWorkItem".into(),
@@ -2115,7 +2115,7 @@ async fn runtime_sleeps_after_processing() {
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "hello".into(),
@@ -2498,7 +2498,7 @@ async fn agent_scoped_external_trigger_survives_missing_work_item_cleanup() {
         MessageOrigin::System {
             subsystem: "test".into(),
         },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "tick".into(),
@@ -3203,7 +3203,7 @@ async fn reconcile_waiting_contract_preserves_agent_callback_after_active_work_s
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "switch to the new target".into(),
@@ -3282,7 +3282,7 @@ async fn reconcile_waiting_contract_keeps_agent_scoped_waits_after_active_work_s
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "switch to the new target".into(),
@@ -3428,7 +3428,7 @@ async fn reconcile_waiting_contract_preserves_agent_callback_when_only_waiting_a
         MessageOrigin::System {
             subsystem: "test".into(),
         },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "tick".into(),
@@ -3493,7 +3493,7 @@ async fn reconcile_waiting_contract_keeps_waits_when_anchor_is_newly_established
         MessageOrigin::System {
             subsystem: "test".into(),
         },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "tick".into(),
@@ -3770,7 +3770,7 @@ async fn queued_notification_keeps_working_memory_unfocused_before_pick() {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "wrap up current work".into(),
@@ -3891,7 +3891,7 @@ async fn update_tool_result_reports_released_blocked_focus() {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "block".into(),
                 name: "UpdateWorkItem".into(),

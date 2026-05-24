@@ -7,7 +7,7 @@ use crate::{
     runtime::{RuntimeHandle, WorkItemFocusTransition},
     tool::helpers::{normalize_optional_non_empty, parse_tool_args, validate_non_empty},
     tool::spec::typed_spec,
-    types::{ToolCapabilityFamily, TrustLevel, WorkItemRecord},
+    types::{AuthorityClass, ToolCapabilityFamily, WorkItemRecord},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -45,7 +45,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    _trust: &TrustLevel,
+    _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: PickWorkItemArgs = parse_tool_args(NAME, input)?;

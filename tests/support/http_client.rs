@@ -27,7 +27,7 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
-        MessageKind, MessageOrigin, OperatorDeliveryStatus, TodoItem, TodoItemState, TrustLevel,
+        MessageKind, MessageOrigin, OperatorDeliveryStatus, TodoItem, TodoItemState,
         WaitingIntentStatus, WorkItemState,
     },
 };
@@ -500,8 +500,8 @@ pub async fn local_client_over_http_can_stream_events_with_cursor_query() -> Res
             .data
             .provenance
             .as_ref()
-            .and_then(|provenance| provenance.get("trust"))
-            .and_then(|trust| trust.as_str()),
+            .and_then(|provenance| provenance.get("authority_class"))
+            .and_then(|authority_class| authority_class.as_str()),
         Some("trusted_operator")
     );
 

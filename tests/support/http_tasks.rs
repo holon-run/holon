@@ -23,7 +23,7 @@ use holon::{
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
         OperatorDeliveryStatus, TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState,
-        TrustLevel, WaitingIntentStatus, WorkItemState,
+        WaitingIntentStatus, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -119,7 +119,7 @@ pub async fn create_command_task_route_no_longer_denies_integration_trust() -> R
         .json(&serde_json::json!({
             "summary": "integration can create task",
             "cmd": "printf trusted_integration_ok",
-            "trust": "trusted_integration"
+            "authority_class": "trusted_integration"
         }))
         .send()
         .await?;

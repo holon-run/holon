@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::{
     runtime::RuntimeHandle,
     tool::{spec::typed_spec, ToolResult},
-    types::{ToolCapabilityFamily, TrustLevel},
+    types::{AuthorityClass, ToolCapabilityFamily},
 };
 
 use super::BuiltinToolDefinition;
@@ -36,7 +36,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     _runtime: &RuntimeHandle,
     _agent_id: &str,
-    _trust: &TrustLevel,
+    _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<ToolResult> {
     let args = parse_sleep_args(input)?;

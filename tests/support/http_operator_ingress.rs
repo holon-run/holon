@@ -23,7 +23,7 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, Priority, TodoItem, TodoItemState, TrustLevel, WaitingIntentStatus,
+        OperatorDeliveryStatus, Priority, TodoItem, TodoItemState, WaitingIntentStatus,
         WorkItemState,
     },
 };
@@ -104,7 +104,7 @@ pub async fn operator_ingress_records_remote_operator_provenance() -> Result<()>
             actor_id: Some("operator:jolestar".into())
         }
     );
-    assert_eq!(message.trust, TrustLevel::TrustedOperator);
+    assert_eq!(message.authority_class, AuthorityClass::OperatorInstruction);
     assert_eq!(message.authority_class, AuthorityClass::OperatorInstruction);
     assert_eq!(
         message.delivery_surface,

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    AdmissionContext, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
-    MessageOrigin, Priority, TrustLevel,
+    AdmissionContext, AuthorityClass, MessageBody, MessageDeliverySurface, MessageEnvelope,
+    MessageKind, MessageOrigin, Priority,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -11,7 +11,7 @@ pub struct InboundRequest {
     pub kind: MessageKind,
     pub priority: Priority,
     pub origin: MessageOrigin,
-    pub trust: TrustLevel,
+    pub authority_class: AuthorityClass,
     pub body: MessageBody,
     pub delivery_surface: MessageDeliverySurface,
     pub admission_context: AdmissionContext,
@@ -26,7 +26,7 @@ impl InboundRequest {
             self.agent_id,
             self.kind,
             self.origin,
-            self.trust,
+            self.authority_class,
             self.priority,
             self.body,
         )

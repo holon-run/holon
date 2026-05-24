@@ -27,14 +27,14 @@ use holon::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{ToolCall, ToolError, ToolRegistry, ToolResult},
     types::{
-        AgentKind, AgentProfilePreset, AgentStatus, BriefKind, CallbackDeliveryMode,
-        ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction, ExternalTriggerStatus,
-        FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
-        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, QueueEntryStatus, TaskStatus, TodoItem,
-        TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingReason,
-        WorkItemState,
+        AgentKind, AgentProfilePreset, AgentStatus, AuthorityClass, BriefKind,
+        CallbackDeliveryMode, ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction,
+        ExternalTriggerStatus, FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind,
+        MessageOrigin, OperatorNotificationBoundary, OperatorTransportBinding,
+        OperatorTransportBindingStatus, OperatorTransportCapabilities,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority,
+        QueueEntryStatus, TaskStatus, TodoItem, TodoItemState, TokenUsage, TranscriptEntry,
+        TranscriptEntryKind, WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -74,7 +74,7 @@ pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> R
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "exercise the turn boundary".into(),
@@ -145,7 +145,7 @@ pub async fn message_processing_creates_briefs_and_sleeps() -> Result<()> {
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "hello".into(),
@@ -177,7 +177,7 @@ pub async fn terminal_brief_uses_last_assistant_message_without_terminal_deliver
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "write and verify a file".into(),
@@ -251,7 +251,7 @@ pub async fn sleep_only_completion_keeps_last_assistant_message_from_previous_ro
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "write a file and then sleep".into(),
@@ -423,7 +423,7 @@ pub async fn wake_hint_coalesces_while_running_and_reenters_once() -> Result<()>
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "do the first turn".into(),
@@ -537,7 +537,7 @@ pub async fn multi_session_state_is_isolated() -> Result<()> {
         "alpha",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "alpha".into(),
@@ -548,7 +548,7 @@ pub async fn multi_session_state_is_isolated() -> Result<()> {
         "beta",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "beta".into(),
@@ -592,7 +592,7 @@ pub async fn notify_operator_records_default_public_and_private_child_targets() 
     let spawned = default_runtime
         .spawn_agent(
             Some("child prompt".into()),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             AgentProfilePreset::PrivateChild,
             None,
             false,
@@ -638,7 +638,10 @@ pub async fn notify_operator_is_not_agent_facing_for_normal_profiles() -> Result
     let registry = ToolRegistry::new(runtime.workspace_root());
 
     let prompt = runtime
-        .preview_prompt("check tool visibility".into(), TrustLevel::TrustedOperator)
+        .preview_prompt(
+            "check tool visibility".into(),
+            AuthorityClass::OperatorInstruction,
+        )
         .await?;
     assert!(!prompt.rendered_system_prompt.contains("NotifyOperator"));
 
@@ -646,7 +649,7 @@ pub async fn notify_operator_is_not_agent_facing_for_normal_profiles() -> Result
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "notify-rejected".into(),
                 name: "NotifyOperator".into(),
@@ -690,7 +693,7 @@ pub async fn notify_operator_prefers_reply_route_for_delivery() -> Result<()> {
             MessageOrigin::Operator {
                 actor_id: Some("operator:jolestar".into()),
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "route preference check".into(),
@@ -754,7 +757,7 @@ pub async fn notify_operator_ignores_reply_route_when_binding_no_longer_matches(
             MessageOrigin::Operator {
                 actor_id: Some("operator:jolestar".into()),
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "route mismatch fallback check".into(),
@@ -818,7 +821,7 @@ pub async fn notify_operator_falls_back_to_default_route_without_reply_route() -
             MessageOrigin::Operator {
                 actor_id: Some("operator:jolestar".into()),
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "default route fallback check".into(),
@@ -861,7 +864,7 @@ pub async fn agent_summary_last_turn_token_usage_survives_transcript_windowing()
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "inspect session state".into(),
@@ -909,7 +912,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-create-external-trigger-rejected".into(),
                 name: "CreateExternalTrigger".into(),
@@ -954,7 +957,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-get-state".into(),
                 name: "AgentGet".into(),
@@ -973,7 +976,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-cancel-external-trigger-rejected".into(),
                 name: "CancelExternalTrigger".into(),
@@ -1049,7 +1052,7 @@ pub async fn sleep_only_completion_preserves_brief_after_max_output_recovery() -
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Generate a comprehensive technical report covering multiple domains. \

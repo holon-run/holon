@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::{
     runtime::RuntimeHandle,
     tool::{apply_patch::ApplyPatchSurface, ToolCall, ToolResult, ToolSpec},
-    types::{ToolCapabilityFamily, TrustLevel},
+    types::{AuthorityClass, ToolCapabilityFamily},
 };
 
 pub(crate) mod agent_get;
@@ -89,56 +89,84 @@ pub(crate) fn builtin_tool_definitions_for_apply_patch_surface(
 pub(crate) async fn execute_builtin_tool(
     runtime: &RuntimeHandle,
     agent_id: &str,
-    trust: &TrustLevel,
+    authority_class: &AuthorityClass,
     call: &ToolCall,
 ) -> Result<ToolResult> {
     match call.name.as_str() {
-        sleep::NAME => sleep::execute(runtime, agent_id, trust, &call.input).await,
-        agent_get::NAME => agent_get::execute(runtime, agent_id, trust, &call.input).await,
-        notify_operator::NAME => {
-            notify_operator::execute(runtime, agent_id, trust, &call.input).await
+        sleep::NAME => sleep::execute(runtime, agent_id, authority_class, &call.input).await,
+        agent_get::NAME => {
+            agent_get::execute(runtime, agent_id, authority_class, &call.input).await
         }
-        enqueue::NAME => enqueue::execute(runtime, agent_id, trust, &call.input).await,
-        spawn_agent::NAME => spawn_agent::execute(runtime, agent_id, trust, &call.input).await,
-        task_list::NAME => task_list::execute(runtime, agent_id, trust, &call.input).await,
-        task_status::NAME => task_status::execute(runtime, agent_id, trust, &call.input).await,
-        task_input::NAME => task_input::execute(runtime, agent_id, trust, &call.input).await,
-        task_output::NAME => task_output::execute(runtime, agent_id, trust, &call.input).await,
-        task_stop::NAME => task_stop::execute(runtime, agent_id, trust, &call.input).await,
+        notify_operator::NAME => {
+            notify_operator::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        enqueue::NAME => enqueue::execute(runtime, agent_id, authority_class, &call.input).await,
+        spawn_agent::NAME => {
+            spawn_agent::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        task_list::NAME => {
+            task_list::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        task_status::NAME => {
+            task_status::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        task_input::NAME => {
+            task_input::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        task_output::NAME => {
+            task_output::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        task_stop::NAME => {
+            task_stop::execute(runtime, agent_id, authority_class, &call.input).await
+        }
         create_work_item::NAME => {
-            create_work_item::execute(runtime, agent_id, trust, &call.input).await
+            create_work_item::execute(runtime, agent_id, authority_class, &call.input).await
         }
         pick_work_item::NAME => {
-            pick_work_item::execute(runtime, agent_id, trust, &call.input).await
+            pick_work_item::execute(runtime, agent_id, authority_class, &call.input).await
         }
-        get_work_item::NAME => get_work_item::execute(runtime, agent_id, trust, &call.input).await,
+        get_work_item::NAME => {
+            get_work_item::execute(runtime, agent_id, authority_class, &call.input).await
+        }
         list_work_items::NAME => {
-            list_work_items::execute(runtime, agent_id, trust, &call.input).await
+            list_work_items::execute(runtime, agent_id, authority_class, &call.input).await
         }
         update_work_item::NAME => {
-            update_work_item::execute(runtime, agent_id, trust, &call.input).await
+            update_work_item::execute(runtime, agent_id, authority_class, &call.input).await
         }
         complete_work_item::NAME => {
-            complete_work_item::execute(runtime, agent_id, trust, &call.input).await
+            complete_work_item::execute(runtime, agent_id, authority_class, &call.input).await
         }
-        memory_search::NAME => memory_search::execute(runtime, agent_id, trust, &call.input).await,
-        memory_get::NAME => memory_get::execute(runtime, agent_id, trust, &call.input).await,
+        memory_search::NAME => {
+            memory_search::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        memory_get::NAME => {
+            memory_get::execute(runtime, agent_id, authority_class, &call.input).await
+        }
         create_external_trigger::NAME => {
-            create_external_trigger::execute(runtime, agent_id, trust, &call.input).await
+            create_external_trigger::execute(runtime, agent_id, authority_class, &call.input).await
         }
         cancel_external_trigger::NAME => {
-            cancel_external_trigger::execute(runtime, agent_id, trust, &call.input).await
+            cancel_external_trigger::execute(runtime, agent_id, authority_class, &call.input).await
         }
         apply_patch_tool::NAME => {
-            apply_patch_tool::execute(runtime, agent_id, trust, &call.input).await
+            apply_patch_tool::execute(runtime, agent_id, authority_class, &call.input).await
         }
-        exec_command::NAME => exec_command::execute(runtime, agent_id, trust, &call.input).await,
+        exec_command::NAME => {
+            exec_command::execute(runtime, agent_id, authority_class, &call.input).await
+        }
         exec_command_batch::NAME => {
-            exec_command_batch::execute(runtime, agent_id, trust, &call.input).await
+            exec_command_batch::execute(runtime, agent_id, authority_class, &call.input).await
         }
-        use_workspace::NAME => use_workspace::execute(runtime, agent_id, trust, &call.input).await,
-        web_fetch::NAME => web_fetch::execute(runtime, agent_id, trust, &call.input).await,
-        web_search::NAME => web_search::execute(runtime, agent_id, trust, &call.input).await,
+        use_workspace::NAME => {
+            use_workspace::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        web_fetch::NAME => {
+            web_fetch::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        web_search::NAME => {
+            web_search::execute(runtime, agent_id, authority_class, &call.input).await
+        }
         _ => Err(anyhow!("unknown builtin tool {}", call.name)),
     }
 }

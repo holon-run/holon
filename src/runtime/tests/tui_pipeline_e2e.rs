@@ -12,10 +12,10 @@ use crate::{
     types::{
         AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
         AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus,
-        AgentSummary, AgentTokenUsageSummary, AgentVisibility, ChildAgentSummary, ClosureDecision,
-        ClosureOutcome, ExternalTriggerSummary, LoadedAgentsMdView, OperatorNotificationRecord,
-        RuntimePosture, SkillsRuntimeView, TokenUsage, TrustLevel, TurnTerminalKind,
-        WaitingIntentSummary, WorkspaceOccupancyRecord,
+        AgentSummary, AgentTokenUsageSummary, AgentVisibility, AuthorityClass, ChildAgentSummary,
+        ClosureDecision, ClosureOutcome, ExternalTriggerSummary, LoadedAgentsMdView,
+        OperatorNotificationRecord, RuntimePosture, SkillsRuntimeView, TokenUsage,
+        TurnTerminalKind, WaitingIntentSummary, WorkspaceOccupancyRecord,
     },
 };
 use serde_json::json;
@@ -174,7 +174,7 @@ async fn e2e_tui_pipeline_smoke_scripted_agent() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: Some(2),
@@ -343,7 +343,7 @@ async fn e2e_tui_complex_turn_multi_operation() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: Some(4),
@@ -510,7 +510,7 @@ async fn e2e_tui_concurrent_agents_attribution() {
     let outcome_a = runtime_a
         .run_agent_loop(
             "agent-a",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: Some(2),
@@ -546,7 +546,7 @@ async fn e2e_tui_concurrent_agents_attribution() {
     let outcome_b = runtime_b
         .run_agent_loop(
             "agent-b",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: Some(2),

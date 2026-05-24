@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::{
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{TaskStatus, TaskStopResult, ToolCapabilityFamily, TrustLevel},
+    types::{AuthorityClass, TaskStatus, TaskStopResult, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -33,12 +33,15 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    trust: &TrustLevel,
+    authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: TaskStopArgs = parse_tool_args(NAME, input)?;
     let task_id = validate_non_empty(args.task_id, NAME, "task_id")?;
-    let task = runtime.managed_tasks().stop_task(&task_id, trust).await?;
+    let task = runtime
+        .managed_tasks()
+        .stop_task(&task_id, authority_class)
+        .await?;
     let force_stop_requested = task
         .detail
         .as_ref()

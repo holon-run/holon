@@ -1,4 +1,4 @@
-use crate::types::{MessageKind, MessageOrigin, TrustLevel};
+use crate::types::{AuthorityClass, MessageKind, MessageOrigin};
 
 #[derive(Debug, Clone)]
 pub struct PolicyDecision {
@@ -56,15 +56,15 @@ pub fn validate_message_kind_for_origin(
     }
 }
 
-pub fn default_trust_for_origin(origin: &MessageOrigin) -> TrustLevel {
+pub fn default_authority_for_origin(origin: &MessageOrigin) -> AuthorityClass {
     match origin {
-        MessageOrigin::Operator { .. } => TrustLevel::TrustedOperator,
+        MessageOrigin::Operator { .. } => AuthorityClass::OperatorInstruction,
         MessageOrigin::System { .. } | MessageOrigin::Task { .. } | MessageOrigin::Timer { .. } => {
-            TrustLevel::TrustedSystem
+            AuthorityClass::RuntimeInstruction
         }
-        MessageOrigin::Webhook { .. } => TrustLevel::TrustedIntegration,
-        MessageOrigin::Callback { .. } => TrustLevel::TrustedIntegration,
-        MessageOrigin::Channel { .. } => TrustLevel::UntrustedExternal,
+        MessageOrigin::Webhook { .. } => AuthorityClass::IntegrationSignal,
+        MessageOrigin::Callback { .. } => AuthorityClass::IntegrationSignal,
+        MessageOrigin::Channel { .. } => AuthorityClass::ExternalEvidence,
     }
 }
 

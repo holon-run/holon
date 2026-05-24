@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::{
     config::AppConfig,
     run_once::{run_once, RunFinalStatus, RunOnceRequest, RunOnceResponse},
-    types::TrustLevel,
+    types::AuthorityClass,
 };
 
 pub const DEFAULT_SOLVE_AGENT_ID: &str = "github-solve";
@@ -25,7 +25,7 @@ pub struct SolveRequest {
     pub agent_id: Option<String>,
     pub template: Option<String>,
     pub max_turns: Option<u64>,
-    pub trust: TrustLevel,
+    pub authority_class: AuthorityClass,
     pub json: bool,
     pub workspace_root: Option<PathBuf>,
     pub cwd: Option<PathBuf>,
@@ -80,7 +80,7 @@ pub async fn run_solve(config: AppConfig, request: SolveRequest) -> Result<RunOn
 
     let run_request = RunOnceRequest {
         text: prompt,
-        trust: request.trust.clone(),
+        authority_class: request.authority_class.clone(),
         agent_id: Some(agent_id.clone()),
         create_agent: true,
         template: Some(template),
@@ -412,7 +412,7 @@ mod tests {
             agent_id: None,
             template: None,
             max_turns: Some(1),
-            trust: TrustLevel::TrustedOperator,
+            authority_class: AuthorityClass::OperatorInstruction,
             json: true,
             workspace_root: None,
             cwd: None,
