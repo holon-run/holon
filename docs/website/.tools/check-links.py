@@ -87,10 +87,21 @@ def check_trailing_slashes():
                         url = m.group(2)
                         clean = url.split('#')[0].split('?')[0]
                         if clean.endswith('/') and clean not in dir_pages:
+                            # Compute suggestion: strip trailing slash from the
+                            # path portion, then reattach query and fragment.
+                            query = url.split('?')[1].split('#')[0] if '?' in url else ''
+                            fragment = url.split('#')[1] if '#' in url else ''
+                            if '?' in fragment:
+                                fragment = fragment.split('?')[0]
+                            suggested = clean.rstrip('/')
+                            if query:
+                                suggested += '?' + query
+                            if fragment:
+                                suggested += '#' + fragment
                             rel = os.path.relpath(fpath, REPO_ROOT)
                             print(
-                                f"  TRAILING-SLASH: {rel}:{i}: {m.group(2)} "
-                                f"(should be {m.group(2).rstrip('/')})"
+                                f"  TRAILING-SLASH: {rel}:{i}: {url} "
+                                f"(should be {suggested})"
                             )
                             broken += 1
 
@@ -107,8 +118,18 @@ def check_nav_config():
     for nav in config.get('topNav', []):
         href = nav['href']
         clean = href.split('#')[0].split('?')[0]
+        # Skip external links
+        if href.startswith('http'):
+            continue
+        # Accept directory-backed routes
         if clean in dir_pages:
             continue
+        # Accept file-backed routes (non-trailing-slash .md files)
+        if not clean.endswith('/'):
+            file_path = os.path.join(
+                WEBSITE_DIR, clean.lstrip('/') + '.md')
+            if os.path.exists(file_path):
+                continue
         print(f"  BROKEN-NAV: {href} ({nav['label']})")
         broken += 1
 
