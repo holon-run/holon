@@ -13,6 +13,7 @@ macro_rules! http_async_tests {
 
 http_async_tests!(
     agent_list_entries_are_slim_for_tui_bootstrap,
+    http_success_response_shapes_follow_route_class_policy,
     agent_list_entries_tolerate_unloaded_agent_with_corrupt_work_queue,
     json_responses_support_gzip_without_compressing_sse,
     local_client_over_http_can_read_agent_state_snapshot,

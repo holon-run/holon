@@ -12,7 +12,7 @@ recording the route list, request parameters, response shapes, and contract
 gaps that need stabilization before scripts and integrations can rely on the
 API long term.
 
-- **Last reviewed against:** `holon` v0.14.1, `main` at `1aa5050`.
+- **Last reviewed against:** `holon` v0.14.1, `main` at `e544c35`.
 - **Primary source:** `src/http.rs` Axum router and request/response structs.
 - **Generated schema:** [`openapi.json`](./openapi.json), produced by
   `holon::openapi::generate_openapi_json()` and checked by
@@ -46,14 +46,30 @@ API long term.
 | Local mode | When no control token is required, the server trusts the local process boundary. | Candidate stable, but should be tied to explicit deployment guidance |
 | Callback capability tokens | `/callbacks/*/:callback_token` routes authenticate by resolving the token to an external trigger record. | Capability |
 
-### Common JSON and error behavior
+### Common JSON and response behavior
 
-Most successful responses are JSON. There is no single success envelope:
+Most successful responses are JSON, but Holon does not use one global success
+envelope. The stable policy is route-class based:
 
-- Some routes return `{ "ok": true, ... }`.
-- Read routes often return records or arrays directly.
+| Route class | Success policy | Rationale |
+|-------------|----------------|-----------|
+| Discovery | Envelope responses include `ok: true` plus discovery fields, except catalog-style discovery routes such as `/models` that intentionally return a direct record. | Small discovery handshakes benefit from an explicit liveness marker; catalog records should remain directly consumable. |
+| Read model | Direct records or arrays, without a synthetic `ok` field. | Read routes expose existing runtime records and lists; adding wrapper envelopes would make CLI/TUI consumers unwrap data without adding state-transition information. |
+| Control mutations | Envelope responses include `ok: true` plus mutation outcome fields, unless the endpoint creates and returns a first-class record. | Mutation callers need a clear admission/side-effect acknowledgement; record-creation routes can use the created record as the acknowledgement. |
+| Streams | Server-Sent Events frames with JSON event data; no JSON success envelope after the stream opens. | The successful response is the stream itself. Cursor and event-envelope details are covered by the event/SSE contract. |
+| Capability callbacks | Envelope responses include `ok: true` plus callback delivery result fields. | Callback callers need a compact acknowledgement while preserving the capability-specific delivery result. |
+
+Representative current examples:
+
+- `/` and `/handshake` return `{ "ok": true, ... }`.
 - `/models` returns `{ "available_models": ..., "model_availability": ... }`
   without an `ok` field.
+- `/agents/list`, `/agents/:id/status`, `/agents/:id/state`,
+  `/agents/:id/tasks`, and similar read routes return direct records or arrays.
+- `/control/agents/:id/prompt`, `/control/agents/:id/wake`, and
+  workspace/model mutation routes return `{ "ok": true, ... }`.
+- `/control/agents/:id/tasks`, `/control/agents/:id/work-items`, and
+  `/control/agents/:id/timers` return the created record directly.
 - `/agents/:id/events/stream` returns Server-Sent Events rather than a JSON
   response body after the stream opens.
 
@@ -305,27 +321,21 @@ treated as schema surfaces, not incidental Rust structs:
 1. **No generated route/schema inventory.** The current route list is hand
    extracted from `src/http.rs`. Add a test or generator that snapshots method,
    path, handler, request type, query type, and response contract.
-2. **No shared success envelope.** Some routes return `{ ok, ... }`; others
-   return arrays or records directly. Decide whether this is intentional per
-   route class or should be normalized.
-3. **Error schema is implicit.** Errors generally return `{ ok: false, error }`,
-   but `code`, `hint`, and cursor fields are ad hoc. Define the stable error
-   envelope and status-code mapping.
-4. **Event projection is not yet a redaction contract.** `operator` and
+2. **Event projection is not yet a redaction contract.** `operator` and
    `local_debug` currently both include raw payloads. This should be fixed or
    explicitly documented before event streams become stable.
-5. **Task lifecycle APIs are incomplete.** HTTP can create and list tasks, but
+3. **Task lifecycle APIs are incomplete.** HTTP can create and list tasks, but
    lacks task status/output/input/stop routes that correspond to runtime tool
    operations.
-6. **WorkItem APIs are incomplete.** HTTP can create/enqueue work items and
+4. **WorkItem APIs are incomplete.** HTTP can create/enqueue work items and
    include them in state snapshots, but lacks list/get/update/pick/complete
    routes.
-7. **Timer lifecycle APIs are incomplete.** HTTP can create and list timers, but
+5. **Timer lifecycle APIs are incomplete.** HTTP can create and list timers, but
    lacks cancellation or detail routes.
-8. **Security posture for public ingress needs clearer boundaries.** Public
+6. **Security posture for public ingress needs clearer boundaries.** Public
    enqueue, generic webhooks, operator bindings, and capability callbacks should
    have a single trust/auth table with explicit deployment guidance.
-9. **Tool schema is a separate API surface.** Built-in tool input/result schemas
+7. **Tool schema is a separate API surface.** Built-in tool input/result schemas
    are not covered by this HTTP inventory and need their own stability
    inventory.
 

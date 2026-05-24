@@ -26,9 +26,9 @@ use holon::{
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
-        ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TodoItem, TodoItemState, TrustLevel, WaitingIntentStatus,
-        WorkItemState,
+        ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
+        MessageKind, MessageOrigin, OperatorDeliveryStatus, TodoItem, TodoItemState, TrustLevel,
+        WaitingIntentStatus, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -42,7 +42,7 @@ use tokio::{
 };
 
 use super::{
-    attach_default_workspace, connect_addr, git, init_git_repo, parse_sse_frame,
+    attach_default_workspace, callback_path, connect_addr, git, init_git_repo, parse_sse_frame,
     read_next_sse_event, spawn_server, spawn_server_for_host, spawn_server_with_config,
     spawn_server_with_runtime_config, spawn_unix_server, tempdir, test_config,
     test_config_with_paths, wait_until, ParsedSseEvent,
@@ -71,6 +71,98 @@ pub async fn local_client_over_unix_socket_can_poll_without_http_fallback() -> R
 
     let status = client.agent_status("default").await?;
     assert_eq!(status.identity.agent_id, "default");
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn http_success_response_shapes_follow_route_class_policy() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    let root: serde_json::Value = client.get(format!("{base}/")).send().await?.json().await?;
+    assert_eq!(root["ok"], true, "discovery root should use ok envelope");
+    assert_eq!(root["default_agent"], "default");
+
+    let models: serde_json::Value = client
+        .get(format!("{base}/models"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(
+        models.get("ok").is_none(),
+        "/models should remain a direct catalog record"
+    );
+    assert!(models["available_models"].is_array());
+
+    let agents: serde_json::Value = client
+        .get(format!("{base}/agents/list"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(
+        agents.as_array().is_some(),
+        "read-model list routes should return direct arrays"
+    );
+
+    let prompt: serde_json::Value = client
+        .post(format!("{base}/control/agents/default/prompt"))
+        .json(&serde_json::json!({ "text": "success shape policy" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(
+        prompt["ok"], true,
+        "control mutations should use ok envelope"
+    );
+    assert_eq!(prompt["agent_id"], "default");
+    assert!(prompt["message_id"].is_string());
+
+    let capability = runtime
+        .create_external_trigger(
+            "success shape callback".into(),
+            "github".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await?;
+    let callback: serde_json::Value = client
+        .post(format!(
+            "{}{}",
+            base,
+            callback_path(&capability.trigger_url)
+        ))
+        .json(&serde_json::json!({ "event": "success_shape" }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(
+        callback["ok"], true,
+        "capability callbacks should use ok envelope"
+    );
+    assert_eq!(callback["delivery_mode"], "wake_hint");
+
+    let stream_response = client
+        .get(format!("{base}/agents/default/events/stream"))
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .send()
+        .await?;
+    assert_eq!(stream_response.status(), reqwest::StatusCode::OK);
+    assert!(
+        stream_response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/event-stream")),
+        "stream route success should be SSE, not a JSON envelope"
+    );
 
     server.abort();
     Ok(())
