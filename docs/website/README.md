@@ -69,10 +69,10 @@ contribute, see [Getting started](/getting-started/). Next, follow the
 
 - **I want to install and run Holon** → [Getting started](/getting-started/)
 - **I want to understand the concepts** → [Concepts](/concepts/), especially
-  [runtime model](/concepts/runtime-model/) and
-  [documentation layers](/concepts/documentation-layers/)
+  [runtime model](/concepts/runtime-model) and
+  [documentation layers](/concepts/documentation-layers)
 - **I want to find a command or config key** → [Reference](/reference/)
-- **I want to integrate Holon** → [Integration guide](/guides/integration/)
+- **I want to integrate Holon** → [Integration guide](/guides/integration)
 - **I want to contribute to the runtime** →
   [Architecture overview](https://github.com/holon-run/holon/blob/main/docs/architecture-overview.md)
   and [RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs)
@@ -82,7 +82,7 @@ contribute, see [Getting started](/getting-started/). Next, follow the
 - [Getting started](/getting-started/) — your first Holon agent run, from
   install to first interaction.
 - [Concepts](/concepts/) — the mental model: agents, work items, tasks, queues,
-- **[Security and execution boundaries](/concepts/security-and-execution-boundaries/)** — what Holon guards and what you must guard.
+- **[Security and execution boundaries](/concepts/security-and-execution-boundaries)** — what Holon guards and what you must guard.
   and trust boundaries.
 - [Guides](/guides/) — task-oriented workflows for operating, integrating, and
   extending Holon.
@@ -107,7 +107,7 @@ need to understand or change runtime behavior.
 This website is built from source Markdown with mdorigin. Every page is
 available as both rendered HTML and raw Markdown, and `Accept: text/markdown`
 requests return machine-readable content. See the
-[documentation workflow guide](/guides/documentation-workflow/) for build and
+[documentation workflow guide](/guides/documentation-workflow) for build and
 preview details.
 
 ## Markdown-native access
@@ -120,7 +120,7 @@ mdorigin keeps the site useful for both humans and agents:
 - Build commands can generate search data and Cloudflare Worker assets.
 
 Build commands are covered in the [documentation workflow
-guide](/guides/documentation-workflow/). The production `siteUrl` is
+guide](/guides/documentation-workflow). The production `siteUrl` is
 `https://holon.run`.
 
 <!-- INDEX:START -->

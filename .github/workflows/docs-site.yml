@@ -36,6 +36,9 @@ jobs:
       - name: Install dependencies
         run: npm ci --prefix .tools
 
+      - name: Check internal links
+        run: python3 .tools/check-links.py
+
       - name: Build directory indexes
         run: npm --prefix .tools run build:index
 
