@@ -21,6 +21,7 @@ fn isolated_holon_command() -> (Command, tempfile::TempDir) {
     let mut command = Command::new(holon_bin());
     command
         .env("HOLON_HOME", home.path())
+        .env("HOLON_MODEL", "openai/gpt-5.4")
         .env(
             "HOLON_SOCKET_PATH",
             home.path().join("run").join("missing.sock"),
