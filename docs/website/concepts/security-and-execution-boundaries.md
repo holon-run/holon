@@ -133,7 +133,7 @@ privileges unless you add OS-level confinement.
 
 ## See also
 
-- [Trust boundaries](/concepts/trust-boundaries/) — how trust classification works end-to-end
-- [Runtime model](/concepts/runtime-model/) — execution environment and workspace binding
-- [Integration guide](/guides/integration/) — HTTP control plane access
-- [Remote access](/guides/remote-access/) — serving Holon beyond localhost
+- [Trust boundaries](/concepts/trust-boundaries) — how trust classification works end-to-end
+- [Runtime model](/concepts/runtime-model) — execution environment and workspace binding
+- [Integration guide](/guides/integration) — HTTP control plane access
+- [Remote access](/guides/remote-access) — serving Holon beyond localhost

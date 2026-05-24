@@ -229,7 +229,7 @@ git push origin HEAD
 
 ## See also
 
-- [Holon CLI reference](/reference/cli/) — full command tree
-- [Configuration reference](/reference/configuration/) — model and provider setup
-- [Integration guide](/guides/integration/) — HTTP control plane access
-- [Multi-agent collaboration](/guides/multi-agent/) — spawning child agents
+- [Holon CLI reference](/reference/cli) — full command tree
+- [Configuration reference](/reference/configuration) — model and provider setup
+- [Integration guide](/guides/integration) — HTTP control plane access
+- [Multi-agent collaboration](/guides/multi-agent) — spawning child agents

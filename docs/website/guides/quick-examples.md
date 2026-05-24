@@ -128,7 +128,7 @@ holon tui --no-alt-screen
 
 In the TUI, type `/` to open the slash command menu. Use `/model` to
 switch models, `/agent` to manage agents, and `/help` to see all commands.
-See the [TUI guide](/guides/tui/) for the full slash command reference.
+See the [TUI guide](/guides/tui) for the full slash command reference.
 
 ## 6. Start the HTTP Server
 

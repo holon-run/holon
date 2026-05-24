@@ -150,5 +150,5 @@ The daemon must be started with an access mode that accepts remote connections
 
 ## Troubleshooting
 
-See the [Troubleshooting guide](/guides/troubleshooting/#tui-issues) for common
+See the [Troubleshooting guide](/guides/troubleshooting#tui-issues) for common
 TUI issues including garbled display and daemon connection problems.

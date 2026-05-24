@@ -169,5 +169,5 @@ Templates and skills serve different purposes:
 | Example | "You are a reviewer" | "Here's how to review a PR" |
 
 Templates often include skill references so that new agents have the right
-tools available from the start. See the [Skills guide](/guides/skills/) for
+tools available from the start. See the [Skills guide](/guides/skills) for
 details on skills.

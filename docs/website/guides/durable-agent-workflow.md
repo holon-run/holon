@@ -181,8 +181,8 @@ For quick one-shot tasks that don't need durability, use `holon run` instead.
 
 ## See also
 
-- [Work items guide](/guides/work-items/) — WorkItem lifecycle and best practices
-- [Multi-agent collaboration](/guides/multi-agent/) — delegate work to child agents
-- [CLI reference](/reference/cli/) — full command surface
-- [Runtime model](/concepts/runtime-model/) — the concepts behind durability
-- [Integration guide](/guides/integration/) — HTTP API for automation
+- [Work items guide](/guides/work-items) — WorkItem lifecycle and best practices
+- [Multi-agent collaboration](/guides/multi-agent) — delegate work to child agents
+- [CLI reference](/reference/cli) — full command surface
+- [Runtime model](/concepts/runtime-model) — the concepts behind durability
+- [Integration guide](/guides/integration) — HTTP API for automation
