@@ -1,0 +1,913 @@
+[
+  {
+    "method": "get",
+    "path": "/",
+    "handler": "root",
+    "operation_id": "root",
+    "tag": "discovery",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/list",
+    "handler": "list_agent_entries",
+    "operation_id": "listAgents",
+    "tag": "agents",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/briefs",
+    "handler": "briefs",
+    "operation_id": "agentBriefs",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/events",
+    "handler": "events",
+    "operation_id": "agentEvents",
+    "tag": "events",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/events/stream",
+    "handler": "events_stream",
+    "operation_id": "agentEventsStream",
+    "tag": "events",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json",
+      "text/event-stream"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/skills",
+    "handler": "list_skills",
+    "operation_id": "agentSkills",
+    "tag": "skills",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/state",
+    "handler": "agent_state",
+    "operation_id": "agentState",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/status",
+    "handler": "status",
+    "operation_id": "agentStatus",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/tasks",
+    "handler": "tasks",
+    "operation_id": "agentTasks",
+    "tag": "tasks",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/timers",
+    "handler": "timers",
+    "operation_id": "agentTimers",
+    "tag": "timers",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/transcript",
+    "handler": "transcript",
+    "operation_id": "agentTranscript",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/worktree-summary",
+    "handler": "worktree_summary",
+    "operation_id": "agentWorktreeSummary",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/briefs",
+    "handler": "briefs_default",
+    "operation_id": "defaultBriefs",
+    "tag": "compat",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/control/runtime/readiness",
+    "handler": "runtime_readiness",
+    "operation_id": "runtimeReadiness",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/control/runtime/status",
+    "handler": "runtime_status",
+    "operation_id": "runtimeStatus",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/handshake",
+    "handler": "handshake",
+    "operation_id": "handshake",
+    "tag": "discovery",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/models",
+    "handler": "models_handler",
+    "operation_id": "models",
+    "tag": "discovery",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/state",
+    "handler": "state_default",
+    "operation_id": "defaultState",
+    "tag": "compat",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/status",
+    "handler": "status_default",
+    "operation_id": "defaultStatus",
+    "tag": "compat",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/transcript",
+    "handler": "transcript_default",
+    "operation_id": "defaultTranscript",
+    "tag": "compat",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/worktree-summary",
+    "handler": "worktree_summary_default",
+    "operation_id": "defaultWorktreeSummary",
+    "tag": "compat",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/agents/{agent_id}/enqueue",
+    "handler": "enqueue",
+    "operation_id": "enqueueAgent",
+    "tag": "ingress",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "EnqueueRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/callbacks/enqueue/{callback_token}",
+    "handler": "callback_ingress_enqueue",
+    "operation_id": "callbackEnqueue",
+    "tag": "callbacks",
+    "parameters": [
+      {
+        "name": "callback_token",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "CallbackBody",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "CallbackToken"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/callbacks/wake/{callback_token}",
+    "handler": "callback_ingress_wake",
+    "operation_id": "callbackWake",
+    "tag": "callbacks",
+    "parameters": [
+      {
+        "name": "callback_token",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "CallbackBody",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "CallbackToken"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/control",
+    "handler": "control",
+    "operation_id": "controlAgent",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "ControlRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/create",
+    "handler": "create_agent",
+    "operation_id": "createAgent",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "CreateAgentRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/current-run/abort",
+    "handler": "abort_current_run",
+    "operation_id": "abortCurrentRun",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "AbortCurrentRunRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/debug-prompt",
+    "handler": "control_debug_prompt",
+    "operation_id": "debugPrompt",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "DebugPromptRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/model",
+    "handler": "set_agent_model",
+    "operation_id": "setAgentModel",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "SetAgentModelRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/model/clear",
+    "handler": "clear_agent_model",
+    "operation_id": "clearAgentModel",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "ClearAgentModelRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/operator-bindings",
+    "handler": "create_operator_transport_binding",
+    "operation_id": "createOperatorTransportBinding",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "OperatorTransportBindingRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/operator-ingress",
+    "handler": "operator_ingress",
+    "operation_id": "operatorIngress",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "OperatorIngressRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/prompt",
+    "handler": "control_prompt",
+    "operation_id": "controlPrompt",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "ControlPromptRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/skills/install",
+    "handler": "install_skill",
+    "operation_id": "installSkill",
+    "tag": "skills",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "InstallSkillRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/skills/uninstall",
+    "handler": "uninstall_skill",
+    "operation_id": "uninstallSkill",
+    "tag": "skills",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "UninstallSkillRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/tasks",
+    "handler": "create_command_task",
+    "operation_id": "createCommandTask",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "CreateCommandTaskRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/timers",
+    "handler": "create_timer",
+    "operation_id": "createTimer",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "CreateTimerRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/wake",
+    "handler": "control_wake",
+    "operation_id": "controlWake",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "ControlWakeRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/work-items",
+    "handler": "create_work_item",
+    "operation_id": "createWorkItem",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "CreateWorkItemRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/workspace/attach",
+    "handler": "attach_workspace",
+    "operation_id": "attachWorkspace",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "AttachWorkspaceRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/workspace/detach",
+    "handler": "detach_workspace",
+    "operation_id": "detachWorkspace",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "DetachWorkspaceRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/workspace/exit",
+    "handler": "exit_workspace",
+    "operation_id": "exitWorkspace",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "ExitWorkspaceRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/runtime/shutdown",
+    "handler": "runtime_shutdown",
+    "operation_id": "runtimeShutdown",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/enqueue",
+    "handler": "enqueue_default",
+    "operation_id": "enqueueDefault",
+    "tag": "ingress",
+    "parameters": [],
+    "request_schema": "EnqueueRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/webhooks/generic/{agent_id}",
+    "handler": "generic_webhook",
+    "operation_id": "genericWebhook",
+    "tag": "ingress",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "GenericJsonPayload",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": []
+  }
+]

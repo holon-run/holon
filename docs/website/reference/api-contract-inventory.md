@@ -17,6 +17,9 @@ API long term.
 - **Generated schema:** [`openapi.json`](./openapi.json), produced by
   `holon::openapi::generate_openapi_json()` and checked by
   `cargo test --test openapi_snapshot`.
+- **Route/schema drift check:** `tests/snapshots/http_route_inventory.json`,
+  produced from the Axum route tree and generated OpenAPI baseline by
+  `cargo test --test http_route_snapshot`.
 - **Client source:** `src/client.rs` for the subset consumed by the TUI/CLI.
 - **Current status:** pre-1.0 baseline. Treat shapes below as observed
   behavior, not a final compatibility promise.
