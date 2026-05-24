@@ -135,79 +135,82 @@ pub fn router(state: AppState) -> Router {
         .route("/handshake", get(handshake))
         .route("/models", get(models_handler))
         .route("/agents/list", get(list_agent_entries))
-        .route("/agents/:agent_id/enqueue", post(enqueue))
-        .route("/agents/:agent_id/status", get(status))
-        .route("/agents/:agent_id/briefs", get(briefs))
-        .route("/agents/:agent_id/state", get(agent_state))
-        .route("/agents/:agent_id/events", get(events))
-        .route("/agents/:agent_id/events/stream", get(events_stream))
-        .route("/agents/:agent_id/transcript", get(transcript))
-        .route("/agents/:agent_id/tasks", get(tasks))
-        .route("/agents/:agent_id/worktree-summary", get(worktree_summary))
-        .route("/agents/:agent_id/timers", get(timers))
-        .route("/control/agents/:agent_id/tasks", post(create_command_task))
+        .route("/agents/{agent_id}/enqueue", post(enqueue))
+        .route("/agents/{agent_id}/status", get(status))
+        .route("/agents/{agent_id}/briefs", get(briefs))
+        .route("/agents/{agent_id}/state", get(agent_state))
+        .route("/agents/{agent_id}/events", get(events))
+        .route("/agents/{agent_id}/events/stream", get(events_stream))
+        .route("/agents/{agent_id}/transcript", get(transcript))
+        .route("/agents/{agent_id}/tasks", get(tasks))
+        .route("/agents/{agent_id}/worktree-summary", get(worktree_summary))
+        .route("/agents/{agent_id}/timers", get(timers))
         .route(
-            "/control/agents/:agent_id/work-items",
+            "/control/agents/{agent_id}/tasks",
+            post(create_command_task),
+        )
+        .route(
+            "/control/agents/{agent_id}/work-items",
             post(create_work_item),
         )
-        .route("/control/agents/:agent_id/timers", post(create_timer))
-        .route("/control/agents/:agent_id/create", post(create_agent))
+        .route("/control/agents/{agent_id}/timers", post(create_timer))
+        .route("/control/agents/{agent_id}/create", post(create_agent))
         .route(
-            "/control/agents/:agent_id/workspace/attach",
+            "/control/agents/{agent_id}/workspace/attach",
             post(attach_workspace),
         )
         .route(
-            "/control/agents/:agent_id/workspace/exit",
+            "/control/agents/{agent_id}/workspace/exit",
             post(exit_workspace),
         )
         .route(
-            "/control/agents/:agent_id/workspace/detach",
+            "/control/agents/{agent_id}/workspace/detach",
             post(detach_workspace),
         )
-        .route("/control/agents/:agent_id/model", post(set_agent_model))
+        .route("/control/agents/{agent_id}/model", post(set_agent_model))
         .route(
-            "/control/agents/:agent_id/model/clear",
+            "/control/agents/{agent_id}/model/clear",
             post(clear_agent_model),
         )
-        .route("/control/agents/:agent_id/control", post(control))
+        .route("/control/agents/{agent_id}/control", post(control))
         .route(
-            "/control/agents/:agent_id/current-run/abort",
+            "/control/agents/{agent_id}/current-run/abort",
             post(abort_current_run),
         )
-        .route("/control/agents/:agent_id/prompt", post(control_prompt))
+        .route("/control/agents/{agent_id}/prompt", post(control_prompt))
         .route(
-            "/control/agents/:agent_id/operator-bindings",
+            "/control/agents/{agent_id}/operator-bindings",
             post(create_operator_transport_binding),
         )
         .route(
-            "/control/agents/:agent_id/operator-ingress",
+            "/control/agents/{agent_id}/operator-ingress",
             post(operator_ingress),
         )
         .route("/control/runtime/readiness", get(runtime_readiness))
         .route("/control/runtime/status", get(runtime_status))
         .route("/control/runtime/shutdown", post(runtime_shutdown))
         .route(
-            "/control/agents/:agent_id/debug-prompt",
+            "/control/agents/{agent_id}/debug-prompt",
             post(control_debug_prompt),
         )
-        .route("/control/agents/:agent_id/wake", post(control_wake))
+        .route("/control/agents/{agent_id}/wake", post(control_wake))
         .route(
-            "/callbacks/enqueue/:callback_token",
+            "/callbacks/enqueue/{callback_token}",
             post(callback_ingress_enqueue).layer(DefaultBodyLimit::max(CALLBACK_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/callbacks/wake/:callback_token",
+            "/callbacks/wake/{callback_token}",
             post(callback_ingress_wake).layer(DefaultBodyLimit::max(CALLBACK_BODY_LIMIT_BYTES)),
         )
-        .route("/webhooks/generic/:agent_id", post(generic_webhook))
+        .route("/webhooks/generic/{agent_id}", post(generic_webhook))
         .route("/enqueue", post(enqueue_default))
-        .route("/agents/:agent_id/skills", get(list_skills))
+        .route("/agents/{agent_id}/skills", get(list_skills))
         .route(
-            "/control/agents/:agent_id/skills/install",
+            "/control/agents/{agent_id}/skills/install",
             post(install_skill),
         )
         .route(
-            "/control/agents/:agent_id/skills/uninstall",
+            "/control/agents/{agent_id}/skills/uninstall",
             post(uninstall_skill),
         )
         .route("/status", get(status_default))
