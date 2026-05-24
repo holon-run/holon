@@ -14,6 +14,9 @@ API long term.
 
 - **Last reviewed against:** `holon` v0.14.1, `main` at `1aa5050`.
 - **Primary source:** `src/http.rs` Axum router and request/response structs.
+- **Generated schema:** [`openapi.json`](./openapi.json), produced by
+  `holon::openapi::generate_openapi_json()` and checked by
+  `cargo test --test openapi_snapshot`.
 - **Client source:** `src/client.rs` for the subset consumed by the TUI/CLI.
 - **Current status:** pre-1.0 baseline. Treat shapes below as observed
   behavior, not a final compatibility promise.

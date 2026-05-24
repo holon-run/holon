@@ -34,6 +34,10 @@ behavior changes.
   How to think about Holon's headless integration surface.
   <!-- mdorigin:index kind=article -->
 
+- [OpenAPI schema](./openapi.json)
+  Generated baseline OpenAPI 3.1 schema for Holon's current HTTP control-plane surface.
+  <!-- mdorigin:index kind=article -->
+
 - [API contract inventory](./api-contract-inventory.md)
   First-pass stability inventory for Holon's HTTP control-plane API parameters, responses, and follow-up contract work.
   <!-- mdorigin:index kind=article -->

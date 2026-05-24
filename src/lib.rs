@@ -16,6 +16,7 @@ pub mod http;
 pub mod ingress;
 pub mod memory;
 pub mod model_catalog;
+pub mod openapi;
 pub mod operator_event;
 pub mod policy;
 pub mod presentation;
