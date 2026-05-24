@@ -280,17 +280,7 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
         }))
         .send()
         .await?;
-    assert!(authority_override.status().is_success());
-    wait_until(|| {
-        let messages = runtime.storage().read_recent_messages(10)?;
-        Ok(messages.iter().any(|message| {
-            matches!(
-                &message.body,
-                holon::types::MessageBody::Text { text } if text == "forged authority"
-            ) && message.authority_class == AuthorityClass::IntegrationSignal
-        }))
-    })
-    .await?;
+    assert_eq!(authority_override.status(), reqwest::StatusCode::FORBIDDEN);
 
     let channel_evidence = client
         .post(format!("{base}/agents/default/enqueue"))
