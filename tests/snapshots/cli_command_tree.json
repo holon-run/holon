@@ -11,6 +11,7 @@
       {
         "name": "agent_id",
         "value_name": "AGENT_ID",
+        "index": null,
         "required": false
       }
     ],
@@ -23,6 +24,7 @@
       {
         "name": "agent_id",
         "value_name": "AGENT_ID",
+        "index": null,
         "required": true
       }
     ],
@@ -55,6 +57,7 @@
       {
         "name": "agent_id",
         "value_name": "AGENT_ID",
+        "index": null,
         "required": false
       }
     ],
@@ -67,6 +70,7 @@
       {
         "name": "agent_id",
         "value_name": "AGENT_ID",
+        "index": null,
         "required": false
       }
     ],
@@ -77,14 +81,16 @@
     "path": "agent.model.set",
     "positionals": [
       {
-        "name": "agent_id",
-        "value_name": "AGENT_ID",
-        "required": false
-      },
-      {
         "name": "model",
         "value_name": "MODEL",
+        "index": null,
         "required": true
+      },
+      {
+        "name": "agent_id",
+        "value_name": "AGENT_ID",
+        "index": null,
+        "required": false
       }
     ],
     "flags": [],
@@ -96,6 +102,7 @@
       {
         "name": "agent_id",
         "value_name": "AGENT_ID",
+        "index": null,
         "required": false
       }
     ],
@@ -108,6 +115,7 @@
       {
         "name": "agent_id",
         "value_name": "AGENT_ID",
+        "index": null,
         "required": false
       }
     ],
@@ -120,6 +128,7 @@
       {
         "name": "agent_id",
         "value_name": "AGENT_ID",
+        "index": null,
         "required": false
       }
     ],
@@ -150,6 +159,7 @@
       {
         "name": "profile",
         "value_name": "PROFILE",
+        "index": null,
         "required": true
       }
     ],
@@ -162,6 +172,7 @@
       {
         "name": "profile",
         "value_name": "PROFILE",
+        "index": null,
         "required": true
       }
     ],
@@ -205,6 +216,7 @@
       {
         "name": "key",
         "value_name": "KEY",
+        "index": null,
         "required": true
       }
     ],
@@ -241,6 +253,7 @@
       {
         "name": "provider",
         "value_name": "PROVIDER",
+        "index": null,
         "required": true
       }
     ],
@@ -253,6 +266,7 @@
       {
         "name": "provider",
         "value_name": "PROVIDER",
+        "index": null,
         "required": true
       }
     ],
@@ -271,6 +285,7 @@
       {
         "name": "provider",
         "value_name": "PROVIDER",
+        "index": null,
         "required": true
       }
     ],
@@ -283,6 +298,7 @@
       {
         "name": "provider",
         "value_name": "PROVIDER",
+        "index": null,
         "required": true
       }
     ],
@@ -351,11 +367,13 @@
       {
         "name": "key",
         "value_name": "KEY",
+        "index": null,
         "required": true
       },
       {
         "name": "value",
         "value_name": "VALUE",
+        "index": null,
         "required": true
       }
     ],
@@ -368,6 +386,7 @@
       {
         "name": "key",
         "value_name": "KEY",
+        "index": null,
         "required": true
       }
     ],
@@ -380,6 +399,7 @@
       {
         "name": "action",
         "value_name": "ACTION",
+        "index": null,
         "required": true
       }
     ],
@@ -588,6 +608,7 @@
       {
         "name": "text",
         "value_name": "TEXT",
+        "index": null,
         "required": true
       }
     ],
@@ -641,6 +662,7 @@
       {
         "name": "text",
         "value_name": "TEXT",
+        "index": null,
         "required": true
       }
     ],
@@ -661,6 +683,7 @@
       {
         "name": "text",
         "value_name": "TEXT",
+        "index": null,
         "required": true
       }
     ],
@@ -825,6 +848,7 @@
       {
         "name": "name_or_path",
         "value_name": "NAME_OR_PATH",
+        "index": null,
         "required": true
       }
     ],
@@ -896,6 +920,7 @@
       {
         "name": "name",
         "value_name": "NAME",
+        "index": null,
         "required": true
       }
     ],
@@ -916,6 +941,7 @@
       {
         "name": "target_ref",
         "value_name": "REF",
+        "index": null,
         "required": true
       }
     ],
@@ -1084,6 +1110,7 @@
       {
         "name": "summary",
         "value_name": "SUMMARY",
+        "index": null,
         "required": true
       }
     ],
@@ -1266,6 +1293,7 @@
       {
         "name": "path",
         "value_name": "PATH",
+        "index": null,
         "required": true
       }
     ],
@@ -1286,6 +1314,7 @@
       {
         "name": "workspace_id",
         "value_name": "WORKSPACE_ID",
+        "index": null,
         "required": true
       }
     ],

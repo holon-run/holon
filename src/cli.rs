@@ -479,6 +479,8 @@ pub struct CommandSnapshotEntry {
 pub struct PositionalInfo {
     pub name: String,
     pub value_name: String,
+    /// Clap positional index (preserves user-facing argument order).
+    pub index: Option<usize>,
     pub required: bool,
 }
 
@@ -498,7 +500,7 @@ pub fn collect_snapshot() -> Vec<CommandSnapshotEntry> {
     collect_snapshot_recursive(&cmd, String::new(), &mut entries);
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     for entry in &mut entries {
-        entry.positionals.sort_by(|a, b| a.name.cmp(&b.name));
+        entry.positionals.sort_by(|a, b| a.index.cmp(&b.index));
         entry.flags.sort_by(|a, b| a.long.cmp(&b.long));
         entry.aliases.sort();
     }
@@ -543,6 +545,7 @@ fn snapshot_entry_for_command(cmd: &clap::Command, path: &str) -> CommandSnapsho
                 })
                 .unwrap_or_default(),
             required: p.is_required_set(),
+            index: p.get_index(),
         })
         .collect();
 
