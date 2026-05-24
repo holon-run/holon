@@ -81,15 +81,15 @@ pub struct AppState {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct HttpErrorEnvelope {
-    pub ok: bool,
-    pub error: String,
+pub(crate) struct HttpErrorEnvelope {
+    ok: bool,
+    error: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
+    code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hint: Option<String>,
+    hint: Option<String>,
     #[serde(flatten)]
-    pub extensions: Map<String, Value>,
+    extensions: Map<String, Value>,
 }
 
 impl HttpErrorEnvelope {
@@ -1630,15 +1630,15 @@ fn clone_payload_field(payload: &Value, field: &str) -> Option<Value> {
     payload.get(field).filter(|value| !value.is_null()).cloned()
 }
 
-fn event_seq_not_found(event_seq: u64) -> (StatusCode, Json<Value>) {
+fn event_seq_not_found(after_seq: u64) -> (StatusCode, Json<Value>) {
     http_error(
         StatusCode::NOT_FOUND,
         HttpErrorEnvelope::new(format!(
-            "after_seq {event_seq} was not found in the replay window"
+            "after_seq {after_seq} was not found in the replay window"
         ))
         .code("cursor_not_found")
-        .extension("after_seq", event_seq)
-        .extension("event_seq", event_seq),
+        .extension("after_seq", after_seq)
+        .extension("event_seq", after_seq),
     )
 }
 

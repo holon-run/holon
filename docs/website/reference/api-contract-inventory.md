@@ -57,7 +57,7 @@ Most successful responses are JSON. There is no single success envelope:
 - `/agents/:id/events/stream` returns Server-Sent Events rather than a JSON
   response body after the stream opens.
 
-Error responses use one shared JSON envelope:
+Handler-produced control-plane errors use one shared JSON envelope:
 
 ```json
 {
@@ -68,9 +68,12 @@ Error responses use one shared JSON envelope:
 }
 ```
 
-`ok` is always `false`; `error` is a human-readable message. `code` and
-`hint` are optional shared fields. Routes may add documented route-specific
-extension fields alongside the shared fields.
+For those handler-produced errors, `ok` is always `false`; `error` is a
+human-readable message. `code` and `hint` are optional shared fields. Routes may
+add documented route-specific extension fields alongside the shared fields.
+Framework-level rejections produced before a handler runs, such as Axum
+extractor failures for malformed JSON or request bodies rejected by
+`DefaultBodyLimit`, are not yet normalized into this envelope.
 
 Status-code mapping:
 
