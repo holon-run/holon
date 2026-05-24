@@ -71,7 +71,7 @@ Workspaces track **occupancy**: which agent holds the workspace and how:
 | Field | Purpose |
 |-------|---------|
 | `holder_agent_id` | The agent currently occupying the workspace |
-| `access_mode` | `ReadWrite` or `ReadOnly` |
+| `access_mode` | `SharedRead` or `ExclusiveWrite` |
 | `acquired_at` | When occupancy was acquired |
 | `released_at` | When occupancy was released (if released) |
 
