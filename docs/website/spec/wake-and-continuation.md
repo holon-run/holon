@@ -121,11 +121,20 @@ occurred:
 
 ## Known gaps
 
-- `CreateExternalTrigger` and `CancelExternalTrigger` tool code still exists
-  in `src/tool/tools/` for legacy compatibility; migration to pure
-  provisioning model is not complete.
+- `ExternalTriggerScope::WorkItem` variant still exists in the type system
+  (`types.rs:1690`) alongside `Agent`. The RFC calls for removing
+  WorkItem-scoped triggers and making capability identity agent-level. See
+  [issue #1381](https://github.com/holon-run/holon/issues/1381).
+- `CreateExternalTrigger` and `CancelExternalTrigger` remain as first-class
+  model-facing tools in the registry without a clear deprecated/compatibility
+  marker. `docs/agentinbox-dogfood-runbook.md` still describes the old
+  CreateExternalTrigger → CancelExternalTrigger pattern as the normal wait
+  handshake. See [issue #1381](https://github.com/holon-run/holon/issues/1381).
+- `WaitingIntentRecord` retains a `scope` field even though the RFC says
+  capability identity should be agent-level, not scope-partitioned.
+  See [issue #1381](https://github.com/holon-run/holon/issues/1381).
 - `WakeHint` idempotency is implemented via `PendingWakeHint` deduplication
   but the contract for when duplicate hints are silently dropped vs surfaced
   as diagnostics is not yet a stable API.
-- `EnqueueMessage` delivery for external events preserves provenance but the
-  provenance taxonomy for external sources is not yet fully specified.
+- `EnqueueMessage` delivery for external events preserves provenance but
+  the provenance taxonomy for external sources is not yet fully specified.

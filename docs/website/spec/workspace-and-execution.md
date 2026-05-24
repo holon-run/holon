@@ -114,6 +114,10 @@ filesystem with the agent user's permissions. Key constraints:
 
 ## Known gaps
 
+- Vestigial `EnterWorkspaceResult` and `ExitWorkspaceResult` structs still
+  exist in `types.rs:2861,2870`. These types may be unused or only used in
+  legacy HTTP paths and should be removed. See
+  [issue #1384](https://github.com/holon-run/holon/issues/1384).
 - Worktree cleanup is best-effort; stale worktrees may persist after abnormal
   agent termination.
 - Workspace occupancy is advisory; the runtime does not enforce exclusive

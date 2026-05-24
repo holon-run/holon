@@ -117,8 +117,13 @@ Holon's provenance contract:
 
 ## Known gaps
 
-- `TrustLevel` vocabulary is transitional; some internal code still uses
-  "callback" terminology.
+- `TrustLevel` is still present on `MessageEnvelope` alongside the newer
+  `AuthorityClass`. The RFC describes this as an intentional transitional
+  state with a `From<&TrustLevel> for AuthorityClass` bridge mapping; the
+  eventual target is `AuthorityClass`-only. See
+  [issue #1385](https://github.com/holon-run/holon/issues/1385).
+- `SignedIntegration` is not yet in `AdmissionContext`; the RFC describes
+  it as a future direction, so its absence matches current RFC intent.
 - `AdmissionContext` is not yet consistently populated across all ingress
   paths; CLI and TUI admissions may carry less metadata than HTTP admissions.
 - No standard mechanism exists for integrators to register custom trust

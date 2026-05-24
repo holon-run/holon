@@ -111,3 +111,8 @@ Tasks are **execution handles**, not planning objects:
 
 Tasks often serve WorkItem objectives (running commands, delegating to child
 agents), but task lifecycle is independent of WorkItem lifecycle.
+
+## Known gaps
+
+- `TaskWaitPolicy::Blocking` is defined in the type system but never used in
+  practice. See [issue #1382](https://github.com/holon-run/holon/issues/1382).

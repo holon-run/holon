@@ -136,9 +136,20 @@ WorkItems flow through scheduling states that the scheduler consumes:
 
 ## Known gaps
 
-- `StayIdle` and `Sleep` overlap conceptually; `StayIdle` could be subsumed by
-  a richer `Sleep` decision that carries an "already asleep" flag.
-- `ReduceMessageOnly` is under-defined — its contract for when a message can
-  be reduced without a full model turn is not yet a stable public API.
+- `WaitingTimer` and `WaitingSystem` variants exist in both
+  `WorkItemSchedulingState` and scheduler decisions (`wait_decision_for_projection`)
+  without RFC coverage. The RFC defines `WaitingOperator, WaitingTask,
+  WaitingExternal, Blocked` but not these timer/system variants. See
+  [issue #1380](https://github.com/holon-run/holon/issues/1380).
+- `idle_boundary_decision` (`scheduler.rs:903`) gates on
+  `AgentStatus::Asleep` before inspecting work facts, which can strand
+  runnable work behind an `Asleep` status check. The RFC says scheduling
+  should derive from WorkItem/wait facts, not lifecycle status labels. See
+  [issue #1380](https://github.com/holon-run/holon/issues/1380).
+- `SchedulerDecisionKind` has 11 variants (`StartModelTurn, ReduceMessageOnly,
+  EmitSystemTick, WaitForTask, …`) while the RFC suggests ~6 high-level
+  posture outcomes. The added granularity is useful but the RFC vocabulary is
+  too coarse to describe current behavior. See
+  [issue #1380](https://github.com/holon-run/holon/issues/1380).
 - The scheduler does not yet expose a public diagnostic event stream for
   observability; diagnostic events exist but are audit-only.
