@@ -235,10 +235,9 @@ fn render_metadata_value<T: Serialize>(value: &T) -> String {
 
 fn render_operator_interjection_text(message: &MessageEnvelope) -> String {
     format!(
-        "{OPERATOR_INTERJECTION_HEADER}\nmessage_id={}\norigin={}\ntrust={}\nauthority_class={}\ndelivery_surface={}\nadmission_context={}\n\n{}",
+        "{OPERATOR_INTERJECTION_HEADER}\nmessage_id={}\norigin={}\nauthority_class={}\ndelivery_surface={}\nadmission_context={}\n\n{}",
         message.id,
         render_metadata_value(&message.origin),
-        render_metadata_value(&message.authority_class),
         render_metadata_value(&message.authority_class),
         render_metadata_value(&message.delivery_surface),
         render_metadata_value(&message.admission_context),
@@ -1671,7 +1670,6 @@ impl RuntimeHandle {
                         "boundary": boundary,
                         "message_id": message.id,
                         "origin": message.origin,
-                        "authority_class": message.authority_class,
                         "authority_class": message.authority_class,
                         "priority": message.priority,
                         "delivery_surface": message.delivery_surface,

@@ -2160,7 +2160,6 @@ mod tests {
                     "agent_id": "default",
                     "kind": "operator_prompt",
                     "origin": { "kind": "operator", "actor_id": null },
-                    "authority_class": "trusted_operator",
                     "authority_class": "operator_instruction",
                     "delivery_surface": "http_control_prompt",
                     "admission_context": "local_process",

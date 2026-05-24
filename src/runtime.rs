@@ -958,7 +958,6 @@ impl RuntimeHandle {
                 "agent_id": message.agent_id.clone(),
                 "kind": message.kind.clone(),
                 "origin": message.origin.clone(),
-                "authority_class": message.authority_class.clone(),
                 "authority_class": message.authority_class,
                 "delivery_surface": message.delivery_surface,
                 "admission_context": message.admission_context,

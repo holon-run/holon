@@ -45,7 +45,7 @@ impl AgentProvider for MaxOutputRecoveryProvider {
                 CQRS patterns separate read and write operations for optimal performance. \
                 Event sourcing provides audit trails and enables temporal queries.\n\n\
                 ## Security Considerations\n\n\
-                Zero-authority_class security models assume no implicit authority_class within the network perimeter. \
+                Zero-trust security models assume no implicit trust within the network perimeter. \
                 End-to-end encryption protects data in transit. \
                 Identity and access management must be granular and auditable.\n\n\
                 ## Performance Optimization\n\n\

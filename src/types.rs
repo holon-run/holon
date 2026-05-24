@@ -998,12 +998,6 @@ pub enum AuthorityClass {
     ExternalEvidence,
 }
 
-impl AuthorityClass {
-    pub fn from_authority_class(authority_class: &AuthorityClass) -> Self {
-        *authority_class
-    }
-}
-
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MessageEnvelope {
     pub id: String,
@@ -3848,26 +3842,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn authority_class_bridges_from_authority_class_level() {
-        assert_eq!(
-            AuthorityClass::from_authority_class(&AuthorityClass::OperatorInstruction),
-            AuthorityClass::OperatorInstruction
-        );
-        assert_eq!(
-            AuthorityClass::from_authority_class(&AuthorityClass::RuntimeInstruction),
-            AuthorityClass::RuntimeInstruction
-        );
-        assert_eq!(
-            AuthorityClass::from_authority_class(&AuthorityClass::IntegrationSignal),
-            AuthorityClass::IntegrationSignal
-        );
-        assert_eq!(
-            AuthorityClass::from_authority_class(&AuthorityClass::ExternalEvidence),
-            AuthorityClass::ExternalEvidence
-        );
-    }
-
-    #[test]
     fn legacy_scheduler_contract_names_deserialize_as_current_terms() {
         let continuation: ContinuationResolution = serde_json::from_value(serde_json::json!({
             "trigger_kind": "task_result",
@@ -3958,7 +3932,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_messages_without_authority_class_deserialize_from_authority_class_bridge() {
+    fn legacy_messages_without_authority_class_deserialize_from_trust_alias() {
         let legacy = serde_json::json!({
             "id": "msg-legacy",
             "agent_id": "default",
@@ -3968,7 +3942,7 @@ mod tests {
                 "kind": "system",
                 "subsystem": "runtime"
             },
-            "authority_class": "trusted_system",
+            "trust": "trusted_system",
             "priority": "normal",
             "body": {
                 "type": "text",
