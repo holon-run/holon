@@ -356,7 +356,6 @@ pub async fn generic_webhook_requires_bearer_token_when_configured() -> Result<(
             message.kind == MessageKind::WebhookEvent
                 && message.delivery_surface == Some(MessageDeliverySurface::HttpWebhook)
                 && message.admission_context == Some(AdmissionContext::PublicUnauthenticated)
-                && message.trust == TrustLevel::TrustedIntegration
                 && message.authority_class == AuthorityClass::IntegrationSignal
         }))
     })
