@@ -15,10 +15,16 @@ The current implementation keeps the CLI in one Rust binary:
 
 - `src/main.rs` defines the Clap command tree and most CLI handlers.
 - `docs/website/reference/cli.md` is the user-facing command reference.
+- `docs/website/reference/cli-stability-policy.md` documents the
+  user-facing support policy for stable, experimental, internal, and
+  deprecated CLI surfaces.
 - `docs/website/reference/configuration.md` documents config files,
   credential-related environment variables, and diagnostics.
 
 ## Stability levels
+
+See [CLI stability policy](./cli-stability-policy.md) for the user-facing
+support policy behind these labels.
 
 | Level | Meaning | Change policy |
 |---|---|---|
@@ -121,6 +127,10 @@ These commands require a reachable local control plane unless noted otherwise.
 | `holon agent model set` | `<MODEL> [AGENT_ID]` | none | JSON model override response | `stable` candidate | Positional `AGENT_ID` is tested. |
 | `holon agent model clear` | optional `[AGENT_ID]` | none | JSON model override response | `stable` candidate | Should share contract with set/get. |
 | `holon control` | `<start\|stop\|abort>` | `--agent <AGENT>` | JSON or raw HTTP response depending on action | `deprecated` | Use `holon agent start|stop|abort [agent-id]`. |
+
+Deprecated `holon control` compatibility is documented in
+[CLI stability policy](./cli-stability-policy.md#deprecated-holon-control).
+New automation should use the `holon agent ...` lifecycle commands.
 
 ### Skills
 

@@ -26,6 +26,10 @@ behavior changes.
   First-pass stability inventory for Holon's command-line parameters, outputs, and follow-up contract work.
   <!-- mdorigin:index kind=article -->
 
+- [CLI stability policy](./cli-stability-policy.md)
+  Support policy for Holon's command-line surfaces and machine-readable output contracts.
+  <!-- mdorigin:index kind=article -->
+
 - [Configuration](./configuration.md)
   Holon configuration files, keys, credentials, environment variables, and diagnostics.
   <!-- mdorigin:index kind=article -->

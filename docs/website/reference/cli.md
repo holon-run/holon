@@ -9,6 +9,10 @@ order: 10
 
 Holon's command-line interface. All commands accept `--help` for detailed flag documentation.
 
+For scripting guidance, stability levels, and support policy, see
+[CLI stability policy](./cli-stability-policy.md) and
+[CLI contract inventory](./cli-contract-inventory.md).
+
 ## Command Tree
 
 ```
@@ -107,8 +111,9 @@ holon agent abort reviewer
 
 > **Deprecated:** The `holon control` command has been replaced by
 > `holon agent start`, `holon agent stop`, and `holon agent abort`.
-> The old `control` command is kept for backward compatibility only and
-> may be removed in a future release.
+> The old `control` command is kept for backward compatibility only; see
+> [CLI stability policy](./cli-stability-policy.md#deprecated-holon-control)
+> for the compatibility and removal criteria.
 
 ### Model selection
 
