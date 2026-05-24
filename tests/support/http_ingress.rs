@@ -321,3 +321,48 @@ pub async fn public_enqueue_rejects_privileged_origin_and_trust_override() -> Re
     server.abort();
     Ok(())
 }
+
+pub async fn generic_webhook_requires_bearer_token_when_configured() -> Result<()> {
+    let config = test_config_with_paths(
+        tempdir().unwrap().keep(),
+        tempdir().unwrap().keep(),
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Required,
+    );
+    let (host, base, server) = spawn_server_with_config(config).await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    let denied = client
+        .post(format!("{base}/webhooks/generic/default"))
+        .json(&serde_json::json!({ "status": "opened" }))
+        .send()
+        .await?;
+    assert_eq!(denied.status(), reqwest::StatusCode::FORBIDDEN);
+    let denied_payload: serde_json::Value = denied.json().await?;
+    assert_eq!(denied_payload["ok"], false);
+    assert!(runtime.storage().read_recent_messages(10)?.is_empty());
+
+    let allowed = client
+        .post(format!("{base}/webhooks/generic/default"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({ "status": "opened" }))
+        .send()
+        .await?;
+    assert!(allowed.status().is_success());
+
+    wait_until(|| {
+        let messages = runtime.storage().read_recent_messages(10)?;
+        Ok(messages.iter().any(|message| {
+            message.kind == MessageKind::WebhookEvent
+                && message.delivery_surface == Some(MessageDeliverySurface::HttpWebhook)
+                && message.admission_context == Some(AdmissionContext::PublicUnauthenticated)
+                && message.trust == TrustLevel::TrustedIntegration
+                && message.authority_class == AuthorityClass::IntegrationSignal
+        }))
+    })
+    .await?;
+
+    server.abort();
+    Ok(())
+}

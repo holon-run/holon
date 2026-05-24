@@ -28,6 +28,21 @@ and trusts the local process boundary.
 GET /handshake → { "auth": { "mode": "bearer" | "local", "required": bool } }
 ```
 
+## Ingress trust and auth boundaries
+
+Holon treats authentication, message origin, trust level, priority, and
+authority as separate runtime facts. HTTP ingress handlers may authenticate a
+caller, but they still construct the message provenance explicitly instead of
+trusting caller-supplied provenance fields.
+
+| Ingress class | Routes | Auth boundary | Origin/trust/authority | Priority | Supported posture |
+|---------------|--------|---------------|------------------------|----------|-------------------|
+| Public enqueue | `POST /enqueue`, `POST /agents/:id/enqueue` | Bearer token in bearer mode; local process boundary in local mode. | Caller may provide only channel or webhook origin. Caller-provided `trust` is rejected. Channel origins become untrusted external evidence; webhook origins become integration signals. Runtime-owned kinds such as `system_tick` and `callback_event` are rejected. | `next`, `normal`, or `background`; `interject` is rejected. | Candidate stable external ingress for non-operator evidence. |
+| Callback capability | `POST /callbacks/wake/:callback_token`, `POST /callbacks/enqueue/:callback_token` | Capability token in the URL path resolves to an active external trigger and matching delivery mode. Do not log, repeat, or publish full callback URLs. | Delivery is admitted as an external-trigger capability and an integration signal. Wake callbacks enqueue runtime-owned inspection ticks; callback payload text is untrusted evidence for the agent to inspect. | Runtime-selected by delivery mode; callers do not choose queue priority. | Capability surface for durable external systems that need to wake or notify an agent. |
+| Operator transport binding | `POST /control/agents/:id/operator-bindings` | Control-plane auth. Delivery credentials are stored on the binding and redacted from audit events. | Creates or updates the binding that later authorizes remote operator ingress. | N/A. | Experimental operator adapter setup surface. |
+| Operator transport ingress | `POST /control/agents/:id/operator-ingress` | Control-plane auth plus active binding, matching target agent, matching operator actor, and matching provider when supplied. | Enqueues a `trusted_operator` `operator_prompt` with `operator_instruction` authority and remote-operator transport metadata. | Always `interject`. | Experimental authenticated operator adapter ingress. |
+| Generic webhook compatibility | `POST /webhooks/generic/:agent_id` | Bearer token in bearer mode; local process boundary in local mode. | Converts JSON payload into a trusted-integration webhook event with `generic_webhook` origin. Callers cannot set origin, trust, or priority through this route. | Always `normal`. | Internal/debug compatibility route; prefer public enqueue or a dedicated capability callback for new external integrations. |
+
 ## Endpoint reference
 
 ### Discovery
@@ -167,6 +182,16 @@ Response:
 ```
 
 **`POST /enqueue`** (no agent in path) — Enqueue to default agent.
+
+**`POST /webhooks/generic/:agent_id`** — Generic webhook compatibility
+
+Accepts a JSON payload and converts it to a `webhook_event` from
+`generic_webhook`. This route is kept for local/debug compatibility and simple
+trusted integration tests. It requires the bearer token when bearer mode is
+enabled, but unlike public enqueue it does not let callers provide explicit
+origin/trust/priority fields. New integrations should usually use public
+enqueue for external evidence or a callback capability when the integration
+needs a secret URL.
 
 
 ### Control plane (authenticated)

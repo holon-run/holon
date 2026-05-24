@@ -17,4 +17,5 @@ http_async_tests!(
     generic_webhook_rejects_stopped_public_agent_without_queueing,
     generic_webhook_and_multi_agent_listing_work,
     public_enqueue_rejects_privileged_origin_and_trust_override,
+    generic_webhook_requires_bearer_token_when_configured,
 );
