@@ -19,7 +19,11 @@ behavior changes.
 <!-- INDEX:START -->
 
 - [CLI reference](./cli.md)
-  Holon's current command-line interface as compiled — verified against `holon --help`.
+  Holon's current command-line interface — verified against holon --help (v0.14.0).
+  <!-- mdorigin:index kind=article -->
+
+- [CLI contract inventory](./cli-contract-inventory.md)
+  First-pass stability inventory for Holon's command-line parameters, outputs, and follow-up contract work.
   <!-- mdorigin:index kind=article -->
 
 - [Configuration](./configuration.md)
