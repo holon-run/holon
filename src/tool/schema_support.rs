@@ -1,14 +1,15 @@
 use anyhow::{anyhow, Result};
-use schemars::{r#gen::SchemaSettings, schema::RootSchema, JsonSchema};
+use schemars::{generate::SchemaSettings, JsonSchema, Schema};
 use serde_json::Value;
 use std::any::TypeId;
 
 use crate::tool::tools::spawn_agent::SpawnAgentArgs;
 
 pub(crate) fn tool_input_schema<T: JsonSchema + 'static>() -> Result<Value> {
-    let mut schema = serde_json::to_value(root_schema_for::<T>().schema)
+    let mut schema = serde_json::to_value(root_schema_for::<T>())
         .map_err(|error| anyhow!("tool schema should serialize: {error}"))?;
     normalize_object_defaults(&mut schema);
+    normalize_numeric_bound_literals(&mut schema);
     prune_schema_metadata(&mut schema);
     if TypeId::of::<T>() == TypeId::of::<SpawnAgentArgs>() {
         enforce_public_named_spawn_contract(&mut schema);
@@ -77,11 +78,10 @@ pub(crate) fn validate_source_tool_schema(schema: &Value) -> Result<()> {
     validate_source_tool_schema_inner(schema, "$")
 }
 
-fn root_schema_for<T: JsonSchema>() -> RootSchema {
+fn root_schema_for<T: JsonSchema>() -> Schema {
     SchemaSettings::draft07()
         .with(|settings| {
             settings.inline_subschemas = true;
-            settings.option_add_null_type = false;
         })
         .into_generator()
         .into_root_schema_for::<T>()
@@ -151,6 +151,52 @@ fn normalize_object_defaults(schema: &mut Value) {
         for variant in one_of {
             normalize_object_defaults(variant);
         }
+    }
+}
+
+fn normalize_numeric_bound_literals(schema: &mut Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+
+    for key in [
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+    ] {
+        if let Some(value) = object.get_mut(key) {
+            normalize_number_literal(value);
+        }
+    }
+
+    if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
+        for child in properties.values_mut() {
+            normalize_numeric_bound_literals(child);
+        }
+    }
+    if let Some(items) = object.get_mut("items") {
+        normalize_numeric_bound_literals(items);
+    }
+    if let Some(any_of) = object.get_mut("anyOf").and_then(Value::as_array_mut) {
+        for variant in any_of {
+            normalize_numeric_bound_literals(variant);
+        }
+    }
+    if let Some(one_of) = object.get_mut("oneOf").and_then(Value::as_array_mut) {
+        for variant in one_of {
+            normalize_numeric_bound_literals(variant);
+        }
+    }
+}
+
+fn normalize_number_literal(value: &mut Value) {
+    let Some(number) = value.as_f64() else {
+        return;
+    };
+    if let Some(normalized) = serde_json::Number::from_f64(number) {
+        *value = Value::Number(normalized);
     }
 }
 

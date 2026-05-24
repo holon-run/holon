@@ -868,7 +868,10 @@ async fn openai_provider_fails_fast_on_contract_errors() {
     assert_eq!(transport.model_ref.as_deref(), Some("openai/gpt-5.4"));
     assert_eq!(transport.status, Some(400));
     assert_eq!(transport.reqwest, None);
-    assert_eq!(transport.http_trace, None);
+    if let Some(http_trace) = transport.http_trace.as_ref() {
+        assert_eq!(http_trace.status, Some(400));
+        assert!(std::path::Path::new(&http_trace.path).exists());
+    }
     assert!(!timeline.attempts[0].advanced_to_fallback);
 }
 
