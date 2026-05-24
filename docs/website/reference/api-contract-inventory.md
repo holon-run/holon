@@ -57,15 +57,64 @@ Most successful responses are JSON. There is no single success envelope:
 - `/agents/:id/events/stream` returns Server-Sent Events rather than a JSON
   response body after the stream opens.
 
-Error responses are JSON and generally use:
+Handler-produced control-plane errors use one shared JSON envelope:
 
 ```json
-{ "ok": false, "error": "message" }
+{
+  "ok": false,
+  "error": "message",
+  "code": "machine_readable_code",
+  "hint": "optional operator guidance"
+}
 ```
 
-Some errors add stable-looking fields such as `code`, `agent_id`, `hint`,
-`after_seq`, or `event_seq`, but those fields are not yet documented as a
-shared error schema.
+For those handler-produced errors, `ok` is always `false`; `error` is a
+human-readable message. `code` and `hint` are optional shared fields. Routes may
+add documented route-specific extension fields alongside the shared fields.
+Framework-level rejections produced before a handler runs, such as Axum
+extractor failures for malformed JSON or request bodies rejected by
+`DefaultBodyLimit`, are not yet normalized into this envelope.
+
+Status-code mapping:
+
+| Status | Class | Current mapping |
+|--------|-------|-----------------|
+| `400 Bad Request` | Validation | Malformed or unsupported request fields, empty required strings, invalid callback body, unsupported operator delivery auth. |
+| `403 Forbidden` | Authentication/authorization | Missing, malformed, or invalid bearer token; private agent access; invalid callback capability token; ingress policy rejection. |
+| `404 Not Found` | Missing resource/cursor | Unknown public agent, archived public agent, unknown compatibility route, or event cursor outside the replay window. |
+| `409 Conflict` | State conflict | Stopped agent, stale or missing current run for abort, duplicate skill install, active workspace detach conflict when surfaced as a conflict. |
+| `424 Failed Dependency` | Dependency unavailable | Skill manager is unavailable. |
+| `502 Bad Gateway` | Upstream failure | Remote skill installer failed. |
+| `504 Gateway Timeout` | Upstream timeout | Remote skill installer timed out. |
+| `503 Service Unavailable` | Runtime service unavailable | Runtime service metadata is required but absent. |
+| `500 Internal Server Error` | Internal/runtime error | Unexpected runtime, storage, workspace, or handler errors. |
+
+Common route-specific error extensions currently include:
+
+| Field | Used by | Meaning |
+|-------|---------|---------|
+| `agent_id` | stopped-agent and no-current-run conflicts | Agent related to the rejected operation. |
+| `after_seq` / `event_seq` | event page/SSE cursor errors | Cursor sequence that was not available in the replay window. |
+| `requested_run_id` / `current_run_id` | current-run abort conflicts | Stale requested run and current active run. |
+| `skill_name`, `destination`, `manager`, `package`, `exit_status`, `stdout`, `stderr`, `timeout_seconds` | skill install errors | Skill-manager or remote-installer diagnostics. |
+
+Known stable error `code` values:
+
+| Code | Status | Meaning |
+|------|--------|---------|
+| `agent_stopped` | `409` | The target agent is stopped and must be started before prompts or wakes. |
+| `cursor_not_found` | `404` | Requested event cursor is outside the retained replay window. |
+| `stale_run_id` | `409` | Abort request named a run that is no longer current. |
+| `no_current_run` | `409` | Abort request found no active run to abort. |
+| `skill_already_installed` | `409` | Skill destination already exists. |
+| `skill_manager_unavailable` | `424` | Required skill manager executable is unavailable. |
+| `remote_skill_install_failed` | `502` | Remote skill installer exited unsuccessfully. |
+| `remote_skill_install_timeout` | `504` | Remote skill installer exceeded its timeout. |
+
+`src/client.rs` decodes this envelope compatibly: it requires only `error` for
+display and preserves optional `code` and `hint` in `LocalHttpError`. Unknown
+extension fields are ignored by the client unless a caller inspects the raw
+response directly.
 
 ## Endpoint inventory
 

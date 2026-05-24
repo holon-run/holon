@@ -510,6 +510,12 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
             reqwest::StatusCode::FORBIDDEN,
             "{path} should require bearer auth"
         );
+        let body: serde_json::Value = denied.json().await?;
+        assert_eq!(body["ok"], false, "{path} error should use envelope");
+        assert!(
+            body["error"].is_string(),
+            "{path} error should include message: {body}"
+        );
     }
 
     let handshake: serde_json::Value = client
@@ -536,6 +542,9 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         .send()
         .await?;
     assert_eq!(removed_agents.status(), reqwest::StatusCode::NOT_FOUND);
+    let removed_body: serde_json::Value = removed_agents.json().await?;
+    assert_eq!(removed_body["ok"], false);
+    assert_eq!(removed_body["error"], "Not Found");
 
     let invalid_runtime_status = client
         .get(format!("{base}/control/runtime/status"))
@@ -546,6 +555,12 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         invalid_runtime_status.status(),
         reqwest::StatusCode::FORBIDDEN
     );
+    let invalid_body: serde_json::Value = invalid_runtime_status.json().await?;
+    assert_eq!(invalid_body["ok"], false);
+    assert!(invalid_body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("invalid control token"));
 
     let runtime_status = client
         .get(format!("{base}/control/runtime/status"))
@@ -560,6 +575,9 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         .send()
         .await?;
     assert_eq!(denied_enqueue.status(), reqwest::StatusCode::FORBIDDEN);
+    let denied_enqueue_body: serde_json::Value = denied_enqueue.json().await?;
+    assert_eq!(denied_enqueue_body["ok"], false);
+    assert!(denied_enqueue_body["error"].is_string());
     let allowed_enqueue = client
         .post(format!("{base}/enqueue"))
         .bearer_auth("secret")

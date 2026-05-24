@@ -19,7 +19,7 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tokio::time::{sleep, Duration};
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::compression::CompressionLayer;
@@ -78,6 +78,45 @@ pub struct AppState {
     pub require_control_token: bool,
     pub runtime_service: Option<RuntimeServiceHandle>,
     pub advertise_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct HttpErrorEnvelope {
+    ok: bool,
+    error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hint: Option<String>,
+    #[serde(flatten)]
+    extensions: Map<String, Value>,
+}
+
+impl HttpErrorEnvelope {
+    fn new(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            error: error.into(),
+            code: None,
+            hint: None,
+            extensions: Map::new(),
+        }
+    }
+
+    fn code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
+    }
+
+    fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    fn extension(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.extensions.insert(key.into(), value.into());
+        self
+    }
 }
 
 const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
@@ -218,6 +257,7 @@ pub fn router(state: AppState) -> Router {
         .route("/state", get(state_default))
         .route("/transcript", get(transcript_default))
         .route("/worktree-summary", get(worktree_summary_default))
+        .fallback(not_found_handler)
         .layer(CompressionLayer::new())
         .with_state(Arc::new(state))
 }
@@ -1590,17 +1630,20 @@ fn clone_payload_field(payload: &Value, field: &str) -> Option<Value> {
     payload.get(field).filter(|value| !value.is_null()).cloned()
 }
 
-fn event_seq_not_found(event_seq: u64) -> (StatusCode, Json<Value>) {
-    (
+fn event_seq_not_found(after_seq: u64) -> (StatusCode, Json<Value>) {
+    http_error(
         StatusCode::NOT_FOUND,
-        Json(json!({
-            "ok": false,
-            "error": format!("after_seq {event_seq} was not found in the replay window"),
-            "code": "cursor_not_found",
-            "after_seq": event_seq,
-            "event_seq": event_seq,
-        })),
+        HttpErrorEnvelope::new(format!(
+            "after_seq {after_seq} was not found in the replay window"
+        ))
+        .code("cursor_not_found")
+        .extension("after_seq", after_seq)
+        .extension("event_seq", after_seq),
     )
+}
+
+async fn not_found_handler() -> (StatusCode, Json<Value>) {
+    not_found("Not Found")
 }
 
 pub async fn transcript(
@@ -2494,12 +2537,8 @@ async fn callback_ingress(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let payload = build_callback_delivery_payload(&headers, body).map_err(|err| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": err.to_string() })),
-        )
-    })?;
+    let payload = build_callback_delivery_payload(&headers, body)
+        .map_err(|err| bad_request(err.to_string()))?;
     let (agent_id, descriptor) = state
         .host
         .resolve_external_trigger_record(&callback_token)
@@ -2796,43 +2835,22 @@ fn validate_operator_transport_delivery_auth(
 }
 
 fn forbidden(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::FORBIDDEN,
-        Json(json!({
-            "ok": false,
-            "error": reason.into(),
-        })),
-    )
+    http_error(StatusCode::FORBIDDEN, HttpErrorEnvelope::new(reason))
 }
 
 fn bad_request(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({
-            "ok": false,
-            "error": reason.into(),
-        })),
-    )
+    http_error(StatusCode::BAD_REQUEST, HttpErrorEnvelope::new(reason))
 }
 
 fn service_unavailable(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
-    (
+    http_error(
         StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({
-            "ok": false,
-            "error": reason.into(),
-        })),
+        HttpErrorEnvelope::new(reason),
     )
 }
 
 fn not_found(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::NOT_FOUND,
-        Json(json!({
-            "ok": false,
-            "error": reason.into(),
-        })),
-    )
+    http_error(StatusCode::NOT_FOUND, HttpErrorEnvelope::new(reason))
 }
 
 fn stopped_agent_conflict(
@@ -2844,15 +2862,12 @@ fn stopped_agent_conflict(
         "start with `holon agent start {}` or POST /control/agents/{}/control with JSON body {{\"action\":\"start\"}}",
         agent_id, agent_id
     );
-    (
+    http_error(
         StatusCode::CONFLICT,
-        Json(json!({
-            "ok": false,
-            "error": reason.into(),
-            "code": "agent_stopped",
-            "agent_id": agent_id,
-            "hint": hint,
-        })),
+        HttpErrorEnvelope::new(reason)
+            .code("agent_stopped")
+            .hint(hint)
+            .extension("agent_id", agent_id),
     )
 }
 
@@ -2880,24 +2895,20 @@ fn abort_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
         Ok(CurrentRunAbortError::StaleRunId {
             requested_run_id,
             current_run_id,
-        }) => (
+        }) => http_error(
             StatusCode::CONFLICT,
-            Json(json!({
-                "ok": false,
-                "code": "stale_run_id",
-                "error": format!("stale run_id {requested_run_id}; current run is {current_run_id}"),
-                "requested_run_id": requested_run_id,
-                "current_run_id": current_run_id,
-            })),
+            HttpErrorEnvelope::new(format!(
+                "stale run_id {requested_run_id}; current run is {current_run_id}"
+            ))
+            .code("stale_run_id")
+            .extension("requested_run_id", requested_run_id)
+            .extension("current_run_id", current_run_id),
         ),
-        Ok(CurrentRunAbortError::NoCurrentRun { agent_id }) => (
+        Ok(CurrentRunAbortError::NoCurrentRun { agent_id }) => http_error(
             StatusCode::CONFLICT,
-            Json(json!({
-                "ok": false,
-                "code": "no_current_run",
-                "error": format!("agent {agent_id} has no current run to abort"),
-                "agent_id": agent_id,
-            })),
+            HttpErrorEnvelope::new(format!("agent {agent_id} has no current run to abort"))
+                .code("no_current_run")
+                .extension("agent_id", agent_id),
         ),
         Err(error) => error_response(error),
     }
@@ -2905,51 +2916,39 @@ fn abort_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
 
 fn skill_install_error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
     match error.downcast::<crate::skills::SkillInstallConflict>() {
-        Ok(conflict) => (
+        Ok(conflict) => http_error(
             StatusCode::CONFLICT,
-            Json(json!({
-                "ok": false,
-                "code": "skill_already_installed",
-                "error": conflict.to_string(),
-                "skill_name": conflict.skill_name,
-                "destination": conflict.destination,
-                "hint": "uninstall the existing skill first or choose a different skill name",
-            })),
+            HttpErrorEnvelope::new(conflict.to_string())
+                .code("skill_already_installed")
+                .hint("uninstall the existing skill first or choose a different skill name")
+                .extension("skill_name", conflict.skill_name)
+                .extension("destination", conflict.destination.to_string_lossy().to_string()),
         ),
         Err(error) => match error.downcast::<crate::skills::SkillManagerUnavailable>() {
-            Ok(unavailable) => (
+            Ok(unavailable) => http_error(
                 StatusCode::FAILED_DEPENDENCY,
-                Json(json!({
-                    "ok": false,
-                    "code": "skill_manager_unavailable",
-                    "error": unavailable.to_string(),
-                    "manager": unavailable.manager,
-                    "hint": "Install Node.js/npm so `npx skills` is available, or install the skill manually into ~/.agents/skills and link it by name.",
-                })),
+                HttpErrorEnvelope::new(unavailable.to_string())
+                    .code("skill_manager_unavailable")
+                    .hint("Install Node.js/npm so `npx skills` is available, or install the skill manually into ~/.agents/skills and link it by name.")
+                    .extension("manager", unavailable.manager),
             ),
             Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallFailed>() {
-                Ok(failed) => (
+                Ok(failed) => http_error(
                     StatusCode::BAD_GATEWAY,
-                    Json(json!({
-                        "ok": false,
-                        "code": "remote_skill_install_failed",
-                        "error": failed.to_string(),
-                        "package": failed.package,
-                        "exit_status": failed.status,
-                        "stdout": failed.stdout,
-                        "stderr": failed.stderr,
-                    })),
+                    HttpErrorEnvelope::new(failed.to_string())
+                        .code("remote_skill_install_failed")
+                        .extension("package", failed.package)
+                        .extension("exit_status", failed.status)
+                        .extension("stdout", failed.stdout)
+                        .extension("stderr", failed.stderr),
                 ),
                 Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallTimedOut>() {
-                    Ok(timeout) => (
+                    Ok(timeout) => http_error(
                         StatusCode::GATEWAY_TIMEOUT,
-                        Json(json!({
-                            "ok": false,
-                            "code": "remote_skill_install_timeout",
-                            "error": timeout.to_string(),
-                            "package": timeout.package,
-                            "timeout_seconds": timeout.timeout.as_secs(),
-                        })),
+                        HttpErrorEnvelope::new(timeout.to_string())
+                            .code("remote_skill_install_timeout")
+                            .extension("package", timeout.package)
+                            .extension("timeout_seconds", timeout.timeout.as_secs()),
                     ),
                     Err(error) => error_response(error),
                 },
@@ -2959,13 +2958,15 @@ fn skill_install_error_response(error: anyhow::Error) -> (StatusCode, Json<Value
 }
 
 fn error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
-    (
+    http_error(
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({
-            "ok": false,
-            "error": error.to_string(),
-        })),
+        HttpErrorEnvelope::new(error.to_string()),
     )
+}
+
+fn http_error(status: StatusCode, envelope: HttpErrorEnvelope) -> (StatusCode, Json<Value>) {
+    let value = serde_json::to_value(envelope).expect("HTTP error envelope serializes");
+    (status, Json(value))
 }
 
 #[cfg(unix)]
