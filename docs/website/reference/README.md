@@ -30,6 +30,10 @@ behavior changes.
   Support policy for Holon's command-line surfaces and machine-readable output contracts.
   <!-- mdorigin:index kind=article -->
 
+- [CLI exit codes](./cli-exit-codes.md)
+  Exit-code and stream-routing contract for Holon's command-line interface.
+  <!-- mdorigin:index kind=article -->
+
 - [Configuration](./configuration.md)
   Holon configuration files, keys, credentials, environment variables, and diagnostics.
   <!-- mdorigin:index kind=article -->

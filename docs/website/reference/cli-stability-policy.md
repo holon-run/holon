@@ -16,6 +16,8 @@ Use this page with:
 - [CLI reference](./cli.md) for the current command tree and common workflows.
 - [CLI contract inventory](./cli-contract-inventory.md) for per-command
   stability levels, output modes, and known contract gaps.
+- [CLI exit codes](./cli-exit-codes.md) for process exit codes and stdout/stderr
+  routing.
 - [API contract inventory](./api-contract-inventory.md) for HTTP response
   shapes that many CLI JSON outputs mirror.
 
@@ -42,7 +44,8 @@ Scripts should prefer surfaces that have all of these properties:
    JSON printing path rather than a raw HTTP response passthrough.
 3. A documented response owner, either in the CLI contract inventory or the
    HTTP/API inventory when the CLI mirrors a control-plane response.
-4. Explicit exit-code behavior once the exit-code contract is published.
+4. Explicit exit-code behavior from the
+   [CLI exit-code contract](./cli-exit-codes.md).
 
 Current script-facing candidates include:
 
