@@ -10,6 +10,11 @@ Holon is designed to be headless. HTTP and event-driven integration surfaces
 should preserve the same runtime concepts as the CLI: origin, trust, priority,
 work items, tasks, queues, wakeups, and user-facing delivery.
 
+The current generated OpenAPI baseline is checked in at
+[`openapi.json`](./openapi.json). It is a conservative schema for the present
+route surface; some request and response schemas intentionally remain broad
+until the success/error envelope and DTO contracts are stabilized.
+
 ## Authentication
 
 When a control token is configured (e.g. `--token`, `--token-file`, or the
