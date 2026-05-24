@@ -279,10 +279,6 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
     assert_eq!(replayed.data["provenance"]["origin"]["kind"], "operator");
     assert_eq!(
         replayed.data["provenance"]["authority_class"],
-        "trusted_operator"
-    );
-    assert_eq!(
-        replayed.data["provenance"]["authority_class"],
         "operator_instruction"
     );
     assert_eq!(
