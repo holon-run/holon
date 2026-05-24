@@ -165,3 +165,9 @@ the agent's home directory (`work-items/<id>/plan.md`). The plan artifact:
   granularity at the display layer.
 - Plan artifact path resolution depends on agent home workspace; cross-agent
   WorkItem reads may need explicit workspace routing.
+- `WorkItemRecord` still retains a legacy `plan: Option<String>` field
+  alongside `plan_artifact`. See
+  [issue #1379](https://github.com/holon-run/holon/issues/1379).
+- `recheck_after` / `recheck_at` / `recheck_consumed_at` scheduling semantics
+  are not described in the WorkItem RFC. See
+  [issue #1379](https://github.com/holon-run/holon/issues/1379).

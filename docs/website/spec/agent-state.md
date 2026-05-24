@@ -111,8 +111,8 @@ The scheduler derives a scheduling posture from current state. This is a
 | `WaitingForOperator` | WorkItem `plan_status=needs_input` |
 | `Blocked` | WorkItem has `blocked_by` set |
 | `Idle` | No queued input, no runnable work, no blocking conditions |
-| `Unknown` | Default before first projection |
-| `Archived` | Not currently used |
+| `Unknown` | Default before first projection; not part of the stable contract |
+| `Archived` | Agent lifecycle is stopped (maps from `AgentStatus::Stopped`) |
 
 **Key contract:**
 
@@ -189,3 +189,13 @@ Agent lifecycle control is `Start` / `Stop`:
   `AgentSchedulingPosture` is not yet a stable contract.
 - `AgentSummary` includes some fields (`recent_operator_notifications`,
   `recent_brief_count`) whose contract is not yet hardened.
+- `WorkItemSchedulingState` has `WaitingTimer` and `WaitingSystem` variants
+  not listed in the RFC. See [issue #1378](https://github.com/holon-run/holon/issues/1378).
+- `AgentStatus::Asleep` is used directly in scheduler decisions
+  (`scheduler.rs:803,903`) instead of being derived via `AgentSchedulingPosture`.
+- `AgentStatus::AwaitingTask` exists in code but is not in the RFC's target
+  status set (`agent-lifecycle-control-posture.md`).
+- `AgentLifecycleHint` retains `resume_*` fields from the deprecated Pause/Resume
+  model. See [issue #1378](https://github.com/holon-run/holon/issues/1378).
+- `AgentSchedulingPosture::Archived` is used (for `Stopped` agents) contrary
+  to the previous spec claim of "Not currently used".
