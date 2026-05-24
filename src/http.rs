@@ -2705,8 +2705,10 @@ fn is_text_content_type(content_type: &str) -> bool {
 pub async fn generic_webhook(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     enqueue_internal(
         state,
         agent_id,

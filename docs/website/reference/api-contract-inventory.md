@@ -12,7 +12,7 @@ recording the route list, request parameters, response shapes, and contract
 gaps that need stabilization before scripts and integrations can rely on the
 API long term.
 
-- **Last reviewed against:** `holon` v0.14.1, `main` at `e544c35`.
+- **Last reviewed against:** `holon` v0.14.1, `main` at `77fe575`.
 - **Primary source:** `src/http.rs` Axum router and request/response structs.
 - **Generated schema:** [`openapi.json`](./openapi.json), produced by
   `holon::openapi::generate_openapi_json()` and checked by
@@ -45,6 +45,16 @@ API long term.
 | Bearer auth | When `require_control_token` is true, read routes and `/control/*` routes require `Authorization: Bearer <token>`. | Candidate stable |
 | Local mode | When no control token is required, the server trusts the local process boundary. | Candidate stable, but should be tied to explicit deployment guidance |
 | Callback capability tokens | `/callbacks/*/:callback_token` routes authenticate by resolving the token to an external trigger record. | Capability |
+
+### Ingress trust/auth boundaries
+
+| Ingress class | Routes | Auth boundary | Runtime provenance | Priority policy | Stability |
+|---------------|--------|---------------|--------------------|-----------------|-----------|
+| Public enqueue | `/enqueue`, `/agents/:agent_id/enqueue` | Bearer token in bearer mode; local process boundary in local mode. | Accepts only channel or webhook origins. Caller-provided `trust` is rejected. Channel origins become untrusted external evidence; webhook origins become integration signals. Runtime-owned message kinds are rejected. | Allows `next`, `normal`, and `background`; rejects `interject`. | Candidate stable |
+| Callback capability | `/callbacks/wake/:callback_token`, `/callbacks/enqueue/:callback_token` | Capability token in path must resolve to an active external trigger and match the route delivery mode. Full callback URLs are secrets. | Admitted as an external-trigger capability and integration signal. Wake mode emits a runtime-owned inspection tick rather than trusting the payload as an operator instruction. | Caller does not choose queue priority. | Capability |
+| Operator transport binding | `/control/agents/:agent_id/operator-bindings` | Control auth. Delivery bearer token is validated on input and redacted in audit events. | Records the binding used by remote operator ingress and delivery callbacks. | N/A. | Experimental |
+| Operator transport ingress | `/control/agents/:agent_id/operator-ingress` | Control auth plus active binding, matching agent, matching actor, and matching provider when supplied. | Enqueues a trusted operator prompt with `operator_instruction` authority and remote-operator transport metadata. | Always `interject`. | Experimental |
+| Generic webhook compatibility | `/webhooks/generic/:agent_id` | Bearer token in bearer mode; local process boundary in local mode. | Converts the JSON payload into a trusted-integration webhook event from `generic_webhook`; route ignores caller-supplied provenance because the whole body is the payload. | Always `normal`. | Internal/debug |
 
 ### Common JSON and response behavior
 
@@ -201,7 +211,7 @@ called stable.
 |--------|------|--------|------------------|-----------|-------|
 | `POST` | `/enqueue` | `EnqueueRequest`; auth header when bearer mode is active. | `{ ok, agent_id, message_id }` | Candidate stable | Enqueues to the default agent. |
 | `POST` | `/agents/:agent_id/enqueue` | Path `agent_id`; `EnqueueRequest`; auth header when bearer mode is active. | `{ ok, agent_id, message_id }` | Candidate stable | Public callers may not set `trust` or `interject` priority. |
-| `POST` | `/webhooks/generic/:agent_id` | Path `agent_id`; JSON payload. | `{ ok, agent_id, message_id }` | Internal/debug | Converts the payload into a trusted integration webhook event. Needs explicit security posture before stable use. |
+| `POST` | `/webhooks/generic/:agent_id` | Path `agent_id`; JSON payload; auth header when bearer mode is active. | `{ ok, agent_id, message_id }` | Internal/debug | Compatibility/debug route that converts the payload into a trusted integration webhook event. Prefer public enqueue or callback capabilities for new integrations. |
 
 `EnqueueRequest` fields:
 
@@ -332,9 +342,10 @@ treated as schema surfaces, not incidental Rust structs:
    routes.
 5. **Timer lifecycle APIs are incomplete.** HTTP can create and list timers, but
    lacks cancellation or detail routes.
-6. **Security posture for public ingress needs clearer boundaries.** Public
-   enqueue, generic webhooks, operator bindings, and capability callbacks should
-   have a single trust/auth table with explicit deployment guidance.
+6. **Deployment guidance still needs hardening.** The HTTP ingress trust/auth
+   table is documented, but production-facing guidance should still describe
+   when to use bearer mode, local mode, callback capabilities, and dedicated
+   operator adapters.
 7. **Tool schema is a separate API surface.** Built-in tool input/result schemas
    are not covered by this HTTP inventory and need their own stability
    inventory.
