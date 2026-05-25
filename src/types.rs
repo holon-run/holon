@@ -2835,22 +2835,6 @@ pub struct UseWorkspaceResult {
     pub summary_text: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EnterWorkspaceResult {
-    pub workspace_id: String,
-    pub projection_kind: String,
-    pub access_mode: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary_text: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExitWorkspaceResult {
-    pub exited: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary_text: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskStopResult {
     pub task: TaskRecord,
