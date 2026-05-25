@@ -192,8 +192,10 @@ that visibly affect CLI behavior while invoking commands.
 
 1. **JSON responses are not uniformly normalized.** Some commands use
    `print_json` while others print raw HTTP response bodies.
-2. **Exit codes are implicit.** Clap and `anyhow` failures produce non-zero
-   exits, but command-specific exit-code guarantees are not documented.
+2. **Exit codes now have a baseline process contract.** See
+   [CLI exit codes](./cli-exit-codes.md). Command-specific business-state
+   promotion to non-zero exits remains intentionally opt-in and must be
+   documented per command.
 3. **Machine-readable outputs need schema owners.** CLI JSON often mirrors
    control-plane/runtime structs. The API inventory should decide which fields
    are stable, diagnostic, or internal.
@@ -215,7 +217,7 @@ milestone:
 | Priority | Issue | Scope |
 |---:|---|---|
 | 0 | [#1388](https://github.com/holon-run/holon/issues/1388) | Normalize or explicitly document raw HTTP response output paths. |
-| 0 | [#1389](https://github.com/holon-run/holon/issues/1389) | Define and test CLI exit-code behavior. |
+| 0 | [#1389](https://github.com/holon-run/holon/issues/1389) | Define and test baseline CLI exit-code behavior. |
 | 0 | [#1390](https://github.com/holon-run/holon/issues/1390) | Add normalized command tree snapshot tests. |
 | 0 | [#1391](https://github.com/holon-run/holon/issues/1391) | Publish CLI stability levels and support policy. |
 | 1 | [#1392](https://github.com/holon-run/holon/issues/1392) | Add task lifecycle management commands. |
@@ -232,7 +234,7 @@ milestone:
 | 1 | `--json` smoke tests for `run`/`solve` with a fake provider or fixture | Confirm machine-readable mode remains parseable. |
 | 2 | Config command golden JSON for `get`, `set`, `unset`, `schema`, provider remove, credential list/remove | Lock offline scripting surfaces. |
 | 2 | Daemon/status/log JSON shape tests | Lock local operations surfaces. |
-| 2 | Error behavior tests for invalid flags, invalid provider config, and missing token cases | Establish exit-code and stderr expectations. |
+| 2 | More error behavior tests for missing token and command-specific business states | Extend the baseline exit-code contract where commands promote domain failures to process failures. |
 | 3 | Normalize or document raw HTTP-body commands (`task`, `timer`, `agent create/abort`, skills install/uninstall) | Reduce output contract drift. |
 
 ## Follow-up inventory scope
