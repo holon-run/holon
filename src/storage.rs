@@ -782,6 +782,29 @@ impl AppStorage {
         Ok(latest.into_values().collect())
     }
 
+    pub fn latest_work_items_for_agent(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkItemRecord>> {
+        if limit == 0 || !self.work_items_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut seen = std::collections::BTreeSet::<String>::new();
+        let mut records = Vec::<WorkItemRecord>::new();
+        scan_jsonl_reverse::<WorkItemRecord, _>(&self.work_items_path, |record| {
+            if !seen.insert(record.id.clone()) {
+                return records.len() < limit;
+            }
+            if record.agent_id == agent_id {
+                records.push(record);
+            }
+            records.len() < limit
+        })?;
+        Ok(records)
+    }
+
     pub fn work_queue_prompt_projection(&self) -> Result<WorkQueuePromptProjection> {
         if !self.work_items_path.exists() {
             return Ok(WorkQueuePromptProjection::default());
@@ -1251,6 +1274,12 @@ impl AppStorage {
             latest.insert(record.id.clone(), record);
         }
         Ok(latest.into_values().collect())
+    }
+
+    pub fn latest_timer_record(&self, timer_id: &str) -> Result<Option<TimerRecord>> {
+        read_latest_jsonl_matching(&self.timers_path, |record: &TimerRecord| {
+            record.id == timer_id
+        })
     }
 
     pub fn latest_waiting_intents(&self) -> Result<Vec<WaitingIntentRecord>> {
@@ -3224,6 +3253,80 @@ mod tests {
         assert_eq!(latest[0].id, item.id);
         assert_eq!(latest[0].state, WorkItemState::Open);
         assert_eq!(latest[0].blocked_by.as_deref(), Some("working"));
+    }
+
+    #[test]
+    fn storage_latest_work_items_for_agent_scans_tail_until_limit() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        fs::write(
+            &storage.work_items_path,
+            "{not valid json and should not be parsed}\n",
+        )
+        .unwrap();
+        let older = WorkItemRecord::new("default", "older", WorkItemState::Open);
+        let mut updated = older.clone();
+        updated.objective = "updated".into();
+        updated.updated_at = Utc::now();
+        let other_agent = WorkItemRecord::new("other", "other agent", WorkItemState::Open);
+        let newest = WorkItemRecord::new("default", "newest", WorkItemState::Open);
+
+        storage.append_work_item(&older).unwrap();
+        storage.append_work_item(&updated).unwrap();
+        storage.append_work_item(&other_agent).unwrap();
+        storage.append_work_item(&newest).unwrap();
+
+        let latest = storage.latest_work_items_for_agent("default", 2).unwrap();
+        let objectives = latest
+            .iter()
+            .map(|item| item.objective.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(objectives, vec!["newest", "updated"]);
+    }
+
+    #[test]
+    fn storage_latest_timer_record_scans_from_tail_for_id() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        fs::write(
+            &storage.timers_path,
+            "{not valid json and should not be parsed}\n",
+        )
+        .unwrap();
+        let now = Utc::now();
+        let older = TimerRecord {
+            id: "timer-1".into(),
+            agent_id: "default".into(),
+            created_at: now,
+            duration_ms: 1000,
+            interval_ms: None,
+            repeat: false,
+            status: crate::types::TimerStatus::Active,
+            summary: Some("older".into()),
+            next_fire_at: Some(now),
+            last_fired_at: None,
+            fire_count: 0,
+        };
+        let mut updated = older.clone();
+        updated.status = crate::types::TimerStatus::Completed;
+        updated.summary = Some("updated".into());
+        let other = TimerRecord {
+            id: "timer-2".into(),
+            summary: Some("other".into()),
+            ..older.clone()
+        };
+
+        storage.append_timer(&older).unwrap();
+        storage.append_timer(&other).unwrap();
+        storage.append_timer(&updated).unwrap();
+
+        let latest = storage
+            .latest_timer_record("timer-1")
+            .unwrap()
+            .expect("timer should be found");
+        assert_eq!(latest.status, crate::types::TimerStatus::Completed);
+        assert_eq!(latest.summary.as_deref(), Some("updated"));
     }
 
     #[test]
