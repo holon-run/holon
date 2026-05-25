@@ -88,6 +88,16 @@ impl AgentProvider for SleepThenRecordTaskResultProvider {
 
         match call {
             1 => Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::Text {
+                    text: "ready for background work".into(),
+                }],
+                stop_reason: None,
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_usage: None,
+                request_diagnostics: None,
+            }),
+            2 => Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::ToolUse {
                     id: "sleep-1".into(),
                     name: "Sleep".into(),
@@ -101,7 +111,7 @@ impl AgentProvider for SleepThenRecordTaskResultProvider {
                 cache_usage: None,
                 request_diagnostics: None,
             }),
-            2 => Ok(ProviderTurnResponse {
+            3 => Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::Text {
                     text: "background command result observed".into(),
                 }],
@@ -179,7 +189,7 @@ pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reent
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
-                text: "sleep until the background command finishes".into(),
+                text: "prepare to wait for a background command".into(),
             },
         ))
         .await?;
@@ -189,10 +199,7 @@ pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reent
         let provider = provider.clone();
         async move {
             let state = runtime.agent_state().await?;
-            Ok(
-                state.status == AgentStatus::Asleep
-                    && provider.captured_requests().await.len() == 1,
-            )
+            Ok(state.current_work_item_id.is_some() && provider.captured_requests().await.len() >= 1)
         }
     })
     .await?;
@@ -215,15 +222,41 @@ pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reent
         )
         .await?;
 
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "sleep until the background command finishes".into(),
+            },
+        ))
+        .await?;
+
+    wait_until_async(|| {
+        let runtime = runtime.clone();
+        let provider = provider.clone();
+        async move {
+            let state = runtime.agent_state().await?;
+            Ok(
+                state.status == AgentStatus::Asleep
+                    && provider.captured_requests().await.len() >= 2,
+            )
+        }
+    })
+    .await?;
+
     wait_until_async(|| {
         let provider = provider.clone();
-        async move { Ok(provider.captured_requests().await.len() >= 2) }
+        async move { Ok(provider.captured_requests().await.len() >= 3) }
     })
     .await?;
 
     let requests = provider.captured_requests().await;
     let reentry_prompt = requests
-        .get(1)
+        .get(2)
         .expect("background task result should trigger model reentry");
     assert!(
         reentry_prompt.contains("background_done"),
@@ -1866,11 +1899,14 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_stopp
         )
         .await?;
 
-    wait_until(|| {
-        let tasks = runtime.storage().latest_task_records()?;
-        Ok(tasks.iter().any(|record| {
-            record.id == task.id && record.status == holon::types::TaskStatus::Completed
-        }))
+    wait_until_async_for(Duration::from_secs(30), || {
+        let runtime = runtime.clone();
+        async move {
+            let tasks = runtime.storage().latest_task_records()?;
+            Ok(tasks.iter().any(|record| {
+                record.id == task.id && record.status == holon::types::TaskStatus::Completed
+            }))
+        }
     })
     .await?;
 

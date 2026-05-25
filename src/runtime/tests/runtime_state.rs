@@ -488,8 +488,7 @@ async fn indefinite_sleep_with_runnable_work_item_and_background_command_task_al
 }
 
 #[tokio::test]
-async fn indefinite_sleep_with_background_command_task_and_queued_runnable_emits_selection_tick(
-) {
+async fn indefinite_sleep_with_background_command_task_and_queued_runnable_emits_selection_tick() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
