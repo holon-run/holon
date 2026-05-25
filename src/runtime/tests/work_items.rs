@@ -5,7 +5,10 @@ use crate::types::{
     WorkItemReadiness, WorkItemSchedulingState, AGENT_HOME_WORKSPACE_ID,
 };
 
-fn blocking_task_for_work_item(task_id: &str, work_item_id: Option<&str>) -> TaskRecord {
+fn legacy_blocking_payload_task_for_work_item(
+    task_id: &str,
+    work_item_id: Option<&str>,
+) -> TaskRecord {
     TaskRecord {
         id: task_id.into(),
         agent_id: "default".into(),
@@ -15,7 +18,7 @@ fn blocking_task_for_work_item(task_id: &str, work_item_id: Option<&str>) -> Tas
         updated_at: Utc::now(),
         parent_message_id: None,
         work_item_id: work_item_id.map(ToString::to_string),
-        summary: Some("blocking command".into()),
+        summary: Some("legacy blocking command".into()),
         detail: Some(serde_json::json!({
             "wait_policy": "blocking",
             "work_item_id": work_item_id,
@@ -246,7 +249,7 @@ async fn work_queue_projection_derives_scheduling_state_per_work_item() {
         .unwrap();
     runtime
         .storage()
-        .append_task(&blocking_task_for_work_item(
+        .append_task(&legacy_blocking_payload_task_for_work_item(
             "task-wait",
             Some(&task_wait.id),
         ))
@@ -266,10 +269,7 @@ async fn work_queue_projection_derives_scheduling_state_per_work_item() {
         state_for(&external.id),
         WorkItemSchedulingState::WaitingExternal
     );
-    assert_eq!(
-        state_for(&task_wait.id),
-        WorkItemSchedulingState::WaitingTask
-    );
+    assert_eq!(state_for(&task_wait.id), WorkItemSchedulingState::Runnable);
     assert!(projection
         .queued_runnable
         .iter()
@@ -669,11 +669,11 @@ async fn work_item_completion_ignores_running_tasks_and_clears_explicit_waits() 
         .create_work_item("other".into(), None, None, Vec::new())
         .await
         .unwrap();
-    let related_task = blocking_task_for_work_item("task-target", Some(&target.id));
+    let related_task = legacy_blocking_payload_task_for_work_item("task-target", Some(&target.id));
     runtime.storage().append_task(&related_task).unwrap();
-    let unrelated_task = blocking_task_for_work_item("task-other", Some(&other.id));
+    let unrelated_task = legacy_blocking_payload_task_for_work_item("task-other", Some(&other.id));
     runtime.storage().append_task(&unrelated_task).unwrap();
-    let unscoped_task = blocking_task_for_work_item("task-unscoped", None);
+    let unscoped_task = legacy_blocking_payload_task_for_work_item("task-unscoped", None);
     runtime.storage().append_task(&unscoped_task).unwrap();
 
     let completed = runtime

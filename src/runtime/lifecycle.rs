@@ -1531,33 +1531,32 @@ mod tests {
     }
 
     #[test]
-    fn child_blocked_reason_prioritizes_cancelling_then_running_then_queued() {
+    fn child_blocked_reason_ignores_background_tasks() {
         let queued = task_with_wait_policy(
             "queued",
             TaskStatus::Queued,
-            crate::types::TaskWaitPolicy::Blocking,
+            crate::types::TaskWaitPolicy::Background,
         );
         let running = task_with_wait_policy(
             "running",
             TaskStatus::Running,
-            crate::types::TaskWaitPolicy::Blocking,
+            crate::types::TaskWaitPolicy::Background,
         );
         let cancelling = task_with_wait_policy(
             "cancelling",
             TaskStatus::Cancelling,
-            crate::types::TaskWaitPolicy::Blocking,
+            crate::types::TaskWaitPolicy::Background,
         );
         let active = vec![&queued, &running, &cancelling];
 
         assert_eq!(
             child_blocked_reason(&AgentStatus::AwakeRunning, &active),
-            Some(ChildAgentBlockedReason::ManagedTaskCancelling)
+            None
         );
 
-        let active = vec![&queued, &running];
         assert_eq!(
-            child_blocked_reason(&AgentStatus::AwakeRunning, &active),
-            Some(ChildAgentBlockedReason::ManagedTaskRunning)
+            child_blocked_reason(&AgentStatus::AwaitingTask, &active),
+            Some(ChildAgentBlockedReason::AwaitingManagedTask)
         );
     }
 

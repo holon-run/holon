@@ -878,7 +878,7 @@ async fn latest_task_list_entries_return_compact_projection() {
     assert_eq!(entries[0].summary.as_deref(), Some("watch logs"));
     assert_eq!(
         entries[0].wait_policy,
-        crate::types::TaskWaitPolicy::Blocking
+        crate::types::TaskWaitPolicy::Background
     );
     let command = entries[0]
         .command

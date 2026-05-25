@@ -1,15 +1,15 @@
 ---
 title: Tasks
-summary: Current task lifecycle, background blocking, terminal re-entry, and command/child-agent supervision contract.
+summary: Current task lifecycle, terminal re-entry, and command/child-agent supervision contract.
 order: 50
 ---
 
 # Tasks
 
 This page defines the current contract for managed task execution: lifecycle,
-blocking behavior, terminal re-entry, and supervision surfaces.
+terminal re-entry, and supervision surfaces.
 
-> **Last verified:** 2026-05-23 against `src/types.rs` `TaskRecord`,
+> **Last verified:** 2026-05-25 against `src/types.rs` `TaskRecord`,
 > `TaskStatus`, `TaskKind`, `TaskHandle`, `TaskWaitPolicy`, and the tool
 > implementations in `src/tool/tools/{exec_command,task_list,task_status,
 > task_output,task_input,task_stop,spawn_agent}.rs`.
@@ -62,15 +62,15 @@ blocking behavior, terminal re-entry, and supervision surfaces.
 
 ## Wait policy
 
-Each task carries a wait policy that determines whether it blocks the agent:
+Each task carries a wait policy for task-list and task-status compatibility:
 
 | `TaskWaitPolicy` | Behavior |
 |------------------|----------|
-| `Blocking` | Agent enters `AwaitingTask` and cannot re-enter model until task terminal |
 | `Background` | Task runs independently; agent can continue turns while task is active |
 
-Child-agent tasks are always `Background`. Command tasks default to
-`Background` unless explicitly configured as `Blocking`.
+All current task kinds report `Background`. Historical task detail payloads may
+still contain `wait_policy: "blocking"`, but the runtime ignores that value for
+scheduler blocking decisions.
 
 **Key contract:**
 
@@ -112,7 +112,9 @@ Tasks are **execution handles**, not planning objects:
 Tasks often serve WorkItem objectives (running commands, delegating to child
 agents), but task lifecycle is independent of WorkItem lifecycle.
 
-## Known gaps
+## Resolved gaps
 
-- `TaskWaitPolicy::Blocking` is defined in the type system but never used in
-  practice. See [issue #1382](https://github.com/holon-run/holon/issues/1382).
+- [Issue #1382](https://github.com/holon-run/holon/issues/1382) removed the
+  unused `Blocking` task wait policy from the public/runtime contract. Waiting
+  is expressed with `Sleep` plus terminal task re-entry, or with a bounded
+  `TaskOutput(block=true)` call inside the current turn.

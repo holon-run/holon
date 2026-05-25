@@ -77,7 +77,6 @@ impl RuntimeHandle {
                 "trigger_kind": trigger.kind,
                 "contentful": trigger.contentful,
                 "task_terminal": trigger.task_terminal,
-                "task_blocking": trigger.task_blocking,
                 "wake_hint_source": trigger.wake_hint_source,
                 "prior_closure_outcome": prior_closure.outcome,
                 "prior_waiting_reason": prior_closure.waiting_reason,
@@ -259,7 +258,9 @@ impl RuntimeHandle {
                 self.emit_system_tick_from_wake_hint(&pending).await?;
 
                 #[cfg(test)]
-                crate::runtime::test_util::wait_at_checkpoint().await;
+                if crate::runtime::test_util::checkpoint_matches_agent(&self.agent_id().await?) {
+                    crate::runtime::test_util::wait_at_checkpoint().await;
+                }
 
                 let mut guard = self.inner.agent.lock().await;
                 if guard.state.pending_wake_hint.as_ref() == Some(&pending) {

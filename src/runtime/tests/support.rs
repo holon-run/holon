@@ -494,6 +494,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                         name: "ExecCommand".into(),
                         input: serde_json::json!({
                             "cmd": "printf 'first-round-output-should-not-stay-exact'",
+                            "yield_time_ms": 30000,
                         }),
                     },
                 ],
@@ -513,6 +514,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                         name: "ExecCommand".into(),
                         input: serde_json::json!({
                             "cmd": "printf 'second-round-output-should-remain-exact'",
+                            "yield_time_ms": 30000,
                         }),
                     },
                 ],
@@ -532,6 +534,7 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                         name: "ExecCommand".into(),
                         input: serde_json::json!({
                             "cmd": "printf 'third-round-output-should-remain-exact'",
+                            "yield_time_ms": 30000,
                         }),
                     },
                 ],

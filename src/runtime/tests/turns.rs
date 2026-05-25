@@ -592,7 +592,8 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
             .expect("missing deterministic recap after compaction");
         assert!(recap.contains("Round 1"), "unexpected recap: {recap}");
         assert!(
-            recap.contains("ExecCommand completed exit_status=0"),
+            recap.contains("ExecCommand completed exit_status=0")
+                || recap.contains("ExecCommand promoted_to_task"),
             "unexpected recap: {recap}"
         );
         assert!(!recap.contains("first-round-output-should-not-stay-exact"));

@@ -1271,9 +1271,6 @@ fn presentation_debug_items_for_event(
     Vec<ProjectionEventRecord>,
     Vec<crate::presentation::TimedItem>,
 ) {
-    if record.kind == "process_execution_requested" {
-        return (Vec::new(), Vec::new());
-    }
     if matches!(
         record.kind.as_str(),
         "tool_executed" | "tool_execution_failed"
@@ -1281,8 +1278,7 @@ fn presentation_debug_items_for_event(
         if let Some(previous) = event_log
             .iter()
             .rev()
-            .nth(1)
-            .filter(|event| event.kind == "process_execution_requested")
+            .find(|event| event.id != record.id && event.kind == "process_execution_requested")
         {
             let reducer_events = vec![previous.clone(), record.clone()];
             let mut reducer = crate::presentation::PresentationReducer::new();

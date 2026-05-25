@@ -1044,19 +1044,21 @@ impl AppStorage {
             .iter()
             .find(|item| item.scheduling_state == WorkItemSchedulingState::WaitingTask)
         {
+            let task_id = self
+                .latest_wait_conditions()?
+                .into_iter()
+                .find(|condition| {
+                    condition.status == WaitConditionStatus::Active
+                        && condition.kind == WaitConditionKind::Task
+                        && condition.work_item_id.as_deref() == Some(item.work_item.id.as_str())
+                })
+                .and_then(|condition| condition.subject_ref);
             return Ok(AgentPostureProjection {
                 posture: AgentSchedulingPosture::WaitingForTask,
                 reason: item.posture_reason(),
                 work_item_id: Some(item.work_item.id.clone()),
                 waiting_intent_id: None,
-                task_id: self
-                    .latest_active_task_records_for_agent(&agent.id, usize::MAX)?
-                    .into_iter()
-                    .find(|task| {
-                        task.is_blocking()
-                            && task.effective_work_item_id() == Some(item.work_item.id.as_str())
-                    })
-                    .map(|task| task.id),
+                task_id,
                 run_id: None,
             });
         }
@@ -2989,22 +2991,27 @@ mod tests {
         );
 
         let mut task_wait = WorkItemRecord::new("default", "task", WorkItemState::Open);
-        task_wait.blocked_by = Some("command task".into());
         task_wait.updated_at = now + chrono::Duration::seconds(3);
         storage.append_work_item(&task_wait).unwrap();
         storage
-            .append_task(&TaskRecord {
-                id: "task-1".into(),
+            .append_wait_condition(&WaitConditionRecord {
+                id: "task-condition".into(),
                 agent_id: "default".into(),
-                kind: TaskKind::CommandTask,
-                status: TaskStatus::Running,
+                work_item_id: Some(task_wait.id.clone()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::Task,
+                source: None,
+                subject_ref: Some("task-1".into()),
+                waiting_for: "task result".into(),
+                wake_sources: vec![WakeSource::TaskResult {
+                    task_id: "task-1".into(),
+                }],
+                continuation: None,
                 created_at: now,
                 updated_at: now,
-                parent_message_id: None,
-                work_item_id: Some(task_wait.id.clone()),
-                summary: Some("blocking task".into()),
-                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
-                recovery: None,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
             })
             .unwrap();
         let task_projection = storage.agent_posture_projection(&agent).unwrap();

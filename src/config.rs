@@ -3898,7 +3898,7 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::MutexGuard;
 
     use serde_json::{json, Value};
     use tempfile::tempdir;
@@ -3920,8 +3920,6 @@ mod tests {
         ProviderBuiltinWebSearchConfig, ProviderConfigFile, ProviderId, ProviderRegistry,
         ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID,
     };
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvVarSnapshot {
         key: &'static str,
@@ -3969,12 +3967,9 @@ mod tests {
         }
 
         fn new() -> Self {
-            let lock = ENV_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
             Self {
                 snapshots: Vec::new(),
-                _lock: lock,
+                _lock: crate::test_env::lock_env(),
             }
         }
 

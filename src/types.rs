@@ -741,7 +741,6 @@ pub struct ClosureDecision {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskWaitPolicy {
-    Blocking,
     Background,
 }
 
@@ -2275,30 +2274,12 @@ pub struct TaskRecord {
 
 impl TaskRecord {
     pub fn wait_policy(&self) -> TaskWaitPolicy {
-        if self.kind.is_legacy_child_agent_compat()
-            || self.kind == TaskKind::ChildAgentTask
-            || self.recovery.as_ref().is_some_and(|recovery| {
-                recovery.is_legacy_child_agent_compat()
-                    || matches!(recovery, TaskRecoverySpec::ChildAgentTask { .. })
-            })
-        {
-            return TaskWaitPolicy::Background;
-        }
-
-        self.detail
-            .as_ref()
-            .and_then(|detail| detail.get("wait_policy"))
-            .and_then(|value| value.as_str())
-            .map(|value| match value {
-                "blocking" => TaskWaitPolicy::Blocking,
-                _ => TaskWaitPolicy::Background,
-            })
-            .or_else(|| self.recovery.as_ref().map(TaskRecoverySpec::wait_policy))
-            .unwrap_or(TaskWaitPolicy::Background)
+        // Active tasks are never scheduler-blocking; terminal results drive re-entry.
+        TaskWaitPolicy::Background
     }
 
     pub fn is_blocking(&self) -> bool {
-        self.wait_policy() == TaskWaitPolicy::Blocking
+        false
     }
 
     pub fn terminal_reentry(&self) -> bool {

@@ -38,4 +38,7 @@ pub mod web;
 pub mod work_item_plan;
 
 #[cfg(test)]
+mod test_env;
+
+#[cfg(test)]
 mod worktree_tests;

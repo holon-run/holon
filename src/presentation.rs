@@ -1093,6 +1093,21 @@ fn exec_command_preview(event: &ProjectionEventRecord) -> Option<String> {
         .get("exec_command_cmd")
         .and_then(|v| v.as_str())
         .or_else(|| event.payload.get("cmd").and_then(|v| v.as_str()))
+        .or_else(|| event.payload.get("cmd_preview").and_then(|v| v.as_str()))
+        .or_else(|| {
+            event
+                .payload
+                .get("command_cost")
+                .and_then(|v| v.get("cmd_preview"))
+                .and_then(|v| v.as_str())
+        })
+        .or_else(|| {
+            event
+                .payload
+                .get("exec_command_cost")
+                .and_then(|v| v.get("cmd_preview"))
+                .and_then(|v| v.as_str())
+        })
         .map(|s| s.to_string())
 }
 

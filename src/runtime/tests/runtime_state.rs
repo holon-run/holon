@@ -15,22 +15,26 @@ struct OperatorInterjectionProbeProvider {
     first_tool_round: Arc<tokio::sync::Notify>,
 }
 
-fn blocking_task_for_work_item(task_id: &str, work_item_id: Option<&str>) -> TaskRecord {
-    TaskRecord {
-        id: task_id.into(),
+fn task_wait_condition_for_work_item(task_id: &str, work_item_id: &str) -> WaitConditionRecord {
+    let now = Utc::now();
+    WaitConditionRecord {
+        id: format!("wait-{task_id}"),
         agent_id: "default".into(),
-        kind: TaskKind::CommandTask,
-        status: TaskStatus::Running,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        parent_message_id: None,
-        work_item_id: work_item_id.map(ToString::to_string),
-        summary: Some("blocking command".into()),
-        detail: Some(serde_json::json!({
-            "wait_policy": "blocking",
-            "work_item_id": work_item_id,
-        })),
-        recovery: None,
+        work_item_id: Some(work_item_id.into()),
+        status: WaitConditionStatus::Active,
+        kind: WaitConditionKind::Task,
+        source: None,
+        subject_ref: Some(task_id.into()),
+        waiting_for: "task result".into(),
+        wake_sources: vec![WakeSource::TaskResult {
+            task_id: task_id.into(),
+        }],
+        continuation: None,
+        created_at: now,
+        updated_at: now,
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: None,
     }
 }
 
@@ -502,7 +506,7 @@ async fn indefinite_sleep_with_waiting_operator_or_task_work_item_can_sleep() {
         } else {
             runtime
                 .storage()
-                .append_task(&blocking_task_for_work_item("task-wait", Some(&work.id)))
+                .append_wait_condition(&task_wait_condition_for_work_item("task-wait", &work.id))
                 .unwrap();
         }
         {
@@ -2250,7 +2254,8 @@ async fn batch_command_reading_discovered_skill_marks_it_active() {
                 "items": [
                     {
                         "cmd": "sed -n '1,8p' .agents/skills/demo/SKILL.md",
-                        "workdir": "."
+                        "workdir": ".",
+                        "yield_time_ms": 30000
                     }
                 ]
             }),
@@ -2504,8 +2509,10 @@ fn runtime_failure_summary_truncates_exact_budget_before_ellipsis() {
 fn wake_hint_preserved_when_replaced_during_critical_window() {
     use tokio::runtime::Runtime;
 
+    let agent_id = "wake-hint-preserved-critical-window";
+
     // Enable checkpoint mechanism for this test
-    crate::runtime::test_util::enable_checkpoint();
+    crate::runtime::test_util::enable_checkpoint_for_agent(agent_id);
 
     // RAII guard to ensure checkpoint is disabled even on panic
     struct CheckpointGuard;
@@ -2522,7 +2529,7 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
     let rt = Runtime::new().unwrap();
 
     // Create agent with idle status and an initial wake hint
-    let mut agent = AgentState::new("default");
+    let mut agent = AgentState::new(agent_id);
     agent.status = AgentStatus::AwakeIdle;
     agent.pending_wake_hint = Some(PendingWakeHint {
         reason: "original-hint".into(),
@@ -2541,7 +2548,7 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
     storage.write_agent(&agent).unwrap();
 
     let runtime = RuntimeHandle::new(
-        "default",
+        agent_id,
         dir.path().to_path_buf(),
         workspace.path().to_path_buf(),
         "http://127.0.0.1:7878".into(),
