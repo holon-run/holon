@@ -52,6 +52,9 @@ holon (v0.14.0)
 │   ├── output   Read task output
 │   ├── input    Send text input to a task
 │   └── stop     Stop a task
+├── work-item    Inspect WorkItems
+│   ├── list     List WorkItems
+│   └── get      Show a WorkItem
 ├── timer        Create a delayed or recurring timer
 ├── control      [deprecated] use `holon agent start|stop|abort`
 ├── agent        Agent management
@@ -191,6 +194,21 @@ Task lifecycle commands default to the configured default agent. Pass
 `--agent <AGENT>` to inspect or control a task owned by a different public
 agent. All task lifecycle commands print the corresponding JSON control-plane
 or read-model response.
+
+### WorkItems
+
+```bash
+holon work-item list
+holon work-item list --limit 10 --agent planner
+holon work-item get <WORK_ITEM_ID>
+holon work-item get <WORK_ITEM_ID> --agent planner
+```
+
+The initial WorkItem CLI surface is read-only. It prints the HTTP read-model
+`WorkItemRecord` JSON shape returned by `/agents/:agent_id/work-items` and
+`/agents/:agent_id/work-items/:work_item_id`. Mutating commands such as create,
+update, pick, and complete remain intentionally deferred until their API
+contracts are stabilized.
 
 ### Terminal UI
 

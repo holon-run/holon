@@ -114,6 +114,8 @@ These commands require a reachable local control plane unless noted otherwise.
 | `holon task output` | `<TASK_ID>` | `--block`; `--timeout-ms <MS>`; `--agent <AGENT>` | pretty JSON `TaskOutputResult` | `experimental` | Output preview length follows the task's creation-time `--max-output-tokens`; this command controls readiness waiting only. |
 | `holon task input` | `<TASK_ID>` | required `--text <TEXT>`; `--agent <AGENT>` | pretty JSON `TaskInputResult` | `experimental` | Sends trusted operator text to command-task stdin/TTY or supervised child-agent follow-up input. |
 | `holon task stop` | `<TASK_ID>` | `--agent <AGENT>` | pretty JSON `TaskStopResult` | `experimental` | Requests managed-task cancellation through the control plane. |
+| `holon work-item list` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | pretty JSON array of `WorkItemRecord` | `experimental` | Initial WorkItem CLI surface is read-only. The JSON schema owner is the HTTP/API `WorkItemRecord` read model returned by `/agents/:agent_id/work-items`. |
+| `holon work-item get` | `<WORK_ITEM_ID>` | `--agent <AGENT>` | pretty JSON `WorkItemRecord` | `experimental` | Reads a single work item through `/agents/:agent_id/work-items/:work_item_id`; create/update/pick/complete commands are deferred until those mutation API contracts are stabilized. |
 | `holon timer` | none | required `--after-ms <MS>`; `--every-ms <MS>`; `--summary <SUMMARY>`; `--agent <AGENT>` | pretty JSON control-plane response | `experimental` | Timer surface should be aligned with WorkItem/waiting-plane contract. |
 
 ### Agent lifecycle and model selection

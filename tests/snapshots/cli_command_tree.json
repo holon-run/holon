@@ -1396,6 +1396,54 @@
     "aliases": []
   },
   {
+    "path": "work-item",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "work-item.get",
+    "positionals": [
+      {
+        "name": "work_item_id",
+        "value_name": "WORK_ITEM_ID",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "work-item.list",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "limit",
+        "short": null,
+        "default_value": "50",
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "workspace",
     "positionals": [],
     "flags": [],

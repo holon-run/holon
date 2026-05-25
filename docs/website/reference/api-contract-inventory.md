@@ -243,7 +243,9 @@ called stable.
 | Method | Path | Request body | Success response | Stability | Notes |
 |--------|------|--------------|------------------|-----------|-------|
 | `POST` | `/control/agents/:agent_id/tasks` | `CreateCommandTaskRequest` | `TaskRecord` | Candidate stable for creation; Gap for lifecycle management | `serde(deny_unknown_fields)` rejects legacy fields. |
-| `POST` | `/control/agents/:agent_id/work-items` | `{ objective, trust? }` | `WorkItemRecord` | Experimental | Only creates/enqueues work items; no HTTP get/update/complete API yet. |
+| `GET` | `/agents/:agent_id/work-items` | none | `WorkItemRecord[]` | Experimental read model; CLI schema owner | Query parameter: `limit`; used by `holon work-item list`. |
+| `GET` | `/agents/:agent_id/work-items/:work_item_id` | none | `WorkItemRecord` | Experimental read model; CLI schema owner | Used by `holon work-item get`; returns 404 when the id is not found for the target agent. |
+| `POST` | `/control/agents/:agent_id/work-items` | `{ objective, trust? }` | `WorkItemRecord` | Experimental | Only creates/enqueues work items; update/pick/complete APIs remain deferred. |
 | `POST` | `/control/agents/:agent_id/timers` | `{ duration_ms, interval_ms?, summary?, trust? }` | `TimerRecord` | Candidate stable for creation; Gap for cancellation/list detail | `duration_ms` is required; `interval_ms` makes a repeating timer. |
 
 `CreateCommandTaskRequest` fields:
@@ -337,9 +339,9 @@ treated as schema surfaces, not incidental Rust structs:
 3. **Task lifecycle APIs are incomplete.** HTTP can create and list tasks, but
    lacks task status/output/input/stop routes that correspond to runtime tool
    operations.
-4. **WorkItem APIs are incomplete.** HTTP can create/enqueue work items and
-   include them in state snapshots, but lacks list/get/update/pick/complete
-   routes.
+4. **WorkItem mutation APIs are incomplete.** HTTP can list/get/create/enqueue
+   work items and include them in state snapshots, but update/pick/complete
+   routes remain deferred.
 5. **Timer lifecycle APIs are incomplete.** HTTP can create and list timers, but
    lacks cancellation or detail routes.
 6. **Deployment guidance still needs hardening.** The HTTP ingress trust/auth
