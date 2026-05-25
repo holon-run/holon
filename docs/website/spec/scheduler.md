@@ -118,8 +118,8 @@ WorkItems flow through scheduling states that the scheduler consumes:
 | `Blocked` | `blocked_by` set | Not runnable; check `recheck_at` |
 | `WaitingTask` | Wait condition on task result | Wake on task terminal |
 | `WaitingExternal` | Wait condition on external event | Wake on external trigger |
-| `WaitingTimer` | Runtime timer wait | Wake when timer or recheck fires |
-| `WaitingSystem` | Runtime system-tick wait | Emit or await system tick |
+| `WaitingTimer` | Runtime timer wait | Wake when timer fires |
+| `WaitingSystem` | Runtime system-tick wait | Emit system tick |
 | `Completed` | `state=Completed` | Excluded from runnable set |
 
 ## Wake/sleep boundary
