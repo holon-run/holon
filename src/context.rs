@@ -14,7 +14,8 @@ use crate::{
         ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TodoItemState,
         ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, WaitingIntentRecord,
-        WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
+        WaitingIntentScope, WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta,
+        WorkingMemorySnapshot,
     },
 };
 
@@ -70,7 +71,7 @@ pub fn build_context(
         .latest_waiting_intents()?
         .into_iter()
         .filter(|intent| intent.agent_id == agent.id)
-        .filter(|intent| intent.scope == ExternalTriggerScope::WorkItem)
+        .filter(|intent| intent.scope == WaitingIntentScope::WorkItem)
         .filter(|intent| intent.status == WaitingIntentStatus::Active)
         .collect::<Vec<_>>();
     let episodes = storage.read_recent_context_episodes(config.recent_episode_candidates)?;
@@ -1785,7 +1786,8 @@ mod tests {
             ContextEpisodeRecord, ContinuationTriggerKind, EpisodeBoundaryReason,
             ExternalTriggerScope, LoadedAgentsMd, MessageKind, MessageOrigin, Priority, TodoItem,
             TodoItemState, ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry,
-            TranscriptEntryKind, WaitingIntentRecord, WaitingIntentStatus, WorkItemState,
+            TranscriptEntryKind, WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus,
+            WorkItemState,
         },
     };
 
@@ -2834,7 +2836,7 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait-current".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
                 description: "wait for CI webhook".into(),
                 source: "github".into(),
@@ -2855,7 +2857,7 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait-other-agent".into(),
                 agent_id: "other-agent".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
                 description: "other agent wait must not leak".into(),
                 source: "github".into(),
@@ -3087,7 +3089,7 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait-triggered".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(triggered.id.clone()),
                 description: "CI completed".into(),
                 source: "github".into(),

@@ -15,13 +15,14 @@ use serde_json::Value;
 use crate::types::{
     AgentIdentityRecord, AgentPostureProjection, AgentSchedulingPosture, AgentState, AgentStatus,
     AuditEvent, BriefRecord, ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord,
-    ExternalTriggerScope, ExternalWaitRecoverability, MessageEnvelope, OperatorDeliveryRecord,
+    ExternalWaitRecoverability, MessageEnvelope, OperatorDeliveryRecord,
     OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, QueueEntryStatus,
     TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
     TranscriptEntry, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
-    WaitingIntentRecord, WaitingIntentStatus, WakeSource, WorkItemDelegationRecord,
-    WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState,
-    WorkItemState, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
+    WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WakeSource,
+    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemReadiness, WorkItemRecord,
+    WorkItemSchedulingState, WorkItemState, WorkingMemoryDelta, WorkspaceEntry,
+    WorkspaceOccupancyRecord,
 };
 
 const RUNTIME_DIR: &str = ".holon";
@@ -836,7 +837,7 @@ impl AppStorage {
             .latest_waiting_intents()?
             .into_iter()
             .filter(|intent| intent.status == WaitingIntentStatus::Active)
-            .filter(|intent| intent.scope == ExternalTriggerScope::WorkItem)
+            .filter(|intent| intent.scope == WaitingIntentScope::WorkItem)
             .filter_map(|intent| intent.work_item_id.map(|id| (id, intent.last_triggered_at)))
             .fold(
                 std::collections::BTreeMap::<String, Option<DateTime<Utc>>>::new(),
@@ -1077,7 +1078,7 @@ impl AppStorage {
                     .into_iter()
                     .find(|intent| {
                         intent.status == WaitingIntentStatus::Active
-                            && intent.scope == ExternalTriggerScope::WorkItem
+                            && intent.scope == WaitingIntentScope::WorkItem
                             && intent.work_item_id.as_deref() == Some(item.work_item.id.as_str())
                     })
                     .map(|intent| intent.id),
@@ -2501,7 +2502,7 @@ mod tests {
         let older = WaitingIntentRecord {
             id: "wait-1".into(),
             agent_id: "default".into(),
-            scope: ExternalTriggerScope::WorkItem,
+            scope: WaitingIntentScope::WorkItem,
             work_item_id: Some("work-old".into()),
             description: "older wait".into(),
             source: "test".into(),
@@ -2549,7 +2550,7 @@ mod tests {
         let active = WaitingIntentRecord {
             id: "wait-1".into(),
             agent_id: "default".into(),
-            scope: ExternalTriggerScope::WorkItem,
+            scope: WaitingIntentScope::WorkItem,
             work_item_id: Some("work-1".into()),
             description: "waiting for github".into(),
             source: "github".into(),
@@ -2737,7 +2738,7 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "legacy-weak".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::Agent,
+                scope: WaitingIntentScope::Agent,
                 work_item_id: Some("work-legacy".into()),
                 description: "legacy weak external wait".into(),
                 source: "github".into(),
@@ -2958,7 +2959,7 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait-external".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(external.id.clone()),
                 description: "external callback".into(),
                 source: "github".into(),
@@ -3125,7 +3126,7 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait-external".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(external.id.clone()),
                 description: "external callback".into(),
                 source: "github".into(),
@@ -3487,7 +3488,7 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait-triggered".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(triggered.id.clone()),
                 description: "triggered wait".into(),
                 source: "test".into(),

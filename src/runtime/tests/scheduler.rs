@@ -2,7 +2,7 @@ use super::super::*;
 use super::support::*;
 use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, ToolExecutionStatus, WaitConditionKind,
-    WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemPlanStatus,
+    WaitConditionRecord, WaitConditionStatus, WaitingIntentScope, WakeSource, WorkItemPlanStatus,
     WorkItemSchedulingState, WorkReactivationMode,
 };
 use serde::de::DeserializeOwned;
@@ -41,7 +41,7 @@ struct TaskFixture {
 #[derive(Deserialize)]
 struct WaitingIntentFixture {
     id: String,
-    scope: ExternalTriggerScope,
+    scope: WaitingIntentScope,
     work_item_id: Option<String>,
 }
 
@@ -581,8 +581,8 @@ fn scheduler_projection_breaks_down_waiting_intent_scopes() {
     storage.write_agent(&agent).unwrap();
     let now = Utc::now();
     for (id, scope, work_item_id) in [
-        ("work-wait", ExternalTriggerScope::WorkItem, Some("work-1")),
-        ("agent-wait", ExternalTriggerScope::Agent, None),
+        ("work-wait", WaitingIntentScope::WorkItem, Some("work-1")),
+        ("agent-wait", WaitingIntentScope::Agent, None),
     ] {
         storage
             .append_waiting_intent(&WaitingIntentRecord {
@@ -628,7 +628,7 @@ fn scheduler_projection_filters_tasks_waiting_intents_and_timers_by_agent() {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: id.into(),
                 agent_id: agent_id.into(),
-                scope: ExternalTriggerScope::Agent,
+                scope: WaitingIntentScope::Agent,
                 work_item_id: None,
                 description: format!("{id} description"),
                 source: "test".into(),
@@ -700,7 +700,7 @@ fn idle_boundary_decision_prefers_controlled_status_over_wait_facts() {
         .append_waiting_intent(&WaitingIntentRecord {
             id: "wait-current".into(),
             agent_id: "default".into(),
-            scope: ExternalTriggerScope::Agent,
+            scope: WaitingIntentScope::Agent,
             work_item_id: None,
             description: "wait".into(),
             source: "test".into(),
@@ -771,7 +771,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
         .append_waiting_intent(&WaitingIntentRecord {
             id: "wait-current".into(),
             agent_id: "default".into(),
-            scope: ExternalTriggerScope::Agent,
+            scope: WaitingIntentScope::Agent,
             work_item_id: None,
             description: "unrelated wait".into(),
             source: "test".into(),
@@ -822,7 +822,7 @@ fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
         .append_waiting_intent(&WaitingIntentRecord {
             id: "agent-wait".into(),
             agent_id: "default".into(),
-            scope: ExternalTriggerScope::Agent,
+            scope: WaitingIntentScope::Agent,
             work_item_id: None,
             description: "unrelated external wait".into(),
             source: "github".into(),
@@ -1096,7 +1096,7 @@ fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
         .append_waiting_intent(&WaitingIntentRecord {
             id: "intent-missing-trigger".into(),
             agent_id: "default".into(),
-            scope: ExternalTriggerScope::Agent,
+            scope: WaitingIntentScope::Agent,
             work_item_id: None,
             description: "fixture waiting intent".into(),
             source: "github".into(),

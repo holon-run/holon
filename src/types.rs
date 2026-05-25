@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -1662,15 +1662,37 @@ pub enum CallbackDeliveryMode {
     WakeHint,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalTriggerScope {
-    WorkItem,
     Agent,
+}
+
+impl<'de> Deserialize<'de> for ExternalTriggerScope {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        match String::deserialize(deserializer)?.as_str() {
+            "agent" | "work_item" => Ok(Self::Agent),
+            other => Err(de::Error::unknown_variant(other, &["agent"])),
+        }
+    }
 }
 
 fn default_external_trigger_scope() -> ExternalTriggerScope {
     ExternalTriggerScope::Agent
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitingIntentScope {
+    WorkItem,
+    Agent,
+}
+
+fn default_waiting_intent_scope() -> WaitingIntentScope {
+    WaitingIntentScope::Agent
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1684,8 +1706,8 @@ pub enum WaitingIntentStatus {
 pub struct WaitingIntentRecord {
     pub id: String,
     pub agent_id: String,
-    #[serde(default = "default_external_trigger_scope")]
-    pub scope: ExternalTriggerScope,
+    #[serde(default = "default_waiting_intent_scope")]
+    pub scope: WaitingIntentScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_item_id: Option<String>,
     #[serde(alias = "summary")]
@@ -1926,7 +1948,7 @@ impl From<ExternalTriggerRecord> for ExternalTriggerStateSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WaitingIntentSummary {
     pub id: String,
-    pub scope: ExternalTriggerScope,
+    pub scope: WaitingIntentScope,
     pub description: String,
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]

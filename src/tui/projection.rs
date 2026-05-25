@@ -1558,8 +1558,9 @@ mod tests {
             MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
             RuntimePosture, SkillsRuntimeView, TaskRecord, TaskStatus, TimerRecord, TimerStatus,
             TodoItem, TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord,
-            WaitingIntentRecord, WaitingIntentStatus, WaitingIntentSummary, WaitingReason,
-            WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
+            WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WaitingIntentSummary,
+            WaitingReason, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
+            WorktreeSession,
         },
     };
     use chrono::Utc;
@@ -2898,7 +2899,7 @@ mod tests {
             waiting_intents: vec![WaitingIntentRecord {
                 id: "wait-1".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: None,
                 description: "wait".into(),
                 source: "github".into(),
@@ -2918,7 +2919,7 @@ mod tests {
                 external_trigger_id: "cb-1".into(),
                 target_agent_id: "default".into(),
                 waiting_intent_id: Some("wait-1".into()),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::EnqueueMessage,
                 status: ExternalTriggerStatus::Active,
                 created_at: Utc::now(),

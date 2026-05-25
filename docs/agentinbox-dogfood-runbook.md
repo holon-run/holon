@@ -36,7 +36,7 @@ This runbook covers the **Real GitHub** flow.
 
 1. AgentInbox CLI installed and configured
 2. GitHub source configured for real events (not fixture)
-3. Holon agent with callback and inbox access
+3. Holon agent with default external ingress and inbox access
 4. Active pull request to monitor
 
 ## Step-by-Step Workflow
@@ -53,22 +53,14 @@ This returns a `sourceId` like `src_github_REAL`.
 
 **Note**: If you've previously added only the fixture source, you'll need to add the real GitHub source separately.
 
-### 2. Create a Wake-Hint External Trigger
+### 2. Get the Agent Wake-Hint External Ingress
 
-Use Holon's `CreateExternalTrigger` tool within your agent to create a callback for the specific PR:
+Use the Holon agent context's `default_external_ingress` URL. This is a
+long-lived, agent-scoped wake-hint capability; do not create a separate trigger
+for a specific PR, issue, WorkItem, or wait cycle.
 
-```json
-{
-  "description": "Check AgentInbox for GitHub PR #33 review or comment activity",
-  "source": "github",
-  "scope": "agent",
-  "delivery_mode": "wake_hint"
-}
-```
-
-This returns:
-- `waiting_intent_id`: Unique identifier for this callback
-- `trigger_url`: URL like `http://127.0.0.1:7878/callbacks/wake/TOKEN`
+The URL looks like `http://127.0.0.1:7878/callbacks/wake/TOKEN` and is a
+capability secret.
 
 ### 3. Create AgentInbox Subscription
 
@@ -84,7 +76,7 @@ agentinbox subscription add <agent_id> src_github_REAL \
 
 Replace:
 - `<agent_id>` with your actual agent ID
-- `TOKEN` with the token from your trigger URL
+- `TOKEN` with the token from the agent's default wake-hint URL
 - `33` with the actual PR number
 
 **Important Parameters:**
@@ -251,21 +243,12 @@ Here's a complete example of using this runbook:
 
 When the dogfood session is complete:
 
-1. **Cancel the waiting intent** returned by `CreateExternalTrigger`:
-   ```json
-   {
-     "waiting_intent_id": "<waiting_intent_id_from_CreateExternalTrigger>"
-   }
-   ```
-
-   This uses the `CancelExternalTrigger` tool with the `waiting_intent_id` value from step 2.
-
-2. **Remove the subscription**:
+1. **Remove the subscription**:
    ```bash
    agentinbox subscription remove <subscription_id> --home ~/.agentinbox
    ```
 
-3. **Exit the worktree** (if used):
+2. **Exit the worktree** (if used):
    ```json
    {
      "action": "keep"

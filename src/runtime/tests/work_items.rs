@@ -1,8 +1,8 @@
 use super::super::*;
 use super::support::*;
 use crate::types::{
-    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource, WorkItemPlanStatus,
-    WorkItemReadiness, WorkItemSchedulingState, AGENT_HOME_WORKSPACE_ID,
+    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WaitingIntentScope, WakeSource,
+    WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState, AGENT_HOME_WORKSPACE_ID,
 };
 
 fn legacy_blocking_payload_task_for_work_item(
@@ -230,7 +230,7 @@ async fn work_queue_projection_derives_scheduling_state_per_work_item() {
         .append_waiting_intent(&WaitingIntentRecord {
             id: "wait-external".into(),
             agent_id: "default".into(),
-            scope: ExternalTriggerScope::WorkItem,
+            scope: WaitingIntentScope::WorkItem,
             work_item_id: Some(external.id.clone()),
             description: "external callback".into(),
             source: "github".into(),
@@ -2454,7 +2454,7 @@ async fn external_trigger_creation_returns_default_ingress_without_waiting_inten
         .create_external_trigger(
             "wait for external review".into(),
             "github".into(),
-            ExternalTriggerScope::WorkItem,
+            ExternalTriggerScope::Agent,
             CallbackDeliveryMode::WakeHint,
             None,
             None,
@@ -2631,7 +2631,7 @@ async fn legacy_descriptor_preserves_provenance_after_wait_cancel() {
         .append_waiting_intent(&WaitingIntentRecord {
             id: waiting_id.clone(),
             agent_id: "default".into(),
-            scope: ExternalTriggerScope::Agent,
+            scope: WaitingIntentScope::Agent,
             work_item_id: None,
             description: "legacy review wait".into(),
             source: "github".into(),
@@ -2746,7 +2746,7 @@ async fn default_external_ingress_wakes_without_owning_work_item_wait_state() {
         .create_external_trigger(
             "wait for CI".into(),
             "github".into(),
-            ExternalTriggerScope::WorkItem,
+            ExternalTriggerScope::Agent,
             CallbackDeliveryMode::WakeHint,
             Some("CI run completed".into()),
             Some("holon-run/holon#1079".into()),
@@ -2853,7 +2853,7 @@ async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
         .append_waiting_intent(&WaitingIntentRecord {
             id: waiting_id.clone(),
             agent_id: "default".into(),
-            scope: ExternalTriggerScope::WorkItem,
+            scope: WaitingIntentScope::WorkItem,
             work_item_id: Some(work.id.clone()),
             description: "wait for CI".into(),
             source: "github".into(),
@@ -2876,7 +2876,7 @@ async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
             external_trigger_id: trigger_id.clone(),
             target_agent_id: "default".into(),
             waiting_intent_id: Some(waiting_id.clone()),
-            scope: ExternalTriggerScope::WorkItem,
+            scope: ExternalTriggerScope::Agent,
             delivery_mode: CallbackDeliveryMode::WakeHint,
             trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/ci".into()),
             token_hash: "token-hash".into(),
@@ -3629,7 +3629,7 @@ async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
         .append_waiting_intent(&WaitingIntentRecord {
             id: "wait-current".into(),
             agent_id: "default".into(),
-            scope: ExternalTriggerScope::WorkItem,
+            scope: WaitingIntentScope::WorkItem,
             work_item_id: Some(current_id.clone()),
             description: "wait for current review".into(),
             source: "github".into(),
