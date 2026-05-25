@@ -40,7 +40,7 @@ support policy behind these labels.
 | Command parser | Clap-derived command tree with `--help` and `--version` at the root. | `stable` | Command and flag names are the highest-value CLI contract. |
 | Help text | Human-readable Clap output. | `experimental` | Useful for users; exact spacing and prose should not be treated as machine-readable. |
 | Errors | Clap validation errors or `anyhow` errors rendered by the binary runtime. | `experimental` | Exit code shape needs explicit tests before declaring stable. |
-| JSON output | Many commands pretty-print JSON to stdout via `serde_json::to_string_pretty`. | `experimental` | JSON field shape usually comes from runtime/control-plane structs and needs API inventory alignment. |
+| JSON output | Script-facing JSON commands pretty-print JSON to stdout via the shared `print_json` path. | `experimental` | JSON field shape usually comes from runtime/control-plane structs and needs API inventory alignment. |
 | Human output | `run`, `solve`, `serve`, `debug latency`, `debug prompt`, and some debug/export commands write human text to stdout. | `experimental` | Do not snapshot full prose unless the command is intentionally script-facing. |
 | stderr | Tracing logs, Clap errors, credential prompt, and some provider/runtime diagnostics. | `experimental` | Credential prompt intentionally writes to stderr. |
 | stdin | Only `config credentials set --stdin` currently reads from stdin. | `stable` candidate | Interaction details need a focused test. |
@@ -109,8 +109,8 @@ These commands require a reachable local control plane unless noted otherwise.
 | `holon status` | none | `--agent <AGENT>` | JSON agent status | `stable` candidate | Agent summary is a key operator/API surface. |
 | `holon tail` | none | `--limit <LIMIT>` default `20`; `--agent <AGENT>` | JSON recent briefs/log tail | `stable` candidate | Result shape should align with brief/output contract. |
 | `holon transcript` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | JSON transcript entries | `stable` candidate | Transcript entry stability needs API inventory. |
-| `holon task` | `<SUMMARY>` | required `--cmd <CMD>`; `--workdir <WORKDIR>`; `--shell <SHELL>`; `--login <true\|false>`; `--tty`; `--yield-time-ms <MS>`; `--max-output-tokens <N>`; `--agent <AGENT>` | raw HTTP response body printed to stdout | `experimental` | CLI currently posts control-plane JSON; output is not normalized through `print_json`. |
-| `holon timer` | none | required `--after-ms <MS>`; `--every-ms <MS>`; `--summary <SUMMARY>`; `--agent <AGENT>` | raw HTTP response body printed to stdout | `experimental` | Timer surface should be aligned with WorkItem/waiting-plane contract. |
+| `holon task` | `<SUMMARY>` | required `--cmd <CMD>`; `--workdir <WORKDIR>`; `--shell <SHELL>`; `--login <true\|false>`; `--tty`; `--yield-time-ms <MS>`; `--max-output-tokens <N>`; `--agent <AGENT>` | pretty JSON control-plane response | `experimental` | CLI posts control-plane JSON and normalizes successful JSON responses through `print_json`. |
+| `holon timer` | none | required `--after-ms <MS>`; `--every-ms <MS>`; `--summary <SUMMARY>`; `--agent <AGENT>` | pretty JSON control-plane response | `experimental` | Timer surface should be aligned with WorkItem/waiting-plane contract. |
 
 ### Agent lifecycle and model selection
 
@@ -119,14 +119,14 @@ These commands require a reachable local control plane unless noted otherwise.
 | `holon agent` / `holon agents` | optional subcommand | none | defaults to `agent list` JSON | `stable` candidate | `agents` is an alias. |
 | `holon agent list` | none | none | JSON agent entries | `stable` candidate | Public multi-agent inspection surface. |
 | `holon agent status` | optional `[AGENT_ID]` | none | JSON agent status | `stable` candidate | Positional agent id; defaults to configured default agent. |
-| `holon agent create` | `<AGENT_ID>` | `--template <TEMPLATE>` | raw HTTP response body printed to stdout | `stable` candidate | Template identifier contract should align with agent initialization docs. |
+| `holon agent create` | `<AGENT_ID>` | `--template <TEMPLATE>` | pretty JSON control-plane response | `stable` candidate | Template identifier contract should align with agent initialization docs. |
 | `holon agent start` | optional `[AGENT_ID]` | none | JSON lifecycle control response | `stable` candidate | Replacement for deprecated `control start`. |
 | `holon agent stop` | optional `[AGENT_ID]` | none | JSON lifecycle control response | `stable` candidate | Replacement for deprecated `control stop`. |
-| `holon agent abort` | optional `[AGENT_ID]` | none | raw HTTP abort response body printed to stdout | `stable` candidate | Replacement for deprecated `control abort`; output normalization differs from start/stop. |
+| `holon agent abort` | optional `[AGENT_ID]` | none | pretty JSON control-plane response | `stable` candidate | Replacement for deprecated `control abort`; shares the lifecycle JSON output path with start/stop. |
 | `holon agent model get` | optional `[AGENT_ID]` | none | JSON model override/status fragment | `stable` candidate | Reads `summary.model` from agent status. |
 | `holon agent model set` | `<MODEL> [AGENT_ID]` | none | JSON model override response | `stable` candidate | Positional `AGENT_ID` is tested. |
 | `holon agent model clear` | optional `[AGENT_ID]` | none | JSON model override response | `stable` candidate | Should share contract with set/get. |
-| `holon control` | `<start\|stop\|abort>` | `--agent <AGENT>` | JSON or raw HTTP response depending on action | `deprecated` | Use `holon agent start|stop|abort [agent-id]`. |
+| `holon control` | `<start\|stop\|abort>` | `--agent <AGENT>` | pretty JSON lifecycle response | `deprecated` | Use `holon agent start|stop|abort [agent-id]`. |
 
 Deprecated `holon control` compatibility is documented in
 [CLI stability policy](./cli-stability-policy.md#deprecated-holon-control).
@@ -137,8 +137,8 @@ New automation should use the `holon agent ...` lifecycle commands.
 | Command | Args | Options | Output | Initial stability | Notes |
 |---|---|---|---|---:|---|
 | `holon skills list` | none | `--agent <AGENT>` | JSON installed-skill response | `experimental` | Skill discovery/install contract is still active design work. |
-| `holon skills install` | `<NAME_OR_PATH>` | `--builtin`; `--remote`; `--skill <SKILL>`; `--copy`; `--agent <AGENT>` | raw HTTP response body printed to stdout | `experimental` | Local paths are resolved relative to cwd when they are directories; otherwise treated as named skills. |
-| `holon skills uninstall` | `<NAME>` | `--agent <AGENT>` | raw HTTP response body printed to stdout | `experimental` | Output should be normalized or documented before stabilization. |
+| `holon skills install` | `<NAME_OR_PATH>` | `--builtin`; `--remote`; `--skill <SKILL>`; `--copy`; `--agent <AGENT>` | pretty JSON control-plane response | `experimental` | Local paths are resolved relative to cwd when they are directories; otherwise treated as named skills. |
+| `holon skills uninstall` | `<NAME>` | `--agent <AGENT>` | pretty JSON control-plane response | `experimental` | Shares the normalized JSON output path with install/list. |
 
 ### One-shot and solve workflows
 
@@ -190,8 +190,9 @@ that visibly affect CLI behavior while invoking commands.
 
 ## Output contract gaps
 
-1. **JSON responses are not uniformly normalized.** Some commands use
-   `print_json` while others print raw HTTP response bodies.
+1. **JSON responses now share the normalized stdout path for script-facing
+   commands.** The remaining output work is assigning schema owners and
+   stability levels to each response shape.
 2. **Exit codes now have a baseline process contract.** See
    [CLI exit codes](./cli-exit-codes.md). Command-specific business-state
    promotion to non-zero exits remains intentionally opt-in and must be

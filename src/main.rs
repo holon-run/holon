@@ -2020,9 +2020,22 @@ async fn post_json_with_auth<T: serde::Serialize>(
         .send()
         .await
         .with_context(|| format!("failed to post {}", path))?;
-    let body = response.text().await?;
-    println!("{body}");
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .with_context(|| format!("failed to read response body from POST {path}"))?;
+    if !status.is_success() {
+        anyhow::bail!("POST {path} returned {status}: {body}");
+    }
+    let value = parse_json_response_body("POST", path, &body)?;
+    print_json(&value)?;
     Ok(())
+}
+
+fn parse_json_response_body(method: &str, path: &str, body: &str) -> Result<serde_json::Value> {
+    serde_json::from_str(body)
+        .with_context(|| format!("failed to parse JSON response body from {method} {path}"))
 }
 
 async fn handle_config_command(command: ConfigCommands) -> Result<()> {
