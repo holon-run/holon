@@ -33,9 +33,11 @@ capability families such as:
 
 - core agent tools
 - local environment tools
+- web tools
 - agent creation tools
 - authority-expanding tools
 - external trigger tools
+- operator notification tools
 
 This RFC is the umbrella document for the tools RFC series.
 
@@ -45,8 +47,12 @@ Holon's current tool surface has useful pieces, but the semantics are uneven.
 
 In particular:
 
-- high-level work tracking lives in `update_work_item` / `update_work_plan`
-- command execution lives in `exec_command` plus task control tools
+- high-level work tracking lives in WorkItem tools such as `CreateWorkItem`,
+  `UpdateWorkItem`, and `CompleteWorkItem`
+- plan body edits are ordinary file edits against `plan_artifact.path`, while
+  `UpdateWorkItem` owns WorkItem state such as `plan_status` and `todo_list`
+- command execution lives in `ExecCommand` / `ExecCommandBatch` plus task
+  control tools
 - waiting lives partly in `Sleep`, partly in `CreateExternalTrigger`, and
   partly in background task semantics
 
@@ -130,8 +136,14 @@ Typical members include:
 - `TaskOutput`
 - `TaskInput`
 - `TaskStop`
-- `update_work_item`
-- `update_work_plan`
+- `CreateWorkItem`
+- `PickWorkItem`
+- `GetWorkItem`
+- `ListWorkItems`
+- `UpdateWorkItem`
+- `CompleteWorkItem`
+- `MemorySearch`
+- `MemoryGet`
 
 This family is the default center of agent continuity, inspection, and control.
 
@@ -142,7 +154,8 @@ execution boundary.
 
 Typical current members include:
 
-- `exec_command`
+- `ExecCommand`
+- `ExecCommandBatch`
 - `ApplyPatch`
 - `UseWorkspace`
 
@@ -159,7 +172,21 @@ active workspace. `EnterWorkspace` and `ExitWorkspace` are retired names in the
 new contract, and `SwitchWorkspace` is intentionally not added as a separate
 model-facing tool.
 
-### 3. Agent Creation Tools
+### 3. Web Tools
+
+These tools access network-backed web providers without changing the attached
+workspace or local execution boundary.
+
+Typical members include:
+
+- `WebFetch`
+- `WebSearch`
+
+This family is distinct from local environment tools because it crosses the
+network boundary and returns external content that must remain provenance-
+framed and untrusted unless separately validated.
+
+### 4. Agent Creation Tools
 
 These tools create or supervise additional agent contexts.
 
@@ -170,7 +197,7 @@ Typical members include:
 This family belongs to the agent plane, not the command plane and not the
 waiting plane.
 
-### 4. Authority-Expanding Tools
+### 5. Authority-Expanding Tools
 
 These tools widen what the agent is allowed to operate on.
 
@@ -195,7 +222,7 @@ entries.
 Holon should not add `ForgetWorkspace` to the public tool surface in this
 phase. Host registry cleanup should be a separate later design.
 
-### 5. External Trigger Tools
+### 6. External Trigger Tools
 
 These tools create or cancel an external channel that may wake or re-enter the
 agent later.
@@ -211,9 +238,23 @@ deserves to be called out separately from local waiting posture such as
 
 The next naming review targets after this family should be:
 
-- `exec_command`
-- `update_work_item`
-- `update_work_plan`
+- stale snake_case references in prompt guidance and older RFCs
+- stale references to a separate work-plan mutation tool; the current contract
+  uses `UpdateWorkItem` for WorkItem state and `ApplyPatch` for plan artifact
+  file edits
+
+### 7. Operator Notification Tools
+
+These tools ask the runtime to notify or escalate to an operator-facing surface
+without implying local shell execution, child-agent creation, or external
+callback provisioning.
+
+Typical members include:
+
+- `NotifyOperator`
+
+This family is separate from waiting because it is an operator-notification
+surface, not a capability URL or reactivation channel.
 
 ## Proposed Planes
 
@@ -225,8 +266,16 @@ The work plane answers:
 
 This plane is represented by:
 
-- `update_work_item`
-- `update_work_plan`
+- `CreateWorkItem`
+- `PickWorkItem`
+- `GetWorkItem`
+- `ListWorkItems`
+- `UpdateWorkItem`
+- `CompleteWorkItem`
+
+Plan body changes are represented by editing the WorkItem plan artifact file
+directly, usually with `ApplyPatch` against `plan_artifact.path`. There is no
+separate `UpdateWorkPlan` tool in the current public surface.
 
 It is intentionally higher-level than turn execution and higher-level than
 background jobs.
@@ -254,7 +303,8 @@ The command plane answers:
 
 This plane is represented by:
 
-- `exec_command`
+- `ExecCommand`
+- `ExecCommandBatch`
 - task inspection and control tools for command-backed execution
 
 The command plane should own:
@@ -391,9 +441,11 @@ families such as:
 
 - core agent tools
 - local environment tools
+- web tools
 - agent creation tools
 - authority-expanding tools
 - external trigger tools
+- operator notification tools
 
 This gives Holon a clearer foundation for future tool evolution while staying
 aligned with its runtime-first design.
