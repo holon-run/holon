@@ -129,12 +129,58 @@ Returns recent runtime events (turn entries, system events). Query parameters:
 | `order` | `asc` or `desc` (default) |
 | `projection` | `local_debug` (control token required) or `operator` (default) |
 
+The JSON response is an `EventsPageResponse`:
+
+| Field | Contract |
+|-------|----------|
+| `events` | Array of `StreamEventEnvelope` records using the selected projection |
+| `oldest_seq` / `newest_seq` | Lowest/highest durable `event_seq` in the returned page, or `null` for an empty page |
+| `has_older` / `has_newer` | Whether more records are available before/after the returned window |
+| `order` | Echoes the requested order |
+| `limit` | Effective limit after server clamping |
+
+`before_seq` and `after_seq` are exclusive cursors. When both are supplied, the
+page contains events where `after_seq < event_seq < before_seq`. Event pages are
+loaded from the durable event log, so an unknown cursor can yield an empty page
+rather than a cursor error.
+
 **`GET /agents/:id/events/stream`** — Server-sent events
 
 SSE stream of agent events. Supports `after_seq`, `limit`, and `projection`
 query params. The SSE `id` field is the per-agent durable `event_seq`, and the
 SSE `event` field is set to the raw audit event kind (e.g. `turn_entry`,
 `wake_requested`, `task_create_requested`), not a limited set of names.
+
+Each SSE `data` frame is a JSON `StreamEventEnvelope` with these stable fields:
+
+| Field | Contract |
+|-------|----------|
+| `id` | Audit event id. This is not the SSE frame id. |
+| `event_seq` | Per-agent durable sequence number; equal to the SSE `id` field |
+| `ts` | RFC 3339 timestamp |
+| `agent_id` | Agent that owns the event log |
+| `type` | Raw audit event kind; equal to the SSE `event` field |
+| `projection` | Projection metadata: `name`, `raw_payload_included`, and `redactions` |
+| `provenance` | Stable provenance fields extracted from the raw payload when present |
+| `payload` | Projected payload for the requested projection |
+
+When `after_seq` is omitted, the stream starts after the current tail and only
+emits future events. When `after_seq=0`, it replays from the beginning of the
+current replay window. For non-zero `after_seq`, the cursor must still be inside
+the replay window; otherwise the route returns `404` with `code:
+cursor_not_found` and `after_seq`/`event_seq` extension fields before opening
+the SSE stream. If an already-open stream falls behind the replay window, the
+server closes that stream.
+
+Projection behavior:
+
+- `operator` is the default. It keeps only operator-facing summary, status,
+  identity, cursor, and provenance-like fields in `payload`. It sets
+  `raw_payload_included: false` and lists omitted raw/debug fields under
+  `redactions`. Raw command text/output, local paths, artifact references,
+  provider traces, and raw assistant text are not included.
+- `local_debug` requires control auth and includes the full raw event payload.
+  It sets `raw_payload_included: true` and has no redactions.
 
 **`GET /agents/:id/transcript`** — Turn transcript
 

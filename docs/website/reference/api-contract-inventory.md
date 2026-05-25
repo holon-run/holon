@@ -186,7 +186,14 @@ Default-agent aliases:
 | `GET` | `/agents/:agent_id/events` | Path `agent_id`; query `before_seq?`, `after_seq?`, `limit?`, `order?`, `projection?`. | `EventsPageResponse` | Candidate stable route; experimental payload | `limit` defaults to the event window and is clamped. `order` is `asc` or `desc`. `projection` is `operator` or `local_debug`. |
 | `GET` | `/agents/:agent_id/events/stream` | Path `agent_id`; query `after_seq?`, `limit?`, `projection?`; `Accept: text/event-stream` recommended. | SSE frames with JSON `StreamEventEnvelope` data. | Candidate stable route; experimental payload | SSE `id` is `event_seq`; SSE `event` is the raw audit event kind. |
 
-Observed event envelope:
+Event page cursors are exclusive: `after_seq` returns records with higher
+`event_seq`, `before_seq` returns records with lower `event_seq`, and combining
+both returns `after_seq < event_seq < before_seq`. SSE streams start after the
+current tail when `after_seq` is omitted, replay from the current replay window
+when `after_seq=0`, and return `404 cursor_not_found` before opening the stream
+when a non-zero `after_seq` is outside that replay window.
+
+Stable `StreamEventEnvelope` fields:
 
 ```json
 {
@@ -195,15 +202,20 @@ Observed event envelope:
   "ts": "2026-05-24T00:00:00Z",
   "agent_id": "main",
   "type": "task_created",
-  "projection": { "name": "operator", "raw_payload_included": true, "redactions": [] },
-  "provenance": { "trust": "trusted_operator", "task_id": "task-..." },
+  "projection": { "name": "operator", "raw_payload_included": false, "redactions": ["raw_output"] },
+  "provenance": { "authority_class": "operator_instruction", "task_id": "task-..." },
   "payload": {}
 }
 ```
 
-Gap: the `operator` and `local_debug` projections currently both include the
-raw payload. The redaction contract should be defined before this stream is
-called stable.
+Projection contract:
+
+- `operator` is the default public projection. It preserves only
+  operator-facing summary/status/identity/cursor/provenance fields in
+  `payload`, sets `raw_payload_included: false`, and lists omitted raw/debug
+  fields in `redactions`.
+- `local_debug` requires control auth and preserves the raw event payload with
+  `raw_payload_included: true` and an empty `redactions` list.
 
 ### Public ingress
 
@@ -333,9 +345,9 @@ treated as schema surfaces, not incidental Rust structs:
 1. **No generated route/schema inventory.** The current route list is hand
    extracted from `src/http.rs`. Add a test or generator that snapshots method,
    path, handler, request type, query type, and response contract.
-2. **Event projection is not yet a redaction contract.** `operator` and
-   `local_debug` currently both include raw payloads. This should be fixed or
-   explicitly documented before event streams become stable.
+2. **Event projection allowlist needs more real-world coverage.** `operator`
+   now has a redaction contract, but additional runtime event kinds may need
+   explicit allowlist additions as TUI/client consumption broadens.
 3. **Task lifecycle APIs are incomplete.** HTTP can create and list tasks, but
    lacks task status/output/input/stop routes that correspond to runtime tool
    operations.
