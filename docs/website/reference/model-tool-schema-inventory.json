@@ -1,0 +1,1159 @@
+{
+  "source_of_truth": {
+    "input_schemas": "typed Rust argument structs deriving schemars::JsonSchema",
+    "model_rendering": "src/tool/tools/mod.rs render_tool_result_for_model()",
+    "result_envelope": "src/tool/spec.rs ToolResultEnvelope",
+    "tool_definitions": "src/tool/tools/mod.rs builtin_tool_definitions()"
+  },
+  "stability_policy": {
+    "deprecated": "Surface remains for compatibility but should not be introduced into new workflows.",
+    "experimental": "Surface is available but may change while the runtime contract is still settling.",
+    "stable": "Name, input schema, result envelope family, and documented model rendering are intended to be compatibility-preserving."
+  },
+  "tools": [
+    {
+      "description": "Mark the current loop as done so the agent can sleep when no other work remains. Omit `duration_ms` for ordinary rest, or provide a positive short session-local delay to wake again.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "Sleep",
+      "related_surfaces": [
+        "runtime agent lifecycle APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "SleepResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Read the current agent-plane summary, including identity visibility, ownership, profile preset, lifecycle, active work focus, waiting state, and visible child-agent lineage.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "AgentGet",
+      "related_surfaces": [
+        "runtime agent lifecycle APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "AgentGetResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Create an operator-facing notification record/event for runtime policy or delivery adapters. Normal agent profiles do not expose this tool; agents should use final responses, work item blockers, and completion summaries instead of deciding notification policy themselves.",
+      "family": "operator_notification",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "name": "NotifyOperator",
+      "related_surfaces": [],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "NotifyOperatorResult"
+      },
+      "stability": "experimental"
+    },
+    {
+      "description": "Enqueue a follow-up message into the current agent.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "priority": {
+            "enum": [
+              "interject",
+              "next",
+              "normal",
+              "background",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "Enqueue",
+      "related_surfaces": [
+        "runtime agent lifecycle APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "EnqueueResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Spawn a delegated agent from a small preset surface. Use `initial_message` as the single caller text field: it is required for the default `private_child` preset and optional for `public_named`. Legacy caller text fields such as `summary`, `prompt`, `task_summary`, and `work_item` are not accepted. The default `private_child` preset returns `agent_id` plus a supervising `task_handle`; `public_named` requires `agent_id` and returns only `agent_id`.",
+      "family": "agent_creation",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "preset": {
+                  "const": "public_named"
+                }
+              },
+              "required": [
+                "preset"
+              ]
+            },
+            "then": {
+              "properties": {
+                "workspace_mode": {
+                  "enum": [
+                    "inherit"
+                  ]
+                }
+              },
+              "required": [
+                "agent_id"
+              ]
+            }
+          },
+          {
+            "if": {
+              "not": {
+                "properties": {
+                  "preset": {
+                    "const": "public_named"
+                  }
+                },
+                "required": [
+                  "preset"
+                ]
+              }
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "agent_id"
+                ]
+              },
+              "required": [
+                "initial_message"
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "initial_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preset": {
+            "enum": [
+              "private_child",
+              "public_named",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "template": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_mode": {
+            "enum": [
+              "inherit",
+              "worktree",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "SpawnAgent",
+      "related_surfaces": [
+        "runtime agent lifecycle APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "SpawnAgentResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "List active tasks for the current agent as compact digest entries.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "TaskList",
+      "related_surfaces": [
+        "CLI task/process wrappers",
+        "HTTP control-plane task APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "Vec<TaskDigest>"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Read a specific task lifecycle snapshot by id.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "name": "TaskStatus",
+      "related_surfaces": [
+        "CLI task/process wrappers",
+        "HTTP control-plane task APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "TaskStatusResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Send input to a managed task handle. Command tasks accept stdin or tty text here when they were created for interactive continuation, and parent-supervised child handles accept bounded follow-up input on the same surface.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "input": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "input"
+        ],
+        "type": "object"
+      },
+      "name": "TaskInput",
+      "related_surfaces": [
+        "CLI task/process wrappers",
+        "HTTP control-plane task APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "TaskInputResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Read background task output and optionally wait for task completion.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "block": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "timeout_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "name": "TaskOutput",
+      "related_surfaces": [
+        "CLI task/process wrappers",
+        "HTTP control-plane task APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "custom_text_receipt",
+        "success_result": "TaskOutputResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Stop a currently running background task by id. command_task may first enter cancelling before the final cancelled result arrives.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "name": "TaskStop",
+      "related_surfaces": [
+        "CLI task/process wrappers",
+        "HTTP control-plane task APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "TaskStopResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Create a new open work item for a genuinely separate objective with an independent lifecycle. Optional plan seeds the work item's AgentHome plan.md artifact; edit that file directly for later plan changes. Use todo_list only for progress checklist items. Continuous discussion, planning, candidate screening, and option comparison should usually update the current work item instead. Do not create a new work item just to refine, narrow, or switch candidates inside the current task; use UpdateWorkItem.objective, UpdateWorkItem.plan_status, and UpdateWorkItem.todo_list for state updates.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "objective": {
+            "type": "string"
+          },
+          "plan": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_status": {
+            "enum": [
+              "draft",
+              "ready",
+              "needs_input",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "todo_list": {
+            "default": null,
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "state": {
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text",
+                "state"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "objective"
+        ],
+        "type": "object"
+      },
+      "name": "CreateWorkItem",
+      "related_surfaces": [
+        "CLI work-item wrappers",
+        "HTTP control-plane WorkItem APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "WorkItemMutationResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Make an existing open work item the current work-item focus for this agent. Include reason when switching away from runnable current work; blocked work items may be picked for inspection but remain non-runnable.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "work_item_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_item_id"
+        ],
+        "type": "object"
+      },
+      "name": "PickWorkItem",
+      "related_surfaces": [
+        "CLI work-item wrappers",
+        "HTTP control-plane WorkItem APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "PickWorkItemResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Read one work item by id, including its lifecycle view, current focus flag, plan artifact descriptor, bounded plan preview, and optional todo_list.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "include_todo_list": {
+            "default": false,
+            "type": "boolean"
+          },
+          "work_item_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_item_id"
+        ],
+        "type": "object"
+      },
+      "name": "GetWorkItem",
+      "related_surfaces": [
+        "CLI work-item wrappers",
+        "HTTP control-plane WorkItem APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "GetWorkItemResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "List recent work items with explicit current, open, completed, queued, blocked, waiting_for_operator, and runnable views. Use this before relying on memory briefs for work-item focus.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "filter": {
+            "default": null,
+            "enum": [
+              "all",
+              "open",
+              "completed",
+              "current",
+              "queued",
+              "blocked",
+              "waiting_for_operator",
+              "runnable",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "include_todo_list": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ListWorkItems",
+      "related_surfaces": [
+        "CLI work-item wrappers",
+        "HTTP control-plane WorkItem APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "ListWorkItemsResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Update mutable state fields for an existing work item. Use objective to refine the short target, plan_status for planning state, todo_list to replace the full progress checklist snapshot, blocked_by for blockers, and recheck_after as a positive millisecond fallback deadline when setting blocked_by. Edit the plan_artifact.path file directly for plan body changes.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "blocked_by": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "objective": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_status": {
+            "enum": [
+              "draft",
+              "ready",
+              "needs_input",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recheck_after": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 1.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "todo_list": {
+            "default": null,
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "state": {
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text",
+                "state"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "work_item_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_item_id"
+        ],
+        "type": "object"
+      },
+      "name": "UpdateWorkItem",
+      "related_surfaces": [
+        "CLI work-item wrappers",
+        "HTTP control-plane WorkItem APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "WorkItemMutationResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Mark an open work item completed. Write the operator-facing completion report as assistant text in the same round; the runtime promotes that text after this tool succeeds.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "work_item_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_item_id"
+        ],
+        "type": "object"
+      },
+      "name": "CompleteWorkItem",
+      "related_surfaces": [
+        "CLI work-item wrappers",
+        "HTTP control-plane WorkItem APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "WorkItemMutationResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Search Holon memory sources, including agent memory markdown and runtime evidence. Normal workspace markdown is not included. Each result includes an opaque source_ref that can be copied verbatim to MemoryGet.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "include_all_workspaces": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "MemorySearch",
+      "related_surfaces": [
+        "memory/runtime APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "MemorySearchResponse"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Fetch exact bounded Holon memory content by a source_ref copied verbatim from MemorySearch.results[].source_ref. Do not invent source_ref values or use MemoryGet for skill paths, file paths, or URLs.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "max_chars": {
+            "format": "uint",
+            "maximum": 50000.0,
+            "minimum": 1.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_ref"
+        ],
+        "type": "object"
+      },
+      "name": "MemoryGet",
+      "related_surfaces": [
+        "memory/runtime APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "MemoryGetResponse"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Apply a unified diff patch across one or more files. Call the JSON/function tool with exactly {\"patch\":\"--- a/path\\n+++ b/path\\n@@ ...\"}; do not use the Codex *** Begin Patch DSL as the advertised format.",
+      "family": "local_environment",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "patch": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "patch"
+        ],
+        "type": "object"
+      },
+      "name": "ApplyPatch",
+      "related_surfaces": [
+        "workspace/runtime file APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "custom_text_receipt",
+        "success_result": "ApplyPatchResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Start a shell command inside the workspace. Valid startup input uses `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `duplicate_policy`, `accepts_input`, `yield_time_ms`, and `max_output_tokens`; do not pass result or task metadata such as `status` or `task_handle`. `duplicate_policy` defaults to `reuse_running` and `yield_time_ms` defaults to 10_000 ms when omitted; set it only when intentionally changing the foreground wait window. Short commands return immediately; long non-interactive commands become command_task automatically.",
+      "family": "local_environment",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "accepts_input": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "cmd": {
+            "type": "string"
+          },
+          "duplicate_policy": {
+            "default": "reuse_running",
+            "enum": [
+              "reuse_running",
+              "start_new"
+            ],
+            "type": "string"
+          },
+          "login": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "shell": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tty": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "workdir": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "yield_time_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "cmd"
+        ],
+        "type": "object"
+      },
+      "name": "ExecCommand",
+      "related_surfaces": [
+        "CLI task/process wrappers",
+        "HTTP control-plane task APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "custom_text_receipt",
+        "success_result": "ExecCommandResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Per-item yield_time_ms defaults to 10_000 ms when omitted; set it only when intentionally changing that item's foreground wait window. Do not use tty, accepts_input, or non-command tools inside the batch.",
+      "family": "local_environment",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "accepts_input": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "cmd": {
+                  "type": "string"
+                },
+                "login": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "max_output_tokens": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "shell": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tty": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "workdir": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "yield_time_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "cmd"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stop_on_error": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "name": "ExecCommandBatch",
+      "related_surfaces": [
+        "CLI task/process wrappers",
+        "HTTP control-plane task APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "custom_text_receipt",
+        "success_result": "ExecCommandBatchResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Make a workspace active. Provide exactly one of `path` or `workspace_id`: use `path` to discover, attach, and activate a project directory; use `workspace_id` to switch to a known workspace, including `agent_home` for the built-in fallback workspace. Shell `cd` does not change this active workspace for ApplyPatch or future commands.",
+      "family": "local_environment",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "isolation_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "direct",
+              "isolated",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "UseWorkspace",
+      "related_surfaces": [
+        "workspace/runtime file APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "UseWorkspaceResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Fetch a specific http or https URL through Holon's web policy, extract readable text, wrap it as untrusted external content, and return provenance including final URL, status, content type, truncation, and hash.",
+      "family": "web",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "extract_mode": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "text",
+              "raw"
+            ],
+            "type": "string"
+          },
+          "max_chars": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "WebFetch",
+      "related_surfaces": [
+        "web adapter APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "WebFetchResult"
+      },
+      "stability": "experimental"
+    },
+    {
+      "description": "Search the web through Holon's web provider registry and return structured results and citations. Use WebFetch after search when full page content is needed.",
+      "family": "web",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "max_results": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "WebSearch",
+      "related_surfaces": [
+        "web adapter APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "WebSearchResult"
+      },
+      "stability": "experimental"
+    }
+  ],
+  "version": 1
+}

@@ -50,4 +50,8 @@ behavior changes.
   First-pass stability inventory for Holon's HTTP control-plane API parameters, responses, and follow-up contract work.
   <!-- mdorigin:index kind=article -->
 
+- [Model tool schema inventory](./model-tool-schema-inventory.md)
+  Versioned inventory for Holon's model-facing built-in tool schemas, result envelopes, and stability labels.
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->

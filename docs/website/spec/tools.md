@@ -10,7 +10,12 @@ This page defines the current contract for Holon's model-facing tool surface:
 tool families, authority classification, schema/dispatch alignment, and
 result envelope conventions.
 
-> **Last verified:** 2026-05-23 against `src/types.rs`
+The machine-readable inventory for built-in model-facing tools is
+[`model-tool-schema-inventory.json`](../reference/model-tool-schema-inventory.json);
+its versioning policy and refresh workflow are documented in the
+[model tool schema inventory reference](../reference/model-tool-schema-inventory.md).
+
+> **Last verified:** 2026-05-25 against `src/types.rs`
 > `ToolCapabilityFamily`, `src/tool/tools/mod.rs` `builtin_tool_definitions()`,
 > `src/tool/spec.rs`, `src/tool/dispatch.rs`.
 
