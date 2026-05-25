@@ -42,8 +42,8 @@ use tracing_subscriber::EnvFilter;
 use holon::cli::{
     AgentCommands, AgentModelCommands, Cli, Commands, ConfigCommands, ConfigCredentialCommands,
     ConfigModelCommands, ConfigProviderCommands, ControlCommandAction, DaemonCommands,
-    DebugCommands, ServeAccess, ServeOptions, SkillsCommands, TaskCommands, WorkItemCommands,
-    WorkspaceCommands,
+    DebugCommands, EventsCommands, ServeAccess, ServeOptions, SkillsCommands, TaskCommands,
+    WorkItemCommands, WorkspaceCommands,
 };
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -168,6 +168,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
                 client.agent_transcript(&agent, limit).await?,
             )?)
         }
+        Commands::Events { command } => handle_events_command(&config, command).await,
         Commands::Task { command } => handle_task_command(&config, command).await,
         Commands::WorkItem { command } => handle_work_item_command(&config, command).await,
         Commands::Timer {
@@ -1319,6 +1320,64 @@ mod tests {
             turn.provider_rounds[0].model_ref.as_deref(),
             Some("anthropic/claude-sonnet-4-6")
         );
+    }
+}
+
+async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> Result<()> {
+    match command {
+        EventsCommands::Tail {
+            before_seq,
+            after_seq,
+            limit,
+            order,
+            projection,
+            agent,
+        } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            let client = LocalClient::new(config.clone())?;
+            let page = client
+                .agent_events_page(
+                    &agent,
+                    holon::client::EventPageRequest {
+                        before_seq,
+                        after_seq,
+                        limit: Some(limit),
+                        order: Some(order.to_string()),
+                        projection: Some(projection.to_string()),
+                    },
+                )
+                .await?;
+            print_json(&serde_json::to_value(page)?)
+        }
+        EventsCommands::Stream {
+            after_seq,
+            limit,
+            projection,
+            max_events,
+            agent,
+        } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            let client = LocalClient::new(config.clone())?;
+            let mut stream = client
+                .stream_agent_events(
+                    &agent,
+                    holon::client::EventStreamRequest {
+                        after_seq,
+                        limit,
+                        projection: Some(projection.to_string()),
+                    },
+                )
+                .await?;
+            let mut seen = 0usize;
+            loop {
+                let event = stream.next_event().await?;
+                println!("{}", serde_json::to_string(&event.data)?);
+                seen += 1;
+                if max_events.is_some_and(|max| seen >= max) {
+                    return Ok(());
+                }
+            }
+        }
     }
 }
 

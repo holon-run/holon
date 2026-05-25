@@ -657,6 +657,112 @@
     "aliases": []
   },
   {
+    "path": "events",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "events.stream",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "after-seq",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "limit",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "max-events",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "projection",
+        "short": null,
+        "default_value": "operator",
+        "possible_values": [
+          "operator",
+          "local-debug"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "events.tail",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "after-seq",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "before-seq",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "limit",
+        "short": null,
+        "default_value": "20",
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "order",
+        "short": null,
+        "default_value": "desc",
+        "possible_values": [
+          "asc",
+          "desc"
+        ],
+        "required": false
+      },
+      {
+        "long": "projection",
+        "short": null,
+        "default_value": "operator",
+        "possible_values": [
+          "operator",
+          "local-debug"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "prompt",
     "positionals": [
       {

@@ -9,6 +9,14 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::types::AuthorityClass;
 
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(parsed) if parsed > 0 => Ok(parsed),
+        Ok(_) => Err("value must be greater than zero".to_string()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Top-level CLI
 // ---------------------------------------------------------------------------
@@ -60,6 +68,11 @@ pub enum Commands {
         limit: usize,
         #[arg(long)]
         agent: Option<String>,
+    },
+    #[command(about = "Read stable runtime event envelopes")]
+    Events {
+        #[command(subcommand)]
+        command: EventsCommands,
     },
     Task {
         #[command(subcommand)]
@@ -404,6 +417,74 @@ pub enum TaskCommands {
     },
     Stop {
         task_id: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EventPageOrderCli {
+    Asc,
+    Desc,
+}
+
+impl std::fmt::Display for EventPageOrderCli {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Asc => f.write_str("asc"),
+            Self::Desc => f.write_str("desc"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EventProjectionCli {
+    Operator,
+    LocalDebug,
+}
+
+impl std::fmt::Display for EventProjectionCli {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Operator => f.write_str("operator"),
+            Self::LocalDebug => f.write_str("local_debug"),
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EventsCommands {
+    #[command(
+        about = "Fetch a bounded page of stable event envelopes",
+        long_about = "Fetch a bounded page of stable runtime event envelopes.\n\nThe stable fields are the event envelope fields emitted by the API, including sequence, identity, timestamps, origin/trust/priority metadata, and user-facing brief/data payloads. `holon tail` and `holon transcript` remain summary views over recent operator-facing history. Use `--projection local-debug` only for diagnostic/internal payloads; those fields are not a compatibility contract."
+    )]
+    Tail {
+        #[arg(long)]
+        before_seq: Option<u64>,
+        #[arg(long)]
+        after_seq: Option<u64>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, value_enum, default_value_t = EventPageOrderCli::Desc)]
+        order: EventPageOrderCli,
+        #[arg(long, value_enum, default_value_t = EventProjectionCli::Operator)]
+        projection: EventProjectionCli,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    #[command(
+        about = "Stream stable event envelopes as newline-delimited JSON",
+        long_about = "Stream stable runtime event envelopes as newline-delimited JSON.\n\nThe stable fields are the event envelope fields emitted by the API, including sequence, identity, timestamps, origin/trust/priority metadata, and user-facing brief/data payloads. `holon tail` and `holon transcript` remain summary views over recent operator-facing history. Use `--projection local-debug` only for diagnostic/internal payloads; those fields are not a compatibility contract."
+    )]
+    Stream {
+        #[arg(long)]
+        after_seq: Option<u64>,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, value_enum, default_value_t = EventProjectionCli::Operator)]
+        projection: EventProjectionCli,
+        #[arg(long, value_parser = parse_positive_usize)]
+        max_events: Option<usize>,
         #[arg(long)]
         agent: Option<String>,
     },
