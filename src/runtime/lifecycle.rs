@@ -5,8 +5,8 @@ use crate::runtime::closure::{derive_closure_decision, ClosureFacts};
 use crate::storage::AppStorage;
 use crate::types::{
     AgentListEntry, AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason,
-    ChildAgentObservabilitySnapshot, ChildAgentPhase, TaskKind, TaskRecord, TaskStatus,
-    TokenUsage, WaitingReason, WorkItemState, WorktreeSession,
+    ChildAgentObservabilitySnapshot, ChildAgentPhase, TaskKind, TaskRecord, TaskStatus, TokenUsage,
+    WaitingReason, WorkItemState, WorktreeSession,
 };
 
 fn resolve_enter_cwd(execution_root: &Path, cwd: Option<&Path>) -> Result<PathBuf> {

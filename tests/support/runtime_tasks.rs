@@ -199,7 +199,8 @@ pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reent
         let provider = provider.clone();
         async move {
             let state = runtime.agent_state().await?;
-            Ok(state.current_work_item_id.is_some() && provider.captured_requests().await.len() >= 1)
+            Ok(state.current_work_item_id.is_some()
+                && provider.captured_requests().await.len() >= 1)
         }
     })
     .await?;
@@ -1899,12 +1900,14 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_stopp
         )
         .await?;
 
+    let task_id = task.id.clone();
     wait_until_async_for(Duration::from_secs(30), || {
         let runtime = runtime.clone();
+        let task_id = task_id.clone();
         async move {
             let tasks = runtime.storage().latest_task_records()?;
             Ok(tasks.iter().any(|record| {
-                record.id == task.id && record.status == holon::types::TaskStatus::Completed
+                record.id == task_id && record.status == holon::types::TaskStatus::Completed
             }))
         }
     })
