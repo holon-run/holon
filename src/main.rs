@@ -42,7 +42,7 @@ use tracing_subscriber::EnvFilter;
 use holon::cli::{
     AgentCommands, AgentModelCommands, Cli, Commands, ConfigCommands, ConfigCredentialCommands,
     ConfigModelCommands, ConfigProviderCommands, ControlCommandAction, DaemonCommands,
-    DebugCommands, ServeAccess, ServeOptions, SkillsCommands, WorkspaceCommands,
+    DebugCommands, ServeAccess, ServeOptions, SkillsCommands, TaskCommands, WorkspaceCommands,
 };
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -167,36 +167,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
                 client.agent_transcript(&agent, limit).await?,
             )?)
         }
-        Commands::Task {
-            summary,
-            cmd,
-            workdir,
-            shell,
-            login,
-            tty,
-            yield_time_ms,
-            max_output_tokens,
-            agent,
-        } => {
-            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
-            post_control_json(
-                &config,
-                &format!("/control/agents/{agent}/tasks"),
-                &CreateCommandTaskRequest {
-                    summary,
-                    cmd,
-                    workdir,
-                    shell,
-                    login,
-                    tty: Some(tty),
-                    yield_time_ms,
-                    max_output_tokens,
-                    accepts_input: Some(false),
-                    authority_class: Some(AuthorityClass::OperatorInstruction),
-                },
-            )
-            .await
-        }
+        Commands::Task { command } => handle_task_command(&config, command).await,
         Commands::Timer {
             after_ms,
             every_ms,
@@ -895,6 +866,99 @@ mod tests {
                 command: Some(AgentCommands::List)
             }
         ));
+    }
+
+    #[test]
+    fn task_run_command_parses_creation_options() {
+        let cli = Cli::parse_from([
+            "holon", "task", "run", "status", "--cmd", "echo hi", "--agent", "runner",
+        ]);
+        let Commands::Task {
+            command:
+                TaskCommands::Run {
+                    summary,
+                    cmd,
+                    agent,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected task run command");
+        };
+        assert_eq!(summary, "status");
+        assert_eq!(cmd, "echo hi");
+        assert_eq!(agent.as_deref(), Some("runner"));
+    }
+
+    #[test]
+    fn task_creation_shape_is_clap_enforced() {
+        assert!(Cli::try_parse_from(["holon", "task", "run", "summary"]).is_err());
+        assert!(Cli::try_parse_from(["holon", "task", "summary", "--cmd", "echo hi"]).is_err());
+    }
+
+    #[test]
+    fn task_lifecycle_commands_parse_with_agent_options() {
+        let cli = Cli::parse_from(["holon", "task", "status", "task-1", "--agent", "runner"]);
+        let Commands::Task {
+            command: TaskCommands::Status { task_id, agent },
+        } = cli.command
+        else {
+            panic!("expected task status command");
+        };
+        assert_eq!(task_id, "task-1");
+        assert_eq!(agent.as_deref(), Some("runner"));
+
+        let cli = Cli::parse_from([
+            "holon",
+            "task",
+            "output",
+            "task-2",
+            "--block",
+            "--timeout-ms",
+            "100",
+        ]);
+        let Commands::Task {
+            command:
+                TaskCommands::Output {
+                    task_id,
+                    block,
+                    timeout_ms,
+                    agent,
+                },
+        } = cli.command
+        else {
+            panic!("expected task output command");
+        };
+        assert_eq!(task_id, "task-2");
+        assert!(block);
+        assert_eq!(timeout_ms, Some(100));
+        assert_eq!(agent, None);
+
+        let cli = Cli::parse_from(["holon", "task", "input", "task-3", "--text", "hello"]);
+        let Commands::Task {
+            command:
+                TaskCommands::Input {
+                    task_id,
+                    text,
+                    agent,
+                },
+        } = cli.command
+        else {
+            panic!("expected task input command");
+        };
+        assert_eq!(task_id, "task-3");
+        assert_eq!(text, "hello");
+        assert_eq!(agent, None);
+
+        let cli = Cli::parse_from(["holon", "task", "stop", "task-4"]);
+        let Commands::Task {
+            command: TaskCommands::Stop { task_id, agent },
+        } = cli.command
+        else {
+            panic!("expected task stop command");
+        };
+        assert_eq!(task_id, "task-4");
+        assert_eq!(agent, None);
     }
 
     #[test]
@@ -1808,6 +1872,77 @@ async fn handle_workspace_command(config: &AppConfig, command: WorkspaceCommands
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             print_json(&serde_json::to_value(
                 client.detach_workspace(&agent, workspace_id).await?,
+            )?)
+        }
+    }
+}
+
+async fn handle_task_command(config: &AppConfig, command: TaskCommands) -> Result<()> {
+    let client = LocalClient::new(config.clone())?;
+    match command {
+        TaskCommands::Run {
+            summary,
+            cmd,
+            workdir,
+            shell,
+            login,
+            tty,
+            yield_time_ms,
+            max_output_tokens,
+            agent,
+        } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            post_control_json(
+                config,
+                &format!("/control/agents/{agent}/tasks"),
+                &CreateCommandTaskRequest {
+                    summary,
+                    cmd,
+                    workdir,
+                    shell,
+                    login,
+                    tty: Some(tty),
+                    yield_time_ms,
+                    max_output_tokens,
+                    accepts_input: Some(false),
+                    authority_class: Some(AuthorityClass::OperatorInstruction),
+                },
+            )
+            .await
+        }
+        TaskCommands::Status { task_id, agent } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(
+                client.task_status(&agent, &task_id).await?,
+            )?)
+        }
+        TaskCommands::Output {
+            task_id,
+            block,
+            timeout_ms,
+            agent,
+        } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(
+                client
+                    .task_output(&agent, &task_id, block, timeout_ms)
+                    .await?,
+            )?)
+        }
+        TaskCommands::Input {
+            task_id,
+            text,
+            agent,
+        } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(
+                client.task_input(&agent, &task_id, text).await?,
+            )?)
+        }
+        TaskCommands::Stop { task_id, agent } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(
+                client.task_stop(&agent, &task_id).await?,
             )?)
         }
     }

@@ -10,6 +10,7 @@ use std::{
     path::PathBuf,
     process::{Command, Output},
     thread,
+    time::{Duration, Instant},
 };
 
 fn holon_bin() -> PathBuf {
@@ -23,7 +24,7 @@ fn holon_bin() -> PathBuf {
 fn control_plane_post_commands_pretty_print_json_stdout() {
     let cases: &[(&[&str], &str)] = &[
         (
-            &["task", "summary", "--cmd", "echo hi"],
+            &["task", "run", "summary", "--cmd", "echo hi"],
             "/control/agents/main/tasks",
         ),
         (&["timer", "--after-ms", "1"], "/control/agents/main/timers"),
@@ -80,7 +81,26 @@ fn run_with_mock_control_plane(args: &[&str]) -> (Output, String) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock control plane");
     let addr = listener.local_addr().expect("mock control plane address");
     let handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept CLI request");
+        listener
+            .set_nonblocking(true)
+            .expect("configure mock listener blocking mode");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(accepted) => break accepted,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for CLI request"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept CLI request: {error}"),
+            }
+        };
+        stream
+            .set_nonblocking(false)
+            .expect("configure mock stream blocking mode");
         let request = read_http_request(&mut stream);
         let path = request
             .lines()

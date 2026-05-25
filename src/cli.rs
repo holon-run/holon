@@ -62,23 +62,8 @@ pub enum Commands {
         agent: Option<String>,
     },
     Task {
-        summary: String,
-        #[arg(long)]
-        cmd: String,
-        #[arg(long)]
-        workdir: Option<String>,
-        #[arg(long)]
-        shell: Option<String>,
-        #[arg(long)]
-        login: Option<bool>,
-        #[arg(long)]
-        tty: bool,
-        #[arg(long)]
-        yield_time_ms: Option<u64>,
-        #[arg(long)]
-        max_output_tokens: Option<u64>,
-        #[arg(long)]
-        agent: Option<String>,
+        #[command(subcommand)]
+        command: TaskCommands,
     },
     Timer {
         #[arg(long)]
@@ -367,6 +352,55 @@ pub enum WorkspaceCommands {
         #[arg(long)]
         agent: Option<String>,
         workspace_id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TaskCommands {
+    Run {
+        summary: String,
+        #[arg(long)]
+        cmd: String,
+        #[arg(long)]
+        workdir: Option<String>,
+        #[arg(long)]
+        shell: Option<String>,
+        #[arg(long)]
+        login: Option<bool>,
+        #[arg(long)]
+        tty: bool,
+        #[arg(long)]
+        yield_time_ms: Option<u64>,
+        #[arg(long)]
+        max_output_tokens: Option<u64>,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Status {
+        task_id: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Output {
+        task_id: String,
+        #[arg(long)]
+        block: bool,
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Input {
+        task_id: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Stop {
+        task_id: String,
+        #[arg(long)]
+        agent: Option<String>,
     },
 }
 

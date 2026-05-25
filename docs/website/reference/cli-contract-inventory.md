@@ -109,7 +109,11 @@ These commands require a reachable local control plane unless noted otherwise.
 | `holon status` | none | `--agent <AGENT>` | JSON agent status | `stable` candidate | Agent summary is a key operator/API surface. |
 | `holon tail` | none | `--limit <LIMIT>` default `20`; `--agent <AGENT>` | JSON recent briefs/log tail | `stable` candidate | Result shape should align with brief/output contract. |
 | `holon transcript` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | JSON transcript entries | `stable` candidate | Transcript entry stability needs API inventory. |
-| `holon task` | `<SUMMARY>` | required `--cmd <CMD>`; `--workdir <WORKDIR>`; `--shell <SHELL>`; `--login <true\|false>`; `--tty`; `--yield-time-ms <MS>`; `--max-output-tokens <N>`; `--agent <AGENT>` | pretty JSON control-plane response | `experimental` | CLI posts control-plane JSON and normalizes successful JSON responses through `print_json`. |
+| `holon task run` | `<SUMMARY>` | required `--cmd <CMD>`; `--workdir <WORKDIR>`; `--shell <SHELL>`; `--login <true\|false>`; `--tty`; `--yield-time-ms <MS>`; `--max-output-tokens <N>`; `--agent <AGENT>` | pretty JSON control-plane response | `experimental` | Creates command tasks through the control plane. |
+| `holon task status` | `<TASK_ID>` | `--agent <AGENT>` | pretty JSON `TaskStatusSnapshot` | `experimental` | Reads task lifecycle state through the task status API. |
+| `holon task output` | `<TASK_ID>` | `--block`; `--timeout-ms <MS>`; `--agent <AGENT>` | pretty JSON `TaskOutputResult` | `experimental` | Output preview length follows the task's creation-time `--max-output-tokens`; this command controls readiness waiting only. |
+| `holon task input` | `<TASK_ID>` | required `--text <TEXT>`; `--agent <AGENT>` | pretty JSON `TaskInputResult` | `experimental` | Sends trusted operator text to command-task stdin/TTY or supervised child-agent follow-up input. |
+| `holon task stop` | `<TASK_ID>` | `--agent <AGENT>` | pretty JSON `TaskStopResult` | `experimental` | Requests managed-task cancellation through the control plane. |
 | `holon timer` | none | required `--after-ms <MS>`; `--every-ms <MS>`; `--summary <SUMMARY>`; `--agent <AGENT>` | pretty JSON control-plane response | `experimental` | Timer surface should be aligned with WorkItem/waiting-plane contract. |
 
 ### Agent lifecycle and model selection

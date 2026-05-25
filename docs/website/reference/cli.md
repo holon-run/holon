@@ -48,6 +48,10 @@ holon (v0.14.0)
 ├── tail         Show recent log tail
 ├── transcript   Show conversation transcript
 ├── task         Run a command as a background task
+│   ├── status   Show task lifecycle status
+│   ├── output   Read task output
+│   ├── input    Send text input to a task
+│   └── stop     Stop a task
 ├── timer        Create a delayed or recurring timer
 ├── control      [deprecated] use `holon agent start|stop|abort`
 ├── agent        Agent management
@@ -172,6 +176,21 @@ holon serve --port 8787
 holon serve --port 8787 --token "secret"
 holon serve --access tunnel
 ```
+
+### Background tasks
+
+```bash
+holon task run "Build project" --cmd "cargo build"
+holon task status <TASK_ID>
+holon task output <TASK_ID> --block --timeout-ms 30000
+holon task input <TASK_ID> --text "continue\n"
+holon task stop <TASK_ID>
+```
+
+Task lifecycle commands default to the configured default agent. Pass
+`--agent <AGENT>` to inspect or control a task owned by a different public
+agent. All task lifecycle commands print the corresponding JSON control-plane
+or read-model response.
 
 ### Terminal UI
 

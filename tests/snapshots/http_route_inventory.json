@@ -858,6 +858,60 @@
   },
   {
     "method": "post",
+    "path": "/control/agents/{agent_id}/tasks/{task_id}/input",
+    "handler": "task_input",
+    "operation_id": "taskInput",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "task_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "TaskInputRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/tasks/{task_id}/stop",
+    "handler": "task_stop",
+    "operation_id": "taskStop",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "task_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "TaskStopRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/control/agents/{agent_id}/timers",
     "handler": "create_timer",
     "operation_id": "createTimer",
