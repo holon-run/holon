@@ -41,8 +41,13 @@ const ROUTES: &[RouteSpec] = &[
     RouteSpec { method: "get", path: "/agents/{agent_id}/events/stream", operation_id: "agentEventsStream", tag: "events", summary: "Agent event stream", description: "Return Server-Sent Events carrying StreamEventEnvelope JSON data. Query parameters: after_seq, limit, projection.", request_schema: None, response_kind: ResponseKind::EventStream, auth: AuthKind::RemoteAccess },
     route("get", "/agents/{agent_id}/transcript", "agentTranscript", "agents", "Recent transcript", "Return recent transcript entries. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/tasks", "agentTasks", "tasks", "List active tasks", "Return active task records. Query parameter: limit.", None, AuthKind::RemoteAccess),
+    route("get", "/agents/{agent_id}/tasks/{task_id}", "agentTaskStatus", "tasks", "Task status", "Return a task lifecycle snapshot by id.", None, AuthKind::RemoteAccess),
+    route("get", "/agents/{agent_id}/tasks/{task_id}/output", "agentTaskOutput", "tasks", "Task output", "Return a task output snapshot. Query parameters: block, timeout_ms.", None, AuthKind::RemoteAccess),
+    route("get", "/agents/{agent_id}/work-items", "agentWorkItems", "work-items", "List work items", "Return latest work item records for the agent. Query parameter: limit.", None, AuthKind::RemoteAccess),
+    route("get", "/agents/{agent_id}/work-items/{work_item_id}", "agentWorkItem", "work-items", "Work item detail", "Return a work item record by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/worktree-summary", "agentWorktreeSummary", "agents", "Worktree summary", "Return managed worktree summary for an agent.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/timers", "agentTimers", "timers", "List timers", "Return recent timer records. Query parameter: limit.", None, AuthKind::RemoteAccess),
+    route("get", "/agents/{agent_id}/timers/{timer_id}", "agentTimer", "timers", "Timer detail", "Return a timer record by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/skills", "agentSkills", "skills", "List skills", "Return installed skills for an agent.", None, AuthKind::RemoteAccess),
     route("post", "/enqueue", "enqueueDefault", "ingress", "Enqueue default agent message", "Enqueue a public channel/webhook message for the default agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),
     route("post", "/agents/{agent_id}/enqueue", "enqueueAgent", "ingress", "Enqueue agent message", "Enqueue a public channel/webhook message for the named agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),
@@ -129,6 +134,7 @@ fn openapi_value() -> Value {
             { "name": "control" },
             { "name": "runtime" },
             { "name": "tasks" },
+            { "name": "work-items" },
             { "name": "timers" },
             { "name": "skills" },
             { "name": "callbacks", "description": "Capability-token callback ingress. Never publish real callback_token values." },
@@ -183,6 +189,15 @@ fn path_parameters(path: &str) -> Vec<Value> {
     let mut params = Vec::new();
     if path.contains("{agent_id}") {
         params.push(path_param("agent_id", "Agent id."));
+    }
+    if path.contains("{task_id}") {
+        params.push(path_param("task_id", "Task id."));
+    }
+    if path.contains("{work_item_id}") {
+        params.push(path_param("work_item_id", "WorkItem id."));
+    }
+    if path.contains("{timer_id}") {
+        params.push(path_param("timer_id", "Timer id."));
     }
     if path.contains("{callback_token}") {
         params.push(path_param(

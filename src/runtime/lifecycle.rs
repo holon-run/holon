@@ -594,6 +594,15 @@ impl RuntimeHandle {
         self.inner.storage.read_recent_timers(limit)
     }
 
+    pub async fn latest_timer(&self, timer_id: &str) -> Result<Option<TimerRecord>> {
+        Ok(self
+            .inner
+            .storage
+            .latest_timer_records()?
+            .into_iter()
+            .find(|timer| timer.id == timer_id))
+    }
+
     pub async fn set_model_override(
         &self,
         model_override: crate::config::ModelRef,

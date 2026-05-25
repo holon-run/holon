@@ -18,7 +18,10 @@ http_async_tests!(
     create_command_task_route_accepts_integration_authority,
     create_command_task_route_accepts_command_request,
     tasks_and_state_routes_return_active_latest_tasks_only,
+    task_status_and_output_routes_return_task_lifecycle_snapshots,
     create_work_item_route_persists_queued_item_without_message_ingress,
+    work_item_routes_list_and_return_work_item_detail,
     create_work_item_route_does_not_replace_existing_active_item,
     create_work_item_route_rejects_empty_objective_with_bad_request,
+    timer_detail_route_returns_latest_timer_record,
 );

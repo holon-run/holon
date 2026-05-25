@@ -243,6 +243,66 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
     Ok(())
 }
 
+pub async fn task_status_and_output_routes_return_task_lifecycle_snapshots() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!("{base}/control/agents/default/tasks"))
+        .json(&serde_json::json!({
+            "summary": "inspect task lifecycle",
+            "cmd": "printf lifecycle_output",
+            "login": false,
+            "yield_time_ms": 1000
+        }))
+        .send()
+        .await?;
+    assert!(response.status().is_success());
+    let created: serde_json::Value = response.json().await?;
+    let task_id = created["id"]
+        .as_str()
+        .expect("task creation returns id")
+        .to_string();
+
+    let runtime = host.default_runtime().await?;
+    wait_until(|| {
+        let task = runtime.storage().latest_task_record(&task_id)?;
+        Ok(task.is_some_and(|task| task.status == TaskStatus::Completed))
+    })
+    .await?;
+
+    let status: serde_json::Value = client
+        .get(format!("{base}/agents/default/tasks/{task_id}"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(status["task_id"], task_id);
+    assert_eq!(status["status"], "completed");
+    assert_eq!(status["wait_policy"], "background");
+
+    let output: serde_json::Value = client
+        .get(format!(
+            "{base}/agents/default/tasks/{task_id}/output?block=false"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(output["retrieval_status"], "success");
+    assert_eq!(output["task"]["task_id"], task_id);
+    assert_eq!(output["task"]["output_preview"], "lifecycle_output");
+
+    let missing = client
+        .get(format!("{base}/agents/default/tasks/missing-task"))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn create_work_item_route_persists_queued_item_without_message_ingress() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();
@@ -283,6 +343,55 @@ pub async fn create_work_item_route_persists_queued_item_without_message_ingress
     assert!(messages
         .iter()
         .all(|message| { matches!(message.kind, holon::types::MessageKind::SystemTick) }));
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn work_item_routes_list_and_return_work_item_detail() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!("{base}/control/agents/default/work-items"))
+        .json(&serde_json::json!({
+            "objective": "inspect lifecycle work item"
+        }))
+        .send()
+        .await?;
+    assert!(response.status().is_success());
+    let created: serde_json::Value = response.json().await?;
+    let work_item_id = created["id"]
+        .as_str()
+        .expect("work item creation returns id")
+        .to_string();
+
+    let list: serde_json::Value = client
+        .get(format!("{base}/agents/default/work-items"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(list
+        .as_array()
+        .expect("work-items returns an array")
+        .iter()
+        .any(|item| item["id"] == work_item_id));
+
+    let detail: serde_json::Value = client
+        .get(format!("{base}/agents/default/work-items/{work_item_id}"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(detail["id"], work_item_id);
+    assert_eq!(detail["objective"], "inspect lifecycle work item");
+
+    let missing = client
+        .get(format!("{base}/agents/default/work-items/missing-work"))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
 
     server.abort();
     Ok(())
@@ -345,6 +454,35 @@ pub async fn create_work_item_route_rejects_empty_objective_with_bad_request() -
     let body: serde_json::Value = response.json().await?;
     assert_eq!(body["ok"], false);
     assert_eq!(body["error"], "objective must not be empty");
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn timer_detail_route_returns_latest_timer_record() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    let timer = runtime
+        .schedule_timer(5_000, None, Some("inspect lifecycle timer".into()))
+        .await?;
+
+    let detail: serde_json::Value = client
+        .get(format!("{base}/agents/default/timers/{}", timer.id))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(detail["id"], timer.id);
+    assert_eq!(detail["status"], "active");
+    assert_eq!(detail["summary"], "inspect lifecycle timer");
+
+    let missing = client
+        .get(format!("{base}/agents/default/timers/missing-timer"))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
 
     server.abort();
     Ok(())

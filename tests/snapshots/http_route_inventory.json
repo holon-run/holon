@@ -188,6 +188,60 @@
   },
   {
     "method": "get",
+    "path": "/agents/{agent_id}/tasks/{task_id}",
+    "handler": "task_status",
+    "operation_id": "agentTaskStatus",
+    "tag": "tasks",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "task_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/tasks/{task_id}/output",
+    "handler": "task_output",
+    "operation_id": "agentTaskOutput",
+    "tag": "tasks",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "task_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/agents/{agent_id}/timers",
     "handler": "timers",
     "operation_id": "agentTimers",
@@ -210,6 +264,33 @@
   },
   {
     "method": "get",
+    "path": "/agents/{agent_id}/timers/{timer_id}",
+    "handler": "timer",
+    "operation_id": "agentTimer",
+    "tag": "timers",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "timer_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/agents/{agent_id}/transcript",
     "handler": "transcript",
     "operation_id": "agentTranscript",
@@ -217,6 +298,55 @@
     "parameters": [
       {
         "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/work-items",
+    "handler": "work_items",
+    "operation_id": "agentWorkItems",
+    "tag": "work-items",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/agents/{agent_id}/work-items/{work_item_id}",
+    "handler": "work_item",
+    "operation_id": "agentWorkItem",
+    "tag": "work-items",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "work_item_id",
         "location": "path",
         "required": true
       }

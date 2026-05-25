@@ -182,8 +182,19 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{agent_id}/events/stream", get(events_stream))
         .route("/agents/{agent_id}/transcript", get(transcript))
         .route("/agents/{agent_id}/tasks", get(tasks))
+        .route("/agents/{agent_id}/tasks/{task_id}", get(task_status))
+        .route(
+            "/agents/{agent_id}/tasks/{task_id}/output",
+            get(task_output),
+        )
+        .route("/agents/{agent_id}/work-items", get(work_items))
+        .route(
+            "/agents/{agent_id}/work-items/{work_item_id}",
+            get(work_item),
+        )
         .route("/agents/{agent_id}/worktree-summary", get(worktree_summary))
         .route("/agents/{agent_id}/timers", get(timers))
+        .route("/agents/{agent_id}/timers/{timer_id}", get(timer))
         .route(
             "/control/agents/{agent_id}/tasks",
             post(create_command_task),
@@ -375,6 +386,13 @@ pub struct DebugPromptRequest {
 #[derive(Debug, Deserialize)]
 pub struct LimitQuery {
     limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskOutputQuery {
+    block: Option<bool>,
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1703,6 +1721,65 @@ pub async fn tasks(
     ))
 }
 
+pub async fn task_status(
+    Path((agent_id, task_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    if !runtime
+        .task_record(&task_id)
+        .await
+        .map_err(error_response)?
+        .is_some_and(|task| task.agent_id == agent_id)
+    {
+        return Err(not_found(format!("task {task_id} not found")));
+    }
+    let snapshot = runtime
+        .managed_tasks()
+        .task_status_snapshot(&task_id)
+        .await
+        .map_err(task_lifecycle_error)?;
+    Ok(Json(snapshot))
+}
+
+pub async fn task_output(
+    Path((agent_id, task_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<TaskOutputQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    if !runtime
+        .task_record(&task_id)
+        .await
+        .map_err(error_response)?
+        .is_some_and(|task| task.agent_id == agent_id)
+    {
+        return Err(not_found(format!("task {task_id} not found")));
+    }
+    let output = runtime
+        .managed_tasks()
+        .task_output(
+            &task_id,
+            query.block.unwrap_or(false),
+            query.timeout_ms.unwrap_or(0),
+        )
+        .await
+        .map_err(task_lifecycle_error)?;
+    Ok(Json(output))
+}
+
 pub async fn create_command_task(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -1794,6 +1871,52 @@ pub async fn create_work_item(
     Ok(Json(record))
 }
 
+pub async fn work_items(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<LimitQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let mut work_items = runtime
+        .latest_work_items()
+        .await
+        .map_err(error_response)?
+        .into_iter()
+        .filter(|item| item.agent_id == agent_id)
+        .collect::<Vec<_>>();
+    sort_state_work_items(&mut work_items);
+    work_items.truncate(query.limit.unwrap_or(50));
+    Ok(Json(work_items))
+}
+
+pub async fn work_item(
+    Path((agent_id, work_item_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let Some(work_item) = runtime
+        .latest_work_item(&work_item_id)
+        .await
+        .map_err(error_response)?
+        .filter(|item| item.agent_id == agent_id)
+    else {
+        return Err(not_found(format!("work item {work_item_id} not found")));
+    };
+    Ok(Json(work_item))
+}
+
 pub async fn timers(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -1812,6 +1935,28 @@ pub async fn timers(
             .await
             .map_err(error_response)?,
     ))
+}
+
+pub async fn timer(
+    Path((agent_id, timer_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let Some(timer) = runtime
+        .latest_timer(&timer_id)
+        .await
+        .map_err(error_response)?
+        .filter(|timer| timer.agent_id == agent_id)
+    else {
+        return Err(not_found(format!("timer {timer_id} not found")));
+    };
+    Ok(Json(timer))
 }
 
 pub async fn create_timer(
@@ -2853,6 +2998,15 @@ fn service_unavailable(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
 
 fn not_found(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
     http_error(StatusCode::NOT_FOUND, HttpErrorEnvelope::new(reason))
+}
+
+fn task_lifecycle_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    let message = error.to_string();
+    if message.starts_with("task ") && message.ends_with(" not found") {
+        not_found(message)
+    } else {
+        error_response(error)
+    }
 }
 
 fn stopped_agent_conflict(
