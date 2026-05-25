@@ -523,6 +523,16 @@ impl RuntimeHandle {
         self.inner.storage.latest_work_items()
     }
 
+    pub async fn latest_work_items_for_agent(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::types::WorkItemRecord>> {
+        self.inner
+            .storage
+            .latest_work_items_for_agent(agent_id, limit)
+    }
+
     pub async fn latest_work_item(
         &self,
         work_item_id: &str,
@@ -595,12 +605,7 @@ impl RuntimeHandle {
     }
 
     pub async fn latest_timer(&self, timer_id: &str) -> Result<Option<TimerRecord>> {
-        Ok(self
-            .inner
-            .storage
-            .latest_timer_records()?
-            .into_iter()
-            .find(|timer| timer.id == timer_id))
+        self.inner.storage.latest_timer_record(timer_id)
     }
 
     pub async fn set_model_override(

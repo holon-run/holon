@@ -194,7 +194,7 @@ fn path_parameters(path: &str) -> Vec<Value> {
         params.push(path_param("task_id", "Task id."));
     }
     if path.contains("{work_item_id}") {
-        params.push(path_param("work_item_id", "WorkItem id."));
+        params.push(path_param("work_item_id", "Work item id."));
     }
     if path.contains("{timer_id}") {
         params.push(path_param("timer_id", "Timer id."));

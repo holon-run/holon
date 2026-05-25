@@ -395,6 +395,8 @@ pub struct TaskOutputQuery {
     timeout_ms: Option<u64>,
 }
 
+const TASK_OUTPUT_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventsQuery {
@@ -1773,7 +1775,7 @@ pub async fn task_output(
         .task_output(
             &task_id,
             query.block.unwrap_or(false),
-            query.timeout_ms.unwrap_or(0),
+            query.timeout_ms.unwrap_or(TASK_OUTPUT_DEFAULT_TIMEOUT_MS),
         )
         .await
         .map_err(task_lifecycle_error)?;
@@ -1884,14 +1886,10 @@ pub async fn work_items(
         .await
         .map_err(agent_access_error)?;
     let mut work_items = runtime
-        .latest_work_items()
+        .latest_work_items_for_agent(&agent_id, query.limit.unwrap_or(50))
         .await
-        .map_err(error_response)?
-        .into_iter()
-        .filter(|item| item.agent_id == agent_id)
-        .collect::<Vec<_>>();
+        .map_err(error_response)?;
     sort_state_work_items(&mut work_items);
-    work_items.truncate(query.limit.unwrap_or(50));
     Ok(Json(work_items))
 }
 

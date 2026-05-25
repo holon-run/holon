@@ -293,6 +293,37 @@ pub async fn task_status_and_output_routes_return_task_lifecycle_snapshots() -> 
     assert_eq!(output["task"]["task_id"], task_id);
     assert_eq!(output["task"]["output_preview"], "lifecycle_output");
 
+    let response = client
+        .post(format!("{base}/control/agents/default/tasks"))
+        .json(&serde_json::json!({
+            "summary": "inspect delayed task output",
+            "cmd": "sleep 0.2; printf delayed_lifecycle_output",
+            "login": false,
+            "yield_time_ms": 1
+        }))
+        .send()
+        .await?;
+    assert!(response.status().is_success());
+    let delayed: serde_json::Value = response.json().await?;
+    let delayed_task_id = delayed["id"]
+        .as_str()
+        .expect("task creation returns id")
+        .to_string();
+
+    let delayed_output: serde_json::Value = client
+        .get(format!(
+            "{base}/agents/default/tasks/{delayed_task_id}/output?block=true"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(delayed_output["retrieval_status"], "success");
+    assert_eq!(
+        delayed_output["task"]["output_preview"],
+        "delayed_lifecycle_output"
+    );
+
     let missing = client
         .get(format!("{base}/agents/default/tasks/missing-task"))
         .send()
