@@ -262,6 +262,25 @@ Starts a background command task for the agent.
 }
 ```
 
+**`POST /control/agents/:id/tasks/:task_id/input`** — Send task input
+
+Delivers text input to a managed task using trusted operator authority. Command
+tasks receive stdin or TTY text when they were created with interactive input
+enabled; supervised child-agent tasks receive a follow-up input.
+
+```json
+{ "text": "continue\n" }
+```
+
+**`POST /control/agents/:id/tasks/:task_id/stop`** — Stop task
+
+Requests cancellation for a managed task and returns the structured task stop
+receipt.
+
+```json
+{}
+```
+
 **`POST /control/agents/:id/work-items`** — Create work item
 
 Creates a durable work item for the agent. Only `objective` is accepted.

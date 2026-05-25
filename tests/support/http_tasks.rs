@@ -379,6 +379,84 @@ pub async fn create_work_item_route_persists_queued_item_without_message_ingress
     Ok(())
 }
 
+pub async fn task_input_and_stop_routes_manage_task_lifecycle() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!("{base}/control/agents/default/tasks"))
+        .json(&serde_json::json!({
+            "summary": "accept task input",
+            "cmd": "cat",
+            "login": false,
+            "accepts_input": true,
+            "yield_time_ms": 1
+        }))
+        .send()
+        .await?;
+    assert!(response.status().is_success());
+    let created: serde_json::Value = response.json().await?;
+    let input_task_id = created["id"]
+        .as_str()
+        .expect("task creation returns id")
+        .to_string();
+
+    let input: serde_json::Value = client
+        .post(format!(
+            "{base}/control/agents/default/tasks/{input_task_id}/input"
+        ))
+        .json(&serde_json::json!({
+            "text": "managed input\n"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(input["task"]["task_id"], input_task_id);
+    assert_eq!(input["accepted_input"], true);
+
+    let response = client
+        .post(format!("{base}/control/agents/default/tasks"))
+        .json(&serde_json::json!({
+            "summary": "stop task through route",
+            "cmd": "sleep 30",
+            "login": false,
+            "yield_time_ms": 1
+        }))
+        .send()
+        .await?;
+    assert!(response.status().is_success());
+    let created: serde_json::Value = response.json().await?;
+    let stop_task_id = created["id"]
+        .as_str()
+        .expect("task creation returns id")
+        .to_string();
+
+    let stop: serde_json::Value = client
+        .post(format!(
+            "{base}/control/agents/default/tasks/{stop_task_id}/stop"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(stop["task"]["id"], stop_task_id);
+    assert_eq!(stop["stop_requested"], true);
+
+    let missing = client
+        .post(format!(
+            "{base}/control/agents/default/tasks/missing-task/stop"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn work_item_routes_list_and_return_work_item_detail() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();

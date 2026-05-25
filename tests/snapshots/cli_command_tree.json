@@ -1111,7 +1111,7 @@
         "name": "summary",
         "value_name": "SUMMARY",
         "index": null,
-        "required": true
+        "required": false
       }
     ],
     "flags": [
@@ -1127,7 +1127,7 @@
         "short": null,
         "default_value": null,
         "possible_values": null,
-        "required": true
+        "required": false
       },
       {
         "long": "login",
@@ -1172,6 +1172,114 @@
       },
       {
         "long": "yield-time-ms",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "task.input",
+    "positionals": [
+      {
+        "name": "task_id",
+        "value_name": "TASK_ID",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "text",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "task.output",
+    "positionals": [
+      {
+        "name": "task_id",
+        "value_name": "TASK_ID",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "block",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "timeout-ms",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "task.status",
+    "positionals": [
+      {
+        "name": "task_id",
+        "value_name": "TASK_ID",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "task.stop",
+    "positionals": [
+      {
+        "name": "task_id",
+        "value_name": "TASK_ID",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
         "short": null,
         "default_value": null,
         "possible_values": null,

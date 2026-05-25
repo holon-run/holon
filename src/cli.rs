@@ -61,10 +61,13 @@ pub enum Commands {
         #[arg(long)]
         agent: Option<String>,
     },
+    #[command(args_conflicts_with_subcommands = true)]
     Task {
-        summary: String,
-        #[arg(long)]
-        cmd: String,
+        #[command(subcommand)]
+        command: Option<TaskCommands>,
+        summary: Option<String>,
+        #[arg(long, requires = "summary")]
+        cmd: Option<String>,
         #[arg(long)]
         workdir: Option<String>,
         #[arg(long)]
@@ -367,6 +370,36 @@ pub enum WorkspaceCommands {
         #[arg(long)]
         agent: Option<String>,
         workspace_id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TaskCommands {
+    Status {
+        task_id: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Output {
+        task_id: String,
+        #[arg(long)]
+        block: bool,
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Input {
+        task_id: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Stop {
+        task_id: String,
+        #[arg(long)]
+        agent: Option<String>,
     },
 }
 

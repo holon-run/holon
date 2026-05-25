@@ -61,8 +61,8 @@ use crate::{
         MessageOrigin, OperatorNotificationRecord, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
-        TimerRecord, TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord, WorkItemState,
-        WorkspaceOccupancyRecord, WorktreeSession,
+        TaskStatus, TaskStopResult, TimerRecord, TurnTerminalRecord, WaitingIntentRecord,
+        WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -186,6 +186,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/agents/{agent_id}/tasks/{task_id}/output",
             get(task_output),
+        )
+        .route(
+            "/control/agents/{agent_id}/tasks/{task_id}/input",
+            post(task_input),
+        )
+        .route(
+            "/control/agents/{agent_id}/tasks/{task_id}/stop",
+            post(task_stop),
         )
         .route("/agents/{agent_id}/work-items", get(work_items))
         .route(
@@ -396,6 +404,19 @@ pub struct TaskOutputQuery {
 }
 
 const TASK_OUTPUT_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskInputRequest {
+    pub text: String,
+    pub authority_class: Option<AuthorityClass>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskStopRequest {
+    pub authority_class: Option<AuthorityClass>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1780,6 +1801,84 @@ pub async fn task_output(
         .await
         .map_err(task_lifecycle_error)?;
     Ok(Json(output))
+}
+
+pub async fn task_input(
+    Path((agent_id, task_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<TaskInputRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    if !runtime
+        .task_record(&task_id)
+        .await
+        .map_err(error_response)?
+        .is_some_and(|task| task.agent_id == agent_id)
+    {
+        return Err(not_found(format!("task {task_id} not found")));
+    }
+    let authority_class = request
+        .authority_class
+        .unwrap_or(AuthorityClass::OperatorInstruction);
+    let result = runtime
+        .managed_tasks()
+        .task_input_with_trust(&task_id, &request.text, &authority_class)
+        .await
+        .map_err(task_lifecycle_error)?;
+    Ok(Json(result))
+}
+
+pub async fn task_stop(
+    Path((agent_id, task_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<TaskStopRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    if !runtime
+        .task_record(&task_id)
+        .await
+        .map_err(error_response)?
+        .is_some_and(|task| task.agent_id == agent_id)
+    {
+        return Err(not_found(format!("task {task_id} not found")));
+    }
+    let authority_class = request
+        .authority_class
+        .unwrap_or(AuthorityClass::OperatorInstruction);
+    let task = runtime
+        .managed_tasks()
+        .stop_task(&task_id, &authority_class)
+        .await
+        .map_err(task_lifecycle_error)?;
+    let force_stop_requested = task
+        .detail
+        .as_ref()
+        .and_then(|detail| detail.get("force_stop_requested"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let result = TaskStopResult {
+        summary_text: Some(match task.status {
+            TaskStatus::Cancelling => format!("stop requested for task {}", task.id),
+            TaskStatus::Cancelled => format!("cancelled task {}", task.id),
+            _ => format!("updated task {}", task.id),
+        }),
+        task,
+        stop_requested: true,
+        force_stop_requested,
+    };
+    Ok(Json(result))
 }
 
 pub async fn create_command_task(

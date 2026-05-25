@@ -12,14 +12,16 @@ use crate::{
     http::{
         AttachWorkspaceRequest, ClearAgentModelRequest, ControlPromptRequest, CreateAgentRequest,
         DebugPromptRequest, DetachWorkspaceRequest, ExitWorkspaceRequest, SetAgentModelRequest,
+        TaskInputRequest, TaskStopRequest,
     },
     model_catalog::BuiltInModelMetadata,
     system::ExecutionSnapshot,
     types::{
         ActiveWorkspaceEntry, AgentListEntry, AgentSummary, AuthorityClass, BriefRecord,
         ExternalTriggerStateSnapshot, OperatorNotificationRecord, ResolvedModelAvailability,
-        TaskRecord, TimerRecord, TranscriptEntry, TurnTerminalRecord, WaitingIntentRecord,
-        WorkItemRecord, WorkspaceOccupancyRecord, WorktreeSession,
+        TaskInputResult, TaskOutputResult, TaskRecord, TaskStatusSnapshot, TaskStopResult,
+        TimerRecord, TranscriptEntry, TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord,
+        WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -423,6 +425,51 @@ impl LocalClient {
     pub async fn agent_tasks(&self, agent_id: &str, limit: usize) -> Result<Vec<TaskRecord>> {
         self.get_json(&format!("/agents/{agent_id}/tasks?limit={limit}"))
             .await
+    }
+
+    pub async fn task_status(&self, agent_id: &str, task_id: &str) -> Result<TaskStatusSnapshot> {
+        self.get_json(&format!("/agents/{agent_id}/tasks/{task_id}"))
+            .await
+    }
+
+    pub async fn task_output(
+        &self,
+        agent_id: &str,
+        task_id: &str,
+        block: bool,
+        timeout_ms: Option<u64>,
+    ) -> Result<TaskOutputResult> {
+        let mut path = format!("/agents/{agent_id}/tasks/{task_id}/output?block={block}");
+        if let Some(timeout_ms) = timeout_ms {
+            path.push_str(&format!("&timeout_ms={timeout_ms}"));
+        }
+        self.get_json(&path).await
+    }
+
+    pub async fn task_input(
+        &self,
+        agent_id: &str,
+        task_id: &str,
+        text: impl Into<String>,
+    ) -> Result<TaskInputResult> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/tasks/{task_id}/input"),
+            &TaskInputRequest {
+                text: text.into(),
+                authority_class: Some(AuthorityClass::OperatorInstruction),
+            },
+        )
+        .await
+    }
+
+    pub async fn task_stop(&self, agent_id: &str, task_id: &str) -> Result<TaskStopResult> {
+        self.post_control_json(
+            &format!("/control/agents/{agent_id}/tasks/{task_id}/stop"),
+            &TaskStopRequest {
+                authority_class: Some(AuthorityClass::OperatorInstruction),
+            },
+        )
+        .await
     }
 
     pub async fn control_prompt(

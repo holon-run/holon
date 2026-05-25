@@ -138,6 +138,16 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "TaskInputRequest": {
+        "additionalProperties": true,
+        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "TaskStopRequest": {
+        "additionalProperties": true,
+        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
       "UninstallSkillRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -2219,6 +2229,160 @@
           }
         ],
         "summary": "Create command task",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/control/agents/{agent_id}/tasks/{task_id}/input": {
+      "post": {
+        "description": "Deliver text input to a managed task.",
+        "operationId": "taskInput",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Task id.",
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Task input",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/control/agents/{agent_id}/tasks/{task_id}/stop": {
+      "post": {
+        "description": "Request cancellation for a managed task.",
+        "operationId": "taskStop",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Task id.",
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskStopRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Task stop",
         "tags": [
           "control"
         ]
