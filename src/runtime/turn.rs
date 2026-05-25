@@ -1433,11 +1433,20 @@ impl RuntimeHandle {
             guard.state.pending_fallback_model = Some(fallback_model.clone());
             self.inner.storage.write_agent(&guard.state)?;
         }
+        let error_text = error.to_string();
+        let provider_failure_text = provider_lineage_failure_text(error);
+        let operator_message = provider_lineage_operator_message(
+            fallback_ref,
+            side_effect_boundary_crossed,
+            &provider_failure_text,
+        );
         self.inner.storage.append_event(&AuditEvent::new(
             "lineage_retry_exhausted",
             serde_json::json!({
                 "agent_id": agent_id,
                 "round": round,
+                "error": error_text.clone(),
+                "operator_message": operator_message.clone(),
                 "requested_model_ref": timeline.requested_model_ref,
                 "active_model_ref": timeline.active_model_ref,
                 "pending_fallback_model_ref": fallback_ref,
@@ -1445,15 +1454,7 @@ impl RuntimeHandle {
                 "provider_attempt_timeline": timeline,
             }),
         ))?;
-        let final_text = if side_effect_boundary_crossed {
-            format!(
-                "Turn stopped after the active provider lineage failed; queued a recovery turn on {fallback_ref}."
-            )
-        } else {
-            format!(
-                "Turn stopped before provider output was accepted; queued fallback turn on {fallback_ref}."
-            )
-        };
+        let final_text = operator_message.clone();
         self.persist_turn_terminal_record(
             terminal_kind,
             last_assistant_message
@@ -1473,6 +1474,8 @@ impl RuntimeHandle {
             serde_json::json!({
                 "agent_id": agent_id,
                 "round": round,
+                "error": error_text,
+                "operator_message": operator_message,
                 "fallback_model_ref": fallback_ref,
                 "side_effect_boundary_crossed": side_effect_boundary_crossed,
                 "last_assistant_preview": last_assistant_message
@@ -1730,6 +1733,33 @@ impl RuntimeHandle {
         .run()
         .await
     }
+}
+
+fn provider_lineage_failure_text(error: &anyhow::Error) -> String {
+    let text = error.to_string();
+    if text.trim().is_empty() {
+        "provider failed".into()
+    } else {
+        truncate_preview(&text, ROUND_TEXT_PREVIEW_LIMIT)
+    }
+}
+
+fn provider_lineage_operator_message(
+    fallback_ref: &str,
+    side_effect_boundary_crossed: bool,
+    failure: &str,
+) -> String {
+    let prefix = if side_effect_boundary_crossed {
+        "Turn stopped after the active provider lineage failed"
+    } else {
+        "Turn stopped before provider output was accepted"
+    };
+    let queued = if side_effect_boundary_crossed {
+        "Queued recovery turn"
+    } else {
+        "Queued fallback turn"
+    };
+    format!("{prefix}: {failure} {queued} on {fallback_ref}.")
 }
 
 struct TurnExecution<'a> {

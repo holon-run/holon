@@ -503,7 +503,9 @@ impl TuiProjection {
             "assistant_round_recorded"
             | "text_only_round_observed"
             | "max_output_tokens_recovery"
-            | "runtime_error" => {
+            | "runtime_error"
+            | "deferred_to_fallback"
+            | "provider_failed_needs_recovery" => {
                 // These events already carry enough payload for the active
                 // Conversation preview and event overlays. Avoid forcing a
                 // full /state refresh during normal turn progress.
@@ -2150,6 +2152,20 @@ mod tests {
                 }),
             ),
             (
+                "deferred_to_fallback",
+                json!({
+                    "operator_message": "OpenAI Codex authentication failed. Queued fallback turn on anthropic/claude-sonnet-4-6.",
+                    "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+                }),
+            ),
+            (
+                "provider_failed_needs_recovery",
+                json!({
+                    "operator_message": "Provider failed after output. Queued recovery turn on anthropic/claude-sonnet-4-6.",
+                    "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+                }),
+            ),
+            (
                 "message_admitted",
                 json!({
                     "message_id": "message-1",
@@ -2169,6 +2185,30 @@ mod tests {
         }
 
         assert!(projection.stale_slices.is_empty());
+    }
+
+    #[test]
+    fn provider_lineage_failure_events_are_visible_in_info_conversation() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+
+        projection.apply_event(
+            sample_event(
+                "deferred_to_fallback",
+                json!({
+                    "operator_message": "OpenAI Codex authentication failed. Queued fallback turn on anthropic/claude-sonnet-4-6.",
+                    "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+                }),
+            ),
+            &test_log_writer(),
+        );
+
+        let events = projection.presentation_events(OperatorDisplayMode::Info);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "deferred_to_fallback");
+        assert_eq!(events[0].lane, ProjectionEventLane::Timeline);
+        assert!(events[0]
+            .summary
+            .contains("OpenAI Codex authentication failed"));
     }
 
     #[test]

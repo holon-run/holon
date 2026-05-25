@@ -228,11 +228,15 @@ fn fake_jwt(payload: serde_json::Value) -> String {
     )
 }
 
-fn write_codex_auth(codex_home: &std::path::Path) {
+pub fn write_codex_auth(codex_home: &std::path::Path) {
+    write_codex_auth_with_exp(codex_home, 4_102_444_800i64);
+}
+
+pub fn write_codex_auth_with_exp(codex_home: &std::path::Path, exp: i64) {
     std::fs::create_dir_all(codex_home).unwrap();
     let token = fake_jwt(json!({
         "account_id": "acct_test",
-        "exp": 4_102_444_800i64
+        "exp": exp
     }));
     std::fs::write(
         codex_home.join("auth.json"),

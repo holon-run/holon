@@ -139,7 +139,10 @@ impl OperatorEventPresentation {
     pub fn is_error_loggable(&self) -> bool {
         matches!(
             self.source_event_kind.as_str(),
-            "runtime_error" | "turn_terminal"
+            "runtime_error"
+                | "turn_terminal"
+                | "deferred_to_fallback"
+                | "provider_failed_needs_recovery"
         )
     }
 }
@@ -192,6 +195,8 @@ pub fn is_activity_reset_event_kind(kind: &str) -> bool {
             | "brief_created"
             | "turn_terminal"
             | "runtime_error"
+            | "deferred_to_fallback"
+            | "provider_failed_needs_recovery"
     )
 }
 
@@ -291,7 +296,10 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "operator_delivery_completed"
         | "operator_notification_mirror_failed"
         | "operator_transport_binding_upserted" => OperatorEventCategory::Delivery,
-        "runtime_error" | "turn_terminal" => OperatorEventCategory::Runtime,
+        "runtime_error"
+        | "turn_terminal"
+        | "deferred_to_fallback"
+        | "provider_failed_needs_recovery" => OperatorEventCategory::Runtime,
         "assistant_round_recorded" | "provider_round_completed" | "text_only_round_observed" => {
             OperatorEventCategory::AssistantProgress
         }
@@ -315,7 +323,13 @@ fn event_visibility(
         ("work_item_written", _) if work_item_completed(payload) => OperatorVisibility::WorkDone,
         ("work_item_written", _) => OperatorVisibility::Trace,
         ("runtime_error", _) => OperatorVisibility::TurnResult,
+        ("deferred_to_fallback" | "provider_failed_needs_recovery", _) => {
+            OperatorVisibility::TurnResult
+        }
         ("turn_terminal", _) if turn_terminal_completed(payload) => OperatorVisibility::Trace,
+        ("turn_terminal", _) if turn_terminal_provider_lineage(payload) => {
+            OperatorVisibility::Trace
+        }
         (_, OperatorEventCategory::AssistantProgress) => OperatorVisibility::Progress,
         (_, OperatorEventCategory::Tool)
         | (_, OperatorEventCategory::Task)
@@ -365,6 +379,18 @@ fn turn_terminal_completed(payload: &Value) -> bool {
         .get("kind")
         .and_then(Value::as_str)
         .is_some_and(|kind| kind == "completed")
+}
+
+fn turn_terminal_provider_lineage(payload: &Value) -> bool {
+    payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| {
+            matches!(
+                kind,
+                "deferred_to_fallback" | "provider_failed_needs_recovery"
+            )
+        })
 }
 
 fn event_text(
@@ -536,6 +562,9 @@ fn event_text(
             simple_event_text("Context length exceeded", context_body(payload))
         }
         "runtime_error" => runtime_error_text(payload),
+        "deferred_to_fallback" | "provider_failed_needs_recovery" => {
+            provider_lineage_failure_text(kind, payload)
+        }
         "turn_terminal" => turn_terminal_text(payload),
         "assistant_round_recorded" => assistant_round_recorded_text(payload),
         "provider_round_completed" => provider_round_text(payload),
@@ -1403,6 +1432,31 @@ fn turn_terminal_text(payload: &Value) -> (String, Option<String>, String) {
     (title.into(), body, summary)
 }
 
+fn provider_lineage_failure_text(kind: &str, payload: &Value) -> (String, Option<String>, String) {
+    let title = match kind {
+        "provider_failed_needs_recovery" => "Provider failed; recovery queued",
+        _ => "Provider failed; fallback queued",
+    };
+    let body = payload
+        .get("operator_message")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("error").and_then(Value::as_str))
+        .map(collapse_whitespace)
+        .filter(|message| !message.is_empty())
+        .map(|message| trim_summary(&message))
+        .or_else(|| {
+            payload
+                .get("fallback_model_ref")
+                .and_then(Value::as_str)
+                .map(|fallback| format!("Queued fallback turn on {fallback}."))
+        });
+    let summary = body
+        .as_deref()
+        .map(|body| format!("{title}: {body}"))
+        .unwrap_or_else(|| title.to_string());
+    (title.into(), body, summary)
+}
+
 fn runtime_error_text(payload: &Value) -> (String, Option<String>, String) {
     let body = error_or_message_body(payload);
     simple_event_text("Runtime error", body)
@@ -1962,6 +2016,36 @@ mod tests {
         );
         assert_eq!(aborted.visibility, OperatorVisibility::TurnResult);
         assert_eq!(aborted.summary, "Turn aborted: need more input");
+    }
+
+    #[test]
+    fn provider_lineage_failure_events_are_turn_results() {
+        let context = OperatorPresentationContext::default();
+        let deferred = present_operator_event(
+            "deferred_to_fallback",
+            &json!({
+                "operator_message": "OpenAI Codex authentication failed. Queued fallback turn on anthropic/claude-sonnet-4-6.",
+                "fallback_model_ref": "anthropic/claude-sonnet-4-6"
+            }),
+            "fallback",
+            &context,
+        );
+        assert_eq!(deferred.visibility, OperatorVisibility::TurnResult);
+        assert_eq!(deferred.category, OperatorEventCategory::Runtime);
+        assert!(deferred
+            .summary
+            .contains("Provider failed; fallback queued"));
+        assert!(deferred
+            .summary
+            .contains("OpenAI Codex authentication failed"));
+
+        let terminal = present_operator_event(
+            "turn_terminal",
+            &json!({ "kind": "deferred_to_fallback", "last_assistant_message": "fallback queued" }),
+            "turn terminal",
+            &context,
+        );
+        assert_eq!(terminal.visibility, OperatorVisibility::Trace);
     }
 
     #[test]

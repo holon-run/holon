@@ -272,10 +272,23 @@ pub(crate) fn classify_status_error_with_trace(
             status: Some(status.as_u16()),
             reqwest: None,
             http_trace: trace.and_then(|trace| trace.diagnostics(Some(status.as_u16()))),
-            source_chain: Vec::new(),
+            source_chain: status_error_source_chain(provider, status),
         }),
         format!("{context} with status {status}: {body}"),
     )
+}
+
+fn status_error_source_chain(provider: Option<&str>, status: StatusCode) -> Vec<String> {
+    if provider == Some("openai-codex")
+        && matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+    {
+        return vec![
+            "OpenAI Codex uses Codex CLI authentication.".into(),
+            "The Codex CLI access token may be expired or revoked.".into(),
+            "Run `codex login`, then retry.".into(),
+        ];
+    }
+    Vec::new()
 }
 
 pub(crate) fn invalid_response_error(

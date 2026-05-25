@@ -979,9 +979,20 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
     assert!(events
         .iter()
         .any(|event| event.kind == "lineage_retry_exhausted"));
-    assert!(events
+    let deferred = events
         .iter()
-        .any(|event| event.kind == "deferred_to_fallback"));
+        .find(|event| event.kind == "deferred_to_fallback")
+        .expect("deferred_to_fallback event");
+    assert_eq!(
+        deferred.data["fallback_model_ref"].as_str(),
+        Some("anthropic/claude-sonnet-4-6")
+    );
+    assert!(deferred.data["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("all configured providers failed")));
+    assert!(deferred.data["operator_message"]
+        .as_str()
+        .is_some_and(|message| message.contains("Queued fallback turn")));
     assert!(events
         .iter()
         .any(|event| event.kind == "recovery_turn_started"));
@@ -1034,9 +1045,13 @@ async fn provider_failure_after_accepted_output_queues_recovery_turn() {
     );
 
     let events = runtime.storage().read_recent_events(30).unwrap();
-    assert!(events
+    let recovery = events
         .iter()
-        .any(|event| event.kind == "provider_failed_needs_recovery"));
+        .find(|event| event.kind == "provider_failed_needs_recovery")
+        .expect("provider_failed_needs_recovery event");
+    assert!(recovery.data["operator_message"]
+        .as_str()
+        .is_some_and(|message| message.contains("Queued recovery turn")));
     let exhausted = events
         .iter()
         .find(|event| event.kind == "lineage_retry_exhausted")
