@@ -110,7 +110,7 @@ pub async fn create_command_task_route_rejects_continue_on_result_field() -> Res
     Ok(())
 }
 
-pub async fn create_command_task_route_no_longer_denies_integration_trust() -> Result<()> {
+pub async fn create_command_task_route_accepts_integration_authority() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();
 
@@ -118,8 +118,8 @@ pub async fn create_command_task_route_no_longer_denies_integration_trust() -> R
         .post(format!("{base}/control/agents/default/tasks"))
         .json(&serde_json::json!({
             "summary": "integration can create task",
-            "cmd": "printf trusted_integration_ok",
-            "authority_class": "trusted_integration"
+            "cmd": "printf integration_signal_ok",
+            "authority_class": "integration_signal"
         }))
         .send()
         .await?;
@@ -130,8 +130,8 @@ pub async fn create_command_task_route_no_longer_denies_integration_trust() -> R
         let events = runtime.storage().read_recent_events(20)?;
         Ok(events.iter().any(|event| {
             event.kind == "task_create_requested"
-                && event.data["provided_trust"] == "trusted_integration"
-                && event.data["effective_trust"] == "trusted_integration"
+                && event.data["provided_trust"] == "integration_signal"
+                && event.data["effective_trust"] == "integration_signal"
         }))
     })
     .await?;
@@ -149,6 +149,7 @@ pub async fn create_command_task_route_accepts_command_request() -> Result<()> {
         .json(&serde_json::json!({
             "summary": "run route command",
             "cmd": "printf route_command_ok",
+            "login": false,
             "yield_time_ms": 1000
         }))
         .send()
