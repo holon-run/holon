@@ -1294,16 +1294,20 @@ impl RuntimeHandle {
         let projection = self.inner.storage.work_queue_prompt_projection()?;
         let agent = self.inner.storage.read_agent()?;
         if let Some(current) = projection.current_runnable {
-            if let Some(agent) = agent.as_ref() {
-                if Self::active_command_task_for_work_item(
-                    &self.inner.storage,
-                    &agent.id,
-                    &current.work_item.id,
-                )? {
-                    return Ok(None);
-                }
+            let suppress_continue_active = agent
+                .as_ref()
+                .map(|agent| {
+                    Self::active_command_task_for_work_item(
+                        &self.inner.storage,
+                        &agent.id,
+                        &current.work_item.id,
+                    )
+                })
+                .transpose()?
+                .unwrap_or(false);
+            if !suppress_continue_active {
+                return Ok(Some((current.work_item, "continue_active")));
             }
-            return Ok(Some((current.work_item, "continue_active")));
         }
         Ok(projection
             .queued_runnable

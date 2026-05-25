@@ -488,6 +488,98 @@ async fn indefinite_sleep_with_runnable_work_item_and_background_command_task_al
 }
 
 #[tokio::test]
+async fn indefinite_sleep_with_background_command_task_and_queued_runnable_emits_selection_tick(
+) {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let current_work_item_id =
+        seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
+    let queued = runtime
+        .create_work_item("queued follow-up work".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let now = Utc::now();
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "cmd-task-wait".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: Some(current_work_item_id.clone()),
+            summary: Some("background cargo check".into()),
+            detail: Some(serde_json::json!({ "wait_policy": "background" })),
+            recovery: None,
+        })
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-1".into());
+        guard.state.current_work_item_id = Some(current_work_item_id.clone());
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    runtime.transition_to_sleep(None).await.unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeRunning);
+    assert_eq!(state.current_run_id.as_deref(), Some("run-1"));
+    assert_eq!(state.pending, 1);
+    assert_eq!(state.sleeping_until, None);
+    let messages = runtime.storage().read_recent_messages(10).unwrap();
+    let tick = messages
+        .iter()
+        .find(|message| {
+            matches!(
+                (&message.kind, &message.origin),
+                (MessageKind::SystemTick, MessageOrigin::System { subsystem }) if subsystem == "work_queue"
+            )
+        })
+        .expect("work queue tick should be enqueued for queued runnable work");
+    assert_eq!(tick.work_item_id.as_deref(), Some(queued.id.as_str()));
+    assert_ne!(
+        tick.work_item_id.as_deref(),
+        Some(current_work_item_id.as_str())
+    );
+    assert_eq!(
+        tick.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("work_queue"))
+            .and_then(|metadata| metadata.get("reason"))
+            .and_then(|value| value.as_str()),
+        Some("queued_available")
+    );
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision"
+            && event.data["boundary"] == "lifecycle_sleep"
+            && event.data["reason"] == "sleep_overridden_runnable_work"
+            && event.data["evidence"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item == "work_queue_reason=queued_available")
+            })
+    }));
+}
+
+#[tokio::test]
 async fn indefinite_sleep_with_queued_runnable_work_item_emits_selection_tick() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
