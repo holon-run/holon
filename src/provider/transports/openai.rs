@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use chrono::Utc;
 use reqwest::{Client, RequestBuilder, Response};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -26,7 +27,8 @@ use crate::{
         ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
         ProviderNativeWebSearchRequest, ProviderOpenAiRemoteCompactionDiagnostics,
         ProviderOpenAiRequestControlsDiagnostics, ProviderPromptFrame, ProviderRequestDiagnostics,
-        ProviderTurnRequest, ProviderTurnResponse, ToolSchemaContract,
+        ProviderTransportDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
+        ToolSchemaContract,
     },
     token_estimate::estimate_json_tokens,
 };
@@ -600,7 +602,36 @@ impl AgentProvider for OpenAiProvider {
 #[async_trait]
 impl AgentProvider for OpenAiCodexProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
-        let credential = load_codex_cli_credential(&self.codex_home)?;
+        let model_ref = format!("{}/{}", self.provider_id, self.model);
+        let credential = load_codex_cli_credential(&self.codex_home).map_err(|error| {
+            openai_codex_auth_error(
+                "credential_resolution",
+                &model_ref,
+                vec![
+                    error.to_string(),
+                    "OpenAI Codex uses Codex CLI authentication; run `codex login`, then retry."
+                        .into(),
+                ],
+                "OpenAI Codex authentication failed: Codex CLI credentials are unavailable. Run `codex login`, then retry.",
+            )
+        })?;
+        if let Some(expires_at) = credential.expires_at {
+            if expires_at <= Utc::now() + chrono::Duration::seconds(60) {
+                return Err(openai_codex_auth_error(
+                    "credential_expired",
+                    &model_ref,
+                    vec![
+                        format!(
+                            "Codex CLI credential from {} expired at {}",
+                            credential.source,
+                            expires_at.to_rfc3339()
+                        ),
+                        "Run `codex login`, then retry.".into(),
+                    ],
+                    "OpenAI Codex authentication failed: the Codex CLI access token is expired. Run `codex login`, then retry.",
+                ));
+            }
+        }
         let body = build_openai_responses_request(
             &self.model,
             self.max_output_tokens,
@@ -3772,7 +3803,7 @@ async fn send_openai_responses_streaming_request(
         let body = response.text().await.unwrap_or_default();
         trace_response_body(request_trace.as_ref(), &body);
         return Err(classify_status_error_with_trace(
-            "OpenAI-style streaming request failed",
+            openai_codex_status_error_context(status),
             "response_status",
             Some("openai-codex"),
             Some(&model_ref),
@@ -3786,6 +3817,43 @@ async fn send_openai_responses_streaming_request(
     let terminal_response =
         read_openai_streaming_response(response, request_trace.as_ref()).await?;
     parse_openai_response_with_transport_state(terminal_response)
+}
+
+fn openai_codex_auth_error(
+    stage: &str,
+    model_ref: &str,
+    source_chain: Vec<String>,
+    message: &str,
+) -> anyhow::Error {
+    provider_transport_error(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::AuthError,
+            disposition: RetryDisposition::FailFast,
+        },
+        None,
+        Some(ProviderTransportDiagnostics {
+            stage: stage.into(),
+            provider: Some("openai-codex".into()),
+            model_ref: Some(model_ref.into()),
+            url: None,
+            status: None,
+            reqwest: None,
+            http_trace: None,
+            source_chain,
+        }),
+        message,
+    )
+}
+
+fn openai_codex_status_error_context(status: reqwest::StatusCode) -> &'static str {
+    if matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) {
+        "OpenAI Codex authentication failed; the Codex CLI token may be expired. Run `codex login`, then retry."
+    } else {
+        "OpenAI-style streaming request failed"
+    }
 }
 
 async fn send_openai_request(

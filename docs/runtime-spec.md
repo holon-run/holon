@@ -91,6 +91,8 @@ Current phase-1 retry contract:
 - retry exhaustion is visible in the final aggregated provider failure
 - retry, fail-fast, and fallback decisions are also preserved in a stable
   provider-attempt timeline on transcript and audit surfaces
+- when fallback is deferred to the next turn, Holon emits an operator-visible
+  provider lineage event with the failure summary and queued fallback model
 - `provider_doctor` exposes the current retry policy alongside provider
   availability
 
@@ -116,6 +118,8 @@ Fallback rules:
 - exhausting retries on provider A must still allow fallback to provider B
 - fail-fast errors on provider A may also continue to provider B; only the
   current provider candidate is aborted
+- provider B is not invoked inside the failed turn; `deferred_to_fallback` or
+  `provider_failed_needs_recovery` records the failure and queues the next turn
 - if a provider request still returns `context_length_exceeded`, Holon treats
   that as a turn-level terminal failure, surfaces an operator-visible failure
   brief, and does not auto-reactivate the active work item through
@@ -191,6 +195,10 @@ Phase-1 visibility rules:
 - transport-backed failures may attach structured `transport_diagnostics` per
   attempt so runtime artifacts can distinguish timeout vs connect vs body/read
   failures without expanding operator-facing summaries
+- TUI and other operator surfaces should render `deferred_to_fallback` and
+  `provider_failed_needs_recovery` as turn-result messages; the matching
+  `turn_terminal` record remains state/trace metadata to avoid duplicate
+  operator messages
 - the timeline is attached to:
   - `provider_round_completed`
   - `terminal_delivery_round_completed`

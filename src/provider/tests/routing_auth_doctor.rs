@@ -15,6 +15,7 @@ use crate::provider::retry::{
     classify_provider_error, ProviderFailureKind, RetryDisposition, PROVIDER_MAX_RETRIES,
 };
 use axum::{extract::State, http::header, response::IntoResponse, routing::post, Json, Router};
+use chrono::Utc;
 use serde_json::{json, Value};
 
 #[test]
@@ -113,6 +114,99 @@ fn build_provider_from_config_uses_effective_fallback_order() {
     );
     assert_eq!(providers[2]["model"], "anthropic/claude-sonnet-4-6");
     assert_eq!(providers[2]["availability"]["available"], Value::Bool(true));
+}
+
+#[tokio::test]
+async fn openai_codex_expired_cli_token_fails_fast_with_login_hint() {
+    let fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    let codex_home = fixture
+        .config
+        .providers
+        .get(&ProviderId::openai_codex())
+        .and_then(|provider| provider.codex_home.as_ref())
+        .expect("codex home");
+    write_codex_auth_with_exp(codex_home, Utc::now().timestamp() - 60);
+
+    let provider = build_provider_from_config(&fixture.config).unwrap();
+    let error = provider
+        .complete_turn(provider_turn_request())
+        .await
+        .expect_err("expired Codex CLI token should fail before send");
+
+    assert!(error
+        .to_string()
+        .contains("Codex CLI access token is expired"));
+    assert!(error.to_string().contains("codex login"));
+    let timeline = provider_attempt_timeline(&error).expect("missing attempt timeline");
+    assert_eq!(timeline.attempts.len(), 1);
+    assert_eq!(
+        timeline.attempts[0].failure_kind.as_deref(),
+        Some("auth_error")
+    );
+    assert_eq!(
+        timeline.attempts[0].outcome,
+        ProviderAttemptOutcome::FailFastAborted
+    );
+    let transport = timeline.attempts[0]
+        .transport_diagnostics
+        .as_ref()
+        .expect("expired credential should carry diagnostics");
+    assert_eq!(transport.provider.as_deref(), Some("openai-codex"));
+    assert_eq!(transport.stage, "credential_expired");
+    assert!(transport
+        .source_chain
+        .iter()
+        .any(|line| line.contains("codex login")));
+}
+
+#[tokio::test]
+async fn openai_codex_unauthorized_status_includes_login_hint_and_diagnostics() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let server_attempts = attempts.clone();
+    let router = Router::new().route(
+        "/codex/responses",
+        post(move || async move {
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+            (axum::http::StatusCode::UNAUTHORIZED, "token_expired")
+        }),
+    );
+    let server = spawn_test_server(router).await;
+
+    let mut fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai_codex())
+        .unwrap()
+        .base_url = server;
+    let provider = build_provider_from_config(&fixture.config).unwrap();
+    let error = provider
+        .complete_turn(provider_turn_request())
+        .await
+        .expect_err("401 should fail fast");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert!(error.to_string().contains("Codex CLI token may be expired"));
+    assert!(error.to_string().contains("codex login"));
+    let timeline = provider_attempt_timeline(&error).expect("missing attempt timeline");
+    assert_eq!(
+        timeline.attempts[0].failure_kind.as_deref(),
+        Some("auth_error")
+    );
+    assert_eq!(
+        timeline.attempts[0].outcome,
+        ProviderAttemptOutcome::FailFastAborted
+    );
+    let transport = timeline.attempts[0]
+        .transport_diagnostics
+        .as_ref()
+        .expect("401 should preserve transport diagnostics");
+    assert_eq!(transport.provider.as_deref(), Some("openai-codex"));
+    assert_eq!(transport.status, Some(401));
+    assert!(transport
+        .source_chain
+        .iter()
+        .any(|line| line.contains("codex login")));
 }
 
 #[test]
