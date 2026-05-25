@@ -1434,7 +1434,7 @@ impl RuntimeHandle {
             self.inner.storage.write_agent(&guard.state)?;
         }
         let error_text = error.to_string();
-        let provider_failure_text = provider_lineage_failure_text(error);
+        let provider_failure_text = provider_lineage_failure_text(&error_text);
         let operator_message = provider_lineage_operator_message(
             fallback_ref,
             side_effect_boundary_crossed,
@@ -1735,12 +1735,11 @@ impl RuntimeHandle {
     }
 }
 
-fn provider_lineage_failure_text(error: &anyhow::Error) -> String {
-    let text = error.to_string();
+fn provider_lineage_failure_text(text: &str) -> String {
     if text.trim().is_empty() {
         "provider failed".into()
     } else {
-        truncate_preview(&text, ROUND_TEXT_PREVIEW_LIMIT)
+        truncate_preview(text, ROUND_TEXT_PREVIEW_LIMIT)
     }
 }
 
