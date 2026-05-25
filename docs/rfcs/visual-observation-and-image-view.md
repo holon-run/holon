@@ -104,10 +104,14 @@ Input:
 subject to the same filesystem trust and workspace boundaries as other local
 environment tools.
 
-`prompt` is optional in the JSON schema but should be encouraged in tool
-guidance. It carries the agent's purpose, focus, and visual question as free
-text instead of separate fields such as `purpose`, `focus`, or
-`observation_policy`.
+`prompt` is required in the model-facing schema. It carries the agent's
+purpose, focus, and visual question as free text instead of separate fields such
+as `purpose`, `focus`, or `observation_policy`. The prompt is part of the
+observation cache key, so a generic prompt should be used only when the caller
+really wants a broad visual inventory.
+
+CLI or SDK helper surfaces may provide a default prompt for human convenience,
+but the model-facing tool contract should require an explicit prompt.
 
 Examples:
 
@@ -237,7 +241,12 @@ reference and prompt:
 ```
 
 The schema should be permissive enough for screenshots, documents, diagrams,
-charts, and photos, while keeping a stable core:
+charts, and photos, while keeping a stable core. The first implementation
+should use one broad `visual_observation.v1` schema with optional sections
+rather than separate purpose-specific schemas such as `ui_layout.v1`,
+`document_ocr.v1`, or `chart_data.v1`.
+
+The stable core is:
 
 - image size and reference
 - prompt used for observation
@@ -316,9 +325,9 @@ Provider requests are derived from that durable form.
 For a multimodal current model:
 
 - include the structured observation
-- include the native image payload when the current step needs direct visual
-  inspection
-- omit the native image on ordinary replay when the cached observation is
+- include the native image payload for the immediate continuation after the
+  `ViewImage` tool call
+- omit the native image on later replay when the cached observation is
   sufficient
 
 For a text-only current model:
@@ -333,6 +342,16 @@ For model switching:
 - lower each visual reference according to the new model's capabilities
 - if an old visual reference lacks an observation, generate one before replaying
   to a text-only model or return a recoverable error
+
+The default native image replay policy is:
+
+```text
+native_image_replay = immediate_only
+```
+
+This lets multimodal primary models inspect the original visual evidence when
+the agent explicitly calls `ViewImage`, while keeping long-term replay,
+compaction, and model switching observation-first.
 
 ### Tool Result Shape
 
@@ -416,6 +435,42 @@ Caching should be conservative. If the prompt asks a materially different visual
 question, Holon should generate a new observation even when the image hash is
 unchanged.
 
+## Limits
+
+The first implementation should use conservative hard limits. Image input can
+inflate substantially when converted to provider-native payloads such as data
+URLs, where base64 adds roughly one third to the encoded byte size. Provider
+request envelopes, tracing, retries, and in-memory copies add additional
+overhead.
+
+Initial limits:
+
+```text
+max input file size: 8 MB
+max decoded pixels: 16 MP
+max encoded image payload before base64: 4 MB
+max long edge for adapter/native resized payload: 2048 px
+max observation JSON: 6k tokens equivalent
+max OCR entries: 200
+max elements: 200
+max issues: 50
+```
+
+The runtime should distinguish input file size from provider payload size. A
+large PNG may compress well after resizing, while a smaller file may still
+produce an oversized model payload after re-encoding and base64 expansion.
+
+If the original image exceeds the input file limit, `ViewImage` should fail
+before reading the full file into memory. If the decoded image or encoded model
+payload exceeds limits, Holon should downscale to the configured long edge and
+try again. If the resized payload still exceeds the provider payload limit,
+`ViewImage` should return a recoverable error that asks the agent to provide a
+smaller image or a focused crop in a future tool version.
+
+The first implementation should not expose native original-resolution image
+mode. Original-resolution forwarding can be reconsidered after Holon has
+provider-specific payload accounting, crop support, and clear cost controls.
+
 ## Failure Modes
 
 `ViewImage` should fail clearly when:
@@ -454,14 +509,10 @@ missing, for example:
 
 ## Open Questions
 
-- Should `prompt` be required in the first schema, or optional with a generic
-  default observation prompt?
-- Should the first observation schema specialize by image purpose, or keep one
-  broad `visual_observation.v1` with optional sections?
-- Should Holon allow a future admin-only `ObserveImageReference` command for
-  regenerating observations with a different schema?
-- What maximum image size and observation token limits should be enforced in the
-  first implementation?
-- Should native multimodal replay include the original image by default for the
-  immediately following model round, then use observation-only replay afterward?
-
+- Should a future version add crop/focus coordinates to the public `ViewImage`
+  input, or should focused inspection remain prompt-only until external
+  adapters can provide richer references?
+- Should provider selection prefer the current primary model whenever it
+  supports image input, or should Holon prefer a cheaper configured vision model
+  for structured observation generation while still sending the native image to
+  the primary model for immediate continuation?
