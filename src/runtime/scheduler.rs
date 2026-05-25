@@ -5,8 +5,8 @@ use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, AgentStatus, AuthorityClass,
     ExternalWaitRecoverability, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
     Priority, TaskRecord, TaskStatus, TimerStatus, TurnTerminalKind, WaitConditionRecord,
-    WaitConditionStatus, WaitingIntentRecord, WaitingIntentStatus, WorkItemRecord,
-    WorkItemSchedulingState, WorkReactivationMode, WorkReactivationSignal,
+    WaitConditionStatus, WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus,
+    WorkItemRecord, WorkItemSchedulingState, WorkReactivationMode, WorkReactivationSignal,
 };
 use chrono::{DateTime, Utc};
 
@@ -123,11 +123,11 @@ impl SchedulerProjection {
             .collect::<Vec<_>>();
         let active_work_item_waiting_intents = active_waiting_intents
             .iter()
-            .filter(|intent| intent.scope == ExternalTriggerScope::WorkItem)
+            .filter(|intent| intent.scope == WaitingIntentScope::WorkItem)
             .count();
         let active_agent_waiting_intents = active_waiting_intents
             .iter()
-            .filter(|intent| intent.scope == ExternalTriggerScope::Agent)
+            .filter(|intent| intent.scope == WaitingIntentScope::Agent)
             .count();
         let active_timers = storage
             .latest_timer_records()?

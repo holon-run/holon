@@ -19,20 +19,14 @@ agentinbox source add fixture github --home ~/.agentinbox
 
 This returns a `sourceId` like `src_fixture_github`.
 
-### 2. Create a wake-hint external trigger
+### 2. Get the agent's wake-hint external ingress
 
-Use Holon's `CreateExternalTrigger` tool within your agent:
+Use the agent context's `default_external_ingress` URL. Holon provisions this
+agent-level capability for wake hints; do not create a separate trigger for
+each PR, issue, WorkItem, or wait cycle.
 
-```json
-{
-  "description": "Check AgentInbox for GitHub PR #34 activity",
-  "source": "github",
-  "scope": "agent",
-  "delivery_mode": "wake_hint"
-}
-```
-
-This returns a `waiting_intent_id` and a `trigger_url` like `http://127.0.0.1:7878/callbacks/wake/TOKEN`.
+The URL looks like `http://127.0.0.1:7878/callbacks/wake/TOKEN` and is a
+capability secret.
 
 ### 3. Register an AgentInbox subscription
 
@@ -44,7 +38,8 @@ agentinbox subscription add <agent_id> src_fixture_github \
   --home ~/.agentinbox
 ```
 
-Replace `<agent_id>` with your agent ID and `TOKEN` with the token from your trigger URL.
+Replace `<agent_id>` with your agent ID and `TOKEN` with the token from the
+agent's default wake-hint URL.
 
 ### 4. Sleep and wait for activation
 

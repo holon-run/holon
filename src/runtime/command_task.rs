@@ -1609,7 +1609,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn command_resolution_ignores_work_item_external_trigger_url() {
+    async fn command_resolution_includes_agent_external_trigger_url() {
         let (_home, _workspace, runtime) = test_runtime();
         let work = runtime
             .create_work_item("wait for scoped callback".into(), None, None, Vec::new())
@@ -1622,7 +1622,7 @@ mod tests {
                 external_trigger_id: "legacy-work-item-trigger".into(),
                 target_agent_id: "default".into(),
                 waiting_intent_id: None,
-                scope: ExternalTriggerScope::WorkItem,
+                scope: ExternalTriggerScope::Agent,
                 delivery_mode: CallbackDeliveryMode::WakeHint,
                 trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/token".into()),
                 token_hash: "token-hash".into(),
@@ -1638,7 +1638,10 @@ mod tests {
         let resolved = resolved_command(&runtime, &spec).await;
         let env = resolved_env(&resolved);
 
-        assert!(!env.contains_key("HOLON_EXTERNAL_TRIGGER_URL"));
+        assert_eq!(
+            env.get("HOLON_EXTERNAL_TRIGGER_URL").map(String::as_str),
+            Some("http://127.0.0.1:7878/callbacks/wake/token")
+        );
     }
 
     #[tokio::test]

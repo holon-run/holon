@@ -84,7 +84,7 @@ initialization. This is a capability URL with a secret token:
 | `trigger_url` | The ingress URL (capability secret) |
 | `target_agent_id` | The agent this trigger wakes |
 | `delivery_mode` | `WakeHint` or `EnqueueMessage` |
-| `scope` | `Agent` or `WorkItem` |
+| `scope` | `Agent` |
 | `status` | `Active` or `Revoked` |
 
 ### Deprecated surface
@@ -121,18 +121,10 @@ occurred:
 
 ## Known gaps
 
-- `ExternalTriggerScope::WorkItem` variant still exists in the type system
-  (`types.rs:1690`) alongside `Agent`. The RFC calls for removing
-  WorkItem-scoped triggers and making capability identity agent-level. See
-  [issue #1381](https://github.com/holon-run/holon/issues/1381).
-- `CreateExternalTrigger` and `CancelExternalTrigger` remain as first-class
-  model-facing tools in the registry without a clear deprecated/compatibility
-  marker. `docs/agentinbox-dogfood-runbook.md` still describes the old
-  CreateExternalTrigger → CancelExternalTrigger pattern as the normal wait
-  handshake. See [issue #1381](https://github.com/holon-run/holon/issues/1381).
-- `WaitingIntentRecord` retains a `scope` field even though the RFC says
-  capability identity should be agent-level, not scope-partitioned.
-  See [issue #1381](https://github.com/holon-run/holon/issues/1381).
+- `WaitingIntentRecord` retains an internal `scope` field for scheduler
+  accounting of agent-level versus WorkItem-bound waiting state. External
+  trigger capabilities themselves are agent-scoped and partitioned only by
+  delivery mode.
 - `WakeHint` idempotency is implemented via `PendingWakeHint` deduplication
   but the contract for when duplicate hints are silently dropped vs surfaced
   as diagnostics is not yet a stable API.

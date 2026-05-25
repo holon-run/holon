@@ -847,8 +847,8 @@ mod tests {
     use crate::context::ContextConfig;
     use crate::provider::StubProvider;
     use crate::types::{
-        AgentStatus, CallbackDeliveryMode, ExternalTriggerScope, TodoItem, TodoItemState,
-        WaitingIntentRecord, WaitingIntentStatus, WorkItemRecord, WorkItemState,
+        AgentStatus, CallbackDeliveryMode, TodoItem, TodoItemState, WaitingIntentRecord,
+        WaitingIntentScope, WaitingIntentStatus, WorkItemRecord, WorkItemState,
     };
     use std::sync::Arc;
     use tempfile::{tempdir, TempDir};
@@ -1004,9 +1004,9 @@ mod tests {
                 id: "wait-active".into(),
                 agent_id: "default".into(),
                 scope: if work_item_id.is_some() {
-                    ExternalTriggerScope::WorkItem
+                    WaitingIntentScope::WorkItem
                 } else {
-                    ExternalTriggerScope::Agent
+                    WaitingIntentScope::Agent
                 },
                 work_item_id: work_item_id.map(ToString::to_string),
                 description: "waiting for external signal".into(),

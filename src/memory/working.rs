@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::{
     storage::AppStorage,
     types::{
-        AgentState, AuditEvent, ClosureDecision, ExternalTriggerScope, MessageEnvelope,
-        MessageKind, TodoItem, TodoItemState, ToolExecutionRecord, TurnMemoryDelta,
+        AgentState, AuditEvent, ClosureDecision, MessageEnvelope, MessageKind, TodoItem,
+        TodoItemState, ToolExecutionRecord, TurnMemoryDelta, WaitingIntentScope,
         WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
         WorkingMemoryUpdateReason,
     },
@@ -148,7 +148,7 @@ pub fn derive_working_memory_snapshot(
         .latest_waiting_intents()?
         .into_iter()
         .filter(|record| record.status == WaitingIntentStatus::Active)
-        .filter(|record| record.scope == ExternalTriggerScope::WorkItem)
+        .filter(|record| record.scope == WaitingIntentScope::WorkItem)
         .collect::<Vec<_>>();
     let current_work_item_id = current_work_item.map(|item| item.id.as_str());
     let memory_tools = collect_memory_tools(&recent_tools, current_work_item_id);
@@ -802,9 +802,9 @@ mod tests {
         storage::AppStorage,
         types::{
             AgentState, AuthorityClass, BriefKind, BriefRecord, CallbackDeliveryMode,
-            ClosureDecision, ExternalTriggerScope, MessageBody, MessageEnvelope, MessageKind,
-            MessageOrigin, Priority, RuntimePosture, TodoItem, TodoItemState, ToolExecutionRecord,
-            ToolExecutionStatus, WaitingIntentRecord, WaitingIntentStatus, WaitingReason,
+            ClosureDecision, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+            RuntimePosture, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
+            WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WaitingReason,
             WorkItemRecord, WorkItemState,
         },
     };
@@ -865,7 +865,7 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait-triggered".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(triggered.id.clone()),
                 description: "CI webhook fired".into(),
                 source: "github".into(),
@@ -958,7 +958,7 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait_1".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
                 description: "wait for CI webhook".into(),
                 source: "github".into(),
@@ -1283,7 +1283,7 @@ mod tests {
             WaitingIntentRecord {
                 id: "wait-current-old".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
                 description: "current old".into(),
                 source: "github".into(),
@@ -1302,7 +1302,7 @@ mod tests {
             WaitingIntentRecord {
                 id: "wait-current-new".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
                 description: "current new".into(),
                 source: "github".into(),
@@ -1321,7 +1321,7 @@ mod tests {
             WaitingIntentRecord {
                 id: "wait-legacy-new".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: None,
                 description: "legacy new".into(),
                 source: "github".into(),
@@ -1340,7 +1340,7 @@ mod tests {
             WaitingIntentRecord {
                 id: "wait-legacy-old".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: None,
                 description: "legacy old".into(),
                 source: "github".into(),
@@ -1359,7 +1359,7 @@ mod tests {
             WaitingIntentRecord {
                 id: "wait-other-newest".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(other.id.clone()),
                 description: "other newest".into(),
                 source: "github".into(),
@@ -1437,7 +1437,7 @@ mod tests {
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait_2".into(),
                 agent_id: "default".into(),
-                scope: ExternalTriggerScope::WorkItem,
+                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
                 description: "wait for reviewer".into(),
                 source: "github".into(),

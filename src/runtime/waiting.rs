@@ -1,7 +1,9 @@
 use super::*;
 
 use crate::ingress::WakeHint;
-use crate::types::{WaitConditionRecord, WaitConditionSummary, WaitingReason, WakeSource};
+use crate::types::{
+    WaitConditionRecord, WaitConditionSummary, WaitingIntentScope, WaitingReason, WakeSource,
+};
 use std::time::Duration;
 
 impl RuntimeHandle {
@@ -348,7 +350,7 @@ impl RuntimeHandle {
             .await?
             .into_iter()
             .filter(|record| record.status == WaitingIntentStatus::Active)
-            .filter(|record| record.scope == ExternalTriggerScope::WorkItem)
+            .filter(|record| record.scope == WaitingIntentScope::WorkItem)
             .count())
     }
 
@@ -400,7 +402,7 @@ impl RuntimeHandle {
             .await?
             .into_iter()
             .filter(|record| record.status == WaitingIntentStatus::Active)
-            .filter(|record| record.scope == ExternalTriggerScope::WorkItem)
+            .filter(|record| record.scope == WaitingIntentScope::WorkItem)
             .collect::<Vec<_>>();
         if active_waiting.is_empty() {
             return Ok(());
