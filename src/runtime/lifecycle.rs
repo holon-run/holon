@@ -5,8 +5,8 @@ use crate::runtime::closure::{derive_closure_decision, ClosureFacts};
 use crate::storage::AppStorage;
 use crate::types::{
     AgentListEntry, AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason,
-    ChildAgentObservabilitySnapshot, ChildAgentPhase, TaskRecord, TaskStatus, TokenUsage,
-    WaitingReason, WorkItemState, WorktreeSession,
+    ChildAgentObservabilitySnapshot, ChildAgentPhase, TaskKind, TaskRecord, TaskStatus,
+    TokenUsage, WaitingReason, WorkItemState, WorktreeSession,
 };
 
 fn resolve_enter_cwd(execution_root: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
@@ -1292,7 +1292,17 @@ impl RuntimeHandle {
         &self,
     ) -> Result<Option<(crate::types::WorkItemRecord, &'static str)>> {
         let projection = self.inner.storage.work_queue_prompt_projection()?;
+        let agent = self.inner.storage.read_agent()?;
         if let Some(current) = projection.current_runnable {
+            if let Some(agent) = agent.as_ref() {
+                if Self::active_command_task_for_work_item(
+                    &self.inner.storage,
+                    &agent.id,
+                    &current.work_item.id,
+                )? {
+                    return Ok(None);
+                }
+            }
             return Ok(Some((current.work_item, "continue_active")));
         }
         Ok(projection
@@ -1300,6 +1310,20 @@ impl RuntimeHandle {
             .into_iter()
             .next()
             .map(|queued| (queued.work_item, "queued_available")))
+    }
+
+    fn active_command_task_for_work_item(
+        storage: &AppStorage,
+        agent_id: &str,
+        work_item_id: &str,
+    ) -> Result<bool> {
+        Ok(storage
+            .latest_active_task_records_for_agent(agent_id, usize::MAX)?
+            .iter()
+            .any(|task| {
+                task.kind == TaskKind::CommandTask
+                    && task.work_item_id.as_deref() == Some(work_item_id)
+            }))
     }
 
     fn spawn_session_sleep_wake(

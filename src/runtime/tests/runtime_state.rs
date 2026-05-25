@@ -416,6 +416,78 @@ async fn indefinite_sleep_with_current_runnable_work_item_emits_continuation_tic
 }
 
 #[tokio::test]
+async fn indefinite_sleep_with_runnable_work_item_and_background_command_task_allows_sleep() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item_id = seed_bound_work_item(&runtime, WorkItemState::Open, None, None).await;
+    let now = Utc::now();
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: "cmd-task-wait".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: Some(work_item_id.clone()),
+            summary: Some("background cargo check".into()),
+            detail: Some(serde_json::json!({ "wait_policy": "background" })),
+            recovery: None,
+        })
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-1".into());
+        guard.state.current_work_item_id = Some(work_item_id.clone());
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    runtime.transition_to_sleep(None).await.unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::Asleep);
+    assert_eq!(state.current_run_id, None);
+    assert_eq!(state.sleeping_until, None);
+    let messages = runtime.storage().read_recent_messages(10).unwrap();
+    assert!(
+        !messages.iter().any(|message| {
+            matches!(
+                (&message.kind, &message.origin),
+                (MessageKind::SystemTick, MessageOrigin::System { subsystem }) if subsystem == "work_queue"
+            )
+        }),
+        "should not emit work queue tick while waiting on background command"
+    );
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision"
+            && event.data["boundary"] == "lifecycle_sleep"
+            && event.data["reason"] == "sleep"
+            && event.data["next_status"] == "asleep"
+    }));
+    assert!(!events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision"
+            && event.data["reason"] == "sleep_overridden_runnable_work"
+    }));
+}
+
+#[tokio::test]
 async fn indefinite_sleep_with_queued_runnable_work_item_emits_selection_tick() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
