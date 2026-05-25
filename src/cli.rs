@@ -65,6 +65,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: TaskCommands,
     },
+    #[command(name = "work-item")]
+    WorkItem {
+        #[command(subcommand)]
+        command: WorkItemCommands,
+    },
     Timer {
         #[arg(long)]
         after_ms: u64,
@@ -399,6 +404,21 @@ pub enum TaskCommands {
     },
     Stop {
         task_id: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkItemCommands {
+    List {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Get {
+        work_item_id: String,
         #[arg(long)]
         agent: Option<String>,
     },

@@ -42,7 +42,8 @@ use tracing_subscriber::EnvFilter;
 use holon::cli::{
     AgentCommands, AgentModelCommands, Cli, Commands, ConfigCommands, ConfigCredentialCommands,
     ConfigModelCommands, ConfigProviderCommands, ControlCommandAction, DaemonCommands,
-    DebugCommands, ServeAccess, ServeOptions, SkillsCommands, TaskCommands, WorkspaceCommands,
+    DebugCommands, ServeAccess, ServeOptions, SkillsCommands, TaskCommands, WorkItemCommands,
+    WorkspaceCommands,
 };
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -168,6 +169,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
             )?)
         }
         Commands::Task { command } => handle_task_command(&config, command).await,
+        Commands::WorkItem { command } => handle_work_item_command(&config, command).await,
         Commands::Timer {
             after_ms,
             every_ms,
@@ -958,6 +960,51 @@ mod tests {
             panic!("expected task stop command");
         };
         assert_eq!(task_id, "task-4");
+        assert_eq!(agent, None);
+    }
+
+    #[test]
+    fn work_item_inspection_commands_parse_with_agent_options() {
+        let cli = Cli::parse_from(["holon", "work-item", "list", "--agent", "runner"]);
+        let Commands::WorkItem {
+            command: WorkItemCommands::List { limit, agent },
+        } = cli.command
+        else {
+            panic!("expected work-item list command");
+        };
+        assert_eq!(limit, 50);
+        assert_eq!(agent.as_deref(), Some("runner"));
+
+        let cli = Cli::parse_from([
+            "holon",
+            "work-item",
+            "list",
+            "--limit",
+            "10",
+            "--agent",
+            "runner",
+        ]);
+        let Commands::WorkItem {
+            command: WorkItemCommands::List { limit, agent },
+        } = cli.command
+        else {
+            panic!("expected work-item list command");
+        };
+        assert_eq!(limit, 10);
+        assert_eq!(agent.as_deref(), Some("runner"));
+
+        let cli = Cli::parse_from(["holon", "work-item", "get", "work_123"]);
+        let Commands::WorkItem {
+            command:
+                WorkItemCommands::Get {
+                    work_item_id,
+                    agent,
+                },
+        } = cli.command
+        else {
+            panic!("expected work-item get command");
+        };
+        assert_eq!(work_item_id, "work_123");
         assert_eq!(agent, None);
     }
 
@@ -1943,6 +1990,27 @@ async fn handle_task_command(config: &AppConfig, command: TaskCommands) -> Resul
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             print_json(&serde_json::to_value(
                 client.task_stop(&agent, &task_id).await?,
+            )?)
+        }
+    }
+}
+
+async fn handle_work_item_command(config: &AppConfig, command: WorkItemCommands) -> Result<()> {
+    let client = LocalClient::new(config.clone())?;
+    match command {
+        WorkItemCommands::List { limit, agent } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(
+                client.agent_work_items(&agent, limit).await?,
+            )?)
+        }
+        WorkItemCommands::Get {
+            work_item_id,
+            agent,
+        } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(
+                client.work_item(&agent, &work_item_id).await?,
             )?)
         }
     }

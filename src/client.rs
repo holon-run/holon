@@ -427,6 +427,20 @@ impl LocalClient {
             .await
     }
 
+    pub async fn agent_work_items(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkItemRecord>> {
+        self.get_json(&format!("/agents/{agent_id}/work-items?limit={limit}"))
+            .await
+    }
+
+    pub async fn work_item(&self, agent_id: &str, work_item_id: &str) -> Result<WorkItemRecord> {
+        self.get_json(&format!("/agents/{agent_id}/work-items/{work_item_id}"))
+            .await
+    }
+
     pub async fn task_status(&self, agent_id: &str, task_id: &str) -> Result<TaskStatusSnapshot> {
         self.get_json(&format!("/agents/{agent_id}/tasks/{task_id}"))
             .await
