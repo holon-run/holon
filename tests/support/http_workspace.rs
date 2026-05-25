@@ -22,8 +22,7 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TodoItem, TodoItemState, TrustLevel, WaitingIntentStatus,
-        WorkItemState,
+        OperatorDeliveryStatus, TodoItem, TodoItemState, WaitingIntentStatus, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -139,7 +138,7 @@ pub async fn worktree_summary_route_returns_reviewable_candidate_summary() -> Re
         .schedule_child_agent_task(
             "compare worktree candidate".into(),
             "return a worktree result".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;

@@ -1494,7 +1494,7 @@ mod tests {
             "default",
             crate::types::MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            crate::types::TrustLevel::TrustedOperator,
+            crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
             MessageBody::Text {
                 text: "same operator input".into(),
@@ -1524,7 +1524,7 @@ mod tests {
             "default",
             crate::types::MessageKind::OperatorPrompt,
             crate::types::MessageOrigin::Operator { actor_id: None },
-            crate::types::TrustLevel::TrustedOperator,
+            crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text {
                 text: "duplicate operator input".into(),

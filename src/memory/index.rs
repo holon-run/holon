@@ -1761,7 +1761,7 @@ mod tests {
                 created_at: Utc::now(),
                 completed_at: Some(Utc::now()),
                 duration_ms: 10,
-                trust: crate::types::TrustLevel::TrustedOperator,
+                authority_class: crate::types::AuthorityClass::OperatorInstruction,
                 status: crate::types::ToolExecutionStatus::Success,
                 input: json!({"cmd": command}),
                 output: json!({"exit_code": 0}),
@@ -1817,7 +1817,7 @@ mod tests {
                 created_at: Utc::now(),
                 completed_at: Some(Utc::now()),
                 duration_ms: 20,
-                trust: crate::types::TrustLevel::TrustedOperator,
+                authority_class: crate::types::AuthorityClass::OperatorInstruction,
                 status: crate::types::ToolExecutionStatus::Success,
                 input: json!({
                     "items": [

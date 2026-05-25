@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::{
     runtime::RuntimeHandle,
     tool::{helpers::invalid_tool_input, spec::typed_spec, ToolError},
-    types::{ToolCapabilityFamily, TrustLevel},
+    types::{AuthorityClass, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -50,7 +50,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    _trust: &TrustLevel,
+    _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: MemoryGetArgs = parse_tool_args(NAME, input)?;
@@ -202,7 +202,8 @@ mod tests {
         provider::StubProvider,
         runtime::RuntimeHandle,
         types::{
-            TaskKind, TaskRecord, TaskStatus, ToolExecutionRecord, ToolExecutionStatus, TrustLevel,
+            AuthorityClass, TaskKind, TaskRecord, TaskStatus, ToolExecutionRecord,
+            ToolExecutionStatus,
         },
     };
 
@@ -327,7 +328,7 @@ mod tests {
                 created_at: Utc::now(),
                 completed_at: Some(Utc::now()),
                 duration_ms: 10,
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 status: ToolExecutionStatus::Success,
                 input: json!({
                     "cmd": command,
@@ -344,7 +345,7 @@ mod tests {
         let result = execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &json!({
                 "source_ref": "tool_execution:tool-get-1246:cmd"
             }),
@@ -397,7 +398,7 @@ mod tests {
         let result = execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &json!({
                 "source_ref": "task:task-get-1246"
             }),

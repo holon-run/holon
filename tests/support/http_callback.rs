@@ -22,8 +22,7 @@ use holon::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
-        MessageKind, MessageOrigin, OperatorDeliveryStatus, TodoItem, TodoItemState, TrustLevel,
-        WorkItemState,
+        MessageKind, MessageOrigin, OperatorDeliveryStatus, TodoItem, TodoItemState, WorkItemState,
     },
 };
 use reqwest::Client;

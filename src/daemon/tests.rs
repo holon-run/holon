@@ -16,7 +16,7 @@ use crate::config::{provider_registry_for_tests, AppConfig, ModelRef, ProviderId
 use crate::{
     host::RuntimeHost,
     provider::StubProvider,
-    types::{CommandTaskSpec, RuntimeFailurePhase, RuntimeFailureSummary, TrustLevel},
+    types::{AuthorityClass, CommandTaskSpec, RuntimeFailurePhase, RuntimeFailureSummary},
 };
 use chrono::Utc;
 use std::{fs, process::Command, sync::Arc};
@@ -361,7 +361,7 @@ async fn runtime_activity_summary_reports_waiting_runtime() {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await
         .unwrap();

@@ -9,11 +9,11 @@ use holon::{
     system::{ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         AdmissionContext, AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset,
-        AgentRegistryStatus, AgentState, AgentVisibility, ContinuationClass,
+        AgentRegistryStatus, AgentState, AgentVisibility, AuthorityClass, ContinuationClass,
         ContinuationResolution, ContinuationTriggerKind, LoadedAgentsMd, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        SkillsRuntimeView, TodoItem, TodoItemState, TrustLevel, WaitingReason, WorkItemRecord,
-        WorkItemState, WorkingMemoryDelta, WorkingMemorySnapshot,
+        SkillsRuntimeView, TodoItem, TodoItemState, WaitingReason, WorkItemRecord, WorkItemState,
+        WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
 use serde_json::json;
@@ -173,7 +173,7 @@ fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Resu
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
         },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "Continue the prompt snapshot work and note any missing surfaces.".into(),
@@ -268,7 +268,7 @@ fn system_tick_context_snapshot_renders_wake_continuation() -> Result<()> {
         MessageOrigin::System {
             subsystem: "wake_hint".into(),
         },
-        TrustLevel::TrustedSystem,
+        AuthorityClass::RuntimeInstruction,
         Priority::Next,
         MessageBody::Text {
             text: "wake hint: github inbox updated".into(),
@@ -367,7 +367,7 @@ fn callback_turn_context_snapshot_preserves_provenance_labels() -> Result<()> {
             descriptor_id: "cb_pr_review".into(),
             source: Some("github".into()),
         },
-        TrustLevel::TrustedIntegration,
+        AuthorityClass::IntegrationSignal,
         Priority::Normal,
         MessageBody::Text {
             text: "CI completed success for PR #465.".into(),
@@ -414,7 +414,7 @@ fn task_result_context_snapshot_renders_follow_up_continuation() -> Result<()> {
         MessageOrigin::Task {
             task_id: "task_exec_1".into(),
         },
-        TrustLevel::TrustedSystem,
+        AuthorityClass::RuntimeInstruction,
         Priority::Next,
         MessageBody::Text {
             text: "Command task completed successfully: cargo test runtime_flow".into(),
@@ -524,7 +524,7 @@ fn active_work_with_queued_work_shows_both_items() -> Result<()> {
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
         },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "Continue with the snapshot expansion work.".into(),
@@ -618,7 +618,7 @@ fn operator_turn_without_working_memory_delta() -> Result<()> {
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
         },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "Continue testing without delta.".into(),
@@ -716,7 +716,7 @@ fn callback_with_active_work_and_delta() -> Result<()> {
             descriptor_id: "cb_ci_result".into(),
             source: Some("github_actions".into()),
         },
-        TrustLevel::TrustedIntegration,
+        AuthorityClass::IntegrationSignal,
         Priority::Normal,
         MessageBody::Text {
             text: "CI pipeline completed successfully for commit abc123.".into(),
@@ -843,7 +843,7 @@ fn system_tick_with_waiting_work_item() -> Result<()> {
         MessageOrigin::System {
             subsystem: "wake_hint".into(),
         },
-        TrustLevel::TrustedSystem,
+        AuthorityClass::RuntimeInstruction,
         Priority::Next,
         MessageBody::Text {
             text: "wake hint: rate limit reset".into(),
@@ -981,7 +981,7 @@ fn post_compaction_snapshot_preserves_continuity() -> Result<()> {
         MessageOrigin::Operator {
             actor_id: Some("operator:jolestar".into()),
         },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "Continue with the expanded coverage work after compaction.".into(),
@@ -1120,7 +1120,7 @@ fn task_result_with_multiple_work_items() -> Result<()> {
         MessageOrigin::Task {
             task_id: "task_cargo_test".into(),
         },
-        TrustLevel::TrustedSystem,
+        AuthorityClass::RuntimeInstruction,
         Priority::Next,
         MessageBody::Text {
             text: "Test task completed: 120 tests passed, 0 failed".into(),

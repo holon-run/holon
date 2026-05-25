@@ -34,7 +34,7 @@ use holon::{
     solve::{run_solve, SolveRequest},
     storage::AppStorage,
     tui::run_tui,
-    types::{AuditEvent, ControlAction, TimerStatus, TrustLevel, WaitingIntentStatus},
+    types::{AuditEvent, AuthorityClass, ControlAction, TimerStatus, WaitingIntentStatus},
 };
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
         Commands::Config { command } => handle_config_command(command).await,
         Commands::Run {
             text,
-            trust,
+            authority_class,
             json,
             agent,
             create_agent,
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
         } => {
             run_one_shot(
                 text,
-                trust,
+                authority_class,
                 json,
                 agent,
                 create_agent,
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
             template,
             model,
             max_turns,
-            trust,
+            authority_class,
             json,
             home,
             workspace,
@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
                 template,
                 model,
                 max_turns,
-                trust,
+                authority_class,
                 json,
                 home,
                 workspace.or(workspace_root),
@@ -192,7 +192,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
                     yield_time_ms,
                     max_output_tokens,
                     accepts_input: Some(false),
-                    trust: Some(TrustLevel::TrustedOperator),
+                    authority_class: Some(AuthorityClass::OperatorInstruction),
                 },
             )
             .await
@@ -211,7 +211,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
                     duration_ms: after_ms,
                     interval_ms: every_ms,
                     summary,
-                    trust: Some(TrustLevel::TrustedOperator),
+                    authority_class: Some(AuthorityClass::OperatorInstruction),
                 },
             )
             .await
@@ -225,7 +225,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
                     &http::AbortCurrentRunRequest {
                         run_id: None,
                         mode: Some("stop_after_abort".into()),
-                        trust: Some(TrustLevel::TrustedOperator),
+                        authority_class: Some(AuthorityClass::OperatorInstruction),
                     },
                 )
                 .await;
@@ -237,7 +237,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
                     action: action
                         .as_control_action()
                         .expect("abort action should be handled separately"),
-                    trust: Some(TrustLevel::TrustedOperator),
+                    authority_class: Some(AuthorityClass::OperatorInstruction),
                 },
             )
             .await
@@ -262,7 +262,7 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
 
 async fn run_one_shot(
     text: String,
-    trust: TrustLevel,
+    authority_class: AuthorityClass,
     json: bool,
     agent_id: Option<String>,
     create_agent: bool,
@@ -278,7 +278,7 @@ async fn run_one_shot(
         config,
         RunOnceRequest {
             text,
-            trust,
+            authority_class,
             agent_id,
             create_agent,
             template,
@@ -309,7 +309,7 @@ async fn run_solve_command(
     template: Option<String>,
     model: Option<String>,
     max_turns: Option<u64>,
-    trust: TrustLevel,
+    authority_class: AuthorityClass,
     json: bool,
     home: Option<PathBuf>,
     workspace_root: Option<PathBuf>,
@@ -332,7 +332,7 @@ async fn run_solve_command(
             agent_id: agent,
             template,
             max_turns,
-            trust,
+            authority_class,
             json,
             workspace_root,
             cwd,
@@ -692,12 +692,12 @@ async fn dump_prompt(
     config: AppConfig,
     text: String,
     agent: Option<String>,
-    trust: TrustLevel,
+    authority_class: AuthorityClass,
 ) -> Result<()> {
     let host = RuntimeHost::new(config.clone())?;
     let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
     let runtime = host.get_or_create_agent(&agent).await?;
-    let prompt = runtime.preview_prompt(text, trust).await?;
+    let prompt = runtime.preview_prompt(text, authority_class).await?;
     println!("{}", prompt.render_dump());
     Ok(())
 }
@@ -1213,9 +1213,11 @@ mod tests {
 
 async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Result<()> {
     match command {
-        DebugCommands::Prompt { text, agent, trust } => {
-            dump_prompt(config, text, agent, trust).await
-        }
+        DebugCommands::Prompt {
+            text,
+            agent,
+            authority_class,
+        } => dump_prompt(config, text, agent, authority_class).await,
         DebugCommands::Latency {
             agent,
             limit,
@@ -1827,7 +1829,7 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                 config,
                 &format!("/control/agents/{agent_id}/create"),
                 &http::CreateAgentRequest {
-                    trust: Some(TrustLevel::TrustedOperator),
+                    authority_class: Some(AuthorityClass::OperatorInstruction),
                     template,
                 },
             )
@@ -1847,7 +1849,7 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                 &http::AbortCurrentRunRequest {
                     run_id: None,
                     mode: Some("stop_after_abort".into()),
-                    trust: Some(TrustLevel::TrustedOperator),
+                    authority_class: Some(AuthorityClass::OperatorInstruction),
                 },
             )
             .await

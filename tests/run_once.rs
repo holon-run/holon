@@ -11,7 +11,7 @@ use holon::{
     run_once::{run_once_with_host, RunFinalStatus, RunOnceRequest},
     storage::AppStorage,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
-    types::{ControlAction, FailureArtifactCategory, TaskStatus, TokenUsage, TrustLevel},
+    types::{AuthorityClass, ControlAction, FailureArtifactCategory, TaskStatus, TokenUsage},
 };
 use serde_json::json;
 use tempfile::tempdir;
@@ -33,7 +33,7 @@ fn test_config(workspace_dir: PathBuf, home_dir: PathBuf) -> AppConfig {
 fn run_request(text: impl Into<String>) -> RunOnceRequest {
     RunOnceRequest {
         text: text.into(),
-        trust: TrustLevel::TrustedOperator,
+        authority_class: AuthorityClass::OperatorInstruction,
         agent_id: None,
         create_agent: false,
         template: None,

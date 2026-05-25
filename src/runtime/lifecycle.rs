@@ -1314,7 +1314,7 @@ impl RuntimeHandle {
                 MessageOrigin::System {
                     subsystem: "sleep_duration".into(),
                 },
-                TrustLevel::TrustedSystem,
+                AuthorityClass::RuntimeInstruction,
                 Priority::Next,
                 MessageBody::Text {
                     text: format!("sleep duration elapsed after {duration_ms}ms"),

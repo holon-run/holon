@@ -8,7 +8,8 @@ use crate::{
     tool::helpers::{parse_tool_args, validate_non_empty},
     tool::spec::typed_spec,
     types::{
-        TodoItem, TodoItemState, ToolCapabilityFamily, TrustLevel, WorkItemRecord, WorkItemState,
+        AuthorityClass, TodoItem, TodoItemState, ToolCapabilityFamily, WorkItemRecord,
+        WorkItemState,
     },
 };
 
@@ -52,7 +53,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    _trust: &TrustLevel,
+    _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: CompleteWorkItemArgs = parse_tool_args(NAME, input)?;

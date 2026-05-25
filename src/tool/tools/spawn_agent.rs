@@ -7,7 +7,7 @@ use crate::{
     host_registry::validate_agent_id_format,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{AgentProfilePreset, ToolCapabilityFamily, TrustLevel},
+    types::{AgentProfilePreset, AuthorityClass, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -54,7 +54,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    trust: &TrustLevel,
+    authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: SpawnAgentArgs = parse_tool_args(NAME, input)?;
@@ -142,7 +142,7 @@ pub(crate) async fn execute(
         .managed_tasks()
         .spawn_agent(
             initial_message,
-            trust.clone(),
+            authority_class.clone(),
             preset,
             agent_id,
             worktree,

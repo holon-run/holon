@@ -1910,9 +1910,9 @@ mod tests {
     use chrono::Utc;
 
     use crate::types::{
-        AgentState, AgentStatus, CallbackDeliveryMode, EpisodeBoundaryReason, Priority,
-        QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus,
-        TodoItem, TodoItemState, TranscriptEntry, TranscriptEntryKind, TrustLevel,
+        AgentState, AgentStatus, AuthorityClass, CallbackDeliveryMode, EpisodeBoundaryReason,
+        Priority, QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec,
+        TaskStatus, TodoItem, TodoItemState, TranscriptEntry, TranscriptEntryKind,
         WorkItemPlanStatus, WorkItemState,
     };
 
@@ -2287,7 +2287,7 @@ mod tests {
             recovery: Some(TaskRecoverySpec::ChildAgentTask {
                 summary: "recover".into(),
                 prompt: "resume with artifact".into(),
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
             }),
         };
@@ -3135,7 +3135,7 @@ mod tests {
                 source: "test".into(),
                 event_type: None,
             },
-            crate::types::TrustLevel::TrustedIntegration,
+            crate::types::AuthorityClass::IntegrationSignal,
             Priority::Normal,
             crate::types::MessageBody::Text {
                 text: "queued".into(),
@@ -3148,7 +3148,7 @@ mod tests {
                 source: "test".into(),
                 event_type: None,
             },
-            crate::types::TrustLevel::TrustedIntegration,
+            crate::types::AuthorityClass::IntegrationSignal,
             Priority::Normal,
             crate::types::MessageBody::Text {
                 text: "done".into(),
@@ -3161,7 +3161,7 @@ mod tests {
                 source: "test".into(),
                 event_type: None,
             },
-            crate::types::TrustLevel::TrustedIntegration,
+            crate::types::AuthorityClass::IntegrationSignal,
             Priority::Normal,
             crate::types::MessageBody::Text {
                 text: "dequeued".into(),

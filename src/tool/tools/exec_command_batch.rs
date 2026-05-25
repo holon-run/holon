@@ -13,9 +13,8 @@ use crate::{
         ToolError, ToolResult,
     },
     types::{
-        CommandTaskSpec, ExecCommandBatchItemResult, ExecCommandBatchItemStatus,
+        AuthorityClass, CommandTaskSpec, ExecCommandBatchItemResult, ExecCommandBatchItemStatus,
         ExecCommandBatchResult, ExecCommandOutcome, ExecCommandResult, ToolCapabilityFamily,
-        TrustLevel,
     },
 };
 
@@ -57,7 +56,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    trust: &TrustLevel,
+    authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<ToolResult> {
     let args: ExecCommandBatchArgs = parse_tool_args(NAME, input)?;
@@ -82,7 +81,7 @@ pub(crate) async fn execute(
             continue;
         }
 
-        let item_result = execute_batch_item(runtime, trust, index, item).await;
+        let item_result = execute_batch_item(runtime, authority_class, index, item).await;
         if stop_on_error
             && matches!(
                 item_result.status,
@@ -158,7 +157,7 @@ fn validate_batch_shape(args: &ExecCommandBatchArgs) -> Result<()> {
 
 async fn execute_batch_item(
     runtime: &RuntimeHandle,
-    trust: &TrustLevel,
+    authority_class: &AuthorityClass,
     index: usize,
     item: ExecCommandBatchItemArgs,
 ) -> ExecCommandBatchItemResult {
@@ -190,7 +189,7 @@ async fn execute_batch_item(
 
     match runtime
         .managed_tasks()
-        .execute_exec_command_once(spec, trust)
+        .execute_exec_command_once(spec, authority_class)
         .await
     {
         Ok(result) => {

@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::{
     runtime::RuntimeHandle,
     tool::{apply_patch::ApplyPatchSurface, ToolError},
-    types::{ToolCapabilityFamily, ToolExecutionRecord, ToolExecutionStatus, TrustLevel},
+    types::{AuthorityClass, ToolCapabilityFamily, ToolExecutionRecord, ToolExecutionStatus},
 };
 
 use super::{
@@ -95,7 +95,7 @@ impl ToolRegistry {
         &self,
         runtime: &RuntimeHandle,
         agent_id: &str,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
         call: &ToolCall,
     ) -> Result<(ToolResult, ToolExecutionRecord)> {
         let started_at = chrono::Utc::now();
@@ -141,7 +141,7 @@ impl ToolRegistry {
             ))
             .into());
         }
-        let result = tools::execute_builtin_tool(runtime, agent_id, trust, call).await?;
+        let result = tools::execute_builtin_tool(runtime, agent_id, authority_class, call).await?;
         if !result.is_error() {
             if let Err(error) =
                 maybe_refresh_memory_index_after_tool(runtime, call.name.as_str(), &result).await
@@ -174,7 +174,7 @@ impl ToolRegistry {
             created_at: started_at,
             completed_at: Some(completed_at),
             duration_ms,
-            trust: trust.clone(),
+            authority_class: authority_class.clone(),
             status: if result.is_error() {
                 ToolExecutionStatus::Error
             } else {

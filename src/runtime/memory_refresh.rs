@@ -579,7 +579,7 @@ impl RuntimeHandle {
             MessageOrigin::System {
                 subsystem: "wake_hint".into(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Next,
             MessageBody::Text {
                 text: format!("wake hint: {}", pending.reason),
@@ -637,7 +637,7 @@ impl RuntimeHandle {
             MessageOrigin::System {
                 subsystem: "work_queue".into(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: if reason == "queued_available" {
@@ -706,7 +706,7 @@ impl RuntimeHandle {
             MessageOrigin::System {
                 subsystem: "work_item_recheck".into(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Background,
             MessageBody::Text {
                 text: format!(
@@ -769,7 +769,7 @@ impl RuntimeHandle {
             MessageOrigin::System {
                 subsystem: "task_restart".into(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Next,
             MessageBody::Text {
                 text: format!(
@@ -1077,7 +1077,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Test message".to_string(),
@@ -1114,7 +1114,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "queued input".to_string(),
@@ -1480,7 +1480,7 @@ mod tests {
             MessageOrigin::System {
                 subsystem: "work_queue".into(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Next,
             MessageBody::Text {
                 text: "queued work item is available".into(),
@@ -1508,7 +1508,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "newer operator signal".into(),
@@ -1896,7 +1896,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "New follow-up".to_string(),

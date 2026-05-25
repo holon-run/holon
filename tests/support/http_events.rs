@@ -23,7 +23,7 @@ use holon::{
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
         OperatorDeliveryStatus, TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState,
-        TrustLevel, WaitingIntentStatus, WorkItemState,
+        WaitingIntentStatus, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -277,7 +277,6 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
     assert_eq!(replayed.event, "message_admitted");
     assert_eq!(replayed.data["type"], "message_admitted");
     assert_eq!(replayed.data["provenance"]["origin"]["kind"], "operator");
-    assert_eq!(replayed.data["provenance"]["trust"], "trusted_operator");
     assert_eq!(
         replayed.data["provenance"]["authority_class"],
         "operator_instruction"

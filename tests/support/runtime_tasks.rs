@@ -26,14 +26,14 @@ use holon::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{ToolCall, ToolError, ToolRegistry, ToolResult},
     types::{
-        AgentKind, AgentProfilePreset, AgentStatus, BriefKind, CallbackDeliveryMode,
-        ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction, ExternalTriggerStatus,
-        FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
-        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TodoItem, TodoItemState,
-        TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentStatus,
-        WaitingReason, WorkItemState,
+        AgentKind, AgentProfilePreset, AgentStatus, AuthorityClass, BriefKind,
+        CallbackDeliveryMode, ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction,
+        ExternalTriggerStatus, FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind,
+        MessageOrigin, OperatorNotificationBoundary, OperatorTransportBinding,
+        OperatorTransportBindingStatus, OperatorTransportCapabilities,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
+        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+        WaitingIntentStatus, WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -134,7 +134,7 @@ pub async fn background_task_rejoins_main_session() -> Result<()> {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -176,7 +176,7 @@ pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reent
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "sleep until the background command finishes".into(),
@@ -211,7 +211,7 @@ pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reent
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -268,12 +268,12 @@ pub async fn stop_task_cancels_running_background_task() -> Result<()> {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
     runtime
-        .stop_task(&task.id, &TrustLevel::TrustedOperator)
+        .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
 
     wait_until(|| {
@@ -307,7 +307,7 @@ pub async fn lifecycle_stop_interrupts_active_command_task() -> Result<()> {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -348,7 +348,7 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "inspect session state".into(),
@@ -422,7 +422,10 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
     );
     assert!(state.working_memory.pending_working_memory_delta.is_none());
     let prompt = runtime
-        .preview_prompt("continue the work".into(), TrustLevel::TrustedOperator)
+        .preview_prompt(
+            "continue the work".into(),
+            AuthorityClass::OperatorInstruction,
+        )
         .await?;
     assert!(!prompt
         .context_sections
@@ -448,7 +451,7 @@ pub async fn file_tools_can_modify_workspace_and_reenter_context() -> Result<()>
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "create a note and confirm its content".into(),
@@ -482,7 +485,7 @@ pub async fn shell_tools_capture_command_output() -> Result<()> {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "run a shell command and summarize it".into(),
@@ -518,7 +521,7 @@ pub async fn shell_tools_truncate_large_output_before_provider_reinjection() -> 
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "inspect a large shell output safely".into(),
@@ -557,7 +560,7 @@ pub async fn exec_command_reports_nonzero_exit_and_truncates_output() -> Result<
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-nonzero".into(),
                 name: "ExecCommand".into(),
@@ -619,7 +622,7 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-batch".into(),
                 name: "ExecCommandBatch".into(),
@@ -699,7 +702,7 @@ pub async fn exec_command_batch_stop_on_error_skips_later_items() -> Result<()> 
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-batch-stop".into(),
                 name: "ExecCommandBatch".into(),
@@ -740,7 +743,7 @@ pub async fn exec_command_workdir_violation_returns_structured_error() -> Result
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-invalid-workdir".into(),
                 name: "ExecCommand".into(),
@@ -784,7 +787,7 @@ pub async fn exec_command_spawn_failure_returns_shell_recovery_hint() -> Result<
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-invalid-shell".into(),
                 name: "ExecCommand".into(),
@@ -823,7 +826,7 @@ pub async fn tool_schema_and_dispatch_errors_are_recorded_without_corrupting_run
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "trigger tool failures".into(),
@@ -927,7 +930,7 @@ pub async fn runtime_provider_failure_surfaces_failure_brief_and_transcript_entr
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "trigger runtime failure".into(),
@@ -1011,7 +1014,7 @@ pub async fn runtime_failure_brief_sanitizes_long_provider_error_but_transcript_
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "trigger verbose runtime failure".into(),
@@ -1082,7 +1085,7 @@ pub async fn command_task_runs_to_completion_and_persists_detail() -> Result<()>
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1129,7 +1132,7 @@ pub async fn task_output_returns_completed_command_task_output() -> Result<()> {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1145,7 +1148,7 @@ pub async fn task_output_returns_completed_command_task_output() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-command".into(),
                 name: "TaskOutput".into(),
@@ -1182,7 +1185,7 @@ pub async fn task_output_non_blocking_reports_running_command_task() -> Result<(
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1190,7 +1193,7 @@ pub async fn task_output_non_blocking_reports_running_command_task() -> Result<(
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-running".into(),
                 name: "TaskOutput".into(),
@@ -1203,7 +1206,7 @@ pub async fn task_output_non_blocking_reports_running_command_task() -> Result<(
     assert_eq!(value["task"]["kind"], "command_task");
 
     runtime
-        .stop_task(&task.id, &TrustLevel::TrustedOperator)
+        .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
@@ -1235,7 +1238,7 @@ pub async fn task_output_waits_for_command_task_completion() -> Result<()> {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1243,7 +1246,7 @@ pub async fn task_output_waits_for_command_task_completion() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-command".into(),
                 name: "TaskOutput".into(),
@@ -1282,7 +1285,7 @@ pub async fn task_input_delivers_stdin_to_managed_command_task() -> Result<()> {
                 accepts_input: true,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1290,7 +1293,7 @@ pub async fn task_input_delivers_stdin_to_managed_command_task() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-input-command".into(),
                 name: "TaskInput".into(),
@@ -1308,7 +1311,7 @@ pub async fn task_input_delivers_stdin_to_managed_command_task() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-after-input".into(),
                 name: "TaskOutput".into(),
@@ -1342,7 +1345,7 @@ pub async fn task_output_times_out_for_long_running_task() -> Result<()> {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1350,7 +1353,7 @@ pub async fn task_output_times_out_for_long_running_task() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-timeout".into(),
                 name: "TaskOutput".into(),
@@ -1368,7 +1371,7 @@ pub async fn task_output_times_out_for_long_running_task() -> Result<()> {
     );
 
     runtime
-        .stop_task(&task.id, &TrustLevel::TrustedOperator)
+        .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
@@ -1400,7 +1403,7 @@ pub async fn task_output_prefers_terminal_task_record_over_stale_task_message() 
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1425,7 +1428,7 @@ pub async fn task_output_prefers_terminal_task_record_over_stale_task_message() 
             MessageOrigin::Task {
                 task_id: task.id.clone(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Background,
             MessageBody::Text {
                 text: "stale running message".into(),
@@ -1438,7 +1441,7 @@ pub async fn task_output_prefers_terminal_task_record_over_stale_task_message() 
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-stale-message".into(),
                 name: "TaskOutput".into(),
@@ -1472,7 +1475,7 @@ pub async fn task_output_accepts_terminal_command_snapshot_without_explicit_read
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1532,7 +1535,7 @@ pub async fn task_output_accepts_terminal_command_without_snapshot_fields() -> R
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1594,7 +1597,7 @@ pub async fn task_output_rejects_message_only_terminal_status_for_running_comman
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1619,7 +1622,7 @@ pub async fn task_output_rejects_message_only_terminal_status_for_running_comman
             MessageOrigin::Task {
                 task_id: task.id.clone(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Next,
             MessageBody::Text {
                 text: "synthetic terminal result".into(),
@@ -1636,7 +1639,7 @@ pub async fn task_output_rejects_message_only_terminal_status_for_running_comman
     assert_eq!(output.task.status, holon::types::TaskStatus::Completed);
 
     runtime
-        .stop_task(&task.id, &TrustLevel::TrustedOperator)
+        .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
     wait_until(|| {
         let tasks = runtime.storage().latest_task_records()?;
@@ -1668,7 +1671,7 @@ pub async fn task_status_and_task_output_keep_lifecycle_and_output_boundaries() 
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1684,7 +1687,7 @@ pub async fn task_status_and_task_output_keep_lifecycle_and_output_boundaries() 
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-status-boundary".into(),
                 name: "TaskStatus".into(),
@@ -1703,7 +1706,7 @@ pub async fn task_status_and_task_output_keep_lifecycle_and_output_boundaries() 
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-boundary".into(),
                 name: "TaskOutput".into(),
@@ -1742,7 +1745,7 @@ pub async fn command_task_output_truncation_preserves_path_artifact_reference() 
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1786,12 +1789,12 @@ pub async fn command_task_stop_cancels_running_command() -> Result<()> {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
     runtime
-        .stop_task(&task.id, &TrustLevel::TrustedOperator)
+        .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
 
     wait_until(|| {
@@ -1818,7 +1821,7 @@ pub async fn command_task_stop_cancels_running_command() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-cancelled-command".into(),
                 name: "TaskOutput".into(),
@@ -1863,7 +1866,7 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_stopp
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1919,7 +1922,7 @@ pub async fn blocking_command_task_clears_active_state_while_runtime_stopped() -
                 accepts_input: false,
                 terminal_reentry: true,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -1961,7 +1964,7 @@ pub async fn command_task_result_is_canonical_follow_up_on_completion() -> Resul
                 accepts_input: false,
                 terminal_reentry: true,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -2010,7 +2013,7 @@ pub async fn task_result_rejoin_preserves_runtime_provenance_not_operator_author
                 accepts_input: false,
                 terminal_reentry: true,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -2035,7 +2038,7 @@ pub async fn task_result_rejoin_preserves_runtime_provenance_not_operator_author
         message.origin,
         MessageOrigin::Task { ref task_id } if task_id == &task.id
     ));
-    assert_eq!(message.trust, TrustLevel::TrustedSystem);
+    assert_eq!(message.authority_class, AuthorityClass::RuntimeInstruction);
     assert_eq!(
         message.authority_class,
         holon::types::AuthorityClass::RuntimeInstruction
@@ -2074,7 +2077,7 @@ pub async fn command_terminal_reentry_does_not_set_awaiting_task_closure() -> Re
                 accepts_input: false,
                 terminal_reentry: true,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -2095,7 +2098,7 @@ pub async fn command_terminal_reentry_does_not_set_awaiting_task_closure() -> Re
     assert_eq!(detail["terminal_reentry"].as_bool(), Some(true));
 
     runtime
-        .stop_task(&task.id, &TrustLevel::TrustedOperator)
+        .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
 
     wait_until(|| {
@@ -2128,7 +2131,7 @@ pub async fn command_task_runner_failure_marks_task_failed_and_cleans_up() -> Re
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
     let output_path = runtime
@@ -2185,7 +2188,7 @@ pub async fn command_task_nonzero_exit_produces_failed_output_and_runtime_state(
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -2235,7 +2238,7 @@ pub async fn command_task_nonzero_exit_produces_failed_output_and_runtime_state(
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-failed-command".into(),
                 name: "TaskOutput".into(),
@@ -2273,7 +2276,7 @@ pub async fn exec_command_auto_promotes_long_running_command_task() -> Result<()
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "run a long command".into(),
@@ -2336,7 +2339,7 @@ pub async fn exec_command_reuses_equivalent_active_command_task_by_default() -> 
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -2344,7 +2347,7 @@ pub async fn exec_command_reuses_equivalent_active_command_task_by_default() -> 
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-dup-second".into(),
                 name: "ExecCommand".into(),
@@ -2397,7 +2400,7 @@ pub async fn exec_command_reuses_equivalent_scheduled_background_task() -> Resul
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -2405,7 +2408,7 @@ pub async fn exec_command_reuses_equivalent_scheduled_background_task() -> Resul
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-scheduled-background".into(),
                 name: "ExecCommand".into(),
@@ -2435,7 +2438,7 @@ pub async fn exec_command_terminal_tasks_do_not_block_new_run() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-terminal-first".into(),
                 name: "ExecCommand".into(),
@@ -2455,7 +2458,7 @@ pub async fn exec_command_terminal_tasks_do_not_block_new_run() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-terminal-second".into(),
                 name: "ExecCommand".into(),
@@ -2485,7 +2488,7 @@ pub async fn exec_command_can_start_new_with_duplicate_policy() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-start-new-first".into(),
                 name: "ExecCommand".into(),
@@ -2506,7 +2509,7 @@ pub async fn exec_command_can_start_new_with_duplicate_policy() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-start-new-second".into(),
                 name: "ExecCommand".into(),
@@ -2539,7 +2542,7 @@ pub async fn exec_command_non_equivalent_same_preview_does_not_reuse() -> Result
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-preview-first".into(),
                 name: "ExecCommand".into(),
@@ -2561,7 +2564,7 @@ pub async fn exec_command_non_equivalent_same_preview_does_not_reuse() -> Result
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-exec-preview-second".into(),
                 name: "ExecCommand".into(),

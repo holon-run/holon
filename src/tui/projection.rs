@@ -2160,7 +2160,6 @@ mod tests {
                     "agent_id": "default",
                     "kind": "operator_prompt",
                     "origin": { "kind": "operator", "actor_id": null },
-                    "trust": "trusted_operator",
                     "authority_class": "operator_instruction",
                     "delivery_surface": "http_control_prompt",
                     "admission_context": "local_process",
@@ -2946,7 +2945,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            crate::types::TrustLevel::TrustedOperator,
+            crate::types::AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "stream prompt".into(),

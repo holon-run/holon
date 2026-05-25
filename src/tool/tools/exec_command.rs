@@ -10,8 +10,8 @@ use crate::{
         ToolResult,
     },
     types::{
-        CommandTaskSpec, ExecCommandDuplicatePolicy, ExecCommandOutcome, ExecCommandResult,
-        ToolCapabilityFamily, TrustLevel,
+        AuthorityClass, CommandTaskSpec, ExecCommandDuplicatePolicy, ExecCommandOutcome,
+        ExecCommandResult, ToolCapabilityFamily,
     },
 };
 
@@ -48,7 +48,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    trust: &TrustLevel,
+    authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<ToolResult> {
     let args: ExecCommandArgs = parse_tool_args(NAME, input)?;
@@ -67,7 +67,7 @@ pub(crate) async fn execute(
     };
     let result: ExecCommandResult = runtime
         .managed_tasks()
-        .execute_exec_command(spec, duplicate_policy, trust)
+        .execute_exec_command(spec, duplicate_policy, authority_class)
         .await?;
     serialize_success(NAME, &result)
 }

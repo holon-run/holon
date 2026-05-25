@@ -1062,7 +1062,7 @@ impl TuiApp {
                             .debug_prompt(
                                 &agent_id,
                                 composer.as_str().to_string(),
-                                TrustLevel::TrustedOperator,
+                                AuthorityClass::OperatorInstruction,
                             )
                             .await?;
                         self.overlay = OverlayState::DebugPromptView {

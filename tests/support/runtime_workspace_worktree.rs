@@ -27,14 +27,14 @@ use holon::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{ToolCall, ToolError, ToolRegistry, ToolResult},
     types::{
-        AgentKind, AgentProfilePreset, AgentStatus, BriefKind, CallbackDeliveryMode,
-        ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction, ExternalTriggerStatus,
-        FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
-        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TodoItem, TodoItemState,
-        TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentStatus,
-        WaitingReason, WorkItemState,
+        AgentKind, AgentProfilePreset, AgentStatus, AuthorityClass, BriefKind,
+        CallbackDeliveryMode, ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction,
+        ExternalTriggerStatus, FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind,
+        MessageOrigin, OperatorNotificationBoundary, OperatorTransportBinding,
+        OperatorTransportBindingStatus, OperatorTransportCapabilities,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
+        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+        WaitingIntentStatus, WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -75,7 +75,7 @@ pub async fn task_output_returns_worktree_subagent_result_text() -> Result<()> {
         .schedule_child_agent_task(
             "delegate worktree task".into(),
             "return a worktree result".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -84,7 +84,7 @@ pub async fn task_output_returns_worktree_subagent_result_text() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-worktree".into(),
                 name: "TaskOutput".into(),
@@ -120,7 +120,7 @@ pub async fn enter_worktree_tool_switches_workspace_and_restores_on_reload() -> 
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "enter a managed worktree".into(),
@@ -199,7 +199,7 @@ pub async fn use_workspace_path_adopts_attached_parent_for_existing_git_worktree
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-use-existing-worktree".into(),
                 name: "UseWorkspace".into(),
@@ -414,7 +414,7 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "enter a managed worktree".into(),
@@ -435,7 +435,7 @@ pub async fn exit_worktree_keep_restores_workspace_and_persists_state() -> Resul
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "exit the worktree but keep it".into(),
@@ -496,7 +496,7 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "enter a managed worktree".into(),
@@ -517,7 +517,7 @@ pub async fn exit_worktree_does_not_remove_clean_worktree() -> Result<()> {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "exit the worktree".into(),
@@ -578,7 +578,7 @@ pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "enter a managed worktree".into(),
@@ -600,7 +600,7 @@ pub async fn exit_worktree_does_not_remove_dirty_worktree() -> Result<()> {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "exit the dirty worktree".into(),
@@ -656,7 +656,7 @@ pub async fn worktree_subagent_task_creates_dedicated_per_task_worktree() -> Res
         .schedule_child_agent_task(
             "delegate work in worktree".into(),
             "return a worktree-isolated result".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -742,7 +742,7 @@ pub async fn subagent_task_returns_result_to_parent_session() -> Result<()> {
         .schedule_child_agent_task(
             "delegate work".into(),
             "return a concise subagent result".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await?;
@@ -782,7 +782,7 @@ pub async fn worktree_child_agent_task_records_workspace_mode() -> Result<()> {
         .schedule_child_agent_task(
             "delegate work in worktree".into(),
             "return a worktree-isolated result".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -860,7 +860,7 @@ pub async fn worktree_subagent_task_returns_metadata_to_parent_session() -> Resu
         .schedule_child_agent_task(
             "delegate work in worktree".into(),
             "return worktree metadata".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -937,7 +937,7 @@ pub async fn worktree_subagent_task_auto_removes_worktree_when_no_changes_wt104(
         .schedule_child_agent_task(
             "do nothing in worktree".into(),
             "just return a result without making changes".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -1044,7 +1044,7 @@ pub async fn worktree_subagent_task_retains_worktree_when_changes_detected_wt105
         .schedule_child_agent_task(
             "make changes in worktree".into(),
             "modify files in the worktree".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;

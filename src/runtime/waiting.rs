@@ -204,7 +204,7 @@ impl RuntimeHandle {
                 MessageOrigin::Timer {
                     timer_id: timer.id.clone(),
                 },
-                TrustLevel::TrustedSystem,
+                AuthorityClass::RuntimeInstruction,
                 Priority::Next,
                 MessageBody::Text {
                     text: timer

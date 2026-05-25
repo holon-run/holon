@@ -13,7 +13,8 @@ use crate::{
         ToolError, ToolResult,
     },
     types::{
-        ApplyPatchAction, ApplyPatchDiagnostic, ApplyPatchResult, ToolCapabilityFamily, TrustLevel,
+        ApplyPatchAction, ApplyPatchDiagnostic, ApplyPatchResult, AuthorityClass,
+        ToolCapabilityFamily,
     },
 };
 
@@ -72,7 +73,7 @@ pub(crate) fn definition_for_surface(surface: ApplyPatchSurface) -> Result<Built
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    _trust: &TrustLevel,
+    _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let surface = runtime.current_apply_patch_surface().await;

@@ -16,10 +16,10 @@ use crate::{
     model_catalog::BuiltInModelMetadata,
     system::ExecutionSnapshot,
     types::{
-        ActiveWorkspaceEntry, AgentListEntry, AgentSummary, BriefRecord,
+        ActiveWorkspaceEntry, AgentListEntry, AgentSummary, AuthorityClass, BriefRecord,
         ExternalTriggerStateSnapshot, OperatorNotificationRecord, ResolvedModelAvailability,
-        TaskRecord, TimerRecord, TranscriptEntry, TrustLevel, TurnTerminalRecord,
-        WaitingIntentRecord, WorkItemRecord, WorkspaceOccupancyRecord, WorktreeSession,
+        TaskRecord, TimerRecord, TranscriptEntry, TurnTerminalRecord, WaitingIntentRecord,
+        WorkItemRecord, WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -443,7 +443,7 @@ impl LocalClient {
             &crate::http::AbortCurrentRunRequest {
                 run_id,
                 mode: Some("stop_after_abort".into()),
-                trust: Some(TrustLevel::TrustedOperator),
+                authority_class: Some(AuthorityClass::OperatorInstruction),
             },
         )
         .await
@@ -458,7 +458,7 @@ impl LocalClient {
             &format!("/control/agents/{agent_id}/control"),
             &crate::http::ControlRequest {
                 action,
-                trust: Some(TrustLevel::TrustedOperator),
+                authority_class: Some(AuthorityClass::OperatorInstruction),
             },
         )
         .await
@@ -468,7 +468,7 @@ impl LocalClient {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/create"),
             &CreateAgentRequest {
-                trust: Some(TrustLevel::TrustedOperator),
+                authority_class: Some(AuthorityClass::OperatorInstruction),
                 template: None,
             },
         )
@@ -484,7 +484,7 @@ impl LocalClient {
             &format!("/control/agents/{agent_id}/workspace/attach"),
             &AttachWorkspaceRequest {
                 path: path.into(),
-                trust: Some(TrustLevel::TrustedOperator),
+                authority_class: Some(AuthorityClass::OperatorInstruction),
             },
         )
         .await
@@ -494,7 +494,7 @@ impl LocalClient {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/workspace/exit"),
             &ExitWorkspaceRequest {
-                trust: Some(TrustLevel::TrustedOperator),
+                authority_class: Some(AuthorityClass::OperatorInstruction),
             },
         )
         .await
@@ -509,7 +509,7 @@ impl LocalClient {
             &format!("/control/agents/{agent_id}/workspace/detach"),
             &DetachWorkspaceRequest {
                 workspace_id: workspace_id.into(),
-                trust: Some(TrustLevel::TrustedOperator),
+                authority_class: Some(AuthorityClass::OperatorInstruction),
             },
         )
         .await
@@ -519,14 +519,14 @@ impl LocalClient {
         &self,
         agent_id: &str,
         text: impl Into<String>,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
     ) -> Result<String> {
         let response: DebugPromptResponse = self
             .post_control_json(
                 &format!("/control/agents/{agent_id}/debug-prompt"),
                 &DebugPromptRequest {
                     text: text.into(),
-                    trust: Some(trust),
+                    authority_class: Some(authority_class),
                 },
             )
             .await?;
@@ -544,7 +544,7 @@ impl LocalClient {
             &SetAgentModelRequest {
                 model: model.into(),
                 reasoning_effort,
-                trust: Some(TrustLevel::TrustedOperator),
+                authority_class: Some(AuthorityClass::OperatorInstruction),
             },
         )
         .await
@@ -554,7 +554,7 @@ impl LocalClient {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/model/clear"),
             &ClearAgentModelRequest {
-                trust: Some(TrustLevel::TrustedOperator),
+                authority_class: Some(AuthorityClass::OperatorInstruction),
             },
         )
         .await

@@ -2,9 +2,9 @@ use anyhow::Result;
 
 use super::RuntimeHandle;
 use crate::types::{
-    AgentProfilePreset, CommandTaskSpec, ExecCommandDuplicatePolicy, ExecCommandResult,
-    SpawnAgentResult, TaskInputResult, TaskListEntry, TaskOutputResult, TaskRecord,
-    TaskStatusSnapshot, TrustLevel,
+    AgentProfilePreset, AuthorityClass, CommandTaskSpec, ExecCommandDuplicatePolicy,
+    ExecCommandResult, SpawnAgentResult, TaskInputResult, TaskListEntry, TaskOutputResult,
+    TaskRecord, TaskStatusSnapshot,
 };
 
 pub(crate) struct ManagedTaskSupervisor<'a> {
@@ -22,32 +22,41 @@ impl ManagedTaskSupervisor<'_> {
         &self,
         spec: CommandTaskSpec,
         duplicate_policy: ExecCommandDuplicatePolicy,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
     ) -> Result<ExecCommandResult> {
         self.runtime
-            .execute_exec_command(spec, duplicate_policy, trust)
+            .execute_exec_command(spec, duplicate_policy, authority_class)
             .await
     }
 
     pub(crate) async fn execute_exec_command_once(
         &self,
         spec: CommandTaskSpec,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
     ) -> Result<ExecCommandResult> {
-        self.runtime.execute_exec_command_once(spec, trust).await
+        self.runtime
+            .execute_exec_command_once(spec, authority_class)
+            .await
     }
 
     pub(crate) async fn spawn_agent(
         &self,
         initial_message: Option<String>,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         preset: AgentProfilePreset,
         agent_id: Option<String>,
         worktree: bool,
         template: Option<String>,
     ) -> Result<SpawnAgentResult> {
         self.runtime
-            .spawn_agent(initial_message, trust, preset, agent_id, worktree, template)
+            .spawn_agent(
+                initial_message,
+                authority_class,
+                preset,
+                agent_id,
+                worktree,
+                template,
+            )
             .await
     }
 
@@ -68,18 +77,22 @@ impl ManagedTaskSupervisor<'_> {
         self.runtime.task_output(task_id, block, timeout_ms).await
     }
 
-    pub(crate) async fn stop_task(&self, task_id: &str, trust: &TrustLevel) -> Result<TaskRecord> {
-        self.runtime.stop_task(task_id, trust).await
+    pub(crate) async fn stop_task(
+        &self,
+        task_id: &str,
+        authority_class: &AuthorityClass,
+    ) -> Result<TaskRecord> {
+        self.runtime.stop_task(task_id, authority_class).await
     }
 
     pub(crate) async fn task_input_with_trust(
         &self,
         task_id: &str,
         input: &str,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
     ) -> Result<TaskInputResult> {
         self.runtime
-            .task_input_with_trust(task_id, input, trust)
+            .task_input_with_trust(task_id, input, authority_class)
             .await
     }
 }

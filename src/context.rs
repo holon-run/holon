@@ -13,7 +13,7 @@ use crate::{
         ContextEpisodeRecord, ContinuationClass, ContinuationResolution, ExternalTriggerRecord,
         ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TodoItemState,
-        ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentRecord,
+        ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, WaitingIntentRecord,
         WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
@@ -1076,12 +1076,12 @@ fn origin_label(origin: &MessageOrigin) -> &'static str {
     }
 }
 
-fn trust_label(trust: &TrustLevel) -> &'static str {
-    match trust {
-        TrustLevel::TrustedOperator => "trusted_operator",
-        TrustLevel::TrustedSystem => "trusted_system",
-        TrustLevel::TrustedIntegration => "trusted_integration",
-        TrustLevel::UntrustedExternal => "untrusted_external",
+fn trust_label(authority_class: &AuthorityClass) -> &'static str {
+    match authority_class {
+        AuthorityClass::OperatorInstruction => "trusted_operator",
+        AuthorityClass::RuntimeInstruction => "trusted_system",
+        AuthorityClass::IntegrationSignal => "trusted_integration",
+        AuthorityClass::ExternalEvidence => "untrusted_external",
     }
 }
 
@@ -1437,7 +1437,7 @@ fn render_recent_tools_with_budget(tools: &[ToolExecutionRecord], budget: usize)
 fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
     let prefix = format!(
         "- [{}][{:?}] {}",
-        trust_label(&record.trust),
+        trust_label(&record.authority_class),
         record.status,
         record.summary
     );
@@ -1781,11 +1781,11 @@ mod tests {
         storage::AppStorage,
         types::{
             AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-            AgentVisibility, BriefKind, BriefRecord, CallbackDeliveryMode, ContextEpisodeRecord,
-            ContinuationTriggerKind, EpisodeBoundaryReason, ExternalTriggerScope, LoadedAgentsMd,
-            MessageKind, MessageOrigin, Priority, TodoItem, TodoItemState, ToolExecutionRecord,
-            ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TrustLevel,
-            WaitingIntentRecord, WaitingIntentStatus, WorkItemState,
+            AgentVisibility, AuthorityClass, BriefKind, BriefRecord, CallbackDeliveryMode,
+            ContextEpisodeRecord, ContinuationTriggerKind, EpisodeBoundaryReason,
+            ExternalTriggerScope, LoadedAgentsMd, MessageKind, MessageOrigin, Priority, TodoItem,
+            TodoItemState, ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry,
+            TranscriptEntryKind, WaitingIntentRecord, WaitingIntentStatus, WorkItemState,
         },
     };
 
@@ -1800,7 +1800,7 @@ mod tests {
                 "default",
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator { actor_id: None },
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
                     text: format!("message-{idx}"),
@@ -1838,7 +1838,7 @@ mod tests {
                 "default",
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator { actor_id: None },
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
                     text: format!("message-{idx}"),
@@ -1885,7 +1885,7 @@ mod tests {
                 "default",
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator { actor_id: None },
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
                     text: format!("message-{idx}"),
@@ -1916,7 +1916,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "continue".into(),
@@ -1957,7 +1957,7 @@ mod tests {
                 "default",
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator { actor_id: None },
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
                     text: "message-6".into(),
@@ -2013,7 +2013,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "fix the failing benchmark".to_string(),
@@ -2039,7 +2039,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             completed_at: Some(chrono::Utc::now()),
             duration_ms: 123,
-            trust: TrustLevel::TrustedOperator,
+            authority_class: AuthorityClass::OperatorInstruction,
             status: ToolExecutionStatus::Success,
             input: json!({"cmd": "cargo test"}),
             output: json!({"exit_code": 0}),
@@ -2052,7 +2052,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "What changed and how did you verify it?".to_string(),
@@ -2116,7 +2116,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             completed_at: Some(chrono::Utc::now()),
             duration_ms: 123,
-            trust: TrustLevel::TrustedOperator,
+            authority_class: AuthorityClass::OperatorInstruction,
             status: ToolExecutionStatus::Success,
             input: json!({"cmd": command}),
             output: json!({"exit_code": 0}),
@@ -2144,7 +2144,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             completed_at: Some(chrono::Utc::now()),
             duration_ms: 123,
-            trust: TrustLevel::TrustedOperator,
+            authority_class: AuthorityClass::OperatorInstruction,
             status: ToolExecutionStatus::Success,
             input: json!({
                 "items": [
@@ -2179,7 +2179,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "continue".to_string(),
@@ -2250,7 +2250,7 @@ mod tests {
                     "default",
                     MessageKind::OperatorPrompt,
                     MessageOrigin::Operator { actor_id: None },
-                    TrustLevel::TrustedOperator,
+                    AuthorityClass::OperatorInstruction,
                     Priority::Normal,
                     MessageBody::Text {
                         text: format!("message-{idx}"),
@@ -2263,7 +2263,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "continue".to_string(),
@@ -2310,7 +2310,7 @@ mod tests {
                 "default",
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator { actor_id: None },
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
                     text: "short".into(),
@@ -2345,7 +2345,7 @@ mod tests {
                     "default",
                     MessageKind::OperatorPrompt,
                     MessageOrigin::Operator { actor_id: None },
-                    TrustLevel::TrustedOperator,
+                    AuthorityClass::OperatorInstruction,
                     Priority::Normal,
                     MessageBody::Text {
                         text: format!("message-{idx}"),
@@ -2386,7 +2386,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "continue".to_string(),
@@ -2449,7 +2449,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "check whether the wake path is stable".to_string(),
@@ -2476,7 +2476,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 completed_at: Some(chrono::Utc::now()),
                 duration_ms: 42,
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 status: ToolExecutionStatus::Success,
                 input: json!({"cmd": "cargo test wake_path"}),
                 output: json!({"exit_code": 1}),
@@ -2489,7 +2489,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Summarize the current state.".to_string(),
@@ -2555,7 +2555,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Analyze the runtime architecture and suggest next steps.".to_string(),
@@ -2615,7 +2615,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Use the demo skill".to_string(),
@@ -2692,7 +2692,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Use a helper template".to_string(),
@@ -2750,7 +2750,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Make changes in the worktree".to_string(),
@@ -2806,7 +2806,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Continue the implementation".to_string(),
@@ -2907,7 +2907,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 completed_at: Some(chrono::Utc::now()),
                 duration_ms: 10,
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 status: ToolExecutionStatus::Success,
                 input: json!({"cmd": "cargo test -p holon context"}),
                 output: json!({}),
@@ -2925,7 +2925,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 completed_at: Some(chrono::Utc::now()),
                 duration_ms: 10,
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 status: ToolExecutionStatus::Success,
                 input: json!({"cmd": "echo other"}),
                 output: json!({}),
@@ -3043,7 +3043,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Continue the implementation".to_string(),
@@ -3160,7 +3160,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Make changes".to_string(),
@@ -3201,7 +3201,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Inspect the environment".to_string(),
@@ -3285,7 +3285,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Inspect ingress".to_string(),
@@ -3365,7 +3365,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Inspect ingress".to_string(),
@@ -3412,7 +3412,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "hello".to_string(),
@@ -3426,7 +3426,7 @@ mod tests {
             MessageOrigin::System {
                 subsystem: "wake_hint".to_string(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Next,
             MessageBody::Text {
                 text: "wake hint: changed".to_string(),
@@ -3473,7 +3473,7 @@ mod tests {
             MessageOrigin::System {
                 subsystem: "wake_hint".to_string(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Next,
             MessageBody::Text {
                 text: "wake hint: github inbox updated".to_string(),
@@ -3543,7 +3543,7 @@ mod tests {
             MessageOrigin::System {
                 subsystem: "work_queue".to_string(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Continue current work item: fix stale pid handling".to_string(),
@@ -3608,7 +3608,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: long_prompt.clone(),
@@ -3657,7 +3657,7 @@ mod tests {
             MessageOrigin::Operator {
                 actor_id: Some("operator:jolestar".into()),
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Continue from the operator surface.".into(),
@@ -3703,7 +3703,7 @@ mod tests {
                 "default",
                 MessageKind::OperatorPrompt,
                 MessageOrigin::Operator { actor_id: None },
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
                     text: text.to_string(),
@@ -3730,7 +3730,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             completed_at: Some(chrono::Utc::now()),
             duration_ms: 10,
-            trust: TrustLevel::TrustedOperator,
+            authority_class: AuthorityClass::OperatorInstruction,
             status: ToolExecutionStatus::Success,
             input: json!({"cmd": "cargo test"}),
             output: json!({"exit_code": 0}),
@@ -3747,7 +3747,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Continue and report what is still pending.".to_string(),
@@ -3860,7 +3860,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Continue the runtime memory work and report the latest status.".into(),
@@ -3969,7 +3969,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Continue fixing the wake path in src/runtime.rs.".to_string(),
@@ -4018,7 +4018,7 @@ mod tests {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Keep the current input visible while trimming oversized context sections."
@@ -4144,7 +4144,7 @@ mod tests {
             MessageOrigin::System {
                 subsystem: "work_queue".into(),
             },
-            TrustLevel::TrustedSystem,
+            AuthorityClass::RuntimeInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "continue".into(),

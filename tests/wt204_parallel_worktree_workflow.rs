@@ -10,7 +10,7 @@ use holon::{
     host::RuntimeHost,
     provider::{AgentProvider, ModelBlock, ProviderTurnRequest, ProviderTurnResponse},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
-    types::{TaskRecord, TaskStatus, TrustLevel},
+    types::{AuthorityClass, TaskRecord, TaskStatus},
 };
 use tempfile::tempdir;
 use tokio::time::{sleep, Duration, Instant};
@@ -223,7 +223,7 @@ async fn wt204_parallel_worktree_workflow_demo_is_reviewable_end_to_end() -> Res
                 .schedule_child_agent_task(
                     summary.clone(),
                     prompt.clone(),
-                    TrustLevel::TrustedOperator,
+                    AuthorityClass::OperatorInstruction,
                     holon::types::ChildAgentWorkspaceMode::Worktree,
                 )
                 .await?,

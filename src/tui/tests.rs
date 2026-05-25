@@ -266,7 +266,7 @@ fn operator_message_event_envelope(
         agent_id,
         crate::types::MessageKind::OperatorPrompt,
         crate::types::MessageOrigin::Operator { actor_id: None },
-        crate::types::TrustLevel::TrustedOperator,
+        crate::types::AuthorityClass::OperatorInstruction,
         crate::types::Priority::Normal,
         MessageBody::Text { text: text.into() },
     );
@@ -1589,7 +1589,7 @@ fn chat_text_filters_operator_queue_ack_but_keeps_result_brief_events() {
         "default",
         crate::types::MessageKind::OperatorPrompt,
         crate::types::MessageOrigin::Operator { actor_id: None },
-        crate::types::TrustLevel::TrustedOperator,
+        crate::types::AuthorityClass::OperatorInstruction,
         crate::types::Priority::Normal,
         crate::types::MessageBody::Text {
             text: "duplicate".into(),

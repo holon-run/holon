@@ -21,7 +21,7 @@ async fn runtime_recovers_from_max_token_truncation() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -54,7 +54,7 @@ async fn runtime_records_text_only_round_observations() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -124,7 +124,7 @@ async fn first_provider_round_records_prompt_cache_identity_fields() {
     runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             prompt,
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -193,7 +193,7 @@ async fn sleep_only_tool_round_completes_without_extra_provider_turn() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -250,7 +250,7 @@ async fn disallowed_tool_call_is_auditable_and_continuation_stays_valid() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -329,7 +329,7 @@ async fn max_output_mutation_tool_call_is_rejected_without_side_effects() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -419,7 +419,7 @@ async fn detached_runtime_provider_request_still_exposes_spawn_agent() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -502,7 +502,7 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             prompt,
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -698,7 +698,7 @@ async fn turn_local_compaction_fails_fast_when_baseline_exceeds_budget() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             prompt,
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -766,7 +766,7 @@ async fn context_length_exceeded_turn_fails_fast_without_runtime_error() {
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "trigger provider context length fail-fast".into(),
@@ -826,7 +826,7 @@ async fn runtime_persists_provider_attempt_timeline_on_successful_round() {
     let _outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -940,7 +940,7 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -969,7 +969,10 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
     };
     assert_eq!(queued.kind, MessageKind::InternalFollowup);
     assert_eq!(queued.priority, Priority::Next);
-    assert!(matches!(queued.trust, TrustLevel::TrustedSystem));
+    assert!(matches!(
+        queued.authority_class,
+        AuthorityClass::RuntimeInstruction
+    ));
 
     let events = runtime.storage().read_recent_events(20).unwrap();
     assert!(events
@@ -1003,7 +1006,7 @@ async fn provider_failure_after_accepted_output_queues_recovery_turn() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -1063,7 +1066,7 @@ async fn runtime_records_turn_latency_phase_events_for_provider_and_tool() {
     let outcome = runtime
         .run_agent_loop(
             "default",
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             test_effective_prompt(),
             LoopControlOptions {
                 max_tool_rounds: None,
@@ -1118,7 +1121,7 @@ async fn runtime_failure_artifacts_preserve_provider_attempt_timeline() {
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Next,
         MessageBody::Text {
             text: "trigger provider failure".into(),

@@ -10,8 +10,8 @@ use crate::{
     system::{workspace_access_mode_label, workspace_projection_label},
     tui_markdown::{render_markdown_text, render_markdown_text_spaced},
     types::{
-        AgentListEntry, AgentSummary, MessageBody, OperatorMessageRecord, OperatorMessageStatus,
-        ResolvedModelAvailability, TaskRecord, TrustLevel,
+        AgentListEntry, AgentSummary, AuthorityClass, MessageBody, OperatorMessageRecord,
+        OperatorMessageStatus, ResolvedModelAvailability, TaskRecord,
     },
 };
 use anyhow::{anyhow, Result};

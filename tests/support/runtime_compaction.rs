@@ -27,14 +27,14 @@ use holon::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{ToolCall, ToolError, ToolRegistry, ToolResult},
     types::{
-        AgentKind, AgentProfilePreset, AgentStatus, BriefKind, CallbackDeliveryMode,
-        ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction, ExternalTriggerStatus,
-        FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
-        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TodoItem, TodoItemState,
-        TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentStatus,
-        WaitingReason, WorkItemState,
+        AgentKind, AgentProfilePreset, AgentStatus, AuthorityClass, BriefKind,
+        CallbackDeliveryMode, ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction,
+        ExternalTriggerStatus, FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind,
+        MessageOrigin, OperatorNotificationBoundary, OperatorTransportBinding,
+        OperatorTransportBindingStatus, OperatorTransportCapabilities,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
+        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+        WaitingIntentStatus, WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -135,7 +135,7 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: format!(
@@ -149,7 +149,7 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
     let prompt = runtime
         .preview_prompt(
             "Continue the long-running compaction regression matrix.".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -222,7 +222,7 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: format!("task-history-{idx}: {}", "rejoin context ".repeat(20)),
@@ -235,7 +235,7 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Start the long-running compaction verification.".into(),
@@ -263,7 +263,7 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
                 accepts_input: false,
                 terminal_reentry: true,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -344,7 +344,7 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: format!("wake-history-{idx}: {}", "wake context ".repeat(20)),
@@ -357,7 +357,7 @@ pub async fn contentful_wake_hint_after_compaction_keeps_active_work_truth() -> 
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Do the first turn before the wake hint lands.".into(),
@@ -455,7 +455,7 @@ pub async fn queued_notification_after_compaction_keeps_queued_work_visible() ->
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: format!("queue-history-{idx}: {}", "queued context ".repeat(20)),
@@ -468,7 +468,7 @@ pub async fn queued_notification_after_compaction_keeps_queued_work_visible() ->
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Wrap up the current turn so queued work can resume.".into(),
@@ -527,7 +527,7 @@ pub async fn repeated_turn_local_compaction_evolves_checkpoint_mode_and_keeps_la
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Run a long-running review loop that repeatedly requires compaction and checkpointing.".into(),
@@ -654,7 +654,7 @@ pub async fn max_output_recovery_followed_by_turn_local_compaction_preserves_pro
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Produce analysis in constrained output, then continue after recovery while preserving checkpoint progress.".into(),
@@ -793,7 +793,7 @@ pub async fn sleep_only_completion_preserves_brief_after_max_output_recovery() -
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Generate a comprehensive technical report covering multiple domains. \
@@ -893,7 +893,7 @@ pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artif
                 accepts_input: false,
                 terminal_reentry: true,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await?;
 
@@ -912,7 +912,7 @@ pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artif
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Run the compaction recovery checkpoint scenario end-to-end.".into(),

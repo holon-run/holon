@@ -30,7 +30,7 @@ async fn runtime_tracks_background_task() {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await
         .unwrap();
@@ -68,7 +68,7 @@ async fn runtime_replays_unprocessed_queue_messages_after_restart() {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "recover me".into(),
@@ -115,7 +115,7 @@ async fn runtime_records_scheduler_decision_before_dequeueing_message() {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "schedule me".into(),
@@ -189,7 +189,7 @@ async fn malformed_task_message_does_not_exit_runtime_loop() {
         MessageOrigin::Task {
             task_id: "bad-task".into(),
         },
-        TrustLevel::TrustedSystem,
+        AuthorityClass::RuntimeInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "malformed task result".into(),
@@ -205,7 +205,7 @@ async fn malformed_task_message_does_not_exit_runtime_loop() {
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "continue after malformed task".into(),
@@ -276,7 +276,7 @@ async fn runtime_interrupts_inflight_task_after_restart() {
                     accepts_input: false,
                     terminal_reentry: false,
                 },
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 promoted_from_exec_command: false,
             }),
         })

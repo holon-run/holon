@@ -10,8 +10,8 @@ use holon::{
     },
     tool::ToolRegistry,
     types::{
-        AgentStatus, BriefKind, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        TrustLevel,
+        AgentStatus, AuthorityClass, BriefKind, MessageBody, MessageEnvelope, MessageKind,
+        MessageOrigin, Priority,
     },
 };
 use std::path::PathBuf;
@@ -182,7 +182,7 @@ async fn live_runtime_wakes_sleeps_and_preserves_context() -> Result<()> {
             &config.default_agent_id,
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Reply with exactly FIRST_OK.".into(),
@@ -197,7 +197,7 @@ async fn live_runtime_wakes_sleeps_and_preserves_context() -> Result<()> {
             &config.default_agent_id,
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "Tell me what the previous result was in one short sentence.".into(),

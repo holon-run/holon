@@ -17,10 +17,10 @@ use crate::{
     storage::PollActivityMarker,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        AdmissionContext, AgentStatus, AuditEvent, ClosureOutcome, ControlAction, FailureArtifact,
-        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        TaskOutputSnapshot, TaskRecord, TaskStatus, TokenUsage, ToolExecutionRecord,
-        ToolExecutionStatus, TrustLevel, WaitingReason,
+        AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, ClosureOutcome, ControlAction,
+        FailureArtifact, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
+        MessageOrigin, Priority, TaskOutputSnapshot, TaskRecord, TaskStatus, TokenUsage,
+        ToolExecutionRecord, ToolExecutionStatus, WaitingReason,
     },
 };
 
@@ -32,7 +32,7 @@ const RUN_STOP_SETTLE_MIN_PER_TASK_MS: u64 = 100;
 #[derive(Debug, Clone)]
 pub struct RunOnceRequest {
     pub text: String,
-    pub trust: TrustLevel,
+    pub authority_class: AuthorityClass,
     pub agent_id: Option<String>,
     pub create_agent: bool,
     pub template: Option<String>,
@@ -211,7 +211,7 @@ pub async fn run_once_with_host(
         origin: MessageOrigin::Operator {
             actor_id: Some("holon_run".into()),
         },
-        trust: request.trust.clone(),
+        authority_class: request.authority_class.clone(),
         body: MessageBody::Text {
             text: request.text.clone(),
         },
@@ -325,9 +325,12 @@ pub async fn run_once_with_host(
     let active_tasks =
         active_new_task_ids(&session.runtime, &pre_cleanup_view.new_task_ids).await?;
     for task_id in &active_tasks {
-        let _ = session.runtime.stop_task(task_id, &request.trust).await;
+        let _ = session
+            .runtime
+            .stop_task(task_id, &request.authority_class)
+            .await;
     }
-    settle_stopped_tasks(&session.runtime, &active_tasks, &request.trust).await?;
+    settle_stopped_tasks(&session.runtime, &active_tasks, &request.authority_class).await?;
     final_state = session.runtime.agent_state().await?;
 
     let final_view = collect_run_view(&session.runtime, &baseline)?;
@@ -620,7 +623,7 @@ async fn active_new_task_ids(
 async fn settle_stopped_tasks(
     runtime: &crate::runtime::RuntimeHandle,
     task_ids: &[String],
-    trust: &TrustLevel,
+    authority_class: &AuthorityClass,
 ) -> Result<()> {
     let deadline = Instant::now() + Duration::from_millis(RUN_STOP_SETTLE_TIMEOUT_MS);
     for (index, task_id) in task_ids.iter().enumerate() {
@@ -633,7 +636,7 @@ async fn settle_stopped_tasks(
                 break;
             }
 
-            let _ = runtime.stop_task(task_id, trust).await;
+            let _ = runtime.stop_task(task_id, authority_class).await;
 
             let tasks_left = task_ids.len().saturating_sub(index).max(1) as u128;
             let remaining_ms_u128 = remaining.as_millis();
@@ -1177,7 +1180,7 @@ mod tests {
             created_at: Utc::now(),
             completed_at: None,
             duration_ms: 0,
-            trust: TrustLevel::TrustedOperator,
+            authority_class: AuthorityClass::OperatorInstruction,
             status: ToolExecutionStatus::Success,
             input: json!({
                 "patch": "diff --git a/notes/result.txt b/notes/final.txt\nrename from notes/result.txt\nrename to notes/final.txt\n--- a/notes/result.txt\n+++ b/notes/final.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n"
@@ -1211,7 +1214,7 @@ mod tests {
             created_at: Utc::now(),
             completed_at: None,
             duration_ms: 0,
-            trust: TrustLevel::TrustedOperator,
+            authority_class: AuthorityClass::OperatorInstruction,
             status: ToolExecutionStatus::Success,
             input: json!({}),
             output: json!({

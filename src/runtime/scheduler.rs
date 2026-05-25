@@ -2,11 +2,11 @@ use super::*;
 use crate::runtime::closure::runtime_error_active;
 use crate::storage::{AppStorage, WorkQueuePromptProjection};
 use crate::types::{
-    AgentPostureProjection, AgentSchedulingPosture, AgentStatus, ExternalWaitRecoverability,
-    MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint, Priority, TaskRecord, TaskStatus,
-    TimerStatus, TrustLevel, TurnTerminalKind, WaitConditionRecord, WaitConditionStatus,
-    WaitingIntentRecord, WaitingIntentStatus, WorkItemRecord, WorkItemSchedulingState,
-    WorkReactivationMode, WorkReactivationSignal,
+    AgentPostureProjection, AgentSchedulingPosture, AgentStatus, AuthorityClass,
+    ExternalWaitRecoverability, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
+    Priority, TaskRecord, TaskStatus, TimerStatus, TurnTerminalKind, WaitConditionRecord,
+    WaitConditionStatus, WaitingIntentRecord, WaitingIntentStatus, WorkItemRecord,
+    WorkItemSchedulingState, WorkReactivationMode, WorkReactivationSignal,
 };
 use chrono::{DateTime, Utc};
 
@@ -976,13 +976,13 @@ pub(crate) fn is_operator_interjection_message(message: &MessageEnvelope) -> boo
         (
             &message.kind,
             &message.origin,
-            &message.trust,
+            &message.authority_class,
             &message.priority,
         ),
         (
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { .. },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Interject,
         )
     )

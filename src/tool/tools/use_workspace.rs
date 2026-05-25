@@ -8,7 +8,7 @@ use crate::{
     runtime::RuntimeHandle,
     system::{workspace_projection_kind_label, WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::spec::typed_spec,
-    types::{ToolCapabilityFamily, TrustLevel, UseWorkspaceResult, AGENT_HOME_WORKSPACE_ID},
+    types::{AuthorityClass, ToolCapabilityFamily, UseWorkspaceResult, AGENT_HOME_WORKSPACE_ID},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -56,7 +56,7 @@ fn mode_arg_label(mode: UseWorkspaceModeArgs) -> &'static str {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    _trust: &TrustLevel,
+    _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: UseWorkspaceArgs = parse_tool_args(NAME, input)?;

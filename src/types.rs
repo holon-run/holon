@@ -19,6 +19,66 @@ pub fn agent_home_workspace_id(agent_id: &str) -> String {
     format!("{AGENT_HOME_WORKSPACE_ID}:{agent_id}")
 }
 
+impl<'de> Deserialize<'de> for MessageEnvelope {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct MessageEnvelopeCompat {
+            id: String,
+            #[serde(alias = "session_id")]
+            agent_id: String,
+            created_at: DateTime<Utc>,
+            kind: MessageKind,
+            origin: MessageOrigin,
+            #[serde(default, alias = "trust")]
+            authority_class: Option<AuthorityClass>,
+            priority: Priority,
+            #[serde(default)]
+            trigger_kind: Option<ContinuationTriggerKind>,
+            #[serde(default)]
+            work_item_id: Option<String>,
+            #[serde(default)]
+            task_id: Option<String>,
+            #[serde(default)]
+            source_refs: BTreeMap<String, String>,
+            body: MessageBody,
+            #[serde(default)]
+            delivery_surface: Option<MessageDeliverySurface>,
+            #[serde(default)]
+            admission_context: Option<AdmissionContext>,
+            metadata: Option<Value>,
+            correlation_id: Option<String>,
+            causation_id: Option<String>,
+        }
+
+        let compat = MessageEnvelopeCompat::deserialize(deserializer)?;
+        let authority_class = compat
+            .authority_class
+            .ok_or_else(|| serde::de::Error::missing_field("authority_class"))?;
+        Ok(Self {
+            id: compat.id,
+            agent_id: compat.agent_id,
+            created_at: compat.created_at,
+            kind: compat.kind,
+            origin: compat.origin,
+            authority_class,
+            priority: compat.priority,
+            trigger_kind: compat.trigger_kind,
+            work_item_id: compat.work_item_id,
+            task_id: compat.task_id,
+            source_refs: compat.source_refs,
+            body: compat.body,
+            delivery_surface: compat.delivery_surface,
+            admission_context: compat.admission_context,
+            metadata: compat.metadata,
+            correlation_id: compat.correlation_id,
+            causation_id: compat.causation_id,
+        })
+    }
+}
+
 fn default_agent_home_workspace_id() -> String {
     AGENT_HOME_WORKSPACE_ID.to_string()
 }
@@ -857,15 +917,6 @@ pub enum MessageKind {
     InternalFollowup,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
-#[serde(rename_all = "snake_case")]
-pub enum TrustLevel {
-    TrustedOperator,
-    TrustedSystem,
-    TrustedIntegration,
-    UntrustedExternal,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
@@ -930,30 +981,21 @@ pub struct BriefAttachment {
     pub value: Option<Value>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityClass {
+    #[serde(alias = "trusted_operator")]
+    #[value(alias = "trusted-operator")]
     OperatorInstruction,
+    #[serde(alias = "trusted_system")]
+    #[value(alias = "trusted-system")]
     RuntimeInstruction,
+    #[serde(alias = "trusted_integration")]
+    #[value(alias = "trusted-integration")]
     IntegrationSignal,
+    #[serde(alias = "untrusted_external")]
+    #[value(alias = "untrusted-external")]
     ExternalEvidence,
-}
-
-impl AuthorityClass {
-    pub fn from_trust(trust: &TrustLevel) -> Self {
-        match trust {
-            TrustLevel::TrustedOperator => Self::OperatorInstruction,
-            TrustLevel::TrustedSystem => Self::RuntimeInstruction,
-            TrustLevel::TrustedIntegration => Self::IntegrationSignal,
-            TrustLevel::UntrustedExternal => Self::ExternalEvidence,
-        }
-    }
-}
-
-impl From<&TrustLevel> for AuthorityClass {
-    fn from(value: &TrustLevel) -> Self {
-        Self::from_trust(value)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -964,7 +1006,6 @@ pub struct MessageEnvelope {
     pub created_at: DateTime<Utc>,
     pub kind: MessageKind,
     pub origin: MessageOrigin,
-    pub trust: TrustLevel,
     pub authority_class: AuthorityClass,
     pub priority: Priority,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -990,7 +1031,7 @@ impl MessageEnvelope {
         agent_id: impl Into<String>,
         kind: MessageKind,
         origin: MessageOrigin,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         priority: Priority,
         body: MessageBody,
     ) -> Self {
@@ -1000,8 +1041,7 @@ impl MessageEnvelope {
             created_at: Utc::now(),
             kind,
             origin,
-            authority_class: AuthorityClass::from_trust(&trust),
-            trust,
+            authority_class,
             priority,
             trigger_kind: None,
             work_item_id: None,
@@ -1080,7 +1120,7 @@ impl MessageEnvelope {
     }
 
     fn metadata_binding_fields_are_trusted(&self) -> bool {
-        self.trust == TrustLevel::TrustedSystem
+        self.authority_class == AuthorityClass::RuntimeInstruction
             && matches!(self.admission_context, Some(AdmissionContext::RuntimeOwned))
             && matches!(
                 self.delivery_surface,
@@ -1119,68 +1159,6 @@ fn collect_source_ref(metadata: &Value, refs: &mut BTreeMap<String, String>, key
         return;
     };
     refs.entry(key.to_string()).or_insert(value);
-}
-
-impl<'de> Deserialize<'de> for MessageEnvelope {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct MessageEnvelopeCompat {
-            id: String,
-            #[serde(alias = "session_id")]
-            agent_id: String,
-            created_at: DateTime<Utc>,
-            kind: MessageKind,
-            origin: MessageOrigin,
-            trust: TrustLevel,
-            #[serde(default)]
-            authority_class: Option<AuthorityClass>,
-            priority: Priority,
-            #[serde(default)]
-            trigger_kind: Option<ContinuationTriggerKind>,
-            #[serde(default)]
-            work_item_id: Option<String>,
-            #[serde(default)]
-            task_id: Option<String>,
-            #[serde(default)]
-            source_refs: BTreeMap<String, String>,
-            body: MessageBody,
-            #[serde(default)]
-            delivery_surface: Option<MessageDeliverySurface>,
-            #[serde(default)]
-            admission_context: Option<AdmissionContext>,
-            metadata: Option<Value>,
-            correlation_id: Option<String>,
-            causation_id: Option<String>,
-        }
-
-        let compat = MessageEnvelopeCompat::deserialize(deserializer)?;
-        let authority_class = compat
-            .authority_class
-            .unwrap_or_else(|| AuthorityClass::from_trust(&compat.trust));
-        Ok(Self {
-            id: compat.id,
-            agent_id: compat.agent_id,
-            created_at: compat.created_at,
-            kind: compat.kind,
-            origin: compat.origin,
-            trust: compat.trust,
-            authority_class,
-            priority: compat.priority,
-            trigger_kind: compat.trigger_kind,
-            work_item_id: compat.work_item_id,
-            task_id: compat.task_id,
-            source_refs: compat.source_refs,
-            body: compat.body,
-            delivery_surface: compat.delivery_surface,
-            admission_context: compat.admission_context,
-            metadata: compat.metadata,
-            correlation_id: compat.correlation_id,
-            causation_id: compat.causation_id,
-        })
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -2888,23 +2866,23 @@ pub enum TaskRecoverySpec {
     ChildAgentTask {
         summary: String,
         prompt: String,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         workspace_mode: ChildAgentWorkspaceMode,
     },
     SubagentTask {
         summary: String,
         prompt: String,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
     },
     WorktreeSubagentTask {
         summary: String,
         prompt: String,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
     },
     CommandTask {
         summary: String,
         spec: CommandTaskSpec,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         promoted_from_exec_command: bool,
     },
 }
@@ -3385,7 +3363,7 @@ pub struct ToolExecutionRecord {
     pub completed_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub duration_ms: u64,
-    pub trust: TrustLevel,
+    pub authority_class: AuthorityClass,
     pub status: ToolExecutionStatus,
     pub input: Value,
     pub output: Value,
@@ -3864,26 +3842,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn authority_class_bridges_from_trust_level() {
-        assert_eq!(
-            AuthorityClass::from_trust(&TrustLevel::TrustedOperator),
-            AuthorityClass::OperatorInstruction
-        );
-        assert_eq!(
-            AuthorityClass::from_trust(&TrustLevel::TrustedSystem),
-            AuthorityClass::RuntimeInstruction
-        );
-        assert_eq!(
-            AuthorityClass::from_trust(&TrustLevel::TrustedIntegration),
-            AuthorityClass::IntegrationSignal
-        );
-        assert_eq!(
-            AuthorityClass::from_trust(&TrustLevel::UntrustedExternal),
-            AuthorityClass::ExternalEvidence
-        );
-    }
-
-    #[test]
     fn legacy_scheduler_contract_names_deserialize_as_current_terms() {
         let continuation: ContinuationResolution = serde_json::from_value(serde_json::json!({
             "trigger_kind": "task_result",
@@ -3961,7 +3919,7 @@ mod tests {
             MessageOrigin::Operator {
                 actor_id: Some("operator:jolestar".into()),
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "ship it".into(),
@@ -3974,7 +3932,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_messages_without_authority_class_deserialize_from_trust_bridge() {
+    fn legacy_messages_without_authority_class_deserialize_from_trust_alias() {
         let legacy = serde_json::json!({
             "id": "msg-legacy",
             "agent_id": "default",
@@ -4071,7 +4029,7 @@ mod tests {
                 TaskRecoverySpec::SubagentTask {
                     summary: "legacy inherited".into(),
                     prompt: "resume".into(),
-                    trust: TrustLevel::TrustedOperator,
+                    authority_class: AuthorityClass::OperatorInstruction,
                 },
             ),
             (
@@ -4079,7 +4037,7 @@ mod tests {
                 TaskRecoverySpec::WorktreeSubagentTask {
                     summary: "legacy worktree".into(),
                     prompt: "resume".into(),
-                    trust: TrustLevel::TrustedOperator,
+                    authority_class: AuthorityClass::OperatorInstruction,
                 },
             ),
         ] {
@@ -4117,7 +4075,7 @@ mod tests {
                 "continue_on_result": true
             }))
             .expect("legacy command task spec"),
-            trust: TrustLevel::TrustedOperator,
+            authority_class: AuthorityClass::OperatorInstruction,
             promoted_from_exec_command: true,
         };
         let task = TaskRecord {
@@ -4197,7 +4155,7 @@ mod tests {
                     accepts_input: false,
                     terminal_reentry: false,
                 },
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 promoted_from_exec_command: false,
             }),
         };
@@ -4246,7 +4204,7 @@ mod tests {
                     accepts_input: false,
                     terminal_reentry: false,
                 },
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 promoted_from_exec_command: true,
             }),
         };
@@ -4295,7 +4253,7 @@ mod tests {
             recovery: Some(TaskRecoverySpec::ChildAgentTask {
                 summary: "delegate child".into(),
                 prompt: "finish child work".into(),
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 workspace_mode: ChildAgentWorkspaceMode::Inherit,
             }),
         };

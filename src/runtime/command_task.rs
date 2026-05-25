@@ -22,11 +22,10 @@ use crate::{
     },
     tool::ToolError,
     types::{
-        CommandCostDiagnostics, CommandTaskSpec, CommandTaskStatusSnapshot,
+        AuthorityClass, CommandCostDiagnostics, CommandTaskSpec, CommandTaskStatusSnapshot,
         ExecCommandDuplicatePolicy, ExecCommandOutcome, ExecCommandResult, ExternalTriggerScope,
         ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
         TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, ToolArtifactRef,
-        TrustLevel,
     },
 };
 
@@ -180,7 +179,7 @@ impl RuntimeHandle {
         &self,
         summary: String,
         spec: CommandTaskSpec,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
     ) -> Result<TaskRecord> {
         self.ensure_background_tasks_allowed("command_task").await?;
         self.ensure_process_execution_exposed("command_task")
@@ -192,7 +191,7 @@ impl RuntimeHandle {
             summary,
             resolved,
             running,
-            trust,
+            authority_class,
             false,
             CapturedOutput::default(),
         )
@@ -203,7 +202,7 @@ impl RuntimeHandle {
         &self,
         mut spec: CommandTaskSpec,
         duplicate_policy: ExecCommandDuplicatePolicy,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
     ) -> Result<ExecCommandResult> {
         self.ensure_process_execution_exposed("ExecCommand").await?;
         self.apply_command_output_policy(&mut spec);
@@ -240,7 +239,7 @@ impl RuntimeHandle {
             "process_execution_requested",
             serde_json::json!({
                 "surface": "ExecCommand",
-                "trust": trust,
+                "authority_class": authority_class,
                 "cmd_preview": diagnostics.cmd_preview.clone(),
                 "command_cost": diagnostics.clone(),
                 "execution": resolved.execution.clone(),
@@ -320,7 +319,7 @@ impl RuntimeHandle {
                             format!("Run command: {}", truncate_text(&spec.cmd, 80)),
                             resolved,
                             running,
-                            trust.clone(),
+                            authority_class.clone(),
                             true,
                             captured.clone(),
                         )
@@ -344,7 +343,7 @@ impl RuntimeHandle {
     pub(crate) async fn execute_exec_command_once(
         &self,
         mut spec: CommandTaskSpec,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
     ) -> Result<ExecCommandResult> {
         self.ensure_process_execution_exposed("ExecCommandBatch")
             .await?;
@@ -355,7 +354,7 @@ impl RuntimeHandle {
             "process_execution_requested",
             serde_json::json!({
                 "surface": "ExecCommandBatch",
-                "trust": trust,
+                "authority_class": authority_class,
                 "cmd_preview": diagnostics.cmd_preview.clone(),
                 "command_cost": diagnostics.clone(),
                 "execution": resolved.execution.clone(),
@@ -561,7 +560,7 @@ impl RuntimeHandle {
         summary: String,
         mut resolved: ResolvedCommandTask,
         running: RunningCommand,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         promoted_from_exec_command: bool,
         initial_capture: CapturedOutput,
     ) -> Result<TaskRecord> {
@@ -593,7 +592,7 @@ impl RuntimeHandle {
             recovery: Some(TaskRecoverySpec::CommandTask {
                 summary,
                 spec: resolved.spec.clone(),
-                trust: trust.clone(),
+                authority_class: authority_class.clone(),
                 promoted_from_exec_command,
             }),
         };
@@ -602,7 +601,7 @@ impl RuntimeHandle {
             serde_json::json!({
                 "surface": "command_task",
                 "task_id": task_id,
-                "trust": trust,
+                "authority_class": authority_class,
                 "cmd_preview": diagnostics.cmd_preview.clone(),
                 "command_cost": diagnostics,
                 "execution": resolved.execution.clone(),
@@ -630,7 +629,7 @@ impl RuntimeHandle {
                     task_record,
                     resolved,
                     running,
-                    trust,
+                    authority_class,
                     cancel_rx,
                     force_stop_rx,
                     input_rx,
@@ -690,7 +689,7 @@ impl RuntimeHandle {
         task_record: TaskRecord,
         resolved: ResolvedCommandTask,
         mut running: RunningCommand,
-        trust: TrustLevel,
+        authority_class: AuthorityClass,
         mut cancel_rx: oneshot::Receiver<()>,
         mut force_stop_rx: oneshot::Receiver<()>,
         mut input_rx: mpsc::Receiver<CommandTaskInputRequest>,
@@ -704,7 +703,7 @@ impl RuntimeHandle {
                 &task_record,
                 &resolved,
                 &mut running,
-                &trust,
+                &authority_class,
                 &mut cancel_rx,
                 &mut force_stop_rx,
                 &mut input_rx,
@@ -787,7 +786,7 @@ impl RuntimeHandle {
                 MessageOrigin::Task {
                     task_id: task_record.id.clone(),
                 },
-                TrustLevel::TrustedSystem,
+                AuthorityClass::RuntimeInstruction,
                 Priority::Next,
                 MessageBody::Text { text: result_text },
             )
@@ -826,7 +825,7 @@ impl RuntimeHandle {
         task_record: &TaskRecord,
         resolved: &ResolvedCommandTask,
         running: &mut RunningCommand,
-        trust: &TrustLevel,
+        authority_class: &AuthorityClass,
         cancel_rx: &mut oneshot::Receiver<()>,
         force_stop_rx: &mut oneshot::Receiver<()>,
         input_rx: &mut mpsc::Receiver<CommandTaskInputRequest>,
@@ -911,7 +910,7 @@ impl RuntimeHandle {
                     MessageOrigin::Task {
                         task_id: task_record.id.clone(),
                     },
-                    trust.clone(),
+                    authority_class.clone(),
                     Priority::Background,
                     MessageBody::Text {
                         text: format!(
@@ -1532,7 +1531,7 @@ mod tests {
             recovery: Some(TaskRecoverySpec::CommandTask {
                 summary: summary.into(),
                 spec,
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 promoted_from_exec_command: false,
             }),
         }
@@ -1656,7 +1655,7 @@ mod tests {
                     "partial stdout\n",
                     "partial stderr\n",
                 ),
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 false,
                 CapturedOutput::default(),
             )
@@ -1702,7 +1701,7 @@ mod tests {
                 "force stop with output".into(),
                 resolved,
                 running_command(FakeRunningProcess::pending(), "before force stop\n", ""),
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 false,
                 CapturedOutput::default(),
             )
@@ -1745,7 +1744,7 @@ mod tests {
                 "poll failure".into(),
                 resolved,
                 running_command(FakeRunningProcess::failing_status("poll exploded"), "", ""),
-                TrustLevel::TrustedOperator,
+                AuthorityClass::OperatorInstruction,
                 false,
                 CapturedOutput::default(),
             )

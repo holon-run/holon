@@ -28,7 +28,7 @@ pub(crate) use crate::{
         ContinuationTriggerKind, DeliverySummaryRecord, LoadedAgentsMd, MessageBody,
         MessageDeliverySurface, MessageKind, MessageOrigin, PendingWakeHint, Priority,
         QueueEntryStatus, TaskKind, TaskOutputRetrievalStatus, TaskRecord, TaskRecoverySpec,
-        TaskStatus, TimerRecord, TimerStatus, TodoItem, TodoItemState, TokenUsage, TrustLevel,
+        TaskStatus, TimerRecord, TimerStatus, TodoItem, TodoItemState, TokenUsage,
         TurnTerminalKind, TurnTerminalRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord,
         WorkItemState, WorkReactivationMode, WorkspaceEntry,
     },

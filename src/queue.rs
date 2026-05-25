@@ -82,7 +82,7 @@ fn pop_matching_from(
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{MessageBody, MessageEnvelope, MessageKind, MessageOrigin, TrustLevel};
+    use crate::types::{AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin};
 
     use super::*;
 
@@ -94,7 +94,7 @@ mod tests {
                 source: "test".into(),
                 event_type: None,
             },
-            TrustLevel::TrustedIntegration,
+            AuthorityClass::IntegrationSignal,
             priority,
             MessageBody::Text { text: text.into() },
         )
@@ -107,7 +107,7 @@ mod tests {
             MessageOrigin::Operator {
                 actor_id: Some("test".into()),
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             priority,
             MessageBody::Text { text: text.into() },
         )
@@ -166,11 +166,11 @@ mod tests {
             queue
                 .pop_next_matching(|message| {
                     matches!(
-                        (&message.kind, &message.origin, &message.trust),
+                        (&message.kind, &message.origin, &message.authority_class),
                         (
                             MessageKind::OperatorPrompt,
                             MessageOrigin::Operator { .. },
-                            TrustLevel::TrustedOperator,
+                            AuthorityClass::OperatorInstruction,
                         )
                     )
                 })

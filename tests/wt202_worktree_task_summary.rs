@@ -160,7 +160,7 @@ async fn wt202_summarize_candidate_worktree_results_for_review() -> Result<()> {
         .schedule_child_agent_task(
             "Implement approach A in worktree".into(),
             "Implement the first approach".into(),
-            holon::types::TrustLevel::TrustedOperator,
+            holon::types::AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -169,7 +169,7 @@ async fn wt202_summarize_candidate_worktree_results_for_review() -> Result<()> {
         .schedule_child_agent_task(
             "Implement approach B in worktree".into(),
             "Implement the second approach".into(),
-            holon::types::TrustLevel::TrustedOperator,
+            holon::types::AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
@@ -178,7 +178,7 @@ async fn wt202_summarize_candidate_worktree_results_for_review() -> Result<()> {
         .schedule_child_agent_task(
             "Implement approach C in worktree".into(),
             "Implement the third approach".into(),
-            holon::types::TrustLevel::TrustedOperator,
+            holon::types::AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;

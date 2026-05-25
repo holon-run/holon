@@ -9,7 +9,7 @@ use crate::{
         spec::{typed_spec, ToolResultStatus},
         ToolResult,
     },
-    types::{TaskOutputResult, TaskOutputRetrievalStatus, ToolCapabilityFamily, TrustLevel},
+    types::{AuthorityClass, TaskOutputResult, TaskOutputRetrievalStatus, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -38,7 +38,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
-    _trust: &TrustLevel,
+    _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<ToolResult> {
     let args: TaskOutputArgs = parse_tool_args(NAME, input)?;

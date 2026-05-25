@@ -27,14 +27,14 @@ use holon::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{ToolCall, ToolError, ToolRegistry, ToolResult},
     types::{
-        AgentKind, AgentProfilePreset, AgentStatus, BriefKind, CallbackDeliveryMode,
-        ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction, ExternalTriggerStatus,
-        FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorNotificationBoundary, OperatorTransportBinding, OperatorTransportBindingStatus,
-        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TodoItem, TodoItemState,
-        TokenUsage, TranscriptEntry, TranscriptEntryKind, TrustLevel, WaitingIntentStatus,
-        WaitingReason, WorkItemState,
+        AgentKind, AgentProfilePreset, AgentStatus, AuthorityClass, BriefKind,
+        CallbackDeliveryMode, ChildAgentPhase, ClosureOutcome, CommandTaskSpec, ControlAction,
+        ExternalTriggerStatus, FailureArtifactCategory, MessageBody, MessageEnvelope, MessageKind,
+        MessageOrigin, OperatorNotificationBoundary, OperatorTransportBinding,
+        OperatorTransportBindingStatus, OperatorTransportCapabilities,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
+        TodoItem, TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
+        WaitingIntentStatus, WaitingReason, WorkItemState,
     },
 };
 use serde_json::json;
@@ -73,7 +73,7 @@ pub async fn task_output_returns_subagent_result_text() -> Result<()> {
         .schedule_child_agent_task(
             "delegate bounded work".into(),
             "return a bounded result".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await?;
@@ -82,7 +82,7 @@ pub async fn task_output_returns_subagent_result_text() -> Result<()> {
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-task-output-subagent".into(),
                 name: "TaskOutput".into(),
@@ -130,7 +130,7 @@ pub async fn spawn_agent_receipt_projects_child_supervision_boundary() -> Result
         .execute(
             &runtime,
             "default",
-            &TrustLevel::TrustedOperator,
+            &AuthorityClass::OperatorInstruction,
             &ToolCall {
                 id: "tool-spawn-agent-supervision".into(),
                 name: "SpawnAgent".into(),
@@ -174,7 +174,7 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
         .schedule_child_agent_task(
             "delegate slow child".into(),
             "slow-child".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await?;
@@ -248,7 +248,7 @@ pub async fn parent_continues_processing_while_private_child_runs() -> Result<()
         .schedule_child_agent_task(
             "delegate slow child".into(),
             "slow-child".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await?;
@@ -258,7 +258,7 @@ pub async fn parent_continues_processing_while_private_child_runs() -> Result<()
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "parent should continue while child runs".into(),
@@ -301,7 +301,7 @@ pub async fn subagent_task_status_exposes_live_and_terminal_child_observability(
         .schedule_child_agent_task(
             "delegate slow child".into(),
             "slow-child".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await?;
@@ -383,7 +383,7 @@ pub async fn blocking_subagent_result_does_not_regress_to_running_task_status() 
         .schedule_child_agent_task(
             "delegate slow child".into(),
             "slow-child".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await?;
@@ -409,7 +409,7 @@ pub async fn blocking_subagent_result_does_not_regress_to_running_task_status() 
             MessageOrigin::Task {
                 task_id: task.id.clone(),
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Background,
             MessageBody::Text {
                 text: "stale running update".into(),
@@ -454,7 +454,7 @@ pub async fn subagent_task_failure_propagates_failed_output_to_parent() -> Resul
         .schedule_child_agent_task(
             "delegate failing child".into(),
             "fail-child".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await?;
@@ -496,7 +496,7 @@ pub async fn multiple_subagent_tasks_do_not_cross_contaminate_outputs() -> Resul
         .schedule_child_agent_task(
             "delegate alpha".into(),
             "alpha-child".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await?;
@@ -504,7 +504,7 @@ pub async fn multiple_subagent_tasks_do_not_cross_contaminate_outputs() -> Resul
         .schedule_child_agent_task(
             "delegate beta".into(),
             "beta-child".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await?;
@@ -554,7 +554,7 @@ pub async fn subagent_task_returns_result_to_parent_session() -> Result<()> {
         .schedule_child_agent_task(
             "delegate work".into(),
             "return a concise subagent result".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             holon::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await?;

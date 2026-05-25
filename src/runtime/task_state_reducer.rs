@@ -155,7 +155,7 @@ mod tests {
     use crate::{
         context::ContextConfig,
         provider::StubProvider,
-        types::{MessageKind, MessageOrigin, Priority, TrustLevel},
+        types::{AuthorityClass, MessageKind, MessageOrigin, Priority},
     };
     use chrono::Utc;
     use serde_json::json;
@@ -227,7 +227,7 @@ mod tests {
             MessageOrigin::Task {
                 task_id: task_id.into(),
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
                 text: "task finished".into(),

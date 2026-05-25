@@ -227,7 +227,7 @@ async fn preview_prompt_lowers_apply_patch_contract_for_json_tool_providers() {
     .unwrap();
 
     let preview = runtime
-        .preview_prompt("edit a file".into(), TrustLevel::TrustedOperator)
+        .preview_prompt("edit a file".into(), AuthorityClass::OperatorInstruction)
         .await
         .unwrap();
 
@@ -256,7 +256,7 @@ async fn preview_prompt_keeps_json_apply_patch_for_generic_lineage_even_when_pro
     .unwrap();
 
     let preview = runtime
-        .preview_prompt("edit a file".into(), TrustLevel::TrustedOperator)
+        .preview_prompt("edit a file".into(), AuthorityClass::OperatorInstruction)
         .await
         .unwrap();
 
@@ -467,7 +467,7 @@ async fn schedule_command_task_rejects_when_process_execution_disabled() {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await
         .unwrap_err();
@@ -498,7 +498,7 @@ async fn schedule_inherited_child_agent_task_rejects_when_background_tasks_disab
         .schedule_child_agent_task(
             "demo".into(),
             "prompt".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             crate::types::ChildAgentWorkspaceMode::Inherit,
         )
         .await
@@ -540,7 +540,7 @@ async fn schedule_command_task_rejects_when_background_tasks_disabled() {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await
         .unwrap_err();
@@ -576,13 +576,13 @@ async fn stop_command_task_marks_cancelling_before_terminal_cancelled() {
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await
         .unwrap();
 
     let stopped = runtime
-        .stop_task(&task.id, &TrustLevel::TrustedOperator)
+        .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await
         .unwrap();
     assert_eq!(stopped.status, TaskStatus::Cancelling);
@@ -639,7 +639,7 @@ async fn second_stop_requests_force_stop_and_runner_terminates_process_before_ca
                 accepts_input: false,
                 terminal_reentry: false,
             },
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await
         .unwrap();
@@ -655,7 +655,7 @@ async fn second_stop_requests_force_stop_and_runner_terminates_process_before_ca
         .to_string();
 
     let stopped = runtime
-        .stop_task(&task.id, &TrustLevel::TrustedOperator)
+        .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await
         .unwrap();
     assert_eq!(stopped.status, TaskStatus::Cancelling);
@@ -669,7 +669,7 @@ async fn second_stop_requests_force_stop_and_runner_terminates_process_before_ca
     );
 
     let force_stopped = runtime
-        .stop_task(&task.id, &TrustLevel::TrustedOperator)
+        .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await
         .unwrap();
     assert_eq!(force_stopped.status, TaskStatus::Cancelling);
@@ -865,7 +865,7 @@ async fn latest_task_list_entries_return_compact_projection() {
                     accepts_input: false,
                     terminal_reentry: true,
                 },
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 promoted_from_exec_command: false,
             }),
         })
@@ -981,7 +981,7 @@ async fn latest_task_list_entries_filters_to_active_statuses_only() {
                     accepts_input: false,
                     terminal_reentry: true,
                 },
-                trust: TrustLevel::TrustedOperator,
+                authority_class: AuthorityClass::OperatorInstruction,
                 promoted_from_exec_command: false,
             }),
         })
@@ -1075,7 +1075,7 @@ async fn schedule_worktree_child_agent_task_rejects_when_background_tasks_disabl
         .schedule_child_agent_task(
             "demo".into(),
             "prompt".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
             crate::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await
@@ -1186,7 +1186,7 @@ async fn interactive_turn_keeps_pending_working_memory_delta_when_prompt_omits_i
     let preview = runtime
         .preview_prompt(
             "Continue the runtime memory work and report the latest status.".into(),
-            TrustLevel::TrustedOperator,
+            AuthorityClass::OperatorInstruction,
         )
         .await
         .unwrap();
@@ -1199,7 +1199,7 @@ async fn interactive_turn_keeps_pending_working_memory_delta_when_prompt_omits_i
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
-        TrustLevel::TrustedOperator,
+        AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
             text: "Continue the runtime memory work and report the latest status.".into(),

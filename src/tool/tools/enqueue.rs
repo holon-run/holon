@@ -7,8 +7,8 @@ use crate::{
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
     types::{
-        EnqueueResult, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
-        MessageOrigin, Priority, ToolCapabilityFamily, TrustLevel,
+        AuthorityClass, EnqueueResult, MessageBody, MessageDeliverySurface, MessageEnvelope,
+        MessageKind, MessageOrigin, Priority, ToolCapabilityFamily,
     },
 };
 
@@ -49,7 +49,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     agent_id: &str,
-    trust: &TrustLevel,
+    authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: EnqueueArgs = parse_tool_args(NAME, input)?;
@@ -66,7 +66,7 @@ pub(crate) async fn execute(
         MessageOrigin::System {
             subsystem: "tool_enqueue".into(),
         },
-        trust.clone(),
+        authority_class.clone(),
         priority.clone(),
         MessageBody::Text { text: text.clone() },
     )
