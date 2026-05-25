@@ -741,7 +741,6 @@ pub struct ClosureDecision {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskWaitPolicy {
-    Blocking,
     Background,
 }
 
@@ -2285,20 +2284,11 @@ impl TaskRecord {
             return TaskWaitPolicy::Background;
         }
 
-        self.detail
-            .as_ref()
-            .and_then(|detail| detail.get("wait_policy"))
-            .and_then(|value| value.as_str())
-            .map(|value| match value {
-                "blocking" => TaskWaitPolicy::Blocking,
-                _ => TaskWaitPolicy::Background,
-            })
-            .or_else(|| self.recovery.as_ref().map(TaskRecoverySpec::wait_policy))
-            .unwrap_or(TaskWaitPolicy::Background)
+        TaskWaitPolicy::Background
     }
 
     pub fn is_blocking(&self) -> bool {
-        self.wait_policy() == TaskWaitPolicy::Blocking
+        false
     }
 
     pub fn terminal_reentry(&self) -> bool {

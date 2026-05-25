@@ -3,6 +3,6 @@
   "current_work_item_revision": 3,
   "queued_work_items": 1,
   "active_tasks": 1,
-  "has_blocking_active_tasks": true,
+  "has_blocking_active_tasks": false,
   "pending_wake_hint": true
 }

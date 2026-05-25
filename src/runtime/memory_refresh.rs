@@ -77,7 +77,6 @@ impl RuntimeHandle {
                 "trigger_kind": trigger.kind,
                 "contentful": trigger.contentful,
                 "task_terminal": trigger.task_terminal,
-                "task_blocking": trigger.task_blocking,
                 "wake_hint_source": trigger.wake_hint_source,
                 "prior_closure_outcome": prior_closure.outcome,
                 "prior_waiting_reason": prior_closure.waiting_reason,

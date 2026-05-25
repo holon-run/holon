@@ -1535,17 +1535,17 @@ mod tests {
         let queued = task_with_wait_policy(
             "queued",
             TaskStatus::Queued,
-            crate::types::TaskWaitPolicy::Blocking,
+            crate::types::TaskWaitPolicy::Background,
         );
         let running = task_with_wait_policy(
             "running",
             TaskStatus::Running,
-            crate::types::TaskWaitPolicy::Blocking,
+            crate::types::TaskWaitPolicy::Background,
         );
         let cancelling = task_with_wait_policy(
             "cancelling",
             TaskStatus::Cancelling,
-            crate::types::TaskWaitPolicy::Blocking,
+            crate::types::TaskWaitPolicy::Background,
         );
         let active = vec![&queued, &running, &cancelling];
 

@@ -236,10 +236,6 @@ pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reent
         .is_some_and(|continuation| {
             continuation.trigger_kind == holon::types::ContinuationTriggerKind::TaskResult
                 && continuation.model_reentry
-                && continuation
-                    .evidence
-                    .iter()
-                    .any(|entry| entry == "task_background")
         }));
     let tasks = runtime.storage().latest_task_records()?;
     assert!(tasks.iter().any(|record| {

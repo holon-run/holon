@@ -1,7 +1,7 @@
 use crate::types::{
     admission_trigger_kind_for_message_kind, ClosureDecision, ClosureOutcome, ContinuationClass,
     ContinuationResolution, ContinuationTriggerKind, MessageBody, MessageEnvelope, MessageKind,
-    TaskRecord, TaskStatus, TaskWaitPolicy, WaitingReason,
+    TaskRecord, TaskStatus, WaitingReason,
 };
 
 #[derive(Debug, Clone)]
@@ -9,8 +9,6 @@ pub(super) struct ContinuationTrigger {
     pub(super) kind: ContinuationTriggerKind,
     pub(super) contentful: bool,
     pub(super) task_terminal: bool,
-    pub(super) task_blocking: bool,
-    pub(super) task_wait_policy: Option<TaskWaitPolicy>,
     pub(super) wake_hint_source: Option<String>,
 }
 
@@ -24,8 +22,6 @@ impl ContinuationTrigger {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
-                task_blocking: false,
-                task_wait_policy: None,
                 wake_hint_source: None,
             }),
             MessageKind::WebhookEvent | MessageKind::CallbackEvent | MessageKind::ChannelEvent => {
@@ -33,8 +29,6 @@ impl ContinuationTrigger {
                     kind: admission_trigger_kind_for_message_kind(&message.kind),
                     contentful: body_is_contentful(&message.body),
                     task_terminal: false,
-                    task_blocking: false,
-                    task_wait_policy: None,
                     wake_hint_source: None,
                 })
             }
@@ -42,24 +36,18 @@ impl ContinuationTrigger {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
-                task_blocking: false,
-                task_wait_policy: None,
                 wake_hint_source: None,
             }),
             MessageKind::InternalFollowup => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
-                task_blocking: false,
-                task_wait_policy: None,
                 wake_hint_source: None,
             }),
             MessageKind::SystemTick => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: system_tick_is_contentful(message),
                 task_terminal: false,
-                task_blocking: false,
-                task_wait_policy: None,
                 wake_hint_source: message
                     .metadata
                     .as_ref()
@@ -82,8 +70,6 @@ impl ContinuationTrigger {
                         )
                     })
                     .unwrap_or(false),
-                task_blocking: task.map(TaskRecord::is_blocking).unwrap_or(false),
-                task_wait_policy: task.map(TaskRecord::wait_policy),
                 wake_hint_source: None,
             }),
             MessageKind::TaskStatus
@@ -107,12 +93,6 @@ pub(super) fn resolve_continuation(
     }
     if trigger.task_terminal {
         evidence.push("task_terminal".to_string());
-    }
-    if trigger.task_blocking {
-        evidence.push("task_blocking".to_string());
-    }
-    if trigger.task_wait_policy == Some(TaskWaitPolicy::Background) {
-        evidence.push("task_background".to_string());
     }
     if let Some(source) = trigger.wake_hint_source.as_ref() {
         evidence.push(format!("wake_hint_source={source}"));
@@ -321,15 +301,13 @@ mod tests {
     }
 
     #[test]
-    fn blocking_task_result_resumes_expected_wait() {
+    fn terminal_task_result_resumes_expected_wait() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingTaskResult),
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::TaskResult,
                 contentful: true,
                 task_terminal: true,
-                task_blocking: true,
-                task_wait_policy: Some(TaskWaitPolicy::Blocking),
                 wake_hint_source: None,
             },
         );
@@ -345,8 +323,6 @@ mod tests {
                 kind: ContinuationTriggerKind::SystemTick,
                 contentful: false,
                 task_terminal: false,
-                task_blocking: false,
-                task_wait_policy: None,
                 wake_hint_source: Some("callback".into()),
             },
         );
@@ -362,8 +338,6 @@ mod tests {
                 kind: ContinuationTriggerKind::OperatorInput,
                 contentful: true,
                 task_terminal: false,
-                task_blocking: false,
-                task_wait_policy: None,
                 wake_hint_source: None,
             },
         );
@@ -385,8 +359,6 @@ mod tests {
                 kind: ContinuationTriggerKind::ExternalEvent,
                 contentful: false,
                 task_terminal: false,
-                task_blocking: false,
-                task_wait_policy: None,
                 wake_hint_source: None,
             },
         );
@@ -395,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_blocking_task_result_resumes_without_prior_wait() {
+    fn terminal_task_result_resumes_without_prior_wait() {
         let resolution = resolve_continuation(
             &ClosureDecision {
                 outcome: ClosureOutcome::Completed,
@@ -408,8 +380,6 @@ mod tests {
                 kind: ContinuationTriggerKind::TaskResult,
                 contentful: true,
                 task_terminal: true,
-                task_blocking: true,
-                task_wait_policy: Some(TaskWaitPolicy::Blocking),
                 wake_hint_source: None,
             },
         );
@@ -418,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_background_task_result_resumes_without_prior_wait() {
+    fn terminal_task_result_resumes_from_sleeping_posture() {
         let resolution = resolve_continuation(
             &ClosureDecision {
                 outcome: ClosureOutcome::Completed,
@@ -431,29 +401,21 @@ mod tests {
                 kind: ContinuationTriggerKind::TaskResult,
                 contentful: true,
                 task_terminal: true,
-                task_blocking: false,
-                task_wait_policy: Some(TaskWaitPolicy::Background),
                 wake_hint_source: None,
             },
         );
         assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
         assert!(resolution.model_reentry);
-        assert!(resolution
-            .evidence
-            .iter()
-            .any(|entry| entry == "task_background"));
     }
 
     #[test]
-    fn terminal_blocking_task_result_overrides_mismatched_wait() {
+    fn terminal_task_result_overrides_mismatched_wait() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingExternalChange),
             &ContinuationTrigger {
                 kind: ContinuationTriggerKind::TaskResult,
                 contentful: true,
                 task_terminal: true,
-                task_blocking: true,
-                task_wait_policy: Some(TaskWaitPolicy::Blocking),
                 wake_hint_source: None,
             },
         );
@@ -469,8 +431,6 @@ mod tests {
                 kind: ContinuationTriggerKind::ExternalEvent,
                 contentful: false,
                 task_terminal: false,
-                task_blocking: false,
-                task_wait_policy: None,
                 wake_hint_source: None,
             },
         );
@@ -487,8 +447,6 @@ mod tests {
                 kind: ContinuationTriggerKind::TimerFire,
                 contentful: true,
                 task_terminal: false,
-                task_blocking: false,
-                task_wait_policy: None,
                 wake_hint_source: None,
             },
         );

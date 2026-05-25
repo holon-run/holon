@@ -343,7 +343,7 @@ Scheduler decisions should use a fixed priority order.
 1. `stopped` or shutdown means `Stop`.
 2. queued operator interjection input may be inserted into a running turn.
 3. a queued model-reentry message may start a turn when no turn is running.
-4. terminal blocking task result may resume the model-reentry wait it satisfies.
+4. terminal task result may resume the model-reentry wait it satisfies.
 5. active waiting intents mean `WaitForExternalChange`.
 6. active timers mean `WaitForTimer`.
 7. pending wake hint means `EmitSystemTick(wake_hint)`.
@@ -368,7 +368,7 @@ Model-visible inputs:
 - contentful external event;
 - timer tick with contentful resume text;
 - runtime-owned internal follow-up intended for the model;
-- terminal blocking task result.
+- terminal task result.
 
 Liveness-only inputs:
 
@@ -406,8 +406,8 @@ Invariants:
 - terminal task records outrank stale non-terminal task messages;
 - task result delivery must not reopen a terminal task;
 - a non-terminal task status is not model-reentry by itself;
-- blocking task truth is derived from latest task records, not from stale
-  active id lists alone;
+- active task truth is derived from latest task records, not from stale active
+  id lists alone;
 - task completion should be persisted before the corresponding model-reentry
   task result is queued.
 
@@ -482,7 +482,7 @@ Waiting belongs to the waiting plane.
 Invariants:
 
 - `awaiting_operator_input` is satisfied by operator input;
-- `awaiting_task_result` is satisfied by a terminal blocking task result;
+- `awaiting_task_result` is satisfied by a terminal task result;
 - `awaiting_timer` is satisfied by a timer fire;
 - `awaiting_external_change` is satisfied by a contentful external event or a
   wake hint tied to an active waiting condition;
@@ -578,11 +578,10 @@ Expected precedence:
 
 1. runtime error;
 2. operator-input wait;
-3. active blocking tasks;
-4. active waiting intents;
-5. active timers;
-6. active turn in progress;
-7. failed terminal turn;
+3. active waiting intents;
+4. active timers;
+5. active turn in progress;
+6. failed terminal turn;
 8. runnable work signal;
 9. completed terminal turn;
 10. no waiting condition.
@@ -658,7 +657,7 @@ Coverage:
 - queue -> dequeued -> processed transitions;
 - provider turn started only when allowed;
 - non-model-reentry task status does not start a turn;
-- terminal blocking task result resumes the expected wait;
+- terminal task result resumes the expected wait;
 - paused runtime persists task terminal state but does not start a provider
   turn;
 - system tick generation does not duplicate across idle loops.
@@ -824,7 +823,7 @@ refinements rather than blockers for the scheduler contract:
 - current run id exists only while a run is active;
 - terminal tasks are absent from active task ids;
 - stale non-terminal task updates do not reopen terminal tasks;
-- blocking task closure is based on latest non-terminal blocking tasks;
+- active task presence alone is not a scheduler waiting condition;
 - completed work items are never runnable;
 - queued work items do not become current without an explicit pick;
 - `needs_input` work items wait for operator input;
