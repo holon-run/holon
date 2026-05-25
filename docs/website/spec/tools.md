@@ -156,14 +156,6 @@ should not be presented to the model as active tool surfaces.
 
 ## Known gaps
 
-- `ToolCapabilityFamily` has `Web` and `OperatorNotification` variants not
-  documented in the RFC. `Web` is marked `#[deprecated]` but is still available
-  in the type system. See
-  [issue #1383](https://github.com/holon-run/holon/issues/1383).
-- The RFC references `update_work_plan` as a WorkItem tool, but this tool does
-  not exist. The actual contract uses `UpdateWorkItem` for plan_status/todo_list
-  updates and direct file edits on `plan_artifact.path` for plan body changes.
-  See [issue #1383](https://github.com/holon-run/holon/issues/1383).
 - Tool description text is hand-maintained in Rust source; drift between
   description and actual behavior is possible without automated validation.
 - `ExecCommandBatch` and individual `ExecCommand` calls share fields but
