@@ -180,7 +180,7 @@ holon serve --access tunnel
 ### Background tasks
 
 ```bash
-holon task "Build project" --cmd "cargo build"
+holon task run "Build project" --cmd "cargo build"
 holon task status <TASK_ID>
 holon task output <TASK_ID> --block --timeout-ms 30000
 holon task input <TASK_ID> --text "continue\n"

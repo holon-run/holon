@@ -1106,78 +1106,8 @@
   },
   {
     "path": "task",
-    "positionals": [
-      {
-        "name": "summary",
-        "value_name": "SUMMARY",
-        "index": null,
-        "required": false
-      }
-    ],
-    "flags": [
-      {
-        "long": "agent",
-        "short": null,
-        "default_value": null,
-        "possible_values": null,
-        "required": false
-      },
-      {
-        "long": "cmd",
-        "short": null,
-        "default_value": null,
-        "possible_values": null,
-        "required": false
-      },
-      {
-        "long": "login",
-        "short": null,
-        "default_value": null,
-        "possible_values": [
-          "true",
-          "false"
-        ],
-        "required": false
-      },
-      {
-        "long": "max-output-tokens",
-        "short": null,
-        "default_value": null,
-        "possible_values": null,
-        "required": false
-      },
-      {
-        "long": "shell",
-        "short": null,
-        "default_value": null,
-        "possible_values": null,
-        "required": false
-      },
-      {
-        "long": "tty",
-        "short": null,
-        "default_value": null,
-        "possible_values": [
-          "true",
-          "false"
-        ],
-        "required": false
-      },
-      {
-        "long": "workdir",
-        "short": null,
-        "default_value": null,
-        "possible_values": null,
-        "required": false
-      },
-      {
-        "long": "yield-time-ms",
-        "short": null,
-        "default_value": null,
-        "possible_values": null,
-        "required": false
-      }
-    ],
+    "positionals": [],
+    "flags": [],
     "aliases": []
   },
   {
@@ -1238,6 +1168,82 @@
       },
       {
         "long": "timeout-ms",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "task.run",
+    "positionals": [
+      {
+        "name": "summary",
+        "value_name": "SUMMARY",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "agent",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "cmd",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      },
+      {
+        "long": "login",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "max-output-tokens",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "shell",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "tty",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "workdir",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "yield-time-ms",
         "short": null,
         "default_value": null,
         "possible_values": null,

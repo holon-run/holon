@@ -61,27 +61,9 @@ pub enum Commands {
         #[arg(long)]
         agent: Option<String>,
     },
-    #[command(args_conflicts_with_subcommands = true)]
     Task {
         #[command(subcommand)]
-        command: Option<TaskCommands>,
-        summary: Option<String>,
-        #[arg(long, requires = "summary")]
-        cmd: Option<String>,
-        #[arg(long)]
-        workdir: Option<String>,
-        #[arg(long)]
-        shell: Option<String>,
-        #[arg(long)]
-        login: Option<bool>,
-        #[arg(long)]
-        tty: bool,
-        #[arg(long)]
-        yield_time_ms: Option<u64>,
-        #[arg(long)]
-        max_output_tokens: Option<u64>,
-        #[arg(long)]
-        agent: Option<String>,
+        command: TaskCommands,
     },
     Timer {
         #[arg(long)]
@@ -375,6 +357,25 @@ pub enum WorkspaceCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum TaskCommands {
+    Run {
+        summary: String,
+        #[arg(long)]
+        cmd: String,
+        #[arg(long)]
+        workdir: Option<String>,
+        #[arg(long)]
+        shell: Option<String>,
+        #[arg(long)]
+        login: Option<bool>,
+        #[arg(long)]
+        tty: bool,
+        #[arg(long)]
+        yield_time_ms: Option<u64>,
+        #[arg(long)]
+        max_output_tokens: Option<u64>,
+        #[arg(long)]
+        agent: Option<String>,
+    },
     Status {
         task_id: String,
         #[arg(long)]
