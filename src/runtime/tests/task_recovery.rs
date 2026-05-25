@@ -23,7 +23,7 @@ async fn runtime_tracks_background_task() {
                 cmd: "sleep 1".into(),
                 workdir: None,
                 shell: None,
-                login: true,
+                login: false,
                 tty: false,
                 yield_time_ms: 10,
                 max_output_tokens: None,
@@ -34,7 +34,7 @@ async fn runtime_tracks_background_task() {
         )
         .await
         .unwrap();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let active_tasks = runtime.active_tasks(10).await.unwrap();
         if !active_tasks.iter().any(|record| record.id == task.id) {

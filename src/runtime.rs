@@ -819,9 +819,12 @@ impl RuntimeHandle {
                 }
             }
             "ExecCommandBatch" => {
-                if let Some(batch) = result.envelope.result.as_ref().and_then(|value| {
-                    serde_json::from_value::<ExecCommandBatchResult>(value.clone()).ok()
-                }) {
+                if let Some(batch) = result
+                    .envelope
+                    .result
+                    .as_ref()
+                    .and_then(decode_exec_command_batch_result)
+                {
                     for item in batch.items {
                         if matches!(item.status, ExecCommandBatchItemStatus::Completed) {
                             self.record_skill_command_activation(&item.cmd).await?;
@@ -1173,6 +1176,25 @@ impl RuntimeHandle {
         self.emit_recovered_pending_wake_hint().await?;
         Ok(())
     }
+}
+
+fn decode_exec_command_batch_result(value: &serde_json::Value) -> Option<ExecCommandBatchResult> {
+    let mut value = value.clone();
+    if let serde_json::Value::Object(map) = &mut value {
+        map.entry("summary_text").or_insert(serde_json::Value::Null);
+        if let Some(serde_json::Value::Array(items)) = map.get_mut("items") {
+            for item in items {
+                if let serde_json::Value::Object(item) = item {
+                    if let Some(serde_json::Value::Object(result)) = item.get_mut("result") {
+                        result
+                            .entry("summary_text")
+                            .or_insert(serde_json::Value::Null);
+                    }
+                }
+            }
+        }
+    }
+    serde_json::from_value(value).ok()
 }
 
 fn command_mentions_path(command: &str, path: &Path) -> bool {

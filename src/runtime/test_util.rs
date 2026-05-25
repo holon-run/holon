@@ -1,6 +1,9 @@
 //! Test utilities for controlling race conditions in tests
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Mutex,
+};
 use tokio::sync::Notify;
 
 /// Atomic flag to enable checkpoint mechanism
@@ -12,22 +15,39 @@ static EMIT_AT_CHECKPOINT: AtomicBool = AtomicBool::new(false);
 /// Counter to track which test iteration we're on
 static CHECKPOINT_GENERATION: AtomicUsize = AtomicUsize::new(0);
 
+/// Optional agent id that owns the active checkpoint.
+static CHECKPOINT_AGENT_ID: Mutex<Option<String>> = Mutex::new(None);
+
 /// Notify to signal that emit thread has reached the checkpoint
 static REACHED_CHECKPOINT: Notify = Notify::const_new();
 
 /// Notify to signal that the test has completed its work and emit can continue
 static ALLOW_CONTINUE: Notify = Notify::const_new();
 
-/// Enable the checkpoint mechanism for testing
-pub fn enable_checkpoint() {
+/// Enable the checkpoint mechanism for a specific test agent.
+pub fn enable_checkpoint_for_agent(agent_id: impl Into<String>) {
     CHECKPOINT_ENABLED.store(true, Ordering::SeqCst);
     CHECKPOINT_GENERATION.fetch_add(1, Ordering::SeqCst);
     EMIT_AT_CHECKPOINT.store(false, Ordering::SeqCst);
+    *CHECKPOINT_AGENT_ID.lock().unwrap() = Some(agent_id.into());
 }
 
 /// Disable the checkpoint mechanism
 pub fn disable_checkpoint() {
     CHECKPOINT_ENABLED.store(false, Ordering::SeqCst);
+    *CHECKPOINT_AGENT_ID.lock().unwrap() = None;
+}
+
+/// Returns true when the enabled checkpoint belongs to `agent_id`.
+pub fn checkpoint_matches_agent(agent_id: &str) -> bool {
+    if !CHECKPOINT_ENABLED.load(Ordering::SeqCst) {
+        return false;
+    }
+    CHECKPOINT_AGENT_ID
+        .lock()
+        .unwrap()
+        .as_deref()
+        .is_some_and(|checkpoint_agent_id| checkpoint_agent_id == agent_id)
 }
 
 /// Wait at the checkpoint in production code (only enabled in tests)

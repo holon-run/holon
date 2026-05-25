@@ -582,9 +582,9 @@ Expected precedence:
 4. active timers;
 5. active turn in progress;
 6. failed terminal turn;
-8. runnable work signal;
-9. completed terminal turn;
-10. no waiting condition.
+7. runnable work signal;
+8. completed terminal turn;
+9. no waiting condition.
 
 The result-closure RFC remains the semantic contract. This scheduler RFC
 defines how facts enter that closure derivation and how closure affects the

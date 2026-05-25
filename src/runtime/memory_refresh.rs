@@ -258,7 +258,9 @@ impl RuntimeHandle {
                 self.emit_system_tick_from_wake_hint(&pending).await?;
 
                 #[cfg(test)]
-                crate::runtime::test_util::wait_at_checkpoint().await;
+                if crate::runtime::test_util::checkpoint_matches_agent(&self.agent_id().await?) {
+                    crate::runtime::test_util::wait_at_checkpoint().await;
+                }
 
                 let mut guard = self.inner.agent.lock().await;
                 if guard.state.pending_wake_hint.as_ref() == Some(&pending) {

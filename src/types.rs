@@ -2274,16 +2274,7 @@ pub struct TaskRecord {
 
 impl TaskRecord {
     pub fn wait_policy(&self) -> TaskWaitPolicy {
-        if self.kind.is_legacy_child_agent_compat()
-            || self.kind == TaskKind::ChildAgentTask
-            || self.recovery.as_ref().is_some_and(|recovery| {
-                recovery.is_legacy_child_agent_compat()
-                    || matches!(recovery, TaskRecoverySpec::ChildAgentTask { .. })
-            })
-        {
-            return TaskWaitPolicy::Background;
-        }
-
+        // Active tasks are never scheduler-blocking; terminal results drive re-entry.
         TaskWaitPolicy::Background
     }
 

@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn has_blocking_active_tasks_uses_storage_backed_task_records() {
+    fn active_tasks_do_not_block_from_legacy_wait_policy_payloads() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         storage
@@ -299,7 +299,7 @@ mod tests {
             .unwrap();
         assert!(active.iter().any(|task| task.id == "blocking"));
         assert!(active.iter().any(|task| task.id == "background"));
-        assert!(active.iter().any(TaskRecord::is_blocking));
+        assert!(!active.iter().any(TaskRecord::is_blocking));
     }
 
     #[test]

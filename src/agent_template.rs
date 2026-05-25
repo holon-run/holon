@@ -1392,15 +1392,13 @@ mod tests {
     use std::{
         io::{Read, Write},
         net::TcpListener,
-        sync::{Arc, LazyLock, Mutex},
+        sync::{Arc, Mutex},
         thread,
     };
 
     use tempfile::tempdir;
 
     use super::*;
-
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     struct EnvGuard {
         key: &'static str,
@@ -1692,9 +1690,7 @@ mod tests {
 
     #[tokio::test]
     async fn github_solve_template_materializes_builtin_skills() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
         let _guard = EnvGuard::set("HOME", home.path().display().to_string());
         seed_builtin_templates().unwrap();
@@ -1725,9 +1721,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_agent_home_from_template_id_materializes_agents_md_and_local_skill() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
         let _guard = EnvGuard::set("HOME", home.path().display().to_string());
         let templates = templates_root().unwrap();
@@ -1906,9 +1900,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_agent_home_agents_md_from_template_fills_missing_agents_md() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
         let _guard = EnvGuard::set("HOME", home.path().display().to_string());
         seed_builtin_templates().unwrap();
@@ -1937,9 +1929,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_agent_home_agents_md_rolls_back_on_skill_failure() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
         let _guard = EnvGuard::set("HOME", home.path().display().to_string());
         let templates = templates_root().unwrap();
@@ -1982,9 +1972,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_agent_home_fails_closed_on_invalid_skill_ref() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
         let _guard = EnvGuard::set("HOME", home.path().display().to_string());
         let templates = templates_root().unwrap();
@@ -2009,9 +1997,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_agent_home_restores_preexisting_empty_agent_home_on_failure() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
         let _guard = EnvGuard::set("HOME", home.path().display().to_string());
         let templates = templates_root().unwrap();
@@ -2095,9 +2081,7 @@ mod tests {
 
     #[test]
     fn user_home_dir_falls_back_to_userprofile() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = crate::test_env::lock_env();
         let profile = tempdir().unwrap();
         let _home = EnvGuard::set("HOME", String::new());
         let _userprofile = EnvGuard::set("USERPROFILE", profile.path().display().to_string());
@@ -2107,9 +2091,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_agent_home_from_github_url_works() {
-        let _lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = crate::test_env::lock_env();
         let home = tempdir().unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
