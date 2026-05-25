@@ -1114,7 +1114,7 @@
             }
           },
           {
-            "description": "WorkItem id.",
+            "description": "Work item id.",
             "in": "path",
             "name": "work_item_id",
             "required": true,
