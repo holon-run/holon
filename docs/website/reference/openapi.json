@@ -398,7 +398,7 @@
     },
     "/agents/{agent_id}/events": {
       "get": {
-        "description": "Return a bounded page of projected runtime events. Query parameters: before_seq, after_seq, limit, order, projection.",
+        "description": "Return a bounded page of projected runtime events. Query parameters: before_seq, after_seq, limit, order, projection. The operator projection redacts raw/debug payload fields; local_debug requires control auth and preserves raw payloads.",
         "operationId": "agentEvents",
         "parameters": [
           {
@@ -456,7 +456,7 @@
     },
     "/agents/{agent_id}/events/stream": {
       "get": {
-        "description": "Return Server-Sent Events carrying StreamEventEnvelope JSON data. Query parameters: after_seq, limit, projection.",
+        "description": "Return Server-Sent Events carrying StreamEventEnvelope JSON data. Query parameters: after_seq, limit, projection. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens.",
         "operationId": "agentEventsStream",
         "parameters": [
           {

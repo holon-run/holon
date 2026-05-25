@@ -57,13 +57,12 @@ async fn next_sse_event_kind(
     .await?
 }
 
-async fn newest_event_seq(base: &str, client: &Client) -> Result<u64> {
-    let page: serde_json::Value = client
-        .get(format!("{base}/agents/default/events?limit=1&order=desc"))
-        .send()
-        .await?
-        .json()
-        .await?;
+async fn newest_event_seq(base: &str, client: &Client, token: Option<&str>) -> Result<u64> {
+    let mut request = client.get(format!("{base}/agents/default/events?limit=1&order=desc"));
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    let page: serde_json::Value = request.send().await?.json().await?;
     page["newest_seq"]
         .as_u64()
         .ok_or_else(|| anyhow::anyhow!("newest_seq should be present"))
@@ -188,7 +187,7 @@ pub async fn events_route_supports_cursor_replay() -> Result<()> {
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let after_seq = newest_event_seq(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client, None).await?;
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
@@ -221,7 +220,7 @@ pub async fn events_stream_supports_cursor_and_rfc3339_ts() -> Result<()> {
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let after_seq = newest_event_seq(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client, None).await?;
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
@@ -237,6 +236,13 @@ pub async fn events_stream_supports_cursor_and_rfc3339_ts() -> Result<()> {
         .await?;
     let replayed = next_sse_event_kind(&mut stream, "message_admitted").await?;
     assert_eq!(replayed.event, "message_admitted");
+    assert_eq!(
+        replayed._id,
+        replayed.data["event_seq"]
+            .as_u64()
+            .expect("event_seq should be present")
+            .to_string()
+    );
     assert!(replayed.data["ts"].is_string());
     assert!(chrono::DateTime::parse_from_rfc3339(
         replayed.data["ts"].as_str().expect("ts should be a string")
@@ -259,7 +265,7 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let after_seq = newest_event_seq(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client, None).await?;
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
@@ -291,14 +297,14 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
     );
     assert_eq!(
         replayed.data["projection"]["raw_payload_included"],
-        serde_json::json!(true)
+        serde_json::json!(false)
     );
 
     server.abort();
     Ok(())
 }
 
-pub async fn events_route_operator_projection_preserves_tool_payload() -> Result<()> {
+pub async fn events_route_operator_projection_redacts_tool_payload() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -310,7 +316,7 @@ pub async fn events_route_operator_projection_preserves_tool_payload() -> Result
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let after_seq = newest_event_seq(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client, None).await?;
 
     runtime.storage().append_event(&AuditEvent::new(
         "tool_executed",
@@ -335,31 +341,28 @@ pub async fn events_route_operator_projection_preserves_tool_payload() -> Result
     assert_eq!(replayed.event, "tool_executed");
     assert_eq!(replayed.data["type"], "tool_executed");
     assert_eq!(replayed.data["projection"]["name"], "operator");
-    assert_eq!(replayed.data["projection"]["raw_payload_included"], true);
+    assert_eq!(replayed.data["projection"]["raw_payload_included"], false);
+    assert_eq!(
+        replayed.data["projection"]["redactions"],
+        serde_json::json!([
+            "artifact_ref",
+            "exec_command_cmd",
+            "local_path",
+            "raw_output"
+        ])
+    );
     assert_eq!(replayed.data["payload"]["tool_name"], "ExecCommand");
     assert_eq!(replayed.data["payload"]["task_id"], "task-secret");
-    assert_eq!(
-        replayed.data["payload"]["exec_command_cmd"],
-        "cat /private/tmp/secret-command.txt"
-    );
-    assert_eq!(
-        replayed.data["payload"]["raw_output"],
-        "secret command output"
-    );
-    assert_eq!(
-        replayed.data["payload"]["local_path"],
-        "/private/tmp/secret-output.txt"
-    );
-    assert_eq!(
-        replayed.data["payload"]["artifact_ref"],
-        "artifact://secret"
-    );
+    assert!(replayed.data["payload"].get("exec_command_cmd").is_none());
+    assert!(replayed.data["payload"].get("raw_output").is_none());
+    assert!(replayed.data["payload"].get("local_path").is_none());
+    assert!(replayed.data["payload"].get("artifact_ref").is_none());
 
     server.abort();
     Ok(())
 }
 
-pub async fn events_route_operator_projection_preserves_assistant_round_payload() -> Result<()> {
+pub async fn events_route_operator_projection_redacts_assistant_round_payload() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -371,7 +374,7 @@ pub async fn events_route_operator_projection_preserves_assistant_round_payload(
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let after_seq = newest_event_seq(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client, None).await?;
 
     runtime.storage().append_event(&AuditEvent::new(
         "assistant_round_recorded",
@@ -406,7 +409,11 @@ pub async fn events_route_operator_projection_preserves_assistant_round_payload(
     assert_eq!(replayed.data["projection"]["name"], "operator");
     assert_eq!(
         replayed.data["projection"]["raw_payload_included"],
-        serde_json::json!(true)
+        serde_json::json!(false)
+    );
+    assert_eq!(
+        replayed.data["projection"]["redactions"],
+        serde_json::json!(["provider_trace", "raw_text"])
     );
     assert_eq!(replayed.data["payload"]["agent_id"], "default");
     assert_eq!(replayed.data["payload"]["run_id"], "run-1");
@@ -426,32 +433,39 @@ pub async fn events_route_operator_projection_preserves_assistant_round_payload(
     );
     assert_eq!(replayed.data["payload"]["has_text"], true);
     assert_eq!(replayed.data["payload"]["has_tool_calls"], true);
-    assert_eq!(
-        replayed.data["payload"]["raw_text"],
-        "full assistant text should stay in operator replay"
-    );
-    assert_eq!(
-        replayed.data["payload"]["provider_trace"]["secret"],
-        "debug-only"
-    );
+    assert!(replayed.data["payload"].get("raw_text").is_none());
+    assert!(replayed.data["payload"].get("provider_trace").is_none());
 
     server.abort();
     Ok(())
 }
 
-pub async fn events_route_operator_projection_preserves_workspace_payload() -> Result<()> {
-    let (host, base, server) = spawn_server().await?;
+pub async fn events_route_local_debug_projection_preserves_raw_payload_with_control_auth(
+) -> Result<()> {
+    let config = test_config_with_paths(
+        tempdir()?.keep(),
+        tempdir()?.keep(),
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Required,
+    );
+    let token = config
+        .control_token
+        .clone()
+        .expect("required control auth should generate token");
+    let (host, base, server) = spawn_server_with_config(config).await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
+        .bearer_auth(&token)
         .json(&serde_json::json!({ "text": "workspace projection bootstrap" }))
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let after_seq = newest_event_seq(&base, &client).await?;
+    let after_seq = newest_event_seq(&base, &client, Some(&token)).await?;
 
     runtime.storage().append_event(&AuditEvent::new(
         "workspace_used",
@@ -468,15 +482,16 @@ pub async fn events_route_operator_projection_preserves_workspace_payload() -> R
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}&projection=operator"
+            "{base}/agents/default/events/stream?after_seq={after_seq}&projection=local_debug"
         ))
+        .bearer_auth(token)
         .send()
         .await?;
     let replayed = next_sse_event_kind(&mut stream, "workspace_used").await?;
 
     assert_eq!(replayed.event, "workspace_used");
     assert_eq!(replayed.data["type"], "workspace_used");
-    assert_eq!(replayed.data["projection"]["name"], "operator");
+    assert_eq!(replayed.data["projection"]["name"], "local_debug");
     assert_eq!(
         replayed.data["projection"]["raw_payload_included"],
         serde_json::json!(true)
@@ -536,17 +551,14 @@ pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after
     assert_eq!(assistant_tail["projection"]["name"], "operator");
     assert_eq!(
         assistant_tail["projection"]["raw_payload_included"],
-        serde_json::json!(true)
+        serde_json::json!(false)
     );
     assert_eq!(assistant_tail["payload"]["stop_reason"], "tool_use");
     assert_eq!(
         assistant_tail["payload"]["tool_names"],
         serde_json::json!(["ExecCommand"])
     );
-    assert_eq!(
-        assistant_tail["payload"]["raw_text"],
-        "debug-only assistant body"
-    );
+    assert!(assistant_tail["payload"].get("raw_text").is_none());
 
     runtime.storage().append_event(&AuditEvent::new(
         "tool_executed",

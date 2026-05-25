@@ -1636,15 +1636,72 @@ fn project_event_payload_for_replay(
             provenance,
         },
         EventReplayProjection::Operator => ProjectedReplayEvent {
-            payload: event.data.clone(),
+            payload: operator_replay_payload(&event.data),
             projection: EventReplayProjectionRecord {
                 name: projection,
-                raw_payload_included: true,
-                redactions: Vec::new(),
+                raw_payload_included: false,
+                redactions: operator_replay_redactions(&event.data),
             },
             provenance,
         },
     }
+}
+
+fn operator_replay_payload(payload: &Value) -> Value {
+    let Some(object) = payload.as_object() else {
+        return Value::Object(Map::new());
+    };
+    let mut projected = Map::new();
+    for key in OPERATOR_REPLAY_PAYLOAD_FIELDS {
+        if let Some(value) = object.get(*key).filter(|value| !value.is_null()) {
+            projected.insert((*key).to_string(), value.clone());
+        }
+    }
+    Value::Object(projected)
+}
+
+const OPERATOR_REPLAY_PAYLOAD_FIELDS: &[&str] = &[
+    "agent_id",
+    "authority_class",
+    "causation_id",
+    "correlation_id",
+    "delivery_surface",
+    "duration_ms",
+    "event_seq",
+    "exit_status",
+    "has_text",
+    "has_tool_calls",
+    "message_id",
+    "origin",
+    "priority",
+    "projection_kind",
+    "round",
+    "run_id",
+    "status",
+    "stop_reason",
+    "summary",
+    "task_id",
+    "text_block_count",
+    "text_char_count",
+    "text_preview",
+    "tool_call_count",
+    "tool_name",
+    "tool_names",
+    "turn_index",
+    "workspace_id",
+    "workspace_label",
+    "work_item_id",
+];
+
+fn operator_replay_redactions(payload: &Value) -> Vec<String> {
+    let Some(object) = payload.as_object() else {
+        return Vec::new();
+    };
+    object
+        .keys()
+        .filter(|key| !OPERATOR_REPLAY_PAYLOAD_FIELDS.contains(&key.as_str()))
+        .cloned()
+        .collect()
 }
 
 fn event_replay_provenance(payload: &Value) -> EventReplayProvenance {
