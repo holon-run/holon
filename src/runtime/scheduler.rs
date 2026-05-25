@@ -802,12 +802,12 @@ pub(crate) fn message_processing_decision(
 pub(crate) fn idle_noop_decision(projection: &SchedulerProjection) -> SchedulerDecision {
     let (kind, reason) = if matches!(projection.status, AgentStatus::Stopped) {
         (SchedulerDecisionKind::Stop, "stopped")
-    } else if matches!(projection.status, AgentStatus::Asleep) {
-        (SchedulerDecisionKind::StayIdle, "already_asleep")
     } else if projection.queue_len > 0 {
         (SchedulerDecisionKind::Noop, "queue_not_empty")
     } else if projection.turn_in_progress {
         (SchedulerDecisionKind::Noop, "turn_in_progress")
+    } else if matches!(projection.status, AgentStatus::Asleep) {
+        (SchedulerDecisionKind::StayIdle, "already_asleep")
     } else {
         (SchedulerDecisionKind::Sleep, "no_pending_scheduler_facts")
     };
@@ -898,14 +898,20 @@ pub(crate) fn idle_boundary_decision(
     projection: &SchedulerProjection,
     boundary: impl Into<String>,
 ) -> SchedulerDecision {
-    if matches!(
-        projection.status,
-        AgentStatus::Stopped | AgentStatus::Asleep
-    ) {
+    let boundary = boundary.into();
+    if matches!(projection.status, AgentStatus::Stopped) {
         return idle_noop_decision(projection).boundary(boundary);
     }
     if let Some(decision) = wait_decision_for_projection(projection) {
         return decision.boundary(boundary);
+    }
+    if let Some(signal) = projection.work_reactivation_signal() {
+        return SchedulerDecision::new(SchedulerDecisionKind::EmitSystemTick, "runnable_work")
+            .boundary(boundary)
+            .model_reentry(true)
+            .work_item_id(signal.work_item_id)
+            .evidence("runtime_idle")
+            .evidence("work_item_runnable");
     }
     idle_noop_decision(projection).boundary(boundary)
 }

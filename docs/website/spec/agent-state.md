@@ -189,10 +189,9 @@ Agent lifecycle control is `Start` / `Stop`:
   `AgentSchedulingPosture` is not yet a stable contract.
 - `AgentSummary` includes some fields (`recent_operator_notifications`,
   `recent_brief_count`) whose contract is not yet hardened.
-- `WorkItemSchedulingState` has `WaitingTimer` and `WaitingSystem` variants
-  not listed in the RFC. See [issue #1378](https://github.com/holon-run/holon/issues/1378).
-- `AgentStatus::Asleep` is used directly in scheduler decisions
-  (`scheduler.rs:803,903`) instead of being derived via `AgentSchedulingPosture`.
+- `AgentStatus::Asleep` remains a lifecycle/display projection, but scheduler
+  idle-boundary decisions inspect wait and work facts before treating an
+  already-asleep agent as idle.
 - `AgentStatus::AwaitingTask` exists in code but is not in the RFC's target
   status set (`agent-lifecycle-control-posture.md`).
 - `AgentLifecycleHint` retains `resume_*` fields from the deprecated Pause/Resume

@@ -119,6 +119,8 @@ WorkItemSchedulingState =
   WaitingOperator
   WaitingTask
   WaitingExternal
+  WaitingTimer
+  WaitingSystem
   Blocked
   Completed
 ```
@@ -178,6 +180,17 @@ The scheduler does not understand what the external source means. It only knows:
 - one or more wake sources may reactivate the agent;
 - a continuation should run when a wake source fires;
 - the wait may be auditable as weak if it lacks a durable recovery path.
+
+### WaitingTimer
+
+A WorkItem is waiting for a timer when progress is intentionally delayed until
+a runtime-owned timer fires, such as a blocked-work recheck fallback.
+
+### WaitingSystem
+
+A WorkItem is waiting for a runtime-owned system tick when progress should
+continue through scheduler-generated maintenance or recovery instead of
+operator input, task completion, a wall-clock timer, or an external callback.
 
 ### Blocked
 
@@ -380,6 +393,18 @@ Complete
 Idle
 ```
 
+These posture labels are the coarse turn-end contract. The implementation may
+use a more granular `SchedulerDecisionKind` to express the concrete action that
+realizes the posture:
+
+- `ContinueNow` -> `StartModelTurn`, `ReduceMessageOnly`, or `EmitSystemTick`;
+- `Wait` -> `WaitForTask`, `WaitForExternalChange`, or `WaitForTimer`;
+- `NeedOperator` -> `WaitForOperator`;
+- `Blocked` -> a liveness-only wait or sleep decision with blocker evidence;
+- `Complete` -> no scheduling for completed WorkItems;
+- `Idle` -> `Sleep`, `StayIdle`, `Stop`, or `Noop` depending on lifecycle and
+  duplicate-suppression facts.
+
 The preferred durable forms are:
 
 - runnable WorkItem exists -> `ContinueNow`;
@@ -520,6 +545,8 @@ Replace ad hoc runnable-work checks with state-derived closure behavior:
 - `WaitingTask` -> sleep until task result;
 - `WaitingOperator` -> wait for operator input;
 - `WaitingExternal` -> wait for wake source and surface recoverability;
+- `WaitingTimer` -> wait until the timer or recheck fallback fires;
+- `WaitingSystem` -> emit or await a runtime-owned system tick;
 - `Blocked` -> expose blocker and do not auto-continue;
 - `Completed` -> ignore for scheduling.
 

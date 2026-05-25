@@ -725,6 +725,68 @@ fn idle_boundary_decision_prefers_controlled_status_over_wait_facts() {
 }
 
 #[test]
+fn idle_boundary_decision_inspects_wait_facts_while_asleep() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Asleep;
+    storage.write_agent(&agent).unwrap();
+    storage
+        .append_waiting_intent(&WaitingIntentRecord {
+            id: "wait-current".into(),
+            agent_id: "default".into(),
+            scope: WaitingIntentScope::Agent,
+            work_item_id: None,
+            description: "wait".into(),
+            source: "test".into(),
+            resource: None,
+            condition: None,
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "trigger-wait-current".into(),
+            created_at: Utc::now(),
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        })
+        .unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+    assert_eq!(
+        decision.kind,
+        scheduler::SchedulerDecisionKind::WaitForExternalChange
+    );
+    assert_eq!(decision.reason, "active_agent_waiting_intents");
+}
+
+#[test]
+fn idle_boundary_decision_reactivates_runnable_work_while_asleep() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Asleep;
+    agent.current_work_item_id = Some("work-current".into());
+    storage.write_agent(&agent).unwrap();
+    let mut work_item = WorkItemRecord::new("default", "continue work", WorkItemState::Open);
+    work_item.id = "work-current".into();
+    work_item.plan_status = WorkItemPlanStatus::Ready;
+    storage.append_work_item(&work_item).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+    assert_eq!(
+        decision.kind,
+        scheduler::SchedulerDecisionKind::EmitSystemTick
+    );
+    assert_eq!(decision.reason, "runnable_work");
+    assert_eq!(decision.work_item_id.as_deref(), Some("work-current"));
+    assert!(decision.model_reentry);
+}
+
+#[test]
 fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();
