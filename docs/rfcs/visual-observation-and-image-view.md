@@ -83,6 +83,25 @@ Holon needs a stable visual observation model that works as both:
 
 ## Design
 
+### Schema Positioning
+
+`visual_observation.v1` is Holon's normalized visual observation format. It is
+not a direct implementation of a single external annotation standard.
+
+The schema intentionally aligns with established conventions where they are
+useful:
+
+- W3C Web Annotation style region selectors for image regions
+- ALTO, hOCR, and PAGE-style OCR/layout records for text and reading evidence
+- COCO-style object annotations for detected elements and bounding boxes
+- platform accessibility and UI automation tree concepts for roles and element
+  semantics
+
+Holon should not store any of those external formats as its canonical durable
+history. They are input/source formats that can be mapped into the normalized
+observation shape. This keeps the model-visible output compact while preserving
+interoperability with OCR, CV, UI automation, and external adapter tools.
+
 ### One Public Tool
 
 Holon should expose one built-in tool:
@@ -269,6 +288,171 @@ Bounding boxes should use object form instead of positional arrays:
 ```
 
 This avoids ambiguity between `[x, y, width, height]` and `[x1, y1, x2, y2]`.
+
+Coordinates are image-pixel coordinates in the visual reference's coordinate
+space, with origin at the top-left corner.
+
+### Visual Observation Field Semantics
+
+The top-level required fields are:
+
+- `type`: fixed string, `visual_observation`
+- `schema`: fixed schema version for the first implementation,
+  `visual_observation.v1`
+- `visual_reference_id`: durable reference to the source image
+- `prompt`: the visual question or focus used to generate this observation
+- `generated_by`: provenance for the observation generator
+- `summary`: concise visible-evidence summary
+- `uncertainties`: explicit caveats, missing evidence, and reliability concerns
+
+The top-level optional fields should default to empty arrays when omitted:
+
+- `ocr`
+- `elements`
+- `relations`
+- `issues`
+- `external_sources`
+
+`generated_by` records observation provenance:
+
+```json
+{
+  "provider": "openai",
+  "model": "gpt-5.4-mini",
+  "mode": "vision_adapter"
+}
+```
+
+`mode` may be:
+
+- `vision_adapter`: a configured multimodal provider generated observation for
+  a primary model that may not support images
+- `primary_native`: the primary multimodal model/provider generated the
+  observation
+- `external_adapter`: an external OCR, UI automation, browser, Appium, or MCP
+  source generated the observation
+
+`summary` should be short and evidence-oriented. It should describe what is
+visible, not recommend implementation changes or take over the primary model's
+planning.
+
+`ocr` contains text evidence:
+
+```json
+{
+  "text": "Sign in",
+  "bbox": {
+    "x": 96,
+    "y": 428,
+    "width": 180,
+    "height": 52
+  },
+  "confidence": 0.94,
+  "source": "vision_adapter"
+}
+```
+
+`text`, `bbox`, and `confidence` are required for OCR entries. `source` is
+optional and may name the adapter or imported source format.
+
+`elements` contains semantic visual objects:
+
+```json
+{
+  "id": "element_1",
+  "role": "button",
+  "text": "Continue",
+  "bbox": {
+    "x": 88,
+    "y": 1568,
+    "width": 994,
+    "height": 104
+  },
+  "visual_style": {
+    "background_color": "#1f6feb",
+    "text_color": "#ffffff"
+  },
+  "confidence": 0.86,
+  "source": "vision_adapter"
+}
+```
+
+`id`, `role`, `bbox`, and `confidence` are required for element entries. `text`,
+`visual_style`, and `source` are optional.
+
+`role` should be a compact semantic label such as `button`, `input`, `text`,
+`heading`, `image`, `icon`, `table`, `chart`, `legend`, `axis`, `cell`,
+`container`, or `unknown`. The vocabulary should stay open-ended in v1 because
+source adapters and visual domains differ.
+
+`visual_style` captures visible style evidence such as colors, font size,
+weight, border color, opacity, or contrast. These values may come from pixel
+sampling, a vision model, a DOM/computed-style source, or an accessibility/UI
+adapter. Source and confidence should be included when the style is uncertain.
+
+`relations` describes spatial or semantic relationships among elements:
+
+```json
+{
+  "type": "below",
+  "a": "element_1",
+  "b": "element_0",
+  "confidence": 0.82
+}
+```
+
+`type`, `a`, `b`, and `confidence` are required. Common relation types include
+`above`, `below`, `left_of`, `right_of`, `contains`, `inside`, `overlaps`,
+`aligned_left`, `aligned_center`, `aligned_right`, `same_row`, `same_column`,
+and `near`.
+
+`issues` contains candidate visual problems discovered during observation:
+
+```json
+{
+  "type": "possible_overlap",
+  "description": "The primary button appears to overlap the sticky footer.",
+  "bbox": {
+    "x": 860,
+    "y": 720,
+    "width": 420,
+    "height": 88
+  },
+  "related_elements": ["element_12", "element_19"],
+  "confidence": 0.78
+}
+```
+
+Issues are diagnostic hints, not final conclusions. They are most useful for
+bug-finding, review, UI regression, accessibility, chart/document quality, and
+visual debugging tasks. If the prompt asks for a broad image description,
+`issues` may be empty. If the prompt asks to inspect layout or rendering
+problems, the adapter should populate issue candidates when it sees visible
+evidence.
+
+Common issue types include `possible_overlap`, `possible_clipping`,
+`low_contrast`, `unreadable_text`, `misalignment`, `missing_expected_element`,
+`ambiguous_state`, `blurred_or_low_quality`, and `possible_loading_state`.
+
+`uncertainties` is required and may be empty. It should record what the
+observation could not establish reliably, such as small text that needs a crop,
+ambiguous element identity, low confidence OCR, or missing external UI
+structure.
+
+`external_sources` records imported source formats or adapters that contributed
+to the observation:
+
+```json
+{
+  "kind": "browser_accessibility_tree",
+  "source_id": "mcp_browser_...",
+  "captured_at": "2026-05-25T00:00:00Z"
+}
+```
+
+Examples include `alto`, `hocr`, `page_xml`, `coco`, `browser_dom`,
+`browser_accessibility_tree`, `android_uiautomator`, `appium_page_source`,
+`macos_accessibility`, and `windows_uia`.
 
 ### Provider Selection
 
