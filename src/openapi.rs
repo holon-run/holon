@@ -187,7 +187,7 @@ fn openapi_value() -> Value {
             .or_insert_with(|| json!({}));
         entry[spec.method] = operation(spec);
     }
-    paths.extend(aide_route_paths());
+    merge_path_items(&mut paths, aide_route_paths());
 
     json!({
         "openapi": "3.1.0",
@@ -225,6 +225,25 @@ fn openapi_value() -> Value {
         },
         "paths": paths
     })
+}
+
+fn merge_path_items(
+    paths: &mut serde_json::Map<String, Value>,
+    incoming: serde_json::Map<String, Value>,
+) {
+    for (path, path_item) in incoming {
+        match (
+            paths.get_mut(&path).and_then(Value::as_object_mut),
+            path_item,
+        ) {
+            (Some(existing), Value::Object(incoming_methods)) => {
+                existing.extend(incoming_methods);
+            }
+            (_, value) => {
+                paths.insert(path, value);
+            }
+        }
+    }
 }
 
 fn aide_route_paths() -> serde_json::Map<String, Value> {
@@ -435,5 +454,38 @@ mod tests {
         assert!(
             paths["/control/agents/{agent_id}/tasks"]["post"]["x-holon-openapi-source"].is_null()
         );
+    }
+
+    #[test]
+    fn aide_paths_merge_with_existing_path_items() {
+        let mut paths = serde_json::Map::new();
+        paths.insert(
+            "/shared".into(),
+            json!({
+                "get": { "operationId": "manualGet" },
+                "parameters": [{ "name": "shared" }]
+            }),
+        );
+
+        let mut incoming = serde_json::Map::new();
+        incoming.insert(
+            "/shared".into(),
+            json!({
+                "post": { "operationId": "aidePost" }
+            }),
+        );
+        incoming.insert(
+            "/aide-only".into(),
+            json!({
+                "get": { "operationId": "aideOnly" }
+            }),
+        );
+
+        merge_path_items(&mut paths, incoming);
+
+        assert_eq!(paths["/shared"]["get"]["operationId"], "manualGet");
+        assert_eq!(paths["/shared"]["post"]["operationId"], "aidePost");
+        assert_eq!(paths["/shared"]["parameters"][0]["name"], "shared");
+        assert_eq!(paths["/aide-only"]["get"]["operationId"], "aideOnly");
     }
 }
