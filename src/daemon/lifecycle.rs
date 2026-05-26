@@ -833,6 +833,40 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
         }
     }
 
+    // Fallback: when the unix socket is missing but the PID file records a
+    // live process, the daemon is still running (the socket may have been
+    // removed externally — see https://github.com/holon-run/holon/issues/1448).
+    if let Ok(Some(metadata)) = load_daemon_metadata(config) {
+        if pid_is_alive(metadata.pid) {
+            // Try TCP as a secondary probe; if it connects we know the runtime
+            // is responsive.  If TCP also fails the daemon is alive but
+            // unreachable via both socket and TCP, so we still report Running
+            // with the metadata we have.
+            let client = match LocalClient::new(config.clone()) {
+                Ok(client) => client,
+                Err(_) => {
+                    return ProbeRuntime::Running(Box::new(RuntimeStatusResponse {
+                        ok: true,
+                        healthy: false,
+                        home_dir: config.home_dir.clone(),
+                        socket_path: config.socket_path.clone(),
+                        http_addr: config.http_addr.clone(),
+                        pid: metadata.pid,
+                        started_at: metadata.started_at,
+                        config_fingerprint: metadata.config_fingerprint.clone(),
+                        activity: None,
+                        startup_surface: None,
+                        runtime_surface: None,
+                        last_failure: None,
+                    }));
+                }
+            };
+            if let Ok(status) = client.runtime_readiness().await {
+                return ProbeRuntime::Running(Box::new(status));
+            }
+        }
+    }
+
     let client = match LocalClient::new(config.clone()) {
         Ok(client) => client,
         Err(_) => {
@@ -861,6 +895,23 @@ fn unix_probe_stopped_socket_occupancy(root: &(dyn std::error::Error + 'static))
         ));
     }
     None
+}
+
+/// Check whether a process with the given PID is still alive.
+fn pid_is_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        // kill with signal 0 checks existence without sending a signal.
+        // SAFETY: signal 0 is a standard POSIX idiom.
+        unsafe { kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 fn merge_latest_failure(

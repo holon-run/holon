@@ -608,6 +608,20 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     if let Some(advertise_url) = &advertise_url {
         println!("Holon advertised at {advertise_url}");
     }
+    // Always bind a localhost listener so local tools (holon tui, curl) can
+    // connect even when the primary address targets a tailnet or LAN IP.
+    // See: https://github.com/holon-run/holon/issues/1449
+    let local_listener = if !listener.local_addr()?.ip().is_loopback() {
+        let local_addr =
+            std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), listener.local_addr()?.port());
+        let local = TcpListener::bind(local_addr)
+            .await
+            .with_context(|| format!("failed to bind localhost listener on {local_addr}"))?;
+        println!("Holon local listening on {}", local.local_addr()?);
+        Some(local)
+    } else {
+        None
+    };
 
     #[cfg(unix)]
     {
@@ -627,9 +641,21 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             unix_router,
             runtime_service.shutdown_signal(),
         );
-        let result = tokio::try_join!(tcp_server, unix_server)
-            .map(|_| ())
-            .context("runtime servers failed");
+        let result = if let Some(local) = local_listener {
+            let local_router = http::router(AppState::for_tcp_with_runtime_service(
+                host.clone(),
+                Some(runtime_service.clone()),
+            ));
+            let local_server = axum::serve(local, local_router)
+                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
+            tokio::try_join!(tcp_server, unix_server, local_server)
+                .map(|_| ())
+                .context("runtime servers failed")
+        } else {
+            tokio::try_join!(tcp_server, unix_server)
+                .map(|_| ())
+                .context("runtime servers failed")
+        };
         let _ = runtime_service.cleanup_state_files(&config);
         return result;
     }
@@ -637,10 +663,24 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     #[cfg(not(unix))]
     {
         runtime_service.write_state_files(&config)?;
-        axum::serve(listener, tcp_router)
-            .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
-            .await
-            .context("HTTP server failed")?;
+        if let Some(local) = local_listener {
+            let local_router = http::router(AppState::for_tcp_with_runtime_service(
+                host.clone(),
+                Some(runtime_service.clone()),
+            ));
+            let local_server = axum::serve(local, local_router)
+                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
+            let tcp_server = axum::serve(listener, tcp_router)
+                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
+            tokio::try_join!(tcp_server, local_server)
+                .map(|_| ())
+                .context("runtime servers failed")?;
+        } else {
+            axum::serve(listener, tcp_router)
+                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
+                .await
+                .context("HTTP server failed")?;
+        }
         let _ = runtime_service.cleanup_state_files(&config);
         Ok(())
     }
