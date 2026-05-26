@@ -217,20 +217,21 @@ that visibly affect CLI behavior while invoking commands.
 
 ## Tracking issues
 
-The initial CLI/API stability follow-up work is tracked in the
+The initial Milestone 8 CLI/API stability follow-up work is complete. Phase 2
+work remains tracked in the
 [CLI/API Stability Contracts](https://github.com/holon-run/holon/milestone/8)
-milestone:
+milestone by
+[#1444](https://github.com/holon-run/holon/issues/1444):
 
 | Priority | Issue | Scope |
 |---:|---|---|
-| 0 | [#1388](https://github.com/holon-run/holon/issues/1388) | Normalize or explicitly document raw HTTP response output paths. |
-| 0 | [#1389](https://github.com/holon-run/holon/issues/1389) | Define and test baseline CLI exit-code behavior. |
-| 0 | [#1390](https://github.com/holon-run/holon/issues/1390) | Add normalized command tree snapshot tests. |
-| 0 | [#1391](https://github.com/holon-run/holon/issues/1391) | Publish CLI stability levels and support policy. |
-| 1 | [#1392](https://github.com/holon-run/holon/issues/1392) | Add task lifecycle management commands. |
-| 1 | [#1393](https://github.com/holon-run/holon/issues/1393) | Add WorkItem inspection commands. |
-| 1 | [#1394](https://github.com/holon-run/holon/issues/1394) | Clarify event-stream CLI surface versus `tail` and `transcript`. |
-| 2 | [#1395](https://github.com/holon-run/holon/issues/1395) | Track deferred automation convenience additions. |
+| 1 | [#1437](https://github.com/holon-run/holon/issues/1437) | Refresh API/CLI contract inventories after Milestone 8 completion. |
+| 1 | [#1442](https://github.com/holon-run/holon/issues/1442) | Add JSON output schema and golden tests for stable commands. |
+| 2 | [#1438](https://github.com/holon-run/holon/issues/1438) | Migrate OpenAPI baseline to `aide` route/type metadata. |
+| 2 | [#1439](https://github.com/holon-run/holon/issues/1439) | Tighten OpenAPI DTO schemas for stable read models. |
+| 2 | [#1440](https://github.com/holon-run/holon/issues/1440) | Add WorkItem mutation HTTP lifecycle endpoints. |
+| 2 | [#1441](https://github.com/holon-run/holon/issues/1441) | Add Timer cancellation lifecycle endpoint. |
+| 3 | [#1443](https://github.com/holon-run/holon/issues/1443) | Define stable operator-facing event payload subset. |
 
 ## Recommended next contract tests
 
@@ -248,7 +249,10 @@ milestone:
 
 After this CLI inventory is reviewed, continue in this order:
 
-1. Control-plane HTTP endpoints and response schemas used by the CLI.
-2. Runtime message/event/task/work-item envelopes.
-3. Public model-facing tool schemas and result envelopes.
+1. CLI JSON output schemas for stable-candidate commands
+   ([#1442](https://github.com/holon-run/holon/issues/1442)).
+2. Control-plane DTO schemas used by CLI task/work-item/timer commands
+   ([#1439](https://github.com/holon-run/holon/issues/1439)).
+3. Runtime event payload subset used by tail, transcript, replay, and SSE
+   ([#1443](https://github.com/holon-run/holon/issues/1443)).
 4. Rust crate public API, if it is intended to be consumed externally.

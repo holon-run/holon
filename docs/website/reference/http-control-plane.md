@@ -13,7 +13,7 @@ work items, tasks, queues, wakeups, and user-facing delivery.
 The current generated OpenAPI baseline is checked in at
 [`openapi.json`](./openapi.json). It is a conservative schema for the present
 route surface; some request and response schemas intentionally remain broad
-until the success/error envelope and DTO contracts are stabilized.
+until the Phase 2 route/type metadata and DTO contracts are stabilized.
 
 ## Authentication
 
@@ -113,9 +113,27 @@ Returns recent briefs (acknowledgements and results) for the agent.
 
 Returns active and recent tasks with status, kind, and timing metadata.
 
+**`GET /agents/:id/tasks/:task_id`** — Task status
+
+Returns the structured task lifecycle snapshot for one managed task.
+
+**`GET /agents/:id/tasks/:task_id/output`** — Task output
+
+Returns a bounded task output result. Query parameters:
+
+| Param | Description |
+|-------|-------------|
+| `block` | Whether to wait for output/completion before returning |
+| `timeout_ms` | Optional bounded wait duration when `block=true` |
+
 **`GET /agents/:id/timers`** — Recent timers
 
 Returns recent timer records.
+
+**`GET /agents/:id/timers/:timer_id`** — Timer detail
+
+Returns a single timer record by id, or a shared error envelope when the timer
+is not found for the target agent.
 
 **`GET /agents/:id/events`** — Event log
 
@@ -273,7 +291,7 @@ Response:
 Sends a control action. Request body:
 
 ```json
-{ "action": "stop", "trust": "trusted_operator" }
+{ "action": "stop", "authority_class": "operator_instruction" }
 ```
 
 **`POST /control/agents/:id/current-run/abort`** — Abort current run
@@ -291,7 +309,7 @@ a compatibility alias and is treated as `stop_after_abort`.
 Creates a new agent managed by the host. The agent id comes from the URL path.
 
 ```json
-{ "template": null, "trust": "trusted_operator" }
+{ "template": null, "authority_class": "operator_instruction" }
 ```
 
 **`POST /control/agents/:id/tasks`** — Create command task
@@ -315,7 +333,7 @@ tasks receive stdin or TTY text when they were created with interactive input
 enabled; supervised child-agent tasks receive a follow-up input.
 
 ```json
-{ "text": "continue\n" }
+{ "text": "continue\n", "authority_class": "operator_instruction" }
 ```
 
 **`POST /control/agents/:id/tasks/:task_id/stop`** — Stop task
@@ -324,17 +342,17 @@ Requests cancellation for a managed task and returns the structured task stop
 receipt.
 
 ```json
-{}
+{ "authority_class": "operator_instruction" }
 ```
 
 **`POST /control/agents/:id/work-items`** — Create work item
 
-Creates a durable work item for the agent. Only `objective` is accepted.
+Creates a durable work item for the agent.
 
 ```json
 {
   "objective": "Fix the build",
-  "trust": "trusted_operator"
+  "authority_class": "operator_instruction"
 }
 ```
 
@@ -347,7 +365,7 @@ Creates a timer that will deliver a `TimerTick` to the agent.
   "duration_ms": 60000,
   "interval_ms": null,
   "summary": "reminder",
-  "trust": "trusted_operator"
+  "authority_class": "operator_instruction"
 }
 ```
 
@@ -356,7 +374,7 @@ Creates a timer that will deliver a `TimerTick` to the agent.
 Sends a debug-mode prompt (runtime-internal classification). Request body:
 
 ```json
-{ "text": "debug instruction", "trust": "trusted_operator" }
+{ "text": "debug instruction", "authority_class": "operator_instruction" }
 ```
 
 **`POST /control/agents/:id/operator-bindings`** — Create operator transport binding
@@ -406,7 +424,7 @@ Request body:
 Returns to the agent home workspace. Accepts an optional body:
 
 ```json
-{ "trust": "trusted_operator" }
+{ "authority_class": "operator_instruction" }
 ```
 
 **`POST /control/agents/:id/workspace/detach`** — Detach workspace
@@ -414,7 +432,7 @@ Returns to the agent home workspace. Accepts an optional body:
 Removes a workspace registration without switching. Request body:
 
 ```json
-{ "workspace_id": "ws-abc123", "trust": "trusted_operator" }
+{ "workspace_id": "ws-abc123", "authority_class": "operator_instruction" }
 ```
 
 **`POST /control/agents/:id/model`** — Set agent model
@@ -428,7 +446,7 @@ Removes a workspace registration without switching. Request body:
 Reverts to the default model. Accepts an optional body:
 
 ```json
-{ "trust": "trusted_operator" }
+{ "authority_class": "operator_instruction" }
 ```
 
 ### Runtime management
