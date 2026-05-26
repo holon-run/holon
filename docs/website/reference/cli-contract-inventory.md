@@ -77,7 +77,7 @@ than requiring a running daemon.
 | `holon config set` | `<KEY> <VALUE>` | none | JSON value after write | `stable` candidate | Value parsing is key-specific. |
 | `holon config unset` | `<KEY>` | none | JSON `{ "key": ..., "status": "unset" }` | `stable` candidate | Status string should be locked if scripts depend on it. |
 | `holon config list` | none | none | full persisted config JSON | `experimental` | Exposes broad config file shape; align with config reference before declaring stable. |
-| `holon config schema` | none | none | JSON config schema/metadata | `stable` candidate | Good machine-readable contract candidate. |
+| `holon config schema` | none | none | JSON config schema/metadata | `stable` JSON | Locked by `tests/cli_json_contract.rs`; entry objects expose `key`, `kind`, `description`, `default`, and optional `allowed_values`. |
 | `holon config doctor` | none | none | JSON provider/system diagnostics | `experimental` | Diagnostic shape may evolve as providers change. |
 | `holon config models list` | none | none | JSON model availability list | `experimental` | Provider catalog and availability details are still evolving. |
 
@@ -88,16 +88,16 @@ than requiring a running daemon.
 | `holon config providers set` | `<PROVIDER>` | `--transport <TRANSPORT>`; `--base-url <BASE_URL>`; `--credential-source <SOURCE>` default `none`; `--credential-kind <KIND>` default `none`; `--credential-env <ENV>`; `--credential-profile <PROFILE>`; `--credential-external <COMMAND>` | JSON `{ "applied_via": "offline_store", "provider": ... }` | `stable` candidate for command shape; `experimental` for provider object | Built-in providers may reject incompatible transport overrides. |
 | `holon config providers get` | `<PROVIDER>` | none | JSON provider view | `experimental` | Output uses runtime provider view. |
 | `holon config providers list` | none | none | JSON array/object of provider views | `experimental` | Output shape should be reconciled with API/config inventory. |
-| `holon config providers remove` | `<PROVIDER>` | none | JSON `{ "applied_via": "offline_store", "provider": ..., "status": "removed\|not_configured" }` | `stable` candidate | Status strings are script-facing. |
+| `holon config providers remove` | `<PROVIDER>` | none | JSON `{ "applied_via": "offline_store", "provider": ..., "status": "removed\|not_configured" }` | `stable` JSON | Locked by `tests/cli_json_contract.rs`; status strings are script-facing. |
 | `holon config providers doctor` | `<PROVIDER>` | none | JSON provider view plus model-chain diagnostics | `experimental` | Diagnostic details may evolve. |
 
 ### Credential configuration
 
 | Command | Args | Options | Output | Initial stability | Notes |
 |---|---|---|---|---:|---|
-| `holon config credentials set` | `<PROFILE>` | required `--kind <KIND>`; one of `--stdin` or `--material <MATERIAL>` | JSON `{ "applied_via": "offline_store", "credential": ... }` | `stable` candidate | `--stdin` prompt goes to stderr; raw `--material` is intentionally discouraged for secrets. |
-| `holon config credentials list` | none | none | JSON credential profile list | `stable` candidate | Must not expose credential material. |
-| `holon config credentials remove` | `<PROFILE>` | none | JSON `{ "applied_via": "offline_store", "credential": ... }` | `stable` candidate | Credential status shape needs explicit contract tests. |
+| `holon config credentials set` | `<PROFILE>` | required `--kind <KIND>`; one of `--stdin` or `--material <MATERIAL>` | JSON `{ "applied_via": "offline_store", "credential": { "profile": ..., "kind": ..., "configured": true } }` | `stable` JSON | Locked by `tests/cli_json_contract.rs`; `--stdin` prompt goes to stderr; raw `--material` is intentionally discouraged for secrets. |
+| `holon config credentials list` | none | none | JSON credential profile list with `profile`, `kind`, and `configured`; credential material is never included | `stable` JSON | Locked by `tests/cli_json_contract.rs`; must not expose credential material. |
+| `holon config credentials remove` | `<PROFILE>` | none | JSON `{ "applied_via": "offline_store", "credential": { "profile": ..., "kind": ..., "configured": false } }` | `stable` JSON | Locked by `tests/cli_json_contract.rs`; missing profiles return `kind: "unknown"` and `configured: false`. |
 
 ### Agent interaction and inspection
 
