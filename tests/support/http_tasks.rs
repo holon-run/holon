@@ -29,7 +29,6 @@ use holon::{
 use reqwest::Client;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
-use tokio::time::{sleep, Duration, Instant};
 #[cfg(unix)]
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -37,9 +36,10 @@ use tokio::{
 };
 
 use super::{
-    attach_default_workspace, connect_addr, git, init_git_repo, read_next_sse_event, spawn_server,
-    spawn_server_for_host, spawn_server_with_config, spawn_server_with_runtime_config, tempdir,
-    test_config, test_config_with_paths, test_work_item, wait_until, ParsedSseEvent,
+    attach_default_workspace, connect_addr, eventually_async, git, init_git_repo,
+    read_next_sse_event, spawn_server, spawn_server_for_host, spawn_server_with_config,
+    spawn_server_with_runtime_config, tempdir, test_config, test_config_with_paths, test_work_item,
+    wait_until, ParsedSseEvent,
 };
 
 pub async fn create_command_task_route_rejects_legacy_kind_field() -> Result<()> {
@@ -745,6 +745,106 @@ pub async fn timer_detail_route_returns_latest_timer_record() -> Result<()> {
         .send()
         .await?;
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    let timer = runtime
+        .schedule_timer(5_000, None, Some("cancel lifecycle timer".into()))
+        .await?;
+
+    let cancelled_response = client
+        .post(format!(
+            "{base}/control/agents/default/timers/{}/cancel",
+            timer.id
+        ))
+        .json(&serde_json::json!({"authority_class": "integration_signal"}))
+        .send()
+        .await?;
+    assert_eq!(cancelled_response.status(), reqwest::StatusCode::OK);
+    let cancelled_body = cancelled_response.text().await?;
+    let cancelled: serde_json::Value = serde_json::from_str(&cancelled_body)?;
+    assert_eq!(cancelled["id"], timer.id);
+    assert_eq!(cancelled["status"], "cancelled");
+    assert!(cancelled["next_fire_at"].is_null());
+
+    let idempotent: serde_json::Value = client
+        .post(format!(
+            "{base}/control/agents/default/timers/{}/cancel",
+            timer.id
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(idempotent["status"], "cancelled");
+
+    let detail: serde_json::Value = client
+        .get(format!("{base}/agents/default/timers/{}", timer.id))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(detail["status"], "cancelled");
+
+    let missing = client
+        .post(format!(
+            "{base}/control/agents/default/timers/missing-timer/cancel"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let completed = runtime
+        .schedule_timer(1, None, Some("already completed timer".into()))
+        .await?;
+    eventually_async({
+        let client = client.clone();
+        let base = base.clone();
+        let completed_id = completed.id.clone();
+        move || {
+            let client = client.clone();
+            let base = base.clone();
+            let completed_id = completed_id.clone();
+            async move {
+                let detail: serde_json::Value = client
+                    .get(format!("{base}/agents/default/timers/{completed_id}"))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                Ok(detail["status"] == "completed")
+            }
+        }
+    })
+    .await?;
+    let completed_cancel = client
+        .post(format!(
+            "{base}/control/agents/default/timers/{}/cancel",
+            completed.id
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(completed_cancel.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    let events = runtime.all_events()?;
+    assert!(events
+        .iter()
+        .any(|event| { event.kind == "timer_cancelled" && event.data["timer_id"] == timer.id }));
+    assert!(events.iter().any(|event| {
+        event.kind == "timer_cancel_requested"
+            && event.data["timer_id"] == timer.id
+            && event.data["provided_trust"] == "integration_signal"
+    }));
 
     server.abort();
     Ok(())

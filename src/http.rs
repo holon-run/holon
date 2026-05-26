@@ -226,6 +226,10 @@ pub fn router(state: AppState) -> Router {
             post(complete_work_item),
         )
         .route("/control/agents/{agent_id}/timers", post(create_timer))
+        .route(
+            "/control/agents/{agent_id}/timers/{timer_id}/cancel",
+            post(cancel_timer),
+        )
         .route("/control/agents/{agent_id}/create", post(create_agent))
         .route(
             "/control/agents/{agent_id}/workspace/attach",
@@ -617,11 +621,18 @@ pub struct PickWorkItemResponse {
     pub transition: crate::runtime::WorkItemFocusTransition,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateTimerRequest {
     pub duration_ms: u64,
     pub interval_ms: Option<u64>,
     pub summary: Option<String>,
+    pub authority_class: Option<AuthorityClass>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CancelTimerRequest {
     pub authority_class: Option<AuthorityClass>,
 }
 
@@ -2349,6 +2360,53 @@ pub async fn create_timer(
         )
         .map_err(error_response)?;
     Ok(Json(timer))
+}
+
+pub async fn cancel_timer(
+    Path((agent_id, timer_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<CancelTimerRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let timer = runtime
+        .cancel_timer(&timer_id)
+        .await
+        .map_err(timer_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            "timer_cancel_requested",
+            json!({
+                "timer_id": timer.id,
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .map_err(error_response)?;
+    Ok(Json(timer))
+}
+
+fn timer_lifecycle_error(err: anyhow::Error) -> (StatusCode, Json<Value>) {
+    let message = err.to_string();
+    if message.starts_with("timer ") && message.ends_with(" not found") {
+        not_found(message)
+    } else if message.starts_with("cannot ") {
+        bad_request(message)
+    } else {
+        error_response(err)
+    }
 }
 
 pub async fn list_skills(

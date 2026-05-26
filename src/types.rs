@@ -3324,7 +3324,7 @@ pub enum TodoItemState {
     Completed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 pub struct TimerRecord {
     pub id: String,
     #[serde(alias = "session_id")]
@@ -3344,7 +3344,7 @@ pub struct TimerRecord {
     pub fire_count: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TimerStatus {
     #[serde(alias = "scheduled")]

@@ -407,6 +407,18 @@ Creates a timer that will deliver a `TimerTick` to the agent.
 }
 ```
 
+**`POST /control/agents/:id/timers/:timer_id/cancel`** — Cancel timer
+
+Cancels an active timer and returns the updated `TimerRecord`. Cancellation is
+idempotent for an already-cancelled timer. A missing timer returns a shared
+404 error envelope; a completed timer returns a shared 400 lifecycle error
+because it already fired. Cancellation immediately updates timer list/detail
+projections and emits `timer_cancelled`.
+
+```json
+{ "authority_class": "operator_instruction" }
+```
+
 **`POST /control/agents/:id/debug-prompt`** — Debug prompt
 
 Sends a debug-mode prompt (runtime-internal classification). Request body:

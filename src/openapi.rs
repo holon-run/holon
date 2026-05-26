@@ -7,10 +7,12 @@ use serde_json::{json, Value};
 
 use crate::{
     http::{
-        CompleteWorkItemRequest, PickWorkItemRequest, PickWorkItemResponse, UpdateWorkItemRequest,
+        CancelTimerRequest, CompleteWorkItemRequest, CreateTimerRequest, PickWorkItemRequest,
+        PickWorkItemResponse, UpdateWorkItemRequest,
     },
     types::{
-        TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult, WorkItemRecord,
+        TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult, TimerRecord,
+        WorkItemRecord,
     },
 };
 
@@ -86,7 +88,8 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("post", "/control/agents/{agent_id}/work-items/{work_item_id}/pick", "pickWorkItem", "control", "Pick work item", "Make an existing open work item the current focus for the agent.", Some("PickWorkItemRequest"), "PickWorkItemResponse", AuthKind::Control),
     route_with_response("patch", "/control/agents/{agent_id}/work-items/{work_item_id}", "updateWorkItem", "control", "Update work item", "Mutate work item objective, plan status, todo list, or blocker fields.", Some("UpdateWorkItemRequest"), "WorkItemRecord", AuthKind::Control),
     route_with_response("post", "/control/agents/{agent_id}/work-items/{work_item_id}/complete", "completeWorkItem", "control", "Complete work item", "Mark an open work item completed.", Some("CompleteWorkItemRequest"), "WorkItemRecord", AuthKind::Control),
-    route("post", "/control/agents/{agent_id}/timers", "createTimer", "control", "Create timer", "Schedule a timer for an agent.", Some("CreateTimerRequest"), AuthKind::Control),
+    route_with_response("post", "/control/agents/{agent_id}/timers", "createTimer", "control", "Create timer", "Schedule a timer for an agent.", Some("CreateTimerRequest"), "TimerRecord", AuthKind::Control),
+    route_with_response("post", "/control/agents/{agent_id}/timers/{timer_id}/cancel", "cancelTimer", "control", "Cancel timer", "Cancel an active timer. Cancellation is idempotent for already-cancelled timers; completed or missing timers return a shared error envelope.", Some("CancelTimerRequest"), "TimerRecord", AuthKind::Control),
     route("post", "/control/agents/{agent_id}/create", "createAgent", "control", "Create named agent", "Create a public named agent, optionally from a template.", Some("CreateAgentRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/workspace/attach", "attachWorkspace", "control", "Attach workspace", "Attach a workspace path to an agent.", Some("AttachWorkspaceRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/workspace/exit", "exitWorkspace", "control", "Exit workspace", "Return an agent to its default AgentHome workspace.", Some("ExitWorkspaceRequest"), AuthKind::Control),
@@ -477,6 +480,7 @@ fn component_schemas() -> Value {
         "WorkItemRecord".into(),
         component_schema::<WorkItemRecord>(),
     );
+    schemas.insert("TimerRecord".into(), component_schema::<TimerRecord>());
     schemas.insert(
         "PickWorkItemResponse".into(),
         component_schema::<PickWorkItemResponse>(),
@@ -493,6 +497,14 @@ fn component_schemas() -> Value {
         "CompleteWorkItemRequest".into(),
         component_schema::<CompleteWorkItemRequest>(),
     );
+    schemas.insert(
+        "CreateTimerRequest".into(),
+        component_schema::<CreateTimerRequest>(),
+    );
+    schemas.insert(
+        "CancelTimerRequest".into(),
+        component_schema::<CancelTimerRequest>(),
+    );
     for name in [
         "EnqueueRequest",
         "IncomingOrigin",
@@ -500,7 +512,6 @@ fn component_schemas() -> Value {
         "TaskInputRequest",
         "TaskStopRequest",
         "CreateWorkItemRequest",
-        "CreateTimerRequest",
         "CreateAgentRequest",
         "AttachWorkspaceRequest",
         "ExitWorkspaceRequest",

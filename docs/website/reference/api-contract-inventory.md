@@ -267,7 +267,8 @@ Projection contract:
 | `PATCH` | `/control/agents/:agent_id/work-items/:work_item_id` | `UpdateWorkItemRequest` | `WorkItemRecord` | Experimental | Mutates objective, plan status, todo list, and blocker/recheck fields. Empty mutations are rejected. |
 | `POST` | `/control/agents/:agent_id/work-items/:work_item_id/complete` | `{ authority_class? }` | `WorkItemRecord` | Experimental | Marks an open WorkItem completed; cancel/delete remains out of scope. |
 | `GET` | `/agents/:agent_id/timers/:timer_id` | Path `agent_id`, `timer_id`. | `TimerRecord` | Candidate stable route; DTO schema still broad | Returns 404 when the timer id is not found for the target agent. |
-| `POST` | `/control/agents/:agent_id/timers` | `{ duration_ms, interval_ms?, summary?, authority_class? }` | `TimerRecord` | Candidate stable for creation; cancellation remains Phase 2 work | `duration_ms` is required; `interval_ms` makes a repeating timer. |
+| `POST` | `/control/agents/:agent_id/timers` | `{ duration_ms, interval_ms?, summary?, authority_class? }` | `TimerRecord` | Candidate stable | `duration_ms` is required; `interval_ms` makes a repeating timer. |
+| `POST` | `/control/agents/:agent_id/timers/:timer_id/cancel` | `{ authority_class? }` | `TimerRecord` | Candidate stable | Idempotent for already-cancelled timers. Missing timers return 404; completed timers return 400 because they already fired. |
 
 `CreateCommandTaskRequest` fields:
 
@@ -366,8 +367,8 @@ treated as schema surfaces, not incidental Rust structs:
    list/get/create/enqueue, pick focus, update objective/planning/blocker
    fields, and complete work items. Cancel/delete remains intentionally out of
    scope until a distinct lifecycle contract is needed.
-5. **Timer lifecycle APIs are incomplete.** HTTP can create/list/get timers,
-   but lacks cancellation semantics and endpoint coverage.
+5. **Timer lifecycle APIs now cover cancellation.** HTTP can create/list/get
+   timers and cancel active timers. Delete/purge remains out of scope.
 6. **Deployment guidance still needs hardening.** The HTTP ingress trust/auth
    table is documented, but production-facing guidance should still describe
    when to use bearer mode, local mode, callback capabilities, and dedicated
@@ -388,7 +389,6 @@ milestone and tracked by
 |-------|-------|
 | [#1438](https://github.com/holon-run/holon/issues/1438) `api: migrate OpenAPI baseline to aide route/type metadata` | Move OpenAPI operation metadata closer to route and DTO definitions. |
 | [#1439](https://github.com/holon-run/holon/issues/1439) `api: tighten OpenAPI DTO schemas for stable read models` | Replace selected generic JSON schemas with typed stable DTO schemas. |
-| [#1441](https://github.com/holon-run/holon/issues/1441) `api: add Timer cancellation lifecycle endpoint` | Define timer cancellation semantics and HTTP endpoint behavior. |
 | [#1443](https://github.com/holon-run/holon/issues/1443) `events: define stable operator-facing event payload subset` | Version/document stable event fields and projection/redaction boundaries. |
 
 ## Suggested next work
@@ -397,7 +397,5 @@ milestone and tracked by
    ([#1438](https://github.com/holon-run/holon/issues/1438)).
 2. Tighten DTO schemas for stable read models and control-plane results
    ([#1439](https://github.com/holon-run/holon/issues/1439)).
-3. Add timer cancellation semantics and endpoint coverage
-   ([#1441](https://github.com/holon-run/holon/issues/1441)).
-4. Define the stable operator-facing event payload subset
+3. Define the stable operator-facing event payload subset
    ([#1443](https://github.com/holon-run/holon/issues/1443)).
