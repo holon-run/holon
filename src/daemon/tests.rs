@@ -598,3 +598,45 @@ async fn daemon_stop_surfaces_incompatible_status_probe_guidance() {
     ));
     assert!(socket_path.exists());
 }
+
+/// Regression: when both TERM and KILL return PermissionDenied (EPERM),
+/// `daemon_stop` must return an error and must NOT clean up state files,
+/// because the daemon process may still be running.
+///
+/// Uses PID 1 (init) as a target — non-root users always get EPERM when
+/// signaling PID 1, giving a deterministic PermissionDenied path without
+/// mocks or extra seams.
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_stop_errors_on_permission_denied_signals() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    // PID 1 (init/systemd) — always returns EPERM for non-root.
+    let pid: u32 = 1;
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    let metadata = RuntimeServiceMetadata {
+        pid,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+    };
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+    let err = daemon_stop(&config).await.unwrap_err().to_string();
+    assert!(
+        err.contains("permission denied"),
+        "expected permission denied error, got: {err}"
+    );
+    // State files must NOT be cleaned up when stop fails due to permission denied.
+    assert!(
+        paths.pid_path.exists(),
+        "PID file should still exist after permission-denied stop failure"
+    );
+    assert!(
+        paths.metadata_path.exists(),
+        "metadata file should still exist after permission-denied stop failure"
+    );
+}
