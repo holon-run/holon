@@ -844,7 +844,14 @@ mod tests {
             "repair benchmark export output",
             WorkItemState::Open,
         );
-        active.legacy_inline_plan = Some("Patch exporter and run focused test.".into());
+        active.plan_artifact = Some(
+            crate::work_item_plan::ensure_plan_artifact(
+                dir.path(),
+                &active,
+                Some("Patch exporter and run focused test."),
+            )
+            .unwrap(),
+        );
         active.todo_list = vec![
             TodoItem {
                 text: "patch exporter".into(),
