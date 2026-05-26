@@ -5,7 +5,14 @@ use aide::{
 use schemars::{generate::SchemaSettings, JsonSchema};
 use serde_json::{json, Value};
 
-use crate::types::{TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult};
+use crate::{
+    http::{
+        CompleteWorkItemRequest, PickWorkItemRequest, PickWorkItemResponse, UpdateWorkItemRequest,
+    },
+    types::{
+        TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult, WorkItemRecord,
+    },
+};
 
 const API_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -75,7 +82,10 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/agents/{agent_id}/enqueue", "enqueueAgent", "ingress", "Enqueue agent message", "Enqueue a public channel/webhook message for the named agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),
     route("post", "/webhooks/generic/{agent_id}", "genericWebhook", "ingress", "Generic webhook", "Convert an arbitrary JSON webhook body into a trusted integration message.", Some("GenericJsonPayload"), AuthKind::None),
     route("post", "/control/agents/{agent_id}/tasks", "createCommandTask", "control", "Create command task", "Schedule a command task for an agent.", Some("CreateCommandTaskRequest"), AuthKind::Control),
-    route("post", "/control/agents/{agent_id}/work-items", "createWorkItem", "control", "Create work item", "Create or enqueue a public work item objective.", Some("CreateWorkItemRequest"), AuthKind::Control),
+    route_with_response("post", "/control/agents/{agent_id}/work-items", "createWorkItem", "control", "Create work item", "Create or enqueue a public work item objective.", Some("CreateWorkItemRequest"), "WorkItemRecord", AuthKind::Control),
+    route_with_response("post", "/control/agents/{agent_id}/work-items/{work_item_id}/pick", "pickWorkItem", "control", "Pick work item", "Make an existing open work item the current focus for the agent.", Some("PickWorkItemRequest"), "PickWorkItemResponse", AuthKind::Control),
+    route_with_response("patch", "/control/agents/{agent_id}/work-items/{work_item_id}", "updateWorkItem", "control", "Update work item", "Mutate work item objective, plan status, todo list, or blocker fields.", Some("UpdateWorkItemRequest"), "WorkItemRecord", AuthKind::Control),
+    route_with_response("post", "/control/agents/{agent_id}/work-items/{work_item_id}/complete", "completeWorkItem", "control", "Complete work item", "Mark an open work item completed.", Some("CompleteWorkItemRequest"), "WorkItemRecord", AuthKind::Control),
     route("post", "/control/agents/{agent_id}/timers", "createTimer", "control", "Create timer", "Schedule a timer for an agent.", Some("CreateTimerRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/create", "createAgent", "control", "Create named agent", "Create a public named agent, optionally from a template.", Some("CreateAgentRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/workspace/attach", "attachWorkspace", "control", "Attach workspace", "Attach a workspace path to an agent.", Some("AttachWorkspaceRequest"), AuthKind::Control),
@@ -462,6 +472,26 @@ fn component_schemas() -> Value {
     schemas.insert(
         "TaskStopResult".into(),
         component_schema::<TaskStopResult>(),
+    );
+    schemas.insert(
+        "WorkItemRecord".into(),
+        component_schema::<WorkItemRecord>(),
+    );
+    schemas.insert(
+        "PickWorkItemResponse".into(),
+        component_schema::<PickWorkItemResponse>(),
+    );
+    schemas.insert(
+        "PickWorkItemRequest".into(),
+        component_schema::<PickWorkItemRequest>(),
+    );
+    schemas.insert(
+        "UpdateWorkItemRequest".into(),
+        component_schema::<UpdateWorkItemRequest>(),
+    );
+    schemas.insert(
+        "CompleteWorkItemRequest".into(),
+        component_schema::<CompleteWorkItemRequest>(),
     );
     for name in [
         "EnqueueRequest",

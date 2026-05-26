@@ -527,6 +527,33 @@
     ]
   },
   {
+    "method": "patch",
+    "path": "/control/agents/{agent_id}/work-items/{work_item_id}",
+    "handler": "update_work_item",
+    "operation_id": "updateWorkItem",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "work_item_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "UpdateWorkItemRequest",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
     "method": "post",
     "path": "/agents/{agent_id}/enqueue",
     "handler": "enqueue",
@@ -969,6 +996,60 @@
     ],
     "request_schema": "CreateWorkItemRequest",
     "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/work-items/{work_item_id}/complete",
+    "handler": "complete_work_item",
+    "operation_id": "completeWorkItem",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "work_item_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "CompleteWorkItemRequest",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/work-items/{work_item_id}/pick",
+    "handler": "pick_work_item",
+    "operation_id": "pickWorkItem",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "work_item_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "PickWorkItemRequest",
+    "request_strict": true,
     "response_content_types": [
       "application/json"
     ],

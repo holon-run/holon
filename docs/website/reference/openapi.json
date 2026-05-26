@@ -19,6 +19,26 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "CompleteWorkItemRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "authority_class": {
+            "enum": [
+              "operator_instruction",
+              "runtime_instruction",
+              "integration_signal",
+              "external_evidence",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "CompleteWorkItemRequest",
+        "type": "object"
+      },
       "ControlPromptRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -131,6 +151,455 @@
       "OperatorTransportBindingRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "PickWorkItemRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "authority_class": {
+            "enum": [
+              "operator_instruction",
+              "runtime_instruction",
+              "integration_signal",
+              "external_evidence",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "PickWorkItemRequest",
+        "type": "object"
+      },
+      "PickWorkItemResponse": {
+        "properties": {
+          "current_work_item": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "blocked_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "legacy_inline_plan": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "writeOnly": true
+              },
+              "objective": {
+                "type": "string"
+              },
+              "plan_artifact": {
+                "properties": {
+                  "bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "hash": {
+                    "type": "string"
+                  },
+                  "owner_agent_id": {
+                    "default": "",
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "preview": {
+                    "type": "string"
+                  },
+                  "preview_complete": {
+                    "type": "boolean"
+                  },
+                  "relative_path": {
+                    "default": "",
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "workspace_alias": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "workspace_id": {
+                    "default": "agent_home",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "hash",
+                  "bytes",
+                  "updated_at",
+                  "preview",
+                  "preview_complete"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "plan_status": {
+                "enum": [
+                  "draft",
+                  "ready",
+                  "needs_input"
+                ],
+                "type": "string"
+              },
+              "recheck_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "recheck_consumed_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result_summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "default": 1,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "enum": [
+                  "open",
+                  "completed"
+                ],
+                "type": "string"
+              },
+              "todo_list": {
+                "items": {
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "pending",
+                        "in_progress",
+                        "completed"
+                      ],
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "default": "agent_home",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "agent_id",
+              "objective",
+              "state",
+              "plan_status",
+              "created_at",
+              "updated_at"
+            ],
+            "type": "object"
+          },
+          "current_work_item_id": {
+            "type": "string"
+          },
+          "previous_work_item": {
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "blocked_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "legacy_inline_plan": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "writeOnly": true
+              },
+              "objective": {
+                "type": "string"
+              },
+              "plan_artifact": {
+                "properties": {
+                  "bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "hash": {
+                    "type": "string"
+                  },
+                  "owner_agent_id": {
+                    "default": "",
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "preview": {
+                    "type": "string"
+                  },
+                  "preview_complete": {
+                    "type": "boolean"
+                  },
+                  "relative_path": {
+                    "default": "",
+                    "type": "string"
+                  },
+                  "updated_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
+                  "workspace_alias": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "workspace_id": {
+                    "default": "agent_home",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "hash",
+                  "bytes",
+                  "updated_at",
+                  "preview",
+                  "preview_complete"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "plan_status": {
+                "enum": [
+                  "draft",
+                  "ready",
+                  "needs_input"
+                ],
+                "type": "string"
+              },
+              "recheck_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "recheck_consumed_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result_summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "default": 1,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "enum": [
+                  "open",
+                  "completed"
+                ],
+                "type": "string"
+              },
+              "todo_list": {
+                "items": {
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "pending",
+                        "in_progress",
+                        "completed"
+                      ],
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "state"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_id": {
+                "default": "agent_home",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "agent_id",
+              "objective",
+              "state",
+              "plan_status",
+              "created_at",
+              "updated_at"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "transition": {
+            "properties": {
+              "current_focus_mode": {
+                "type": "string"
+              },
+              "current_readiness": {
+                "enum": [
+                  "runnable",
+                  "waiting_for_operator",
+                  "blocked",
+                  "completed"
+                ],
+                "type": "string"
+              },
+              "current_work_item_id": {
+                "type": "string"
+              },
+              "previous_readiness": {
+                "enum": [
+                  "runnable",
+                  "waiting_for_operator",
+                  "blocked",
+                  "completed",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "previous_work_item_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "switch_kind": {
+                "type": "string"
+              },
+              "warnings": {
+                "items": {
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "current_work_item_id",
+              "current_readiness",
+              "switch_kind",
+              "current_focus_mode"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "current_work_item",
+          "current_work_item_id",
+          "transition"
+        ],
+        "title": "PickWorkItemResponse",
         "type": "object"
       },
       "SetAgentModelRequest": {
@@ -1666,6 +2135,247 @@
       "UninstallSkillRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "UpdateWorkItemRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "authority_class": {
+            "enum": [
+              "operator_instruction",
+              "runtime_instruction",
+              "integration_signal",
+              "external_evidence",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blocked_by": true,
+          "objective": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_status": {
+            "enum": [
+              "draft",
+              "ready",
+              "needs_input",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recheck_after": {
+            "format": "uint64",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "todo_list": {
+            "items": {
+              "properties": {
+                "state": {
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text",
+                "state"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "title": "UpdateWorkItemRequest",
+        "type": "object"
+      },
+      "WorkItemRecord": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "blocked_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "legacy_inline_plan": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "writeOnly": true
+          },
+          "objective": {
+            "type": "string"
+          },
+          "plan_artifact": {
+            "properties": {
+              "bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hash": {
+                "type": "string"
+              },
+              "owner_agent_id": {
+                "default": "",
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "preview": {
+                "type": "string"
+              },
+              "preview_complete": {
+                "type": "boolean"
+              },
+              "relative_path": {
+                "default": "",
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "workspace_alias": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "workspace_id": {
+                "default": "agent_home",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "hash",
+              "bytes",
+              "updated_at",
+              "preview",
+              "preview_complete"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "plan_status": {
+            "enum": [
+              "draft",
+              "ready",
+              "needs_input"
+            ],
+            "type": "string"
+          },
+          "recheck_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recheck_consumed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result_summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "default": 1,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "completed"
+            ],
+            "type": "string"
+          },
+          "todo_list": {
+            "items": {
+              "properties": {
+                "state": {
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text",
+                "state"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "workspace_id": {
+            "default": "agent_home",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "agent_id",
+          "objective",
+          "state",
+          "plan_status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "WorkItemRecord",
         "type": "object"
       }
     },
@@ -4079,11 +4789,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/WorkItemRecord"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
@@ -4112,6 +4822,237 @@
           }
         ],
         "summary": "Create work item",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/control/agents/{agent_id}/work-items/{work_item_id}": {
+      "patch": {
+        "description": "Mutate work item objective, plan status, todo list, or blocker fields.",
+        "operationId": "updateWorkItem",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Work item id.",
+            "in": "path",
+            "name": "work_item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWorkItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update work item",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/control/agents/{agent_id}/work-items/{work_item_id}/complete": {
+      "post": {
+        "description": "Mark an open work item completed.",
+        "operationId": "completeWorkItem",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Work item id.",
+            "in": "path",
+            "name": "work_item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteWorkItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Complete work item",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/control/agents/{agent_id}/work-items/{work_item_id}/pick": {
+      "post": {
+        "description": "Make an existing open work item the current focus for the agent.",
+        "operationId": "pickWorkItem",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Work item id.",
+            "in": "path",
+            "name": "work_item_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PickWorkItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PickWorkItemResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Pick work item",
         "tags": [
           "control"
         ]

@@ -13,11 +13,12 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
     },
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::time::{sleep, Duration};
@@ -61,9 +62,9 @@ use crate::{
         MessageOrigin, OperatorNotificationRecord, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
-        TaskStatus, TaskStatusSnapshot, TaskStopResult, TimerRecord, TurnTerminalRecord,
-        WaitingIntentRecord, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
-        WorktreeSession,
+        TaskStatus, TaskStatusSnapshot, TaskStopResult, TimerRecord, TodoItem, TurnTerminalRecord,
+        WaitingIntentRecord, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+        WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -211,6 +212,18 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/control/agents/{agent_id}/work-items",
             post(create_work_item),
+        )
+        .route(
+            "/control/agents/{agent_id}/work-items/{work_item_id}/pick",
+            post(pick_work_item),
+        )
+        .route(
+            "/control/agents/{agent_id}/work-items/{work_item_id}",
+            patch(update_work_item),
+        )
+        .route(
+            "/control/agents/{agent_id}/work-items/{work_item_id}/complete",
+            post(complete_work_item),
         )
         .route("/control/agents/{agent_id}/timers", post(create_timer))
         .route("/control/agents/{agent_id}/create", post(create_agent))
@@ -565,10 +578,43 @@ pub struct CreateCommandTaskRequest {
     pub authority_class: Option<AuthorityClass>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct CreateWorkItemRequest {
     pub objective: String,
     pub authority_class: Option<AuthorityClass>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PickWorkItemRequest {
+    pub reason: Option<String>,
+    pub authority_class: Option<AuthorityClass>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateWorkItemRequest {
+    pub objective: Option<String>,
+    pub plan_status: Option<WorkItemPlanStatus>,
+    pub todo_list: Option<Vec<TodoItem>>,
+    pub blocked_by: Option<Value>,
+    #[schemars(range(min = 1))]
+    pub recheck_after: Option<u64>,
+    pub authority_class: Option<AuthorityClass>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompleteWorkItemRequest {
+    pub authority_class: Option<AuthorityClass>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PickWorkItemResponse {
+    pub previous_work_item: Option<WorkItemRecord>,
+    pub current_work_item: WorkItemRecord,
+    pub current_work_item_id: String,
+    pub transition: crate::runtime::WorkItemFocusTransition,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2031,6 +2077,160 @@ pub async fn create_work_item(
     Ok(Json(record))
 }
 
+pub async fn pick_work_item(
+    Path((agent_id, work_item_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<PickWorkItemRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let picked = runtime
+        .pick_work_item_with_reason(work_item_id, normalize_optional_non_empty(request.reason))
+        .await
+        .map_err(work_item_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            "work_item_pick_requested",
+            json!({
+                "work_item_id": picked.current_work_item.id.clone(),
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .map_err(error_response)?;
+    let current_work_item_id = picked.current_work_item.id.clone();
+    Ok(Json(PickWorkItemResponse {
+        previous_work_item: picked.previous_work_item,
+        current_work_item: picked.current_work_item,
+        current_work_item_id,
+        transition: picked.transition,
+    }))
+}
+
+pub async fn update_work_item(
+    Path((agent_id, work_item_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateWorkItemRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let objective = request
+        .objective
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                Err(bad_request("objective must not be empty"))
+            } else {
+                Ok(trimmed)
+            }
+        })
+        .transpose()?;
+    let blocked_by = request
+        .blocked_by
+        .map(parse_blocked_by_mutation)
+        .transpose()?;
+    if request.recheck_after == Some(0) {
+        return Err(bad_request("recheck_after must be greater than 0"));
+    }
+    if request.recheck_after.is_some() && blocked_by.as_ref().is_none_or(Option::is_none) {
+        return Err(bad_request(
+            "recheck_after requires a non-empty blocked_by value",
+        ));
+    }
+    if objective.is_none()
+        && request.plan_status.is_none()
+        && request.todo_list.is_none()
+        && blocked_by.is_none()
+    {
+        return Err(bad_request(
+            "request must include at least one mutation field",
+        ));
+    }
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let record = runtime
+        .update_work_item_fields_with_recheck(
+            work_item_id,
+            objective,
+            request.plan_status,
+            None,
+            request.todo_list,
+            blocked_by,
+            request.recheck_after,
+        )
+        .await
+        .map_err(work_item_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            "work_item_update_requested",
+            json!({
+                "work_item_id": record.id.clone(),
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .map_err(error_response)?;
+    Ok(Json(record))
+}
+
+pub async fn complete_work_item(
+    Path((agent_id, work_item_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<CompleteWorkItemRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let admission_context = control_admission_context(&state);
+    let provided_trust = request.authority_class;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let record = runtime
+        .complete_work_item(work_item_id, Vec::new())
+        .await
+        .map_err(work_item_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            "work_item_complete_requested",
+            json!({
+                "work_item_id": record.id.clone(),
+                "target_agent_id": agent_id,
+                "admission_context": admission_context,
+                "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .map_err(error_response)?;
+    Ok(Json(record))
+}
+
 pub async fn work_items(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -3162,6 +3362,38 @@ fn task_lifecycle_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
         not_found(message)
     } else {
         error_response(error)
+    }
+}
+
+fn work_item_lifecycle_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    let message = error.to_string();
+    let lower = message.to_ascii_lowercase();
+    if (lower.contains("work item") && lower.ends_with("not found"))
+        || lower.starts_with("unknown work item ")
+    {
+        not_found(message)
+    } else if message.starts_with("cannot ") {
+        bad_request(message)
+    } else {
+        error_response(error)
+    }
+}
+
+fn normalize_optional_non_empty(value: Option<String>) -> Option<String> {
+    value.and_then(|inner| {
+        let trimmed = inner.trim().to_string();
+        (!trimmed.is_empty()).then_some(trimmed)
+    })
+}
+
+fn parse_blocked_by_mutation(value: Value) -> Result<Option<String>, (StatusCode, Json<Value>)> {
+    match value {
+        Value::Null => Ok(None),
+        Value::String(inner) => {
+            let trimmed = inner.trim().to_string();
+            Ok((!trimmed.is_empty()).then_some(trimmed))
+        }
+        _ => Err(bad_request("blocked_by must be a string or null")),
     }
 }
 

@@ -262,7 +262,10 @@ Projection contract:
 | `POST` | `/control/agents/:agent_id/tasks/:task_id/stop` | `{ authority_class? }` | `TaskStopResult` | Candidate stable route; DTO schema still broad | Requests managed-task cancellation. |
 | `GET` | `/agents/:agent_id/work-items` | none | `WorkItemRecord[]` | Experimental read model; CLI schema owner | Query parameter: `limit`; used by `holon work-item list`. |
 | `GET` | `/agents/:agent_id/work-items/:work_item_id` | none | `WorkItemRecord` | Experimental read model; CLI schema owner | Used by `holon work-item get`; returns 404 when the id is not found for the target agent. |
-| `POST` | `/control/agents/:agent_id/work-items` | `{ objective, authority_class? }` | `WorkItemRecord` | Experimental | Creates/enqueues work items; update/pick/complete APIs remain Phase 2 work. |
+| `POST` | `/control/agents/:agent_id/work-items` | `{ objective, authority_class? }` | `WorkItemRecord` | Experimental | Creates/enqueues work items. |
+| `POST` | `/control/agents/:agent_id/work-items/:work_item_id/pick` | `{ reason?, authority_class? }` | `PickWorkItemResponse` | Experimental | Sets the current WorkItem focus to an existing open WorkItem and returns the previous/current focus transition. |
+| `PATCH` | `/control/agents/:agent_id/work-items/:work_item_id` | `UpdateWorkItemRequest` | `WorkItemRecord` | Experimental | Mutates objective, plan status, todo list, and blocker/recheck fields. Empty mutations are rejected. |
+| `POST` | `/control/agents/:agent_id/work-items/:work_item_id/complete` | `{ authority_class? }` | `WorkItemRecord` | Experimental | Marks an open WorkItem completed; cancel/delete remains out of scope. |
 | `GET` | `/agents/:agent_id/timers/:timer_id` | Path `agent_id`, `timer_id`. | `TimerRecord` | Candidate stable route; DTO schema still broad | Returns 404 when the timer id is not found for the target agent. |
 | `POST` | `/control/agents/:agent_id/timers` | `{ duration_ms, interval_ms?, summary?, authority_class? }` | `TimerRecord` | Candidate stable for creation; cancellation remains Phase 2 work | `duration_ms` is required; `interval_ms` makes a repeating timer. |
 
@@ -359,9 +362,10 @@ treated as schema surfaces, not incidental Rust structs:
 3. **Event projection allowlist needs more real-world coverage.** `operator`
    now has a redaction contract, but additional runtime event kinds may need
    explicit allowlist additions as TUI/client consumption broadens.
-4. **WorkItem mutation APIs are incomplete.** HTTP can list/get/create/enqueue
-   work items and include them in state snapshots, but update/pick/complete
-   routes remain deferred.
+4. **WorkItem mutation APIs now cover focus/update/complete.** HTTP can
+   list/get/create/enqueue, pick focus, update objective/planning/blocker
+   fields, and complete work items. Cancel/delete remains intentionally out of
+   scope until a distinct lifecycle contract is needed.
 5. **Timer lifecycle APIs are incomplete.** HTTP can create/list/get timers,
    but lacks cancellation semantics and endpoint coverage.
 6. **Deployment guidance still needs hardening.** The HTTP ingress trust/auth
@@ -384,7 +388,6 @@ milestone and tracked by
 |-------|-------|
 | [#1438](https://github.com/holon-run/holon/issues/1438) `api: migrate OpenAPI baseline to aide route/type metadata` | Move OpenAPI operation metadata closer to route and DTO definitions. |
 | [#1439](https://github.com/holon-run/holon/issues/1439) `api: tighten OpenAPI DTO schemas for stable read models` | Replace selected generic JSON schemas with typed stable DTO schemas. |
-| [#1440](https://github.com/holon-run/holon/issues/1440) `api: add WorkItem mutation HTTP lifecycle endpoints` | Add or explicitly scope update/pick/complete mutation endpoints. |
 | [#1441](https://github.com/holon-run/holon/issues/1441) `api: add Timer cancellation lifecycle endpoint` | Define timer cancellation semantics and HTTP endpoint behavior. |
 | [#1443](https://github.com/holon-run/holon/issues/1443) `events: define stable operator-facing event payload subset` | Version/document stable event fields and projection/redaction boundaries. |
 
@@ -394,9 +397,7 @@ milestone and tracked by
    ([#1438](https://github.com/holon-run/holon/issues/1438)).
 2. Tighten DTO schemas for stable read models and control-plane results
    ([#1439](https://github.com/holon-run/holon/issues/1439)).
-3. Add WorkItem mutation endpoints or explicitly define the non-goals
-   ([#1440](https://github.com/holon-run/holon/issues/1440)).
-4. Add timer cancellation semantics and endpoint coverage
+3. Add timer cancellation semantics and endpoint coverage
    ([#1441](https://github.com/holon-run/holon/issues/1441)).
-5. Define the stable operator-facing event payload subset
+4. Define the stable operator-facing event payload subset
    ([#1443](https://github.com/holon-run/holon/issues/1443)).

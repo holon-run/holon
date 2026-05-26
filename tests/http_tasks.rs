@@ -24,5 +24,7 @@ http_async_tests!(
     work_item_routes_list_and_return_work_item_detail,
     create_work_item_route_does_not_replace_existing_active_item,
     create_work_item_route_rejects_empty_objective_with_bad_request,
+    work_item_mutation_routes_pick_update_and_complete,
+    work_item_mutation_routes_validate_bad_requests,
     timer_detail_route_returns_latest_timer_record,
 );
