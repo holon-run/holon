@@ -39,8 +39,6 @@ pub(crate) struct ExecCommandBatchItemArgs {
     pub(crate) login: Option<bool>,
     pub(crate) yield_time_ms: Option<u64>,
     pub(crate) max_output_tokens: Option<u64>,
-    pub(crate) tty: Option<bool>,
-    pub(crate) accepts_input: Option<bool>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -48,7 +46,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::LocalEnvironment,
         spec: crate::tool::spec::typed_spec::<ExecCommandBatchArgs>(
             NAME,
-            "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Per-item yield_time_ms defaults to 10_000 ms when omitted; set it only when intentionally changing that item's foreground wait window. Do not use tty, accepts_input, or non-command tools inside the batch.",
+            "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Per-item yield_time_ms defaults to 10_000 ms when omitted; set it only when intentionally changing that item's foreground wait window. Do not use non-command tools inside the batch.",
         )?,
     })
 }
@@ -163,18 +161,6 @@ async fn execute_batch_item(
 ) -> ExecCommandBatchItemResult {
     let started = Instant::now();
     let cmd = item.cmd.clone();
-    if let Some(error) = rejected_item_error(&item) {
-        return ExecCommandBatchItemResult {
-            index,
-            cmd,
-            status: ExecCommandBatchItemStatus::Rejected,
-            result: None,
-            error_kind: Some(error.kind),
-            error_message: Some(error.message),
-            duration_ms: Some(started.elapsed().as_millis() as u64),
-        };
-    }
-
     let spec = CommandTaskSpec {
         cmd: item.cmd,
         workdir: item.workdir,
@@ -224,31 +210,6 @@ async fn execute_batch_item(
             }
         }
     }
-}
-
-fn rejected_item_error(item: &ExecCommandBatchItemArgs) -> Option<ToolError> {
-    let field = if item.tty.is_some() {
-        Some("tty")
-    } else if item.accepts_input.is_some() {
-        Some("accepts_input")
-    } else {
-        None
-    }?;
-
-    Some(
-        ToolError::new(
-            "unsupported_batch_command_field",
-            format!("{NAME} items do not support `{field}`"),
-        )
-        .with_details(json!({
-            "field": field,
-            "reason": "batch command items cannot request interactive or command-task continuation semantics",
-        }))
-        .with_recovery_hint(format!(
-            "call ExecCommand directly when you need `{field}`"
-        ))
-        .with_retryable(false),
-    )
 }
 
 pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
@@ -348,39 +309,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_command_task_fields_in_items() {
-        let item = ExecCommandBatchItemArgs {
-            cmd: "python -i".into(),
-            workdir: None,
-            shell: None,
-            login: None,
-            yield_time_ms: None,
-            max_output_tokens: None,
-            tty: Some(true),
-            accepts_input: None,
+    fn rejects_unknown_fields_in_items() {
+        // tty is not a valid field on ExecCommandBatchItemArgs; serde deny_unknown_fields
+        // should reject it at parse time.
+        let input = serde_json::json!({
+            "items": [{
+                "cmd": "echo hello",
+                "tty": true
+            }]
+        });
+        let err = match serde_json::from_value::<ExecCommandBatchArgs>(input) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("tty should cause deserialization failure"),
         };
+        assert!(err.contains("tty"), "error should mention tty: {err}");
 
-        let error = rejected_item_error(&item).expect("tty should be rejected");
-        assert_eq!(error.kind, "unsupported_batch_command_field");
-        assert!(error.message.contains("tty"));
-
-        let item = ExecCommandBatchItemArgs {
-            cmd: "python -i".into(),
-            workdir: None,
-            shell: None,
-            login: None,
-            yield_time_ms: None,
-            max_output_tokens: None,
-            tty: None,
-            accepts_input: Some(true),
+        // Same for accepts_input
+        let input = serde_json::json!({
+            "items": [{
+                "cmd": "echo hello",
+                "accepts_input": true
+            }]
+        });
+        let err = match serde_json::from_value::<ExecCommandBatchArgs>(input) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("accepts_input should cause deserialization failure"),
         };
-        let error = rejected_item_error(&item).expect("accepts_input should be rejected");
-        assert_eq!(error.kind, "unsupported_batch_command_field");
-        assert!(error.message.contains("accepts_input"));
-        assert!(error
-            .recovery_hint
-            .as_deref()
-            .is_some_and(|hint| hint == "call ExecCommand directly when you need `accepts_input`"));
+        assert!(
+            err.contains("accepts_input"),
+            "error should mention accepts_input: {err}"
+        );
     }
 
     #[test]
