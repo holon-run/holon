@@ -298,7 +298,98 @@
                       "null"
                     ]
                   },
-                  "worktree": true
+                  "worktree": {
+                    "properties": {
+                      "actual_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "auto_cleaned_up": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "changed_files": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_cwd": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "projection_kind": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "retained_for_review": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "worktree_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "worktree_path": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
                 },
                 "required": [
                   "parent_agent_id",
@@ -540,7 +631,98 @@
                       "null"
                     ]
                   },
-                  "worktree": true
+                  "worktree": {
+                    "properties": {
+                      "actual_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "auto_cleaned_up": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "changed_files": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_cwd": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "projection_kind": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "retained_for_review": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "worktree_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "worktree_path": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
                 },
                 "required": [
                   "parent_agent_id",
@@ -828,7 +1010,98 @@
                   "null"
                 ]
               },
-              "worktree": true
+              "worktree": {
+                "properties": {
+                  "actual_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "auto_cleaned_up": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "branch_cleanup_error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "branch_cleanup_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "changed_files": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "cleanup_error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cleanup_reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cleanup_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "original_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "original_cwd": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "projection_kind": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "retained_for_review": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "worktree_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "worktree_path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
             },
             "required": [
               "parent_agent_id",
@@ -1134,7 +1407,98 @@
                       "null"
                     ]
                   },
-                  "worktree": true
+                  "worktree": {
+                    "properties": {
+                      "actual_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "auto_cleaned_up": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "changed_files": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_cwd": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "projection_kind": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "retained_for_review": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "worktree_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "worktree_path": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
                 },
                 "required": [
                   "parent_agent_id",

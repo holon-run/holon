@@ -2495,11 +2495,71 @@ pub struct ChildSupervisionProjection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_mode: Option<ChildAgentWorkspaceMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<Value>,
+    pub worktree: Option<ChildSupervisionWorktreeProjection>,
     pub cleanup_owner: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup_status: Option<String>,
     pub followup_target: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct ChildSupervisionWorktreeProjection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_cleaned_up: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_for_review: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_cleanup_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_cleanup_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_branch: Option<String>,
+}
+
+impl ChildSupervisionWorktreeProjection {
+    fn from_value(value: &Value) -> Self {
+        Self {
+            worktree_path: value_string(value, "worktree_path"),
+            worktree_branch: value_string(value, "worktree_branch"),
+            projection_kind: value_string(value, "projection_kind"),
+            original_cwd: value_string(value, "original_cwd"),
+            original_branch: value_string(value, "original_branch"),
+            changed_files: value
+                .get("changed_files")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect(),
+            cleanup_status: value_string(value, "cleanup_status"),
+            cleanup_reason: value_string(value, "cleanup_reason"),
+            cleanup_error: value_string(value, "cleanup_error"),
+            auto_cleaned_up: value.get("auto_cleaned_up").and_then(Value::as_bool),
+            retained_for_review: value.get("retained_for_review").and_then(Value::as_bool),
+            branch_cleanup_status: value_string(value, "branch_cleanup_status"),
+            branch_cleanup_error: value_string(value, "branch_cleanup_error"),
+            actual_branch: value_string(value, "actual_branch"),
+        }
+    }
 }
 
 impl ChildSupervisionProjection {
@@ -2523,7 +2583,9 @@ impl ChildSupervisionProjection {
             child_work_item_id: None,
             delegation_id: None,
             workspace_mode: task.child_agent_workspace_mode(),
-            worktree,
+            worktree: worktree
+                .as_ref()
+                .map(ChildSupervisionWorktreeProjection::from_value),
             cleanup_owner: "supervision_task".into(),
             cleanup_status,
             followup_target: "parent_supervisor".into(),
@@ -2909,6 +2971,13 @@ fn task_detail_i32(detail: &Option<Value>, key: &str) -> Option<i32> {
 
 fn task_detail_value<'a>(detail: &'a Option<Value>, key: &str) -> Option<&'a Value> {
     detail.as_ref().and_then(|detail| detail.get(key))
+}
+
+fn value_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
 }
 
 impl TaskRecoverySpec {
