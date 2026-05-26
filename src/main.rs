@@ -611,7 +611,11 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     // Always bind a localhost listener so local tools (holon tui, curl) can
     // connect even when the primary address targets a tailnet or LAN IP.
     // See: https://github.com/holon-run/holon/issues/1449
-    let local_listener = if !listener.local_addr()?.ip().is_loopback() {
+    let primary_ip = listener.local_addr()?.ip();
+    let primary_is_unspecified = primary_ip.is_unspecified();
+    // Skip when primary is already loopback or binds all interfaces (0.0.0.0 / ::),
+    // since binding 127.0.0.1 on the same port would fail with EADDRINUSE.
+    let local_listener = if !primary_ip.is_loopback() && !primary_is_unspecified {
         let local_addr = std::net::SocketAddr::new(
             std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             listener.local_addr()?.port(),
@@ -644,10 +648,10 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             runtime_service.shutdown_signal(),
         );
         let result = if let Some(local) = local_listener {
-            let local_router = http::router(AppState::for_tcp_with_runtime_service(
-                host.clone(),
-                Some(runtime_service.clone()),
-            ));
+            let local_router = http::router(
+                AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+                    .with_advertise_url(advertise_url.clone()),
+            );
             let local_server = axum::serve(local, local_router)
                 .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
             tokio::try_join!(tcp_server, unix_server, local_server)
@@ -666,10 +670,10 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     {
         runtime_service.write_state_files(&config)?;
         if let Some(local) = local_listener {
-            let local_router = http::router(AppState::for_tcp_with_runtime_service(
-                host.clone(),
-                Some(runtime_service.clone()),
-            ));
+            let local_router = http::router(
+                AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+                    .with_advertise_url(advertise_url.clone()),
+            );
             let local_server = axum::serve(local, local_router)
                 .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
             let tcp_server = axum::serve(listener, tcp_router)

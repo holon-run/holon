@@ -372,6 +372,7 @@ Probe error: {details}",
         if let Some(pid) = before.pid {
             match send_signal(pid, 15, "-TERM")? {
                 SignalOutcome::Delivered => {}
+                SignalOutcome::PermissionDenied => {}
                 SignalOutcome::MissingProcess => {
                     clear_persisted_daemon_lifecycle_failures(config)?;
                     cleanup_daemon_state(config)?;
@@ -769,6 +770,7 @@ fn push_diff(differences: &mut Vec<String>, key: &str, expected: String, actual:
 enum SignalOutcome {
     Delivered,
     MissingProcess,
+    PermissionDenied,
 }
 
 #[cfg(unix)]
@@ -778,6 +780,7 @@ fn send_signal(pid: u32, signal: i32, signal_name: &str) -> Result<SignalOutcome
     }
 
     const ESRCH: i32 = 3;
+    const EPERM: i32 = 1;
     let result = unsafe { kill(pid as i32, signal) };
     if result == 0 {
         return Ok(SignalOutcome::Delivered);
@@ -786,6 +789,9 @@ fn send_signal(pid: u32, signal: i32, signal_name: &str) -> Result<SignalOutcome
     let err = std::io::Error::last_os_error();
     if err.raw_os_error() == Some(ESRCH) {
         return Ok(SignalOutcome::MissingProcess);
+    }
+    if err.raw_os_error() == Some(EPERM) {
+        return Ok(SignalOutcome::PermissionDenied);
     }
     Err(anyhow!("kill {signal_name} {pid} failed: {err}"))
 }
@@ -901,12 +907,12 @@ fn unix_probe_stopped_socket_occupancy(root: &(dyn std::error::Error + 'static))
 fn pid_is_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        unsafe extern "C" {
-            fn kill(pid: i32, sig: i32) -> i32;
+        match send_signal(pid, 0, "0") {
+            Ok(SignalOutcome::Delivered) | Ok(SignalOutcome::PermissionDenied) => true,
+            Ok(SignalOutcome::MissingProcess) => false,
+            // Conservative: on unknown error assume the process may still exist.
+            Err(_) => true,
         }
-        // kill with signal 0 checks existence without sending a signal.
-        // SAFETY: signal 0 is a standard POSIX idiom.
-        unsafe { kill(pid as i32, 0) == 0 }
     }
     #[cfg(not(unix))]
     {
