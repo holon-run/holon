@@ -184,12 +184,16 @@ The scheduler does not understand what the external source means. It only knows:
 ### WaitingTimer
 
 A WorkItem is waiting for a timer when progress is intentionally delayed until
-a runtime-owned timer fires, such as a blocked-work recheck fallback.
+a runtime-owned timer fires.
+
+Blocked WorkItem `recheck_at` deadlines are not part of `WaitingTimer`; they
+remain `Blocked` and only create a fallback reminder for the owning agent to
+inspect the blocker.
 
 ### WaitingSystem
 
 A WorkItem is waiting for a runtime-owned system tick when progress should
-continue through scheduler-generated maintenance or recovery instead of
+continue by emitting scheduler-generated maintenance or recovery instead of
 operator input, task completion, a wall-clock timer, or an external callback.
 
 ### Blocked
@@ -545,8 +549,8 @@ Replace ad hoc runnable-work checks with state-derived closure behavior:
 - `WaitingTask` -> sleep until task result;
 - `WaitingOperator` -> wait for operator input;
 - `WaitingExternal` -> wait for wake source and surface recoverability;
-- `WaitingTimer` -> wait until the timer or recheck fallback fires;
-- `WaitingSystem` -> emit or await a runtime-owned system tick;
+- `WaitingTimer` -> wait until the runtime timer fires;
+- `WaitingSystem` -> emit a runtime-owned system tick;
 - `Blocked` -> expose blocker and do not auto-continue;
 - `Completed` -> ignore for scheduling.
 
