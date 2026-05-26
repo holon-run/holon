@@ -156,6 +156,12 @@ holon config models list         # Available models with status
 holon config credentials list    # Stored credential profiles
 ```
 
+Stable script-facing JSON contracts currently cover `holon config schema`,
+`holon config providers remove`, and `holon config credentials set/list/remove`.
+Other configuration inspection commands emit JSON too, but remain experimental
+until their provider/runtime DTO ownership is fully stabilized. Human-readable
+help and prose output are separate from these JSON contracts.
+
 ### Credential setup
 
 ```bash
