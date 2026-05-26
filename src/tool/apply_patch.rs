@@ -1263,12 +1263,10 @@ fn is_unsupported_git_feature(line: &str) -> bool {
 }
 
 fn strip_diff_prefix(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")) {
-        if !Path::new(rest).is_absolute() {
-            return rest.to_string();
-        }
-    }
-    path.to_string()
+    path.strip_prefix("a/")
+        .or_else(|| path.strip_prefix("b/"))
+        .unwrap_or(path)
+        .to_string()
 }
 
 fn validate_rename_paths(
@@ -1871,6 +1869,22 @@ mod tests {
             "hello\n"
         );
         assert!(!tokio::fs::try_exists(&doomed).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn apply_patch_strips_diff_prefix_from_absolute_paths() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+
+        let patch = format!(
+            "--- a/{}\n+++ b/{}\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+            file.display(),
+            file.display()
+        );
+
+        apply_patch(dir.path(), &patch).await.unwrap();
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "new\n");
     }
 
     #[tokio::test]

@@ -144,7 +144,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         {
             "Use Codex DSL file hunks: `*** Add File`, `*** Delete File`, `*** Update File`, optional `*** Move to`, and `@@` chunk separators when useful. Prefer focused chunks with enough surrounding context to stay unambiguous. Blank context lines within update chunks must have a space prefix."
         } else {
-            "Use unified diff `---`/`+++` file headers and `@@` hunks for deletes, precise edits, and renames. Prefer focused hunks with enough surrounding context to stay unambiguous. Include at least 3 context lines before and after each changed line, and expand to 5-10 lines when the file contains repeated structures or similar patterns. Blank lines within hunks must have a space prefix to be valid context lines."
+            "Use unified diff `---`/`+++` file headers and `@@` hunks for deletes, precise edits, and renames. For ordinary edits, the `--- a/path` and `+++ b/path` headers must refer to the same path; different paths are treated as a rename/move and require explicit `rename from` and `rename to` headers. Do not put old/new prose text in `---`/`+++` header lines; those lines must contain file paths. Prefer focused hunks with enough surrounding context to stay unambiguous. Include at least 3 context lines before and after each changed line, and expand to 5-10 lines when the file contains repeated structures or similar patterns. Blank lines within hunks must have a space prefix to be valid context lines."
         };
         sections.push(section(
             "tool_file_mutation",
@@ -641,6 +641,14 @@ mod tests {
         assert!(section
             .content
             .contains("formatter, script, command, or user edit"));
+        assert!(section.content.contains("For ordinary edits"));
+        assert!(section.content.contains("must refer to the same path"));
+        assert!(section
+            .content
+            .contains("different paths are treated as a rename/move"));
+        assert!(section.content.contains("rename from"));
+        assert!(section.content.contains("rename to"));
+        assert!(section.content.contains("Do not put old/new prose text"));
     }
 
     #[test]
@@ -672,6 +680,13 @@ mod tests {
         assert!(!apply_patch
             .content
             .contains("Current ApplyPatch surface is a JSON/function tool"));
+        let section = sections
+            .iter()
+            .find(|s| s.name == "tool_file_mutation")
+            .expect("file mutation section");
+        assert!(section.content.contains("Use Codex DSL file hunks"));
+        assert!(!section.content.contains("For ordinary edits"));
+        assert!(!section.content.contains("Do not put old/new prose text"));
     }
 
     #[test]
