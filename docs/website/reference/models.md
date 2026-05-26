@@ -1,6 +1,3 @@
-   Compiling holon v0.14.1 (/home/jolestar/opensource/src/github.com/holon-run/holon)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.31s
-     Running `target/debug/holon-docgen models`
 ---
 title: Supported Models
 description: Complete reference of all built-in models and providers supported by Holon.
@@ -312,4 +309,3 @@ and capabilities.
 | `zai-openai` | `glm-5-turbo` | `zai-openai/glm-5-turbo` | 202800 | 131100 | ✅ | — |
 | `zai-openai` | `glm-5.1` | `zai-openai/glm-5.1` | 202800 | 131100 | ✅ | — |
 | `zai-openai` | `glm-5v-turbo` | `zai-openai/glm-5v-turbo` | 202800 | 131100 | ✅ | ✅ |
-Generated model reference: 47 providers, 236 models.
