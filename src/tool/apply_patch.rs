@@ -2160,27 +2160,24 @@ rename to new.txt
     }
 
     #[tokio::test]
-    async fn apply_patch_keeps_prefixed_absolute_like_paths_workspace_relative() {
+    async fn apply_patch_strips_prefixed_absolute_add_paths() {
         let dir = tempdir().unwrap();
-        let patch = r#"--- /dev/null
-+++ b//tmp/target.txt
+        let external = tempdir().unwrap();
+        let file = external.path().join("target.txt");
+        let path = format!("b/{}", file.display());
+        let patch = format!(
+            r#"--- /dev/null
++++ {path}
 @@ -0,0 +1,1 @@
 +safe
-"#;
-
-        let outcome = apply_patch(dir.path(), patch).await.unwrap();
-
-        assert_eq!(
-            tokio::fs::read_to_string(dir.path().join("b/tmp/target.txt"))
-                .await
-                .unwrap(),
-            "safe\n"
+"#
         );
-        assert_eq!(outcome.changed_files[0].path, "b//tmp/target.txt");
-        assert_eq!(
-            outcome.changed_paths,
-            vec![dir.path().join("b/tmp/target.txt").display().to_string()]
-        );
+
+        let outcome = apply_patch(dir.path(), &patch).await.unwrap();
+
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "safe\n");
+        assert_eq!(outcome.changed_files[0].path, file.display().to_string());
+        assert_eq!(outcome.changed_paths, vec![file.display().to_string()]);
     }
 
     #[tokio::test]
