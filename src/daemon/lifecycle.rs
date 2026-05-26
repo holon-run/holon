@@ -392,7 +392,16 @@ Probe error: {details}",
                     status: daemon_status(config).await?,
                 });
             }
-            let _ = send_signal(pid, 9, "-KILL")?;
+            match send_signal(pid, 9, "-KILL")? {
+                SignalOutcome::Delivered | SignalOutcome::MissingProcess => {}
+                SignalOutcome::PermissionDenied => {
+                    // Neither TERM nor KILL could be delivered — the process
+                    // may still be running, so don't delete state files.
+                    return Err(anyhow!(
+                        "cannot stop daemon PID {pid}: permission denied (TERM and KILL both failed); run as root or the process owner to stop this daemon"
+                    ));
+                }
+            }
         }
     }
 
