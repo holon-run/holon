@@ -226,7 +226,6 @@
       "get": {
         "description": "Return lightweight public agent entries.",
         "operationId": "listAgents",
-        "parameters": [],
         "responses": {
           "200": {
             "content": {
@@ -267,7 +266,8 @@
         "summary": "List agents",
         "tags": [
           "agents"
-        ]
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
     "/agents/{agent_id}/briefs": {
@@ -282,7 +282,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "style": "simple"
           }
         ],
         "responses": {
@@ -325,7 +326,8 @@
         "summary": "Recent briefs",
         "tags": [
           "agents"
-        ]
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
     "/agents/{agent_id}/enqueue": {
@@ -572,7 +574,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "style": "simple"
           }
         ],
         "responses": {
@@ -615,7 +618,8 @@
         "summary": "Agent state snapshot",
         "tags": [
           "agents"
-        ]
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
     "/agents/{agent_id}/status": {
@@ -630,7 +634,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "style": "simple"
           }
         ],
         "responses": {
@@ -673,7 +678,8 @@
         "summary": "Agent status",
         "tags": [
           "agents"
-        ]
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
     "/agents/{agent_id}/tasks": {
@@ -1005,7 +1011,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "style": "simple"
           }
         ],
         "responses": {
@@ -1048,7 +1055,8 @@
         "summary": "Recent transcript",
         "tags": [
           "agents"
-        ]
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
     "/agents/{agent_id}/work-items": {
@@ -1188,7 +1196,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "style": "simple"
           }
         ],
         "responses": {
@@ -1231,14 +1240,14 @@
         "summary": "Worktree summary",
         "tags": [
           "agents"
-        ]
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
     "/briefs": {
       "get": {
         "description": "Compatibility alias for the default agent briefs route. Query parameter: limit.",
         "operationId": "defaultBriefs",
-        "parameters": [],
         "responses": {
           "200": {
             "content": {
@@ -1279,7 +1288,8 @@
         "summary": "Default agent briefs alias",
         "tags": [
           "compat"
-        ]
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
     "/callbacks/enqueue/{callback_token}": {
@@ -3098,7 +3108,6 @@
       "get": {
         "description": "Compatibility alias for the default agent state route.",
         "operationId": "defaultState",
-        "parameters": [],
         "responses": {
           "200": {
             "content": {
@@ -3139,14 +3148,14 @@
         "summary": "Default agent state alias",
         "tags": [
           "compat"
-        ]
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
     "/status": {
       "get": {
         "description": "Compatibility alias for the default agent status route.",
         "operationId": "defaultStatus",
-        "parameters": [],
         "responses": {
           "200": {
             "content": {
@@ -3187,14 +3196,14 @@
         "summary": "Default agent status alias",
         "tags": [
           "compat"
-        ]
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
     "/transcript": {
       "get": {
         "description": "Compatibility alias for the default agent transcript route. Query parameter: limit.",
         "operationId": "defaultTranscript",
-        "parameters": [],
         "responses": {
           "200": {
             "content": {
@@ -3235,7 +3244,8 @@
         "summary": "Default agent transcript alias",
         "tags": [
           "compat"
-        ]
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     },
     "/webhooks/generic/{agent_id}": {
@@ -3305,7 +3315,6 @@
       "get": {
         "description": "Compatibility alias for the default agent worktree summary route.",
         "operationId": "defaultWorktreeSummary",
-        "parameters": [],
         "responses": {
           "200": {
             "content": {
@@ -3346,7 +3355,8 @@
         "summary": "Default agent worktree summary alias",
         "tags": [
           "compat"
-        ]
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
       }
     }
   },
