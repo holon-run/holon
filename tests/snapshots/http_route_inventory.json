@@ -951,7 +951,34 @@
       }
     ],
     "request_schema": "CreateTimerRequest",
-    "request_strict": false,
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/control/agents/{agent_id}/timers/{timer_id}/cancel",
+    "handler": "cancel_timer",
+    "operation_id": "cancelTimer",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "timer_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "CancelTimerRequest",
+    "request_strict": true,
     "response_content_types": [
       "application/json"
     ],
