@@ -61,8 +61,9 @@ use crate::{
         MessageOrigin, OperatorNotificationRecord, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
-        TaskStatus, TaskStopResult, TimerRecord, TurnTerminalRecord, WaitingIntentRecord,
-        WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
+        TaskStatus, TaskStatusSnapshot, TaskStopResult, TimerRecord, TurnTerminalRecord,
+        WaitingIntentRecord, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
+        WorktreeSession,
     },
 };
 
@@ -1925,13 +1926,14 @@ pub async fn task_stop(
         .and_then(|detail| detail.get("force_stop_requested"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let snapshot = TaskStatusSnapshot::from_task_record(&task);
     let result = TaskStopResult {
         summary_text: Some(match task.status {
             TaskStatus::Cancelling => format!("stop requested for task {}", task.id),
             TaskStatus::Cancelled => format!("cancelled task {}", task.id),
             _ => format!("updated task {}", task.id),
         }),
-        task,
+        task: snapshot,
         stop_requested: true,
         force_stop_requested,
     };

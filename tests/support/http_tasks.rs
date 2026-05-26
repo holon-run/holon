@@ -441,7 +441,7 @@ pub async fn task_input_and_stop_routes_manage_task_lifecycle() -> Result<()> {
         .await?
         .json()
         .await?;
-    assert_eq!(stop["task"]["id"], stop_task_id);
+    assert_eq!(stop["task"]["task_id"], stop_task_id);
     assert_eq!(stop["stop_requested"], true);
 
     let missing = client

@@ -2,7 +2,10 @@ use aide::{
     axum::{routing::ApiMethodDocs, ApiRouter},
     openapi::{OpenApi, Operation},
 };
+use schemars::{generate::SchemaSettings, JsonSchema};
 use serde_json::{json, Value};
+
+use crate::types::{TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult};
 
 const API_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -15,6 +18,7 @@ struct RouteSpec {
     summary: &'static str,
     description: &'static str,
     request_schema: Option<&'static str>,
+    response_schema: Option<&'static str>,
     response_kind: ResponseKind,
     auth: AuthKind,
     metadata_source: MetadataSource,
@@ -57,10 +61,10 @@ const ROUTES: &[RouteSpec] = &[
     event_stream_route("get", "/agents/{agent_id}/events/stream", "agentEventsStream", "events", "Agent event stream", "Return Server-Sent Events carrying StreamEventEnvelope JSON data. Query parameters: after_seq, limit, projection. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/transcript", "agentTranscript", "agents", "Recent transcript", "Return recent transcript entries. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/tasks", "agentTasks", "tasks", "List active tasks", "Return active task records. Query parameter: limit.", None, AuthKind::RemoteAccess),
-    route("get", "/agents/{agent_id}/tasks/{task_id}", "agentTaskStatus", "tasks", "Task status", "Return a task lifecycle snapshot by id.", None, AuthKind::RemoteAccess),
-    route("get", "/agents/{agent_id}/tasks/{task_id}/output", "agentTaskOutput", "tasks", "Task output", "Return a task output snapshot. Query parameters: block, timeout_ms.", None, AuthKind::RemoteAccess),
-    route("post", "/control/agents/{agent_id}/tasks/{task_id}/input", "taskInput", "control", "Task input", "Deliver text input to a managed task.", Some("TaskInputRequest"), AuthKind::Control),
-    route("post", "/control/agents/{agent_id}/tasks/{task_id}/stop", "taskStop", "control", "Task stop", "Request cancellation for a managed task.", Some("TaskStopRequest"), AuthKind::Control),
+    route_with_response("get", "/agents/{agent_id}/tasks/{task_id}", "agentTaskStatus", "tasks", "Task status", "Return a task lifecycle snapshot by id.", None, "TaskStatusSnapshot", AuthKind::RemoteAccess),
+    route_with_response("get", "/agents/{agent_id}/tasks/{task_id}/output", "agentTaskOutput", "tasks", "Task output", "Return a task output snapshot. Query parameters: block, timeout_ms.", None, "TaskOutputResult", AuthKind::RemoteAccess),
+    route_with_response("post", "/control/agents/{agent_id}/tasks/{task_id}/input", "taskInput", "control", "Task input", "Deliver text input to a managed task.", Some("TaskInputRequest"), "TaskInputResult", AuthKind::Control),
+    route_with_response("post", "/control/agents/{agent_id}/tasks/{task_id}/stop", "taskStop", "control", "Task stop", "Request cancellation for a managed task.", Some("TaskStopRequest"), "TaskStopResult", AuthKind::Control),
     route("get", "/agents/{agent_id}/work-items", "agentWorkItems", "work-items", "List work items", "Return latest work item records for the agent. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/work-items/{work_item_id}", "agentWorkItem", "work-items", "Work item detail", "Return a work item record by id.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/worktree-summary", "agentWorktreeSummary", "agents", "Worktree summary", "Return managed worktree summary for an agent.", None, AuthKind::RemoteAccess),
@@ -118,6 +122,33 @@ const fn route(
         summary,
         description,
         request_schema,
+        response_schema: None,
+        response_kind: ResponseKind::Json,
+        auth,
+        metadata_source: MetadataSource::Manual,
+    }
+}
+
+const fn route_with_response(
+    method: &'static str,
+    path: &'static str,
+    operation_id: &'static str,
+    tag: &'static str,
+    summary: &'static str,
+    description: &'static str,
+    request_schema: Option<&'static str>,
+    response_schema: &'static str,
+    auth: AuthKind,
+) -> RouteSpec {
+    RouteSpec {
+        method,
+        path,
+        operation_id,
+        tag,
+        summary,
+        description,
+        request_schema,
+        response_schema: Some(response_schema),
         response_kind: ResponseKind::Json,
         auth,
         metadata_source: MetadataSource::Manual,
@@ -142,6 +173,7 @@ const fn aide_route(
         summary,
         description,
         request_schema,
+        response_schema: None,
         response_kind: ResponseKind::Json,
         auth,
         metadata_source: MetadataSource::Aide,
@@ -166,6 +198,7 @@ const fn event_stream_route(
         summary,
         description,
         request_schema,
+        response_schema: None,
         response_kind: ResponseKind::EventStream,
         auth,
         metadata_source: MetadataSource::Manual,
@@ -285,7 +318,7 @@ fn operation(spec: &RouteSpec) -> Value {
         "summary": spec.summary,
         "description": spec.description,
         "parameters": path_parameters(spec.path),
-        "responses": responses(spec.response_kind),
+        "responses": responses(spec.response_kind, spec.response_schema),
     });
     if let Some(schema) = spec.request_schema {
         op["requestBody"] = json!({
@@ -340,22 +373,33 @@ fn path_param(name: &str, description: &str) -> Value {
     })
 }
 
-fn responses(kind: ResponseKind) -> Value {
+fn responses(kind: ResponseKind, response_schema: Option<&str>) -> Value {
     match kind {
-        ResponseKind::Json => json!({
-            "200": {
-                "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized.",
-                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JsonValue" } } }
-            },
-            "4XX": {
-                "description": "Client error JSON response.",
-                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
-            },
-            "5XX": {
-                "description": "Server error JSON response.",
-                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
-            }
-        }),
+        ResponseKind::Json => {
+            let success_description = if response_schema.is_some() {
+                "Successful JSON response using a stable DTO schema."
+            } else {
+                "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            };
+            let success_schema = response_schema
+                .map(|schema| json!({ "$ref": format!("#/components/schemas/{schema}") }))
+                .unwrap_or_else(|| json!({ "$ref": "#/components/schemas/JsonValue" }));
+
+            json!({
+                "200": {
+                    "description": success_description,
+                    "content": { "application/json": { "schema": success_schema } }
+                },
+                "4XX": {
+                    "description": "Client error JSON response.",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+                },
+                "5XX": {
+                    "description": "Server error JSON response.",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+                }
+            })
+        }
         ResponseKind::EventStream => json!({
             "200": {
                 "description": "Server-Sent Events stream. Each data frame contains a StreamEventEnvelope JSON object.",
@@ -403,6 +447,22 @@ fn component_schemas() -> Value {
     schemas.insert("CallbackBody".into(), json!({
         "description": "Raw callback request body. JSON and text bodies are parsed; other content types are represented internally as base64 JSON."
     }));
+    schemas.insert(
+        "TaskStatusSnapshot".into(),
+        component_schema::<TaskStatusSnapshot>(),
+    );
+    schemas.insert(
+        "TaskOutputResult".into(),
+        component_schema::<TaskOutputResult>(),
+    );
+    schemas.insert(
+        "TaskInputResult".into(),
+        component_schema::<TaskInputResult>(),
+    );
+    schemas.insert(
+        "TaskStopResult".into(),
+        component_schema::<TaskStopResult>(),
+    );
     for name in [
         "EnqueueRequest",
         "IncomingOrigin",
@@ -430,6 +490,20 @@ fn component_schemas() -> Value {
         schemas.insert(name.into(), request_schema.clone());
     }
     Value::Object(schemas)
+}
+
+fn component_schema<T: JsonSchema>() -> Value {
+    let schema = SchemaSettings::draft07()
+        .with(|settings| {
+            settings.inline_subschemas = true;
+        })
+        .into_generator()
+        .into_root_schema_for::<T>();
+    let mut value = serde_json::to_value(schema).expect("serialize OpenAPI component schema");
+    if let Some(object) = value.as_object_mut() {
+        object.remove("$schema");
+    }
+    value
 }
 
 #[cfg(test)]

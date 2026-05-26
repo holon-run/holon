@@ -675,7 +675,7 @@ pub struct WorkReactivationSignal {
     pub reactivation_mode: WorkReactivationMode,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitingReason {
     AwaitingOperatorInput,
@@ -738,7 +738,7 @@ pub struct ClosureDecision {
     pub evidence: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskWaitPolicy {
     Background,
@@ -748,7 +748,7 @@ pub const CHILD_AGENT_TASK_KIND: &str = "child_agent_task";
 pub const LEGACY_SUBAGENT_TASK_KIND: &str = "subagent_task";
 pub const LEGACY_WORKTREE_SUBAGENT_TASK_KIND: &str = "worktree_subagent_task";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
     CommandTask,
@@ -787,7 +787,7 @@ impl std::fmt::Display for TaskKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildAgentWorkspaceMode {
     Inherit,
@@ -1207,7 +1207,7 @@ pub enum RuntimeFailurePhase {
     RuntimeTurn,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureArtifactCategory {
     Transport,
@@ -1217,7 +1217,7 @@ pub enum FailureArtifactCategory {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct FailureArtifact {
     pub category: FailureArtifactCategory,
     pub kind: String,
@@ -2194,7 +2194,7 @@ pub struct OperatorDeliveryRecord {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Queued,
@@ -2206,7 +2206,7 @@ pub enum TaskStatus {
     Interrupted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct TaskHandle {
     pub task_id: String,
     pub task_kind: String,
@@ -2240,7 +2240,7 @@ impl TaskHandle {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildAgentPhase {
     Running,
@@ -2249,7 +2249,7 @@ pub enum ChildAgentPhase {
     Terminal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildAgentBlockedReason {
     ManagedTaskQueued,
@@ -2258,7 +2258,7 @@ pub enum ChildAgentBlockedReason {
     AwaitingManagedTask,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ChildAgentObservabilitySnapshot {
     pub phase: ChildAgentPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2362,19 +2362,20 @@ impl TaskRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskListEntry {
     pub id: String,
     pub kind: String,
     pub status: TaskStatus,
     pub summary: Option<String>,
+    #[schemars(schema_with = "datetime_schema")]
     pub updated_at: DateTime<Utc>,
     pub wait_policy: TaskWaitPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<CommandTaskStatusSnapshot>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct CommandTaskStatusSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmd: Option<String>,
@@ -2480,7 +2481,7 @@ impl CommandTaskStatusSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ChildSupervisionProjection {
     pub parent_agent_id: String,
     pub child_agent_id: String,
@@ -2494,11 +2495,71 @@ pub struct ChildSupervisionProjection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_mode: Option<ChildAgentWorkspaceMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<Value>,
+    pub worktree: Option<ChildSupervisionWorktreeProjection>,
     pub cleanup_owner: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup_status: Option<String>,
     pub followup_target: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct ChildSupervisionWorktreeProjection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_cleaned_up: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_for_review: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_cleanup_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_cleanup_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_branch: Option<String>,
+}
+
+impl ChildSupervisionWorktreeProjection {
+    fn from_value(value: &Value) -> Self {
+        Self {
+            worktree_path: value_string(value, "worktree_path"),
+            worktree_branch: value_string(value, "worktree_branch"),
+            projection_kind: value_string(value, "projection_kind"),
+            original_cwd: value_string(value, "original_cwd"),
+            original_branch: value_string(value, "original_branch"),
+            changed_files: value
+                .get("changed_files")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect(),
+            cleanup_status: value_string(value, "cleanup_status"),
+            cleanup_reason: value_string(value, "cleanup_reason"),
+            cleanup_error: value_string(value, "cleanup_error"),
+            auto_cleaned_up: value.get("auto_cleaned_up").and_then(Value::as_bool),
+            retained_for_review: value.get("retained_for_review").and_then(Value::as_bool),
+            branch_cleanup_status: value_string(value, "branch_cleanup_status"),
+            branch_cleanup_error: value_string(value, "branch_cleanup_error"),
+            actual_branch: value_string(value, "actual_branch"),
+        }
+    }
 }
 
 impl ChildSupervisionProjection {
@@ -2522,7 +2583,9 @@ impl ChildSupervisionProjection {
             child_work_item_id: None,
             delegation_id: None,
             workspace_mode: task.child_agent_workspace_mode(),
-            worktree,
+            worktree: worktree
+                .as_ref()
+                .map(ChildSupervisionWorktreeProjection::from_value),
             cleanup_owner: "supervision_task".into(),
             cleanup_status,
             followup_target: "parent_supervisor".into(),
@@ -2537,14 +2600,16 @@ impl ChildSupervisionProjection {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskStatusSnapshot {
     pub task_id: String,
     pub kind: String,
     pub status: TaskStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[schemars(schema_with = "datetime_schema")]
     pub created_at: DateTime<Utc>,
+    #[schemars(schema_with = "datetime_schema")]
     pub updated_at: DateTime<Utc>,
     pub wait_policy: TaskWaitPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2584,7 +2649,7 @@ impl TaskStatusSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskOutputRetrievalStatus {
     Success,
@@ -2592,7 +2657,7 @@ pub enum TaskOutputRetrievalStatus {
     NotReady,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskOutputSnapshot {
     pub task_id: String,
     pub kind: String,
@@ -2612,7 +2677,7 @@ pub struct TaskOutputSnapshot {
     pub child_supervision: Option<ChildSupervisionProjection>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskOutputResult {
     pub retrieval_status: TaskOutputRetrievalStatus,
     pub task: TaskOutputSnapshot,
@@ -2720,19 +2785,19 @@ pub struct ExecCommandBatchResult {
     pub summary_text: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ToolArtifactRef {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskStatusResult {
     pub task: TaskStatusSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskInputResult {
     pub task: TaskStatusSnapshot,
     pub accepted_input: bool,
@@ -2838,13 +2903,20 @@ pub struct UseWorkspaceResult {
     pub summary_text: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskStopResult {
-    pub task: TaskRecord,
+    pub task: TaskStatusSnapshot,
     pub stop_requested: bool,
     pub force_stop_requested: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
+}
+
+fn datetime_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "format": "date-time"
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2899,6 +2971,13 @@ fn task_detail_i32(detail: &Option<Value>, key: &str) -> Option<i32> {
 
 fn task_detail_value<'a>(detail: &'a Option<Value>, key: &str) -> Option<&'a Value> {
     detail.as_ref().and_then(|detail| detail.get(key))
+}
+
+fn value_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
 }
 
 impl TaskRecoverySpec {

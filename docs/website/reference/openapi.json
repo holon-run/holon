@@ -143,9 +143,1524 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "TaskInputResult": {
+        "properties": {
+          "accepted_input": {
+            "type": "boolean"
+          },
+          "bytes_written": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "input_target": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task": {
+            "properties": {
+              "child_agent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "child_observability": {
+                "properties": {
+                  "blocked_reason": {
+                    "enum": [
+                      "managed_task_queued",
+                      "managed_task_running",
+                      "managed_task_cancelling",
+                      "awaiting_managed_task",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "current_work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "last_progress_brief": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "last_result_brief": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "phase": {
+                    "enum": [
+                      "running",
+                      "blocked",
+                      "waiting",
+                      "terminal"
+                    ],
+                    "type": "string"
+                  },
+                  "waiting_reason": {
+                    "enum": [
+                      "awaiting_operator_input",
+                      "awaiting_external_change",
+                      "awaiting_task_result",
+                      "awaiting_timer",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "work_summary": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "phase"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "child_supervision": {
+                "properties": {
+                  "child_agent_id": {
+                    "type": "string"
+                  },
+                  "child_work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cleanup_owner": {
+                    "type": "string"
+                  },
+                  "cleanup_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "delegation_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "followup_target": {
+                    "type": "string"
+                  },
+                  "parent_agent_id": {
+                    "type": "string"
+                  },
+                  "parent_work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "supervision_task_id": {
+                    "type": "string"
+                  },
+                  "workspace_mode": {
+                    "enum": [
+                      "inherit",
+                      "worktree",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "worktree": {
+                    "properties": {
+                      "actual_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "auto_cleaned_up": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "changed_files": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_cwd": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "projection_kind": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "retained_for_review": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "worktree_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "worktree_path": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "parent_agent_id",
+                  "child_agent_id",
+                  "supervision_task_id",
+                  "cleanup_owner",
+                  "followup_target"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "command": {
+                "properties": {
+                  "accepts_input": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "cmd": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cmd_digest": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exit_status": {
+                    "format": "int32",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "input_target": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "login": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "output_path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "promoted_from_exec_command": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "result_summary": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "shell": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "terminal_reentry": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "tty": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "workdir": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "parent_message_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "queued",
+                  "running",
+                  "cancelling",
+                  "completed",
+                  "failed",
+                  "cancelled",
+                  "interrupted"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "wait_policy": {
+                "enum": [
+                  "background"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id",
+              "kind",
+              "status",
+              "created_at",
+              "updated_at",
+              "wait_policy"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "task",
+          "accepted_input"
+        ],
+        "title": "TaskInputResult",
+        "type": "object"
+      },
+      "TaskOutputResult": {
+        "properties": {
+          "retrieval_status": {
+            "enum": [
+              "success",
+              "timeout",
+              "not_ready"
+            ],
+            "type": "string"
+          },
+          "task": {
+            "properties": {
+              "artifacts": {
+                "items": {
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "child_supervision": {
+                "properties": {
+                  "child_agent_id": {
+                    "type": "string"
+                  },
+                  "child_work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cleanup_owner": {
+                    "type": "string"
+                  },
+                  "cleanup_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "delegation_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "followup_target": {
+                    "type": "string"
+                  },
+                  "parent_agent_id": {
+                    "type": "string"
+                  },
+                  "parent_work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "supervision_task_id": {
+                    "type": "string"
+                  },
+                  "workspace_mode": {
+                    "enum": [
+                      "inherit",
+                      "worktree",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "worktree": {
+                    "properties": {
+                      "actual_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "auto_cleaned_up": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "changed_files": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_cwd": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "projection_kind": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "retained_for_review": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "worktree_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "worktree_path": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "parent_agent_id",
+                  "child_agent_id",
+                  "supervision_task_id",
+                  "cleanup_owner",
+                  "followup_target"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "exit_status": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "failure_artifact": {
+                "properties": {
+                  "category": {
+                    "enum": [
+                      "transport",
+                      "protocol",
+                      "runtime",
+                      "task",
+                      "unknown"
+                    ],
+                    "type": "string"
+                  },
+                  "exit_status": {
+                    "format": "int32",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
+                  "model_ref": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "provider": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source_chain": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "status": {
+                    "format": "uint16",
+                    "maximum": 65535,
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "task_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "category",
+                  "kind",
+                  "summary"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "output_artifact": {
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_preview": {
+                "type": "string"
+              },
+              "output_truncated": {
+                "type": "boolean"
+              },
+              "result_summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "queued",
+                  "running",
+                  "cancelling",
+                  "completed",
+                  "failed",
+                  "cancelled",
+                  "interrupted"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id",
+              "kind",
+              "status",
+              "output_preview",
+              "output_truncated"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "retrieval_status",
+          "task"
+        ],
+        "title": "TaskOutputResult",
+        "type": "object"
+      },
+      "TaskStatusSnapshot": {
+        "properties": {
+          "child_agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "child_observability": {
+            "properties": {
+              "blocked_reason": {
+                "enum": [
+                  "managed_task_queued",
+                  "managed_task_running",
+                  "managed_task_cancelling",
+                  "awaiting_managed_task",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "current_work_item_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "last_progress_brief": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "last_result_brief": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "phase": {
+                "enum": [
+                  "running",
+                  "blocked",
+                  "waiting",
+                  "terminal"
+                ],
+                "type": "string"
+              },
+              "waiting_reason": {
+                "enum": [
+                  "awaiting_operator_input",
+                  "awaiting_external_change",
+                  "awaiting_task_result",
+                  "awaiting_timer",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "work_summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "phase"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "child_supervision": {
+            "properties": {
+              "child_agent_id": {
+                "type": "string"
+              },
+              "child_work_item_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cleanup_owner": {
+                "type": "string"
+              },
+              "cleanup_status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "delegation_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "followup_target": {
+                "type": "string"
+              },
+              "parent_agent_id": {
+                "type": "string"
+              },
+              "parent_work_item_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "supervision_task_id": {
+                "type": "string"
+              },
+              "workspace_mode": {
+                "enum": [
+                  "inherit",
+                  "worktree",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree": {
+                "properties": {
+                  "actual_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "auto_cleaned_up": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "branch_cleanup_error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "branch_cleanup_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "changed_files": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "cleanup_error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cleanup_reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cleanup_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "original_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "original_cwd": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "projection_kind": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "retained_for_review": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "worktree_branch": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "worktree_path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "parent_agent_id",
+              "child_agent_id",
+              "supervision_task_id",
+              "cleanup_owner",
+              "followup_target"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "command": {
+            "properties": {
+              "accepts_input": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "cmd": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cmd_digest": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exit_status": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_target": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "login": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "output_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "promoted_from_exec_command": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "result_summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "shell": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "terminal_reentry": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "tty": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "workdir": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "parent_message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "completed",
+              "failed",
+              "cancelled",
+              "interrupted"
+            ],
+            "type": "string"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "wait_policy": {
+            "enum": [
+              "background"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "kind",
+          "status",
+          "created_at",
+          "updated_at",
+          "wait_policy"
+        ],
+        "title": "TaskStatusSnapshot",
+        "type": "object"
+      },
       "TaskStopRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "TaskStopResult": {
+        "properties": {
+          "force_stop_requested": {
+            "type": "boolean"
+          },
+          "stop_requested": {
+            "type": "boolean"
+          },
+          "summary_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task": {
+            "properties": {
+              "child_agent_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "child_observability": {
+                "properties": {
+                  "blocked_reason": {
+                    "enum": [
+                      "managed_task_queued",
+                      "managed_task_running",
+                      "managed_task_cancelling",
+                      "awaiting_managed_task",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "current_work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "last_progress_brief": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "last_result_brief": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "phase": {
+                    "enum": [
+                      "running",
+                      "blocked",
+                      "waiting",
+                      "terminal"
+                    ],
+                    "type": "string"
+                  },
+                  "waiting_reason": {
+                    "enum": [
+                      "awaiting_operator_input",
+                      "awaiting_external_change",
+                      "awaiting_task_result",
+                      "awaiting_timer",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "work_summary": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "phase"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "child_supervision": {
+                "properties": {
+                  "child_agent_id": {
+                    "type": "string"
+                  },
+                  "child_work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cleanup_owner": {
+                    "type": "string"
+                  },
+                  "cleanup_status": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "delegation_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "followup_target": {
+                    "type": "string"
+                  },
+                  "parent_agent_id": {
+                    "type": "string"
+                  },
+                  "parent_work_item_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "supervision_task_id": {
+                    "type": "string"
+                  },
+                  "workspace_mode": {
+                    "enum": [
+                      "inherit",
+                      "worktree",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "worktree": {
+                    "properties": {
+                      "actual_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "auto_cleaned_up": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "branch_cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "changed_files": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "cleanup_error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cleanup_status": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "original_cwd": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "projection_kind": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "retained_for_review": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "worktree_branch": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "worktree_path": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "parent_agent_id",
+                  "child_agent_id",
+                  "supervision_task_id",
+                  "cleanup_owner",
+                  "followup_target"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "command": {
+                "properties": {
+                  "accepts_input": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "cmd": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "cmd_digest": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "exit_status": {
+                    "format": "int32",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "input_target": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "login": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "output_path": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "promoted_from_exec_command": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "result_summary": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "shell": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "terminal_reentry": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "tty": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "workdir": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "parent_message_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "queued",
+                  "running",
+                  "cancelling",
+                  "completed",
+                  "failed",
+                  "cancelled",
+                  "interrupted"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "wait_policy": {
+                "enum": [
+                  "background"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id",
+              "kind",
+              "status",
+              "created_at",
+              "updated_at",
+              "wait_policy"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "task",
+          "stop_requested",
+          "force_stop_requested"
+        ],
+        "title": "TaskStopResult",
         "type": "object"
       },
       "UninstallSkillRequest": {
@@ -769,11 +2284,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/TaskStatusSnapshot"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
@@ -836,11 +2351,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/TaskOutputResult"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
@@ -2283,11 +3798,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/TaskInputResult"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
@@ -2360,11 +3875,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/TaskStopResult"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
