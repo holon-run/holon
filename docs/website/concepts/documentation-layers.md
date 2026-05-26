@@ -83,8 +83,6 @@ cluttering the active surface.
 - Website pages link to RFCs as "deeper design background" — not as required
   reading.
 - The repository `README.md` links to the website as the product entry point.
-- The documentation cleanup audit (`docs/documentation-cleanup-audit.md`)
-  tracks stale references and vocabulary drift across layers.
 
 ## When to update which layer
 
