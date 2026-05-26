@@ -39,7 +39,6 @@ Tools are grouped by capability family for authority gating:
 | `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `UseWorkspace` | All profiles |
 | `Web` | `WebFetch`, `WebSearch` | All profiles |
 | `AgentCreation` | `SpawnAgent` | All profiles |
-| `ExternalTrigger` | `CreateExternalTrigger`, `CancelExternalTrigger` | Deprecated |
 | `OperatorNotification` | `NotifyOperator` | All profiles |
 
 ## Complete tool listing
@@ -143,16 +142,6 @@ rendered as a human-readable receipt:
 
 `ExecCommand` results carry additional fields: `disposition`,
 `initial_output_preview`, `task_handle` (when promoted to command_task).
-
-## Deprecated surfaces
-
-| Tool | Status |
-|------|--------|
-| `CreateExternalTrigger` | Deprecated. Trigger provisioning is now initialization-time. |
-| `CancelExternalTrigger` | Deprecated. Revocation is administrative. |
-
-These tools still exist in `src/tool/tools/` for backward compatibility but
-should not be presented to the model as active tool surfaces.
 
 ## Known gaps
 
