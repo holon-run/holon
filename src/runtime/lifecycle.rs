@@ -918,19 +918,6 @@ impl RuntimeHandle {
     ) -> Result<()> {
         let agent_id = self.agent_id().await?;
         let existing_state = self.agent_state().await?;
-        if projection_kind == WorkspaceProjectionKind::GitWorktreeRoot
-            && existing_state
-                .active_workspace_entry
-                .as_ref()
-                .is_some_and(|entry| {
-                    entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot
-                })
-        {
-            return Err(anyhow!(
-                "agent {} is already using an isolated execution root; use UseWorkspace with a direct workspace before creating another isolated root",
-                agent_id
-            ));
-        }
         if !existing_state
             .attached_workspaces
             .iter()
@@ -1084,16 +1071,6 @@ impl RuntimeHandle {
     ) -> Result<()> {
         let agent_id = self.agent_id().await?;
         let existing_state = self.agent_state().await?;
-        if existing_state
-            .active_workspace_entry
-            .as_ref()
-            .is_some_and(|entry| entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot)
-        {
-            return Err(anyhow!(
-                "agent {} is already using an isolated execution root; use UseWorkspace with a direct workspace before entering another git worktree root",
-                agent_id
-            ));
-        }
         if !existing_state
             .attached_workspaces
             .iter()
