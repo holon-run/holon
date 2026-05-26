@@ -705,9 +705,11 @@ fn work_item_document_body(item: &WorkItemRecord) -> String {
             work_item_plan_status_label(item.plan_status)
         ),
     ];
-    if let Some(plan) = item.plan.as_deref().filter(|plan| !plan.trim().is_empty()) {
-        lines.push("Plan:".into());
-        lines.push(plan.to_string());
+    if let Some(plan_artifact) = item.plan_artifact.as_ref() {
+        if !plan_artifact.preview.trim().is_empty() {
+            lines.push("Plan preview:".into());
+            lines.push(plan_artifact.preview.clone());
+        }
     }
     if !item.todo_list.is_empty() {
         lines.push("Todo list:".into());
@@ -1276,7 +1278,18 @@ mod tests {
         );
         work_item.workspace_id = "ws-holon".into();
         work_item.plan_status = WorkItemPlanStatus::Ready;
-        work_item.plan = Some("Persist checksum-oriented task understanding in recall.".into());
+        work_item.plan_artifact = Some(crate::types::WorkItemPlanArtifact {
+            owner_agent_id: "default".into(),
+            workspace_id: crate::types::agent_home_workspace_id("default"),
+            workspace_alias: Some(crate::types::AGENT_HOME_WORKSPACE_ID.into()),
+            relative_path: PathBuf::from("work-items/work-memory/plan.md"),
+            path: dir.path().join("work-items/work-memory/plan.md"),
+            hash: "sha256:test".into(),
+            bytes: 54,
+            updated_at: Utc::now(),
+            preview: "Persist checksum-oriented task understanding in recall.".into(),
+            preview_complete: true,
+        });
         work_item.todo_list = vec![
             TodoItem {
                 text: "Index durable objective plan text".into(),

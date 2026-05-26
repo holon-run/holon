@@ -1949,7 +1949,7 @@ impl RuntimeHandle {
             &record,
             plan.as_deref(),
         )?);
-        record.plan = None;
+        record.legacy_inline_plan = None;
         record.todo_list = todo_list;
         record.workspace_id = self
             .agent_state()

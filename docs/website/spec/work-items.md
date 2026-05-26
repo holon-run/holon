@@ -9,7 +9,7 @@ order: 20
 This page defines the current contract for WorkItem runtime behavior:
 lifecycle, focus, readiness, planning, blocking, and completion semantics.
 
-> **Last verified:** 2026-05-23 against `src/types.rs` `WorkItemRecord`,
+> **Last verified:** 2026-05-26 against `src/types.rs` `WorkItemRecord`,
 > `WorkItemState`, `WorkItemPlanStatus`, `WorkItemReadiness`,
 > `WorkItemSchedulingState`, and the tool implementations in
 > `src/tool/tools/{create,update,pick,list,get,complete}_work_item.rs`.
@@ -35,6 +35,7 @@ A WorkItem is a durable objective record owned by an agent. It tracks:
 | `todo_list` | Progress checklist snapshot |
 | `blocked_by` | Human-readable blocker description |
 | `recheck_at` | Fallback deadline for blocked re-evaluation |
+| `recheck_consumed_at` | Marker that the current recheck reminder was delivered |
 | `result_summary` | Completion summary (optional) |
 
 The Rust enum `WorkItemPlanStatus` uses PascalCase variants (`Draft`, `Ready`,
@@ -165,9 +166,6 @@ the agent's home directory (`work-items/<id>/plan.md`). The plan artifact:
   granularity at the display layer.
 - Plan artifact path resolution depends on agent home workspace; cross-agent
   WorkItem reads may need explicit workspace routing.
-- `WorkItemRecord` still retains a legacy `plan: Option<String>` field
-  alongside `plan_artifact`. See
-  [issue #1379](https://github.com/holon-run/holon/issues/1379).
-- `recheck_after` / `recheck_at` / `recheck_consumed_at` scheduling semantics
-  are not described in the WorkItem RFC. See
-  [issue #1379](https://github.com/holon-run/holon/issues/1379).
+- Older ledger snapshots that contain inline `plan` text are migrated into the
+  AgentHome plan artifact when the WorkItem is refreshed. Current snapshots do
+  not serialize inline plan body state.

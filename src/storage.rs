@@ -3342,7 +3342,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         let mut work_item = WorkItemRecord::new("default", "fix issue #223", WorkItemState::Open);
-        work_item.plan = Some("Implement the new WorkItem model.".into());
+        work_item.legacy_inline_plan = Some("Implement the new WorkItem model.".into());
         work_item.todo_list = vec![TodoItem {
             text: "persist work item store".into(),
             state: TodoItemState::InProgress,
@@ -3354,7 +3354,7 @@ mod tests {
         assert_eq!(snapshot.work_items.len(), 1);
         assert_eq!(snapshot.work_items[0].id, work_item.id);
         assert_eq!(
-            snapshot.work_items[0].plan.as_deref(),
+            snapshot.work_items[0].legacy_inline_plan.as_deref(),
             Some("Implement the new WorkItem model.")
         );
         assert_eq!(

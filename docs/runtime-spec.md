@@ -1922,7 +1922,7 @@ fallback recheck deadline. Updating other WorkItem fields without touching
 
 There is no separate agent-facing `UpdateWorkPlan` tool and no separate
 work-plan storage stream. Plan body state lives in the AgentHome plan artifact;
-`WorkItemRecord.plan` is legacy compatibility state and is not the current
+`plan_artifact` is the only persisted WorkItem plan reference in the current
 agent-facing read/write contract. `plan_status` and `todo_list` remain explicit
 WorkItem state. Agent-scoped external trigger capabilities are cancelled only
 by explicit revoke or rotation.

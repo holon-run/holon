@@ -3067,8 +3067,8 @@ pub struct WorkItemRecord {
     pub objective: String,
     pub state: WorkItemState,
     pub plan_status: WorkItemPlanStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan: Option<String>,
+    #[serde(default, alias = "plan", skip_serializing)]
+    pub legacy_inline_plan: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_artifact: Option<WorkItemPlanArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3101,7 +3101,7 @@ impl WorkItemRecord {
             objective: objective.into(),
             state,
             plan_status: WorkItemPlanStatus::Draft,
-            plan: None,
+            legacy_inline_plan: None,
             plan_artifact: None,
             todo_list: Vec::new(),
             blocked_by: None,
@@ -4273,6 +4273,37 @@ mod tests {
         work_item.as_object_mut().unwrap().remove("workspace_id");
         let work_item: WorkItemRecord = serde_json::from_value(work_item).unwrap();
         assert_eq!(work_item.workspace_id, AGENT_HOME_WORKSPACE_ID);
+
+        let mut legacy_inline_plan =
+            WorkItemRecord::new("default", "migrate inline plan", WorkItemState::Open);
+        legacy_inline_plan.legacy_inline_plan = Some("legacy body".into());
+        let serialized_legacy_inline_plan = serde_json::to_value(&legacy_inline_plan).unwrap();
+        assert!(
+            serialized_legacy_inline_plan.get("plan").is_none(),
+            "WorkItemRecord must not serialize inline plan body state"
+        );
+        assert!(
+            serialized_legacy_inline_plan
+                .get("legacy_inline_plan")
+                .is_none(),
+            "legacy inline plan migration state must stay internal"
+        );
+
+        let legacy_inline_plan: WorkItemRecord = serde_json::from_value(serde_json::json!({
+            "id": "work_legacy_inline_plan",
+            "agent_id": "default",
+            "objective": "ship",
+            "state": "open",
+            "plan_status": "ready",
+            "plan": "legacy body",
+            "created_at": "2026-04-20T00:00:00Z",
+            "updated_at": "2026-04-20T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy_inline_plan.legacy_inline_plan.as_deref(),
+            Some("legacy body")
+        );
 
         let legacy_work_item = serde_json::json!({
             "id": "work_legacy",

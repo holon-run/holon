@@ -2820,7 +2820,8 @@ mod tests {
             "storage and recovery foundation",
             crate::types::WorkItemState::Open,
         );
-        active.plan = Some("Persist the work item store and project it into prompts.".into());
+        active.legacy_inline_plan =
+            Some("Persist the work item store and project it into prompts.".into());
         active.todo_list = vec![
             TodoItem {
                 text: "Persist work-item store".into(),
@@ -3058,13 +3059,13 @@ mod tests {
             crate::types::WorkItemState::Open,
         );
         triggered.blocked_by = Some("waiting for CI".into());
-        triggered.plan = Some("Handle the triggered CI result.".into());
+        triggered.legacy_inline_plan = Some("Handle the triggered CI result.".into());
         let mut queued = crate::types::WorkItemRecord::new(
             "default",
             "Queue follow-up verification",
             crate::types::WorkItemState::Open,
         );
-        queued.plan = Some(format!(
+        queued.legacy_inline_plan = Some(format!(
             "Verify the queued path.\n{}",
             "queued detail ".repeat(200)
         ));
@@ -3074,7 +3075,7 @@ mod tests {
             crate::types::WorkItemState::Open,
         );
         waiting.plan_status = crate::types::WorkItemPlanStatus::NeedsInput;
-        waiting.plan = Some("Wait for the operator answer before retrying.".into());
+        waiting.legacy_inline_plan = Some("Wait for the operator answer before retrying.".into());
         let mut completed = crate::types::WorkItemRecord::new(
             "default",
             "Already finished item",

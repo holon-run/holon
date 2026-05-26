@@ -853,7 +853,12 @@ fn build_work_item_stale_reminder(
             work_item_plan_status_label(work_item.plan_status)
         ),
     ];
-    if let Some(plan) = work_item.plan.as_deref() {
+    if let Some(plan) = work_item
+        .plan_artifact
+        .as_ref()
+        .map(|artifact| artifact.preview.as_str())
+        .filter(|preview| !preview.trim().is_empty())
+    {
         lines.push("- Plan:".to_string());
         let mut plan_chars = 0usize;
         for line in plan.lines().take(WORK_ITEM_STALE_REMINDER_PLAN_LINE_LIMIT) {
@@ -3371,7 +3376,7 @@ mod tests {
         );
         work_item.id = "work_reminder".into();
         work_item.plan_status = WorkItemPlanStatus::Ready;
-        work_item.plan = Some("Patch runtime reminder.\nRun focused tests.".into());
+        work_item.legacy_inline_plan = Some("Patch runtime reminder.\nRun focused tests.".into());
         work_item.todo_list = vec![
             crate::types::TodoItem {
                 text: "Patch runtime reminder".into(),
@@ -3445,7 +3450,7 @@ mod tests {
         );
         work_item.id = "work_large_reminder".into();
         work_item.plan_status = WorkItemPlanStatus::Ready;
-        work_item.plan = Some(
+        work_item.legacy_inline_plan = Some(
             (0..80)
                 .map(|idx| format!("step {idx}: {}", "inspect and verify ".repeat(40)))
                 .collect::<Vec<_>>()
