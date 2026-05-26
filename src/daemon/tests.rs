@@ -402,11 +402,16 @@ async fn probe_runtime_reports_running_when_socket_missing_but_pid_alive() {
     // Use the current process PID — guaranteed alive.
     let pid = std::process::id();
     fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    // Use metadata paths that differ from current config to verify the
+    // fallback returns persisted metadata, not caller config.
+    let metadata_home = config.home_dir.join("persisted-home");
+    let metadata_socket = metadata_home.join("run").join("holon.sock");
+    let metadata_http = "127.0.0.1:19999".to_string();
     let metadata = RuntimeServiceMetadata {
         pid,
-        home_dir: config.home_dir.clone(),
-        socket_path: config.socket_path.clone(),
-        http_addr: config.http_addr.clone(),
+        home_dir: metadata_home.clone(),
+        socket_path: metadata_socket.clone(),
+        http_addr: metadata_http.clone(),
         started_at: Utc::now(),
         config_fingerprint: config_fingerprint(&config).unwrap(),
     };
@@ -415,6 +420,9 @@ async fn probe_runtime_reports_running_when_socket_missing_but_pid_alive() {
     match probe_runtime(&config).await {
         ProbeRuntime::Running(status) => {
             assert_eq!(status.pid, pid);
+            assert_eq!(status.home_dir, metadata_home);
+            assert_eq!(status.socket_path, metadata_socket);
+            assert_eq!(status.http_addr, metadata_http);
         }
         other => panic!("expected Running, got {:?}", other),
     }
