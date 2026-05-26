@@ -1,7 +1,10 @@
 //! Holon documentation generator.
 //!
 //! Generates markdown reference docs from built-in provider and model runtime metadata.
-//! Run with: `cargo run --bin holon-docgen -- models > docs/website/reference/models.md`
+//! Run with: `cargo run --bin holon-docgen -- models > docs/website/reference/models.md`.
+//!
+//! Run in a clean environment (no HOLON_* or provider-specific env overrides) for
+//! deterministic output that reflects the true built-in defaults.
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -32,13 +35,18 @@ fn transport_display(transport: &ProviderTransportKind) -> String {
     }
 }
 
+fn format_tokens(tokens: impl std::fmt::Display) -> String {
+    tokens.to_string()
+}
+
 fn generate_models_doc() -> anyhow::Result<()> {
     let catalog = holon::model_catalog::BuiltInModelCatalog::new();
     let models = catalog.list();
     let providers = holon::config::built_in_provider_doc_entries()?;
 
-    // Print header
-    println!(
+    // Print header — use print! to avoid an extra blank line after the header
+    // separator row, which would break Markdown table rendering.
+    print!(
         r#"---
 title: Supported Models
 description: Complete reference of all built-in models and providers supported by Holon.
@@ -50,7 +58,7 @@ generated: auto-generated from holon source — do not edit directly
 Holon includes built-in configuration for **{provider_count} providers** and **{model_count} models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
-Run `cargo run --bin holon-docgen -- models` to regenerate.
+Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
 
 ## Provider Setup
 
@@ -78,7 +86,7 @@ running Holon.
     }
 
     // Print models section
-    println!(
+    print!(
         r#"
 ## Model Catalog
 
@@ -104,8 +112,8 @@ and capabilities.
             "| `{provider}` | `{model}` | `{provider}/{model}` | {ctx} | {max_out} | {reasoning} | {image} |",
             provider = m.model_ref.provider.as_str(),
             model = m.model_ref.model,
-            ctx = m.context_window_tokens.map_or("—".to_string(), |c| format!("{}K", c / 1000)),
-            max_out = m.default_max_output_tokens.map_or("—".to_string(), |c| format!("{}K", c / 1000)),
+            ctx = m.context_window_tokens.map_or("—".to_string(), format_tokens),
+            max_out = m.default_max_output_tokens.map_or("—".to_string(), format_tokens),
             reasoning = if m.capabilities.reasoning_summaries { "✅" } else { "—" },
             image = if m.capabilities.image_input { "✅" } else { "—" },
         );

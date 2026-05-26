@@ -3942,9 +3942,9 @@ mod tests {
     use crate::provider::ProviderNativeWebSearchKind;
 
     use super::{
-        built_in_provider_registry_with_settings, config_schema, credential_store_path,
-        default_holon_home, get_config_key, get_config_value, list_credential_profiles_at,
-        load_persisted_config_at, parse_anthropic_cache_strategy,
+        built_in_provider_doc_entries, built_in_provider_registry_with_settings, config_schema,
+        credential_store_path, default_holon_home, get_config_key, get_config_value,
+        list_credential_profiles_at, load_persisted_config_at, parse_anthropic_cache_strategy,
         parse_anthropic_cache_strategy_env, parse_comma_separated_values, parse_url_value,
         persisted_config_path, provider_registry_for_tests,
         resolve_anthropic_context_management_config, save_persisted_config_at, set_config_key,
@@ -5876,5 +5876,19 @@ mod tests {
         assert!(err
             .to_string()
             .contains("effective_context_window_percent expects an integer from 1 to 100"));
+    }
+
+    #[test]
+    fn provider_doc_entries_are_sorted_and_populated() {
+        let entries =
+            built_in_provider_doc_entries().expect("built_in_provider_doc_entries should succeed");
+        assert!(!entries.is_empty(), "should have at least one provider");
+        // Verify entries are sorted by id
+        for i in 1..entries.len() {
+            assert!(
+                entries[i - 1].id.as_str() <= entries[i].id.as_str(),
+                "entries must be sorted by id"
+            );
+        }
     }
 }
