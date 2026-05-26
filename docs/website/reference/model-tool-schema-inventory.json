@@ -49,6 +49,50 @@
       "stability": "stable"
     },
     {
+      "description": "Record an explicit wait condition and yield the current turn. Use wake=task_result with resource=<task_id> when waiting for a background task, wake=external with resource=<external object such as a URL or github:owner/repo#id> when waiting for outside state, or wake=operator_input when waiting for the operator. If there is a current open work item, WaitFor attaches to it and marks it waiting; otherwise it records an agent-level wait.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "resource": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wake": {
+            "enum": [
+              "operator_input",
+              "task_result",
+              "external"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "wake"
+        ],
+        "type": "object"
+      },
+      "name": "WaitFor",
+      "related_surfaces": [
+        "runtime agent lifecycle APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "WaitForResult"
+      },
+      "stability": "stable"
+    },
+    {
       "description": "Read the current agent-plane summary, including identity visibility, ownership, profile preset, lifecycle, active work focus, waiting state, and visible child-agent lineage.",
       "family": "core_agent",
       "freeform_grammar": null,
@@ -608,19 +652,12 @@
       "stability": "stable"
     },
     {
-      "description": "Update mutable state fields for an existing work item. Use objective to refine the short target, plan_status for planning state, todo_list to replace the full progress checklist snapshot, blocked_by for blockers, and recheck_after as a positive millisecond fallback deadline when setting blocked_by. Edit the plan_artifact.path file directly for plan body changes.",
+      "description": "Update mutable state fields for an existing work item. Use objective to refine the short target, plan_status for planning state, and todo_list to replace the full progress checklist snapshot. Use WaitFor, not UpdateWorkItem, to mark task, external, or operator waits. Edit the plan_artifact.path file directly for plan body changes.",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "blocked_by": {
-            "default": null,
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "objective": {
             "default": null,
             "type": [
@@ -637,15 +674,6 @@
             ],
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "recheck_after": {
-            "default": null,
-            "format": "uint64",
-            "minimum": 1.0,
-            "type": [
-              "integer",
               "null"
             ]
           },

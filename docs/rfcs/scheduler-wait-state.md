@@ -1,7 +1,7 @@
 ---
 title: RFC: Scheduler Wait State And Recoverable Agent Continuation
 date: 2026-05-19
-status: draft
+status: updated
 ---
 
 # RFC: Scheduler Wait State And Recoverable Agent Continuation
@@ -19,16 +19,14 @@ runtime to classify the work. If any WorkItem is still runnable, an indefinite
 sleep must not silently strand the agent; the runtime should enqueue or
 schedule a continuation instead.
 
-As the first implementation phase, the scheduler should keep the agent-facing
-contract small: `blocked_by` remains free text, and blocked WorkItems gain a
-single fallback recheck deadline derived from `recheck_after` / `recheck_at`.
-The fallback is only an anti-forget reminder; it does not make the WorkItem
-runnable and does not mean the blocker is resolved.
+The current agent-facing contract is intentionally small: `WaitFor` records one
+explicit wait condition and yields the turn. It supports three wake classes:
+operator input, task result, and external state. `blocked_by` remains as
+display text on WorkItems; `UpdateWorkItem` no longer exposes blocker mutation
+or fallback recheck fields to agents.
 
-A fuller `WaitCondition` / `WakeSource` model remains a possible future
-direction, but it should not be implemented until the scheduler has a concrete
-use for those extra fields. The first phase should not add generic
-agent-facing WaitCondition CRUD tools.
+`WaitFor` is not generic WaitCondition CRUD. It is the narrow public path for
+the common scheduler waits that the runtime can reason about.
 
 ## Problem
 
@@ -67,8 +65,8 @@ reliable without teaching the core scheduler provider-specific business rules.
 - Define a scheduler-facing state model for WorkItems.
 - Make runnable work non-silent: indefinite sleep must not strand runnable
   WorkItems.
-- Add a minimal recoverability fallback for natural-language blockers without
-  requiring structured wait metadata.
+- Add a minimal structured wait path without requiring provider-specific wait
+  metadata.
 - Keep task result, external ingress, timer, operator input, and system tick
   wakeups compatible with a future generic wake-source model.
 - Preserve the boundary between generic runtime scheduling and provider or
@@ -82,8 +80,7 @@ reliable without teaching the core scheduler provider-specific business rules.
   provider-specific fallback durations.
 - Do not make the scheduler decide whether an external condition is
   semantically resolved.
-- Do not require every external wait to have a timer in the first
-  implementation phase.
+- Do not require every external wait to have a timer.
 - Do not replace WorkItem planning or todo tracking with a new project
   management system.
 - Do not make `Sleep` a complex business workflow tool.
@@ -102,10 +99,9 @@ The current repository already has the major runtime pieces:
 - closure and lifecycle code decide whether to enqueue additional work or let
   the agent rest.
 
-This RFC does not propose replacing those pieces. It proposes adding a clearer
-derived scheduling layer over them. The first implementation phase should add a
-blocked WorkItem recheck fallback; evolving waiting intents into a more general
-`WaitCondition` model is deferred.
+This RFC does not propose replacing those pieces. It adds a clearer derived
+scheduling layer over them and exposes the minimal `WaitFor` tool needed to
+create scheduler-visible wait conditions.
 
 ## Core model
 
@@ -223,10 +219,52 @@ resolved.
 
 Completed WorkItems do not participate in scheduling.
 
-## Phase 0: blocked WorkItem recheck fallback
+## Agent-facing `WaitFor`
 
-The initial implementation should use the existing WorkItem blocker field plus
-one small scheduler-facing deadline:
+`WaitFor` records explicit waiting state and yields the turn.
+
+```text
+WaitFor {
+  reason: String
+  wake: operator_input | task_result | external
+  resource: Option<String>
+}
+```
+
+Rules:
+
+- `reason` is required and must be non-empty.
+- `wake=task_result` requires `resource=<task_id>`.
+- `wake=external` requires `resource=<stable external object>`, such as a URL
+  or `github:holon-run/holon#1435`.
+- `wake=operator_input` may omit `resource`.
+- if a current open WorkItem exists, the wait is WorkItem-scoped;
+- if no current open WorkItem exists, the wait is agent-scoped;
+- to wait on another WorkItem, the agent must pick it first.
+
+WorkItem-scoped `WaitFor` replaces active waits on that WorkItem, writes
+`blocked_by=reason` for display, clears legacy recheck fields, and releases the
+current focus so scheduler projection no longer treats the item as runnable.
+
+Mapping:
+
+| `wake` | `WaitCondition.kind` | `subject_ref` | `wake_sources` |
+|--------|----------------------|---------------|----------------|
+| `task_result` | `Task` | `resource` | `TaskResult { task_id: resource }` |
+| `external` | `External` | `resource` | `ExternalIngress { external_trigger_id: None }` |
+| `operator_input` | `Operator` | `resource` when present | `OperatorInput` |
+
+Terminal task results resolve matching task wait conditions and clear the
+matching `WaitFor` blocker text. Operator and external wakeups record
+reconciliation signals but do not automatically resolve the wait or mutate the
+WorkItem, because the agent must inspect the new evidence.
+
+`CompleteWorkItem` cancels active WorkItem-scoped waits.
+
+## Superseded Phase 0: blocked WorkItem recheck fallback
+
+The earlier phase-0 plan used the existing WorkItem blocker field plus one
+small scheduler-facing deadline:
 
 ```text
 WorkItem {
@@ -235,8 +273,10 @@ WorkItem {
 }
 ```
 
-`UpdateWorkItem` should support a small `recheck_after` input, or an equivalent
-bounded field, when the agent sets or refreshes `blocked_by`.
+`UpdateWorkItem` previously supported a small `recheck_after` input when the
+agent set or refreshed `blocked_by`. That path is now superseded by `WaitFor`
+for new waits. Historical fields remain in storage and read models for older
+records.
 
 Rules:
 
@@ -439,10 +479,10 @@ visible as non-recoverable or weakly recoverable.
 
 The core scheduler should not choose provider-specific fallback durations.
 
-For Phase 0, the only built-in duration is the generic 1-hour default for
-unstructured blocked WorkItems with no explicit `recheck_after`. The scheduler
-still does not interpret `blocked_by`; it only detects that the one-shot
-deadline is due and asks the agent to recheck.
+For legacy phase-0 records, the only built-in duration was the generic 1-hour
+default for unstructured blocked WorkItems with no explicit `recheck_after`.
+The scheduler still does not interpret `blocked_by`; it only detects that the
+one-shot deadline is due and asks the agent to recheck.
 
 The fuller external wait classification below is deferred with the
 `WaitCondition` direction:
@@ -519,19 +559,21 @@ The scheduler does not own:
 
 ## Incremental implementation plan
 
-### 0. Add blocked WorkItem recheck fallback
+### 0. Historical blocked WorkItem recheck fallback
 
-Add the minimal `blocked_by + recheck_after/recheck_at` contract:
+The earlier implementation added the minimal
+`blocked_by + recheck_after/recheck_at` contract:
 
 - persist `recheck_at` on blocked WorkItems;
-- extend `UpdateWorkItem` with `recheck_after` or an equivalent small input;
+- historically extend `UpdateWorkItem` with `recheck_after` or an equivalent
+  small input;
 - apply the 1-hour default only when setting or refreshing `blocked_by` without
   an explicit recheck value;
 - clear `recheck_at` when `blocked_by` is cleared;
 - coalesce due reminders per agent;
 - preserve `Blocked` readiness until the agent explicitly updates the WorkItem.
 
-This phase must not add agent-facing WaitCondition CRUD tools.
+This legacy phase must not be extended with new agent-facing blocker fields.
 
 ### 1. Derive scheduling state
 
@@ -554,27 +596,24 @@ Replace ad hoc runnable-work checks with state-derived closure behavior:
 - `Blocked` -> expose blocker and do not auto-continue;
 - `Completed` -> ignore for scheduling.
 
-### 3. Consider WaitCondition ledger records
+### 3. Add narrow WaitFor ledger writes
 
-Generalize or migrate waiting intents into `WaitCondition` records.
-
-This step is deferred until the scheduler has a concrete use for the extra
-fields. A future version can keep the shape small:
+Generalize waiting state into `WaitCondition` records through the narrow
+`WaitFor` tool. This is not open-ended CRUD; the schema stays small:
 
 ```text
-kind
-work_item_id
-waiting_for
-wake_sources
-continuation
-status
+reason
+wake
+resource
 ```
 
 ### 4. Normalize wake-source continuation
 
-Task result, external ingress, timer, operator input, and system tick should all
-enqueue continuation that asks the agent to reconcile the wait, rather than
-implicitly resolving the wait.
+External ingress, timer, operator input, and system tick should enqueue
+continuation that asks the agent to reconcile the wait, rather than implicitly
+resolving the wait. Terminal task results are the exception: a matching
+`task_result` wait is resolved because the awaited runtime-owned task has
+reached a terminal state.
 
 ### 5. Add external wait audit
 
@@ -583,16 +622,14 @@ Surface weak external waits that have no timer, durable queue, or explicit
 
 ## Open questions
 
-- Should `WaitingOperator` be represented only through `plan_status =
-  needs_input`, or should it also be a `WaitCondition(kind = operator)`?
-- Should `blocked_by` remain a separate WorkItem field forever, or eventually
-  become display text attached to a `Blocked` scheduling record?
+- Should `plan_status=needs_input` eventually be migrated into
+  `WaitCondition(kind = operator)`, or remain a separate planning posture?
+- Should `blocked_by` remain a separate WorkItem display field forever, or
+  eventually become display text derived only from active wait records?
 - What is the minimum continuation payload needed for reliable wake
   reconciliation?
-- After Phase 0, is there any scheduler-owned use for structured
-  `WaitCondition` fields beyond display and provider handoff?
-- Should system tick be a first-class `WakeSource` or a scheduler-only audit
-  mechanism if/when WaitCondition is introduced?
+- Should system tick be a first-class `WakeSource` for agent-facing waits, or
+  remain scheduler-only?
 - How should weak external waits be shown in `ListWorkItems`, `AgentGet`, and
   TUI surfaces?
 

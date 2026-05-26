@@ -6,15 +6,18 @@ use serde_json::Value;
 use crate::{
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{AuthorityClass, ToolCapabilityFamily, WorkItemReadiness, WorkItemState},
+    types::{
+        AuthorityClass, ToolCapabilityFamily, WaitConditionSummary, WorkItemReadiness,
+        WorkItemState,
+    },
 };
 
 use super::{
     serialize_success,
     work_item_query::{
         active_wait_conditions_by_work_item, latest_delivery_summaries_by_work_item,
-        lifecycle_view, query_context, view_for_record, WorkItemFocusView, WorkItemLifecycleView,
-        WorkItemQueryContext, WorkItemView,
+        lifecycle_view, query_context, readiness_for_view, view_for_record, WorkItemFocusView,
+        WorkItemLifecycleView, WorkItemQueryContext, WorkItemView,
     },
     BuiltinToolDefinition,
 };
@@ -81,9 +84,16 @@ pub(crate) async fn execute(
     let context = query_context(runtime).await?;
     let mut records = runtime.latest_work_items().await?;
     records.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    let all_wait_conditions = active_wait_conditions_by_work_item(runtime, &records)?;
     let matching = records
         .into_iter()
-        .filter(|record| matches_filter(record, &context, &filter))
+        .filter(|record| {
+            let waits = all_wait_conditions
+                .get(&record.id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            matches_filter(record, waits, &context, &filter)
+        })
         .collect::<Vec<_>>();
     let total_matching = matching.len();
     let selected = matching.into_iter().take(limit).collect::<Vec<_>>();
@@ -125,6 +135,7 @@ pub(crate) async fn execute(
 
 fn matches_filter(
     record: &crate::types::WorkItemRecord,
+    active_wait_conditions: &[WaitConditionSummary],
     context: &WorkItemQueryContext,
     filter: &ListWorkItemsFilter,
 ) -> bool {
@@ -148,8 +159,11 @@ fn matches_filter(
                     == WorkItemFocusView::Blocked
         }
         ListWorkItemsFilter::WaitingForOperator => {
-            record.readiness() == WorkItemReadiness::WaitingForOperator
+            readiness_for_view(record, active_wait_conditions)
+                == WorkItemReadiness::WaitingForOperator
         }
-        ListWorkItemsFilter::Runnable => record.readiness() == WorkItemReadiness::Runnable,
+        ListWorkItemsFilter::Runnable => {
+            readiness_for_view(record, active_wait_conditions) == WorkItemReadiness::Runnable
+        }
     }
 }

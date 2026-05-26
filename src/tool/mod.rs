@@ -72,12 +72,11 @@ pub fn model_tool_schema_inventory() -> Result<Value> {
 fn tool_stability_level(name: &str) -> &'static str {
     match name {
         "CreateExternalTrigger" | "CancelExternalTrigger" => "deprecated",
-        "ApplyPatch" | "ExecCommand" | "ExecCommandBatch" | "Sleep" | "TaskList" | "TaskStatus"
-        | "TaskInput" | "TaskOutput" | "TaskStop" | "CreateWorkItem" | "PickWorkItem"
-        | "GetWorkItem" | "ListWorkItems" | "UpdateWorkItem" | "CompleteWorkItem"
-        | "UseWorkspace" | "AgentGet" | "Enqueue" | "SpawnAgent" | "MemorySearch" | "MemoryGet" => {
-            "stable"
-        }
+        "ApplyPatch" | "ExecCommand" | "ExecCommandBatch" | "Sleep" | "WaitFor" | "TaskList"
+        | "TaskStatus" | "TaskInput" | "TaskOutput" | "TaskStop" | "CreateWorkItem"
+        | "PickWorkItem" | "GetWorkItem" | "ListWorkItems" | "UpdateWorkItem"
+        | "CompleteWorkItem" | "UseWorkspace" | "AgentGet" | "Enqueue" | "SpawnAgent"
+        | "MemorySearch" | "MemoryGet" => "stable",
         _ => "experimental",
     }
 }
@@ -97,6 +96,7 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         "NotifyOperator" => "NotifyOperatorResult",
         "PickWorkItem" => "PickWorkItemResult",
         "Sleep" => "SleepResult",
+        "WaitFor" => "WaitForResult",
         "SpawnAgent" => "SpawnAgentResult",
         "TaskInput" => "TaskInputResult",
         "TaskList" => "Vec<TaskDigest>",
@@ -127,7 +127,7 @@ fn related_surfaces_for_tool(name: &str) -> Vec<&'static str> {
         | "CompleteWorkItem" => {
             vec!["CLI work-item wrappers", "HTTP control-plane WorkItem APIs"]
         }
-        "Sleep" | "Enqueue" | "AgentGet" | "SpawnAgent" => {
+        "Sleep" | "WaitFor" | "Enqueue" | "AgentGet" | "SpawnAgent" => {
             vec!["runtime agent lifecycle APIs"]
         }
         "ApplyPatch" | "UseWorkspace" => vec!["workspace/runtime file APIs"],

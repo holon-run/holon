@@ -82,8 +82,11 @@ task, and wait state, not from summary fields.
 
 **Key contract:**
 
-- `Sleep` sets status to `Asleep` — it is a turn-end posture, not an
-  authoritative "idle" declaration.
+- `Sleep` sets status to `Asleep` only when the scheduler accepts the rest
+  request. It is a turn-end posture, not an authoritative "idle" declaration.
+- `WaitFor` records explicit wait state before yielding; it is the preferred
+  path when a WorkItem or agent is waiting on task, external, or operator
+  input.
 - An `Asleep` agent can have runnable WorkItems. `Asleep` does **not** mean
   idle or empty.
 - `AwaitingTask` means a non-terminal task (command, child agent) blocks
@@ -108,8 +111,8 @@ The scheduler derives a scheduling posture from current state. This is a
 | `HasRunnableWork` | At least one WorkItem is runnable |
 | `WaitingForTask` | An active non-terminal task is blocking |
 | `WaitingForExternal` | Agent is waiting on an external event |
-| `WaitingForOperator` | WorkItem `plan_status=needs_input` |
-| `Blocked` | WorkItem has `blocked_by` set |
+| `WaitingForOperator` | WorkItem `plan_status=needs_input` or active operator wait |
+| `Blocked` | WorkItem has `blocked_by` set or an active non-operator wait |
 | `Idle` | No queued input, no runnable work, no blocking conditions |
 | `Unknown` | Default before first projection; not part of the stable contract |
 | `Archived` | Agent lifecycle is stopped (maps from `AgentStatus::Stopped`) |

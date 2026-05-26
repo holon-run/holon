@@ -25,6 +25,7 @@ mod workspace;
 mod worktree;
 
 pub use tasks::{PickedWorkItem, WorkItemFocusTransition, WorkItemFocusTransitionWarning};
+pub(crate) use waiting::{WaitForScope, WaitForWakeKind};
 
 use std::{
     collections::HashMap,

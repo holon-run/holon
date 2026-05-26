@@ -93,13 +93,13 @@ for scheduler resume or a system tick, while blocked or waiting items should
 pause until their unblock condition changes.
 
 `Sleep` only rests the agent. It does not mark the current work item as blocked,
-waiting, or non-runnable. If no immediate progress is possible, update the work
-item state before sleeping:
+waiting, or non-runnable. If no immediate progress is possible, call `WaitFor`
+instead of plain `Sleep`:
 
-- use `plan_status=needs_input` when operator input is required
-- set `blocked_by` when waiting on a concrete non-operator blocker
-- add `recheck_after` with `blocked_by` when the blocker should be revisited
-  after a fallback delay
+- use `wake=operator_input` when operator input is required
+- use `wake=task_result` with `resource=<task_id>` when waiting on a task
+- use `wake=external` with `resource=<external object>` when waiting on an
+  outside system such as a PR, CI run, URL, or durable inbox source
 - use an external trigger when an external system can actively wake the agent
 
 Keep work items runnable only when the next scheduler resume can make useful
@@ -124,9 +124,9 @@ Avoid:
 
 When a work item cannot proceed:
 
-- set `blocked_by` to the concrete blocker
-- add `recheck_after` when the blocker should be reconsidered later
-- use `needs_input` if operator clarification is required
+- call `WaitFor` with a concrete `reason`
+- use `wake=operator_input` if operator clarification is required
+- use `wake=task_result` or `wake=external` for concrete task or outside waits
 - attach external waiting mechanisms only when the work is truly cross-turn
 
 This keeps the scheduler and future turns aligned with reality.

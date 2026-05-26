@@ -114,8 +114,8 @@ WorkItems flow through scheduling states that the scheduler consumes:
 | State | Meaning | Scheduler action |
 |-------|---------|-----------------|
 | `Runnable` | Ready for processing | May be auto-picked as current |
-| `WaitingOperator` | `plan_status=NeedsInput` | Agent waits for operator |
-| `Blocked` | `blocked_by` set | Not runnable; check `recheck_at` |
+| `WaitingOperator` | `plan_status=NeedsInput` or operator wait | Agent waits for operator |
+| `Blocked` | `blocked_by` set without a more specific wait | Not runnable; check legacy `recheck_at` when present |
 | `WaitingTask` | Wait condition on task result | Wake on task terminal |
 | `WaitingExternal` | Wait condition on external event | Wake on external trigger |
 | `WaitingTimer` | Runtime timer wait | Wake when timer fires |
@@ -124,9 +124,11 @@ WorkItems flow through scheduling states that the scheduler consumes:
 
 ## Wake/sleep boundary
 
-- `Sleep` is a scheduler decision (not a tool). The model calls `Sleep` to
-  signal turn-end; the scheduler then decides whether the agent truly becomes
-  `Asleep` or continues with queued work.
+- `Sleep` is a rest request. The model calls `Sleep` to signal turn-end; the
+  scheduler then decides whether the agent truly becomes `Asleep` or continues
+  with queued work.
+- `WaitFor` records explicit wait state and then yields the turn. It is the
+  model-facing path for task, external, and operator waits.
 - `StayIdle` means the agent is already asleep and the scheduler has nothing
   to do; this is distinct from `Sleep` (the initial transition).
 - `EmitSystemTick` injects an internal follow-up message to re-enter the model

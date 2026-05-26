@@ -3877,7 +3877,7 @@ async fn blocking_current_work_item_releases_focus_and_unblock_does_not_repick()
 }
 
 #[tokio::test]
-async fn update_tool_result_reports_released_blocked_focus() {
+async fn wait_for_tool_result_reports_released_blocked_focus() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -3905,10 +3905,11 @@ async fn update_tool_result_reports_released_blocked_focus() {
             &AuthorityClass::OperatorInstruction,
             &crate::tool::ToolCall {
                 id: "block".into(),
-                name: "UpdateWorkItem".into(),
+                name: "WaitFor".into(),
                 input: serde_json::json!({
-                    "work_item_id": work.id,
-                    "blocked_by": "blocked through tool result",
+                    "wake": "external",
+                    "resource": "github:holon-run/holon#1446",
+                    "reason": "blocked through tool result",
                 }),
             },
         )

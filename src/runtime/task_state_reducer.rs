@@ -91,6 +91,7 @@ impl RuntimeHandle {
         }
         self.persist_task_transition(&task, "task_result_received")
             .await?;
+        self.resolve_task_wait_conditions(&task.id).await?;
 
         let task_status_label = match task.status {
             TaskStatus::Completed => "completed",

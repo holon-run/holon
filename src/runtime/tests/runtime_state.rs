@@ -2,7 +2,7 @@ use super::super::*;
 use super::support::*;
 use crate::types::{
     AuthorityClass, SkillLoadReason, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
-    WakeSource, WorkItemPlanStatus,
+    WakeSource, WorkItemPlanStatus, WorkItemSchedulingState,
 };
 
 struct BlockingProvider {
@@ -36,6 +36,21 @@ fn task_wait_condition_for_work_item(task_id: &str, work_item_id: &str) -> WaitC
         resolved_at: None,
         cancelled_at: None,
     }
+}
+
+fn task_result_message(task_id: &str) -> MessageEnvelope {
+    MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: task_id.into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "task completed".into(),
+        },
+    )
 }
 
 #[async_trait]
@@ -534,6 +549,135 @@ async fn indefinite_sleep_with_waiting_operator_or_task_work_item_can_sleep() {
                 (MessageKind::SystemTick, MessageOrigin::System { subsystem }) if subsystem == "work_queue"
             )));
     }
+}
+
+#[tokio::test]
+async fn wait_for_task_result_marks_work_item_waiting_and_allows_sleep() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("wait for task".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-1".into());
+        guard.state.current_work_item_id = Some(work.id.clone());
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-1".into()),
+            "waiting for task-1".into(),
+        )
+        .await
+        .unwrap();
+
+    let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+    assert_eq!(latest.blocked_by.as_deref(), Some("waiting for task-1"));
+    assert_eq!(latest.recheck_at, None);
+    let projection = runtime.storage().work_queue_prompt_projection().unwrap();
+    let projected = projection
+        .readiness
+        .iter()
+        .find(|item| item.work_item.id == work.id)
+        .expect("work item should be projected");
+    assert_eq!(
+        projected.scheduling_state,
+        WorkItemSchedulingState::WaitingTask
+    );
+
+    runtime.transition_to_sleep(None).await.unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::Asleep);
+    assert_eq!(state.pending, 0);
+    assert!(runtime
+        .storage()
+        .read_recent_events(100)
+        .unwrap()
+        .iter()
+        .all(|event| event.data["reason"] != "sleep_overridden_runnable_work"));
+}
+
+#[tokio::test]
+async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocker() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("wait for task".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-1".into()),
+            "waiting for task-1".into(),
+        )
+        .await
+        .unwrap();
+
+    let task = TaskRecord {
+        id: "task-1".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: Some(work.id.clone()),
+        summary: Some("task-1".into()),
+        detail: None,
+        recovery: None,
+    };
+    runtime
+        .reduce_task_result_message(&task_result_message("task-1"), task, false, None)
+        .await
+        .unwrap();
+
+    let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+    assert_eq!(latest.blocked_by, None);
+    let active_conditions = runtime
+        .storage()
+        .latest_active_wait_conditions_for_work_item("default", &work.id)
+        .unwrap();
+    assert!(active_conditions.is_empty());
+    let events = runtime.storage().read_recent_events(100).unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "wait_conditions_resolved"));
 }
 
 #[tokio::test]
@@ -1692,7 +1836,7 @@ async fn task_result_routes_through_reduction_and_follow_up_behavior() {
 }
 
 #[tokio::test]
-async fn task_result_records_wait_reconciliation_without_resolving_wait_condition() {
+async fn task_result_records_wait_reconciliation_and_resolves_task_wait_condition() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(CountingProvider {
@@ -1767,24 +1911,24 @@ async fn task_result_records_wait_reconciliation_without_resolving_wait_conditio
         .unwrap();
 
     let events = runtime.storage().read_recent_events(100).unwrap();
-    let signal = events
-        .iter()
-        .find(|event| {
-            event.kind == "wait_reconciliation_requested"
-                && event.data["wait_condition_id"] == "wait-task-1"
-        })
-        .expect("task result should request wait reconciliation");
-    assert_eq!(signal.data["wake_source"].as_str(), Some("task_result"));
-    assert_eq!(signal.data["subject_ref"].as_str(), Some("task-1"));
-    assert_eq!(signal.data["work_item_id"].as_str(), Some("wi-1"));
+    assert!(events.iter().any(|event| {
+        event.kind == "wait_conditions_resolved"
+            && event.data["wait_condition_ids"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id == "wait-task-1"))
+    }));
 
     let active_conditions = runtime
         .storage()
         .latest_active_wait_conditions_for_agent("default")
         .unwrap();
-    assert!(active_conditions
+    assert!(!active_conditions
         .iter()
         .any(|condition| condition.id == "wait-task-1"));
+    let latest_conditions = runtime.storage().latest_wait_conditions().unwrap();
+    assert!(latest_conditions.iter().any(|condition| {
+        condition.id == "wait-task-1" && condition.status == WaitConditionStatus::Resolved
+    }));
 }
 
 #[tokio::test]

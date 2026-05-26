@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     runtime::RuntimeHandle,
     types::{
-        DeliverySummaryRecord, TodoItem, WaitConditionSummary, WorkItemPlanArtifact,
-        WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
+        DeliverySummaryRecord, TodoItem, WaitConditionKind, WaitConditionSummary,
+        WorkItemPlanArtifact, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
     },
 };
 
@@ -135,7 +135,6 @@ pub(crate) async fn view_for_record(
     };
     let state = lifecycle_view(&record.state);
     let focus = focus_view(&record, is_current);
-    let readiness = record.readiness();
     let completion_report = completion_report_for_record(runtime, &record, delivery_summaries)?;
     let active_wait_conditions = match wait_conditions {
         Some(wait_conditions) => wait_conditions.get(&record.id).cloned().unwrap_or_default(),
@@ -146,6 +145,7 @@ pub(crate) async fn view_for_record(
             .map(WaitConditionSummary::from)
             .collect(),
     };
+    let readiness = readiness_for_view(&record, &active_wait_conditions);
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,
@@ -285,4 +285,34 @@ pub(crate) fn focus_view(record: &WorkItemRecord, is_current: bool) -> WorkItemF
     } else {
         WorkItemFocusView::Queued
     }
+}
+
+pub(crate) fn readiness_for_view(
+    record: &WorkItemRecord,
+    active_wait_conditions: &[WaitConditionSummary],
+) -> WorkItemReadiness {
+    if record.state == WorkItemState::Completed {
+        return WorkItemReadiness::Completed;
+    }
+    if active_wait_conditions
+        .iter()
+        .any(|condition| condition.kind == WaitConditionKind::Task)
+    {
+        return WorkItemReadiness::Blocked;
+    }
+    if active_wait_conditions.iter().any(|condition| {
+        matches!(
+            condition.kind,
+            WaitConditionKind::External | WaitConditionKind::Timer | WaitConditionKind::System
+        )
+    }) {
+        return WorkItemReadiness::Blocked;
+    }
+    if active_wait_conditions
+        .iter()
+        .any(|condition| condition.kind == WaitConditionKind::Operator)
+    {
+        return WorkItemReadiness::WaitingForOperator;
+    }
+    record.readiness()
 }
