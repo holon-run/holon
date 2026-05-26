@@ -154,7 +154,10 @@ pub fn derive_working_memory_snapshot(
     let memory_tools = collect_memory_tools(&recent_tools, current_work_item_id);
 
     let work_summary = current_work_item.map(|item| item.objective.clone());
-    let plan = current_work_item.and_then(|item| item.plan.clone());
+    let plan = current_work_item
+        .and_then(|item| item.plan_artifact.as_ref())
+        .map(|artifact| artifact.preview.clone())
+        .filter(|preview| !preview.trim().is_empty());
     let todo_list = current_work_item
         .map(|item| item.todo_list.clone())
         .unwrap_or_default();
@@ -841,7 +844,14 @@ mod tests {
             "repair benchmark export output",
             WorkItemState::Open,
         );
-        active.plan = Some("Patch exporter and run focused test.".into());
+        active.plan_artifact = Some(
+            crate::work_item_plan::ensure_plan_artifact(
+                dir.path(),
+                &active,
+                Some("Patch exporter and run focused test."),
+            )
+            .unwrap(),
+        );
         active.todo_list = vec![
             TodoItem {
                 text: "patch exporter".into(),

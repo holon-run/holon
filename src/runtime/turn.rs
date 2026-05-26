@@ -853,7 +853,12 @@ fn build_work_item_stale_reminder(
             work_item_plan_status_label(work_item.plan_status)
         ),
     ];
-    if let Some(plan) = work_item.plan.as_deref() {
+    if let Some(plan) = work_item
+        .plan_artifact
+        .as_ref()
+        .map(|artifact| artifact.preview.as_str())
+        .filter(|preview| !preview.trim().is_empty())
+    {
         lines.push("- Plan:".to_string());
         let mut plan_chars = 0usize;
         for line in plan.lines().take(WORK_ITEM_STALE_REMINDER_PLAN_LINE_LIMIT) {
@@ -3147,6 +3152,25 @@ fn truncated_mutation_recovery_hint(tool_name: &str) -> &'static str {
 mod tests {
     use super::*;
 
+    fn fixture_plan_artifact(
+        work_item: &WorkItemRecord,
+        preview: impl Into<String>,
+    ) -> crate::types::WorkItemPlanArtifact {
+        let preview = preview.into();
+        crate::types::WorkItemPlanArtifact {
+            owner_agent_id: work_item.agent_id.clone(),
+            workspace_id: crate::types::agent_home_workspace_id(&work_item.agent_id),
+            workspace_alias: Some(crate::types::AGENT_HOME_WORKSPACE_ID.into()),
+            relative_path: crate::work_item_plan::plan_relative_path(&work_item.id),
+            path: std::path::PathBuf::from(format!("/tmp/{}/plan.md", work_item.id)),
+            hash: "sha256:test".into(),
+            bytes: preview.len() as u64,
+            updated_at: chrono::Utc::now(),
+            preview,
+            preview_complete: true,
+        }
+    }
+
     #[test]
     fn truncated_mutation_recovery_hint_is_tool_specific() {
         let apply_patch = truncated_mutation_recovery_hint("ApplyPatch");
@@ -3371,7 +3395,10 @@ mod tests {
         );
         work_item.id = "work_reminder".into();
         work_item.plan_status = WorkItemPlanStatus::Ready;
-        work_item.plan = Some("Patch runtime reminder.\nRun focused tests.".into());
+        work_item.plan_artifact = Some(fixture_plan_artifact(
+            &work_item,
+            "Patch runtime reminder.\nRun focused tests.",
+        ));
         work_item.todo_list = vec![
             crate::types::TodoItem {
                 text: "Patch runtime reminder".into(),
@@ -3445,12 +3472,13 @@ mod tests {
         );
         work_item.id = "work_large_reminder".into();
         work_item.plan_status = WorkItemPlanStatus::Ready;
-        work_item.plan = Some(
+        work_item.plan_artifact = Some(fixture_plan_artifact(
+            &work_item,
             (0..80)
                 .map(|idx| format!("step {idx}: {}", "inspect and verify ".repeat(40)))
                 .collect::<Vec<_>>()
                 .join("\n"),
-        );
+        ));
         work_item.todo_list = (0..80)
             .map(|idx| crate::types::TodoItem {
                 text: format!("todo {idx}: {}", "finish bounded work ".repeat(30)),

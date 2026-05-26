@@ -141,6 +141,8 @@ The minimal WorkItem state is:
 - `plan_artifact`
 - `todo_list`
 - `blocked_by`
+- `recheck_at`
+- `recheck_consumed_at`
 - `result_summary`
 - `created_at`
 - `updated_at`
@@ -182,6 +184,16 @@ Blocked and queued are derived views, not lifecycle states:
 
 - blocked work is `open` work with `blocked_by` set;
 - queued work is `open` work that is not the current focus and has no blocker.
+
+Blocked WorkItems may also carry a one-shot fallback recheck deadline:
+
+- `recheck_at` records the next absolute time when the runtime should wake the
+  agent to re-evaluate the blocker;
+- `recheck_consumed_at` records that the current `recheck_at` reminder has
+  already been delivered or consumed;
+- clearing `blocked_by` clears both recheck fields;
+- a due recheck never makes the WorkItem runnable by itself. The WorkItem stays
+  blocked until the agent explicitly refreshes or clears the blocker.
 
 ### `plan_status`
 

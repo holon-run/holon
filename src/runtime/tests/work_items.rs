@@ -4,6 +4,7 @@ use crate::types::{
     WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WaitingIntentScope, WakeSource,
     WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState, AGENT_HOME_WORKSPACE_ID,
 };
+use std::{fs::OpenOptions, io::Write};
 
 fn legacy_blocking_payload_task_for_work_item(
     task_id: &str,
@@ -1335,8 +1336,20 @@ async fn update_work_item_materializes_and_clears_legacy_inline_plan() {
 
     let mut legacy = WorkItemRecord::new("default", "Migrate inline plan", WorkItemState::Open);
     legacy.id = "legacy-plan-item".into();
-    legacy.plan = Some("Keep this legacy plan body in the artifact.".into());
-    runtime.inner.storage.append_work_item(&legacy).unwrap();
+    legacy.legacy_inline_plan = Some("Keep this legacy plan body in the artifact.".into());
+    let mut legacy_json = serde_json::to_value(&legacy).unwrap();
+    legacy_json["plan"] = serde_json::json!("Keep this legacy plan body in the artifact.");
+    let work_items_path = dir
+        .path()
+        .join(".holon")
+        .join("ledger")
+        .join("work_items.jsonl");
+    let mut work_items_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&work_items_path)
+        .unwrap();
+    writeln!(work_items_file, "{}", legacy_json).unwrap();
 
     let updated = runtime
         .update_work_item_fields(
@@ -1351,9 +1364,9 @@ async fn update_work_item_materializes_and_clears_legacy_inline_plan() {
         .unwrap();
 
     assert_eq!(updated.revision, legacy.revision + 1);
-    assert!(updated.plan.is_none());
+    assert!(updated.legacy_inline_plan.is_none());
     let latest = runtime.latest_work_item(&legacy.id).await.unwrap().unwrap();
-    assert!(latest.plan.is_none());
+    assert!(latest.legacy_inline_plan.is_none());
     assert_eq!(latest.objective, "Migrate inline plan without copying it");
 
     let plan_path = crate::work_item_plan::plan_path(runtime.agent_home().as_path(), &legacy.id);
@@ -1373,12 +1386,10 @@ async fn update_work_item_materializes_and_clears_legacy_inline_plan() {
     let mut legacy_with_artifact =
         WorkItemRecord::new("default", "Keep existing artifact", WorkItemState::Open);
     legacy_with_artifact.id = "legacy-plan-item-with-artifact".into();
-    legacy_with_artifact.plan = Some("Stale inline plan body.".into());
-    runtime
-        .inner
-        .storage
-        .append_work_item(&legacy_with_artifact)
-        .unwrap();
+    legacy_with_artifact.legacy_inline_plan = Some("Stale inline plan body.".into());
+    let mut legacy_with_artifact_json = serde_json::to_value(&legacy_with_artifact).unwrap();
+    legacy_with_artifact_json["plan"] = serde_json::json!("Stale inline plan body.");
+    writeln!(work_items_file, "{}", legacy_with_artifact_json).unwrap();
     let existing_plan_path =
         crate::work_item_plan::plan_path(runtime.agent_home().as_path(), &legacy_with_artifact.id);
     std::fs::create_dir_all(existing_plan_path.parent().unwrap()).unwrap();
@@ -1396,7 +1407,7 @@ async fn update_work_item_materializes_and_clears_legacy_inline_plan() {
         .await
         .unwrap();
 
-    assert!(updated_with_artifact.plan.is_none());
+    assert!(updated_with_artifact.legacy_inline_plan.is_none());
     assert_eq!(
         std::fs::read_to_string(&existing_plan_path).unwrap(),
         "Existing artifact body."
