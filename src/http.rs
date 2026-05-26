@@ -1718,6 +1718,9 @@ fn operator_replay_payload(payload: &Value) -> Value {
     Value::Object(projected)
 }
 
+// Stable operator replay payload v1 field subset. Unknown raw event payload
+// fields stay available through the authorized local-debug projection but are
+// redacted from the default operator replay contract until documented here.
 const OPERATOR_REPLAY_PAYLOAD_FIELDS: &[&str] = &[
     "agent_id",
     "authority_class",

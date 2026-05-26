@@ -304,6 +304,136 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
     Ok(())
 }
 
+pub async fn events_route_operator_projection_keeps_stable_high_value_payload_fields() -> Result<()>
+{
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/control/agents/default/prompt"))
+        .json(&serde_json::json!({ "text": "stable operator event bootstrap" }))
+        .send()
+        .await?;
+    wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
+
+    let after_seq = newest_event_seq(&base, &client, None).await?;
+
+    runtime.storage().append_event(&AuditEvent::new(
+        "message_admitted",
+        serde_json::json!({
+            "agent_id": "default",
+            "message_id": "msg-stable",
+            "origin": { "kind": "operator" },
+            "authority_class": "operator_instruction",
+            "delivery_surface": "http_control_prompt",
+            "priority": "interject",
+            "summary": "operator prompt admitted",
+            "text_preview": "inspect status",
+            "raw_text": "debug-only prompt body",
+        }),
+    ))?;
+    runtime.storage().append_event(&AuditEvent::new(
+        "brief_created",
+        serde_json::json!({
+            "agent_id": "default",
+            "run_id": "run-stable",
+            "work_item_id": "work-stable",
+            "status": "completed",
+            "summary": "work finished",
+            "text_preview": "final summary",
+            "raw_brief": { "debug": true },
+        }),
+    ))?;
+    runtime.storage().append_event(&AuditEvent::new(
+        "task_status_updated",
+        serde_json::json!({
+            "agent_id": "default",
+            "task_id": "task-stable",
+            "status": "completed",
+            "duration_ms": 123,
+            "exit_status": 0,
+            "summary": "cargo check passed",
+            "stdout": "debug-only output",
+        }),
+    ))?;
+
+    let page: serde_json::Value = client
+        .get(format!(
+            "{base}/agents/default/events?after_seq={after_seq}&limit=10&order=asc&projection=operator"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let events = page["events"].as_array().expect("events");
+
+    let admitted = events
+        .iter()
+        .find(|event| event["type"] == "message_admitted")
+        .expect("message_admitted projection");
+    assert_eq!(
+        admitted["payload"],
+        serde_json::json!({
+            "agent_id": "default",
+            "authority_class": "operator_instruction",
+            "delivery_surface": "http_control_prompt",
+            "message_id": "msg-stable",
+            "origin": { "kind": "operator" },
+            "priority": "interject",
+            "summary": "operator prompt admitted",
+            "text_preview": "inspect status",
+        })
+    );
+    assert_eq!(
+        admitted["projection"]["redactions"],
+        serde_json::json!(["raw_text"])
+    );
+
+    let brief = events
+        .iter()
+        .find(|event| event["type"] == "brief_created")
+        .expect("brief_created projection");
+    assert_eq!(
+        brief["payload"],
+        serde_json::json!({
+            "agent_id": "default",
+            "run_id": "run-stable",
+            "status": "completed",
+            "summary": "work finished",
+            "text_preview": "final summary",
+            "work_item_id": "work-stable",
+        })
+    );
+    assert_eq!(
+        brief["projection"]["redactions"],
+        serde_json::json!(["raw_brief"])
+    );
+
+    let task = events
+        .iter()
+        .find(|event| event["type"] == "task_status_updated")
+        .expect("task_status_updated projection");
+    assert_eq!(
+        task["payload"],
+        serde_json::json!({
+            "agent_id": "default",
+            "duration_ms": 123,
+            "exit_status": 0,
+            "status": "completed",
+            "summary": "cargo check passed",
+            "task_id": "task-stable",
+        })
+    );
+    assert_eq!(
+        task["projection"]["redactions"],
+        serde_json::json!(["stdout"])
+    );
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn events_route_operator_projection_redacts_tool_payload() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;

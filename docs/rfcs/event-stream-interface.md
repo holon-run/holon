@@ -216,11 +216,10 @@ transport-local response sequence numbers.
 
 Runtime events should have clear, standard payload schemas that first-party
 clients and integrations can consume directly. The default replay projection is
-the operator projection, and it includes the raw standard event payload. UI
-noise and density are handled by client-side presentation policy, not by
-mutating or clipping the stream payload. A local debug projection remains
-available for explicitly authorized debug clients, but the canonical event
-contract should not depend on a separate redacted operator shape.
+the operator projection, and it exposes only the stable operator-facing payload
+subset. Raw/debug runtime payloads remain available through the explicitly
+authorized local debug projection, but they are not part of the public replay
+compatibility contract.
 
 ## Event Envelope
 
@@ -237,8 +236,8 @@ Every stream event should use one canonical envelope.
   "type": "task_status_updated",
   "projection": {
     "name": "operator",
-    "raw_payload_included": true,
-    "redactions": []
+    "raw_payload_included": false,
+    "redactions": ["raw_output"]
   },
   "provenance": {
     "origin": {"kind": "operator"},
@@ -265,8 +264,10 @@ Every stream event should use one canonical envelope.
   - raw runtime event kind
 - `projection`
   - the replay projection applied to this envelope
-  - `raw_payload_included=true` means the payload is the canonical event
-    payload for the selected authorized replay surface
+  - `raw_payload_included=false` on the `operator` projection means raw/debug
+    fields were omitted and any omitted payload keys are listed in `redactions`
+  - `raw_payload_included=true` is reserved for explicitly authorized debug
+    projections that include the raw event payload
 - `provenance`
   - provenance fields duplicated for client recovery and indexing
 - `payload`
@@ -417,7 +418,9 @@ audit events.
 
 ## Event Payload Strategy
 
-The stream payload should remain raw and explicit.
+The stream envelope should remain raw and explicit about provenance, cursor,
+and projection. The default operator payload is a documented stable subset; the
+full raw runtime payload is available only through the local debug projection.
 
 That means:
 
