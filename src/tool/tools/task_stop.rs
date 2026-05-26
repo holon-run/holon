@@ -48,6 +48,7 @@ pub(crate) async fn execute(
         .and_then(|detail| detail.get("force_stop_requested"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let snapshot = crate::types::TaskStatusSnapshot::from_task_record(&task);
     serialize_success(
         NAME,
         &TaskStopResult {
@@ -56,7 +57,7 @@ pub(crate) async fn execute(
                 TaskStatus::Cancelled => format!("cancelled task {}", task.id),
                 _ => format!("updated task {}", task.id),
             }),
-            task,
+            task: snapshot,
             stop_requested: true,
             force_stop_requested,
         },

@@ -675,7 +675,7 @@ pub struct WorkReactivationSignal {
     pub reactivation_mode: WorkReactivationMode,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitingReason {
     AwaitingOperatorInput,
@@ -738,7 +738,7 @@ pub struct ClosureDecision {
     pub evidence: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskWaitPolicy {
     Background,
@@ -748,7 +748,7 @@ pub const CHILD_AGENT_TASK_KIND: &str = "child_agent_task";
 pub const LEGACY_SUBAGENT_TASK_KIND: &str = "subagent_task";
 pub const LEGACY_WORKTREE_SUBAGENT_TASK_KIND: &str = "worktree_subagent_task";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
     CommandTask,
@@ -787,7 +787,7 @@ impl std::fmt::Display for TaskKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildAgentWorkspaceMode {
     Inherit,
@@ -1207,7 +1207,7 @@ pub enum RuntimeFailurePhase {
     RuntimeTurn,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureArtifactCategory {
     Transport,
@@ -1217,7 +1217,7 @@ pub enum FailureArtifactCategory {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct FailureArtifact {
     pub category: FailureArtifactCategory,
     pub kind: String,
@@ -2194,7 +2194,7 @@ pub struct OperatorDeliveryRecord {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Queued,
@@ -2206,7 +2206,7 @@ pub enum TaskStatus {
     Interrupted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct TaskHandle {
     pub task_id: String,
     pub task_kind: String,
@@ -2240,7 +2240,7 @@ impl TaskHandle {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildAgentPhase {
     Running,
@@ -2249,7 +2249,7 @@ pub enum ChildAgentPhase {
     Terminal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChildAgentBlockedReason {
     ManagedTaskQueued,
@@ -2258,7 +2258,7 @@ pub enum ChildAgentBlockedReason {
     AwaitingManagedTask,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ChildAgentObservabilitySnapshot {
     pub phase: ChildAgentPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2362,19 +2362,20 @@ impl TaskRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskListEntry {
     pub id: String,
     pub kind: String,
     pub status: TaskStatus,
     pub summary: Option<String>,
+    #[schemars(schema_with = "datetime_schema")]
     pub updated_at: DateTime<Utc>,
     pub wait_policy: TaskWaitPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<CommandTaskStatusSnapshot>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct CommandTaskStatusSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cmd: Option<String>,
@@ -2480,7 +2481,7 @@ impl CommandTaskStatusSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ChildSupervisionProjection {
     pub parent_agent_id: String,
     pub child_agent_id: String,
@@ -2537,14 +2538,16 @@ impl ChildSupervisionProjection {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskStatusSnapshot {
     pub task_id: String,
     pub kind: String,
     pub status: TaskStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[schemars(schema_with = "datetime_schema")]
     pub created_at: DateTime<Utc>,
+    #[schemars(schema_with = "datetime_schema")]
     pub updated_at: DateTime<Utc>,
     pub wait_policy: TaskWaitPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2584,7 +2587,7 @@ impl TaskStatusSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskOutputRetrievalStatus {
     Success,
@@ -2592,7 +2595,7 @@ pub enum TaskOutputRetrievalStatus {
     NotReady,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskOutputSnapshot {
     pub task_id: String,
     pub kind: String,
@@ -2612,7 +2615,7 @@ pub struct TaskOutputSnapshot {
     pub child_supervision: Option<ChildSupervisionProjection>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskOutputResult {
     pub retrieval_status: TaskOutputRetrievalStatus,
     pub task: TaskOutputSnapshot,
@@ -2720,19 +2723,19 @@ pub struct ExecCommandBatchResult {
     pub summary_text: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ToolArtifactRef {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskStatusResult {
     pub task: TaskStatusSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskInputResult {
     pub task: TaskStatusSnapshot,
     pub accepted_input: bool,
@@ -2838,13 +2841,20 @@ pub struct UseWorkspaceResult {
     pub summary_text: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TaskStopResult {
-    pub task: TaskRecord,
+    pub task: TaskStatusSnapshot,
     pub stop_requested: bool,
     pub force_stop_requested: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
+}
+
+fn datetime_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "format": "date-time"
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
