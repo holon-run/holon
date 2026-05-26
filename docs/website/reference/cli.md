@@ -1,6 +1,6 @@
 ---
 title: CLI reference
-summary: Holon's current command-line interface — verified against holon --help.
+summary: Holon's current command-line interface — verified against holon --help (v0.14.1).
 order: 10
 ---
 <!-- maintenance: regenerate from `holon --help` output when commands change -->
@@ -47,6 +47,9 @@ holon (v0.14.1)
 ├── status       Show agent status
 ├── tail         Show recent log tail
 ├── transcript   Show conversation transcript
+├── events       Read stable runtime event envelopes
+│   ├── tail     Fetch a bounded page of event envelopes
+│   └── stream   Stream event envelopes as newline-delimited JSON
 ├── task         Run a command as a background task
 │   ├── status   Show task lifecycle status
 │   ├── output   Read task output
@@ -209,6 +212,14 @@ The initial WorkItem CLI surface is read-only. It prints the HTTP read-model
 `/agents/:agent_id/work-items/:work_item_id`. Mutating commands such as create,
 update, pick, and complete remain intentionally deferred until their API
 contracts are stabilized.
+
+### Events
+
+```bash
+holon events tail --limit 20
+holon events tail --order asc --projection operator
+holon events stream --after-seq 42 --max-events 100
+```
 
 ### Terminal UI
 

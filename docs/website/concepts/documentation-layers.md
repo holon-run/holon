@@ -26,7 +26,6 @@ concepts without overwhelming readers with RFC detail.
 | Concepts | Four-object mental model before deep lifecycle vocabulary |
 | Guides | Task-oriented workflows grouped by user job |
 | Reference | Current-contract CLI, config, and control-plane snapshots |
-| Roadmap | User-facing milestones and stability expectations |
 
 **Rule:** Website pages should explain *what* and *how*, not *why the design
 works that way*. Link to RFCs for design rationale.
@@ -74,7 +73,6 @@ decisions. These are the canonical source of truth for runtime behavior.
 | `docs/rfcs/` | Canonical design contracts — one RFC per runtime concept |
 | `docs/implementation-decisions/` | ADR-style records — one decision per file |
 | `docs/archive/` | Superseded notes, historical design docs |
-| `docs/documentation-cleanup-audit.md` | Maintenance audit tracking drift between layers |
 
 **Rule:** When a runtime concept changes, update the RFC first. Implementation
 decisions capture *why* a choice was made. Archives preserve history without
@@ -85,8 +83,6 @@ cluttering the active surface.
 - Website pages link to RFCs as "deeper design background" — not as required
   reading.
 - The repository `README.md` links to the website as the product entry point.
-- The documentation cleanup audit (`docs/documentation-cleanup-audit.md`)
-  tracks stale references and vocabulary drift across layers.
 
 ## When to update which layer
 

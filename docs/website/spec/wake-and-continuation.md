@@ -87,13 +87,8 @@ initialization. This is a capability URL with a secret token:
 | `scope` | `Agent` |
 | `status` | `Active` or `Revoked` |
 
-### Deprecated surface
-
-`CreateExternalTrigger` and `CancelExternalTrigger` as agent-facing tools are
-deprecated. The current contract provisions triggers at initialization; the
-agent does not create or cancel them per wait cycle. Legacy internal references
-to these tools remain for compatibility but should not be presented to the
-model as active tool surfaces.
+External triggers are provisioned at agent initialization. Agents do not create
+or cancel triggers at runtime.
 
 ## Continuation resolution
 

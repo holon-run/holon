@@ -61,15 +61,6 @@ If you plan to modify or contribute to Holon itself:
 - Holon installed on `PATH` (Homebrew or direct binary; see [first agent](first-agent.md) for step-by-step)
 - A model provider API key (Anthropic, OpenAI, or compatible)
 
-### Build from source
-
-If you prefer to build from source or want to contribute:
-
-- Rust toolchain with Cargo
-- Clone the repository: `git clone https://github.com/holon-run/holon.git && cd holon`
-- Build: `cargo build`
-- When building from source, replace `holon` commands in examples with `cargo run --`
-
 ## Repository orientation (contributors)
 
 This is a short orientation for contributors. End users don't need to know the repository layout.
