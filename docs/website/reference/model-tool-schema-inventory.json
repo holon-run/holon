@@ -917,7 +917,7 @@
       "stability": "stable"
     },
     {
-      "description": "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Per-item yield_time_ms defaults to 10_000 ms when omitted; set it only when intentionally changing that item's foreground wait window. Do not use tty, accepts_input, or non-command tools inside the batch.",
+      "description": "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Per-item yield_time_ms defaults to 10_000 ms when omitted; set it only when intentionally changing that item's foreground wait window. Do not use non-command tools inside the batch.",
       "family": "local_environment",
       "freeform_grammar": null,
       "input_schema": {
@@ -927,12 +927,6 @@
             "items": {
               "additionalProperties": false,
               "properties": {
-                "accepts_input": {
-                  "type": [
-                    "boolean",
-                    "null"
-                  ]
-                },
                 "cmd": {
                   "type": "string"
                 },
@@ -953,12 +947,6 @@
                 "shell": {
                   "type": [
                     "string",
-                    "null"
-                  ]
-                },
-                "tty": {
-                  "type": [
-                    "boolean",
                     "null"
                   ]
                 },
