@@ -186,8 +186,8 @@ Default-agent aliases:
 
 | Method | Path | Inputs | Success response | Stability | Notes |
 |--------|------|--------|------------------|-----------|-------|
-| `GET` | `/agents/:agent_id/events` | Path `agent_id`; query `before_seq?`, `after_seq?`, `limit?`, `order?`, `projection?`. | `EventsPageResponse` | Candidate stable route; experimental payload | `limit` defaults to the event window and is clamped. `order` is `asc` or `desc`. `projection` is `operator` or `local_debug`. |
-| `GET` | `/agents/:agent_id/events/stream` | Path `agent_id`; query `after_seq?`, `limit?`, `projection?`; `Accept: text/event-stream` recommended. | SSE frames with JSON `StreamEventEnvelope` data. | Candidate stable route; experimental payload | SSE `id` is `event_seq`; SSE `event` is the raw audit event kind. |
+| `GET` | `/agents/:agent_id/events` | Path `agent_id`; query `before_seq?`, `after_seq?`, `limit?`, `order?`, `projection?`. | `EventsPageResponse` | Candidate stable route and envelope; operator payload v1 subset | `limit` defaults to the event window and is clamped. `order` is `asc` or `desc`. `projection` is `operator` or `local_debug`. |
+| `GET` | `/agents/:agent_id/events/stream` | Path `agent_id`; query `after_seq?`, `limit?`, `projection?`; `Accept: text/event-stream` recommended. | SSE frames with JSON `StreamEventEnvelope` data. | Candidate stable route and envelope; operator payload v1 subset | SSE `id` is `event_seq`; SSE `event` is the raw audit event kind. |
 
 Event page cursors are exclusive: `after_seq` returns records with higher
 `event_seq`, `before_seq` returns records with lower `event_seq`, and combining
@@ -213,12 +213,39 @@ Stable `StreamEventEnvelope` fields:
 
 Projection contract:
 
-- `operator` is the default public projection. It preserves only
-  operator-facing summary/status/identity/cursor/provenance fields in
-  `payload`, sets `raw_payload_included: false`, and lists omitted raw/debug
-  fields in `redactions`.
+- `operator` is the default public projection. It preserves only the
+  operator-facing v1 field subset in `payload`, sets
+  `raw_payload_included: false`, and lists omitted raw/debug fields in
+  `redactions`. The v1 subset is intentionally shared by events page and SSE
+  stream output.
 - `local_debug` requires control auth and preserves the raw event payload with
   `raw_payload_included: true` and an empty `redactions` list.
+
+Stable operator payload v1 fields:
+
+| Field family | Stable fields | Notes |
+|--------------|---------------|-------|
+| Identity and correlation | `agent_id`, `message_id`, `task_id`, `work_item_id`, `run_id`, `correlation_id`, `causation_id` | IDs are stable handles for joining the event with read-model routes. |
+| Provenance and admission | `origin`, `authority_class`, `delivery_surface`, `priority` | Enough to preserve operator/system/external trust boundaries without exposing the full ingress body. |
+| State and outcome | `status`, `exit_status`, `duration_ms`, `stop_reason`, `summary` | Used by task, turn, brief, and lifecycle events for operator-visible state transitions. |
+| Turn/model summary | `turn_index`, `round`, `has_text`, `has_tool_calls`, `text_block_count`, `text_char_count`, `text_preview`, `tool_call_count`, `tool_name`, `tool_names` | Summary-only fields; provider/raw message bodies remain debug-only. |
+| Workspace projection | `workspace_id`, `workspace_label`, `projection_kind` | Stable workspace identity/projection facts; host paths and access-mode internals remain debug-only unless separately stabilized. |
+| Cursor/detail summaries | `event_seq` | Included only when an event payload already carries a related cursor; the envelope `event_seq` remains the replay cursor. |
+
+Selected high-value event kinds with checked operator payload behavior:
+
+| Event kind | Stable operator fields currently asserted | Debug-only examples redacted from operator projection |
+|------------|-------------------------------------------|------------------------------------------------------|
+| `message_admitted` | `agent_id`, `message_id`, `origin`, `authority_class`, `delivery_surface`, `priority`, `summary`, `text_preview` | Raw prompt text or transport bodies such as `raw_text`. |
+| `brief_created` | `agent_id`, `run_id`, `work_item_id`, `status`, `summary`, `text_preview` | Full/raw brief payload objects such as `raw_brief`. |
+| `task_status_updated` | `agent_id`, `task_id`, `status`, `duration_ms`, `exit_status`, `summary` | Raw stdout/stderr or command-output bodies. |
+| `assistant_round_recorded` | `agent_id`, `run_id`, `turn_index`, `round`, `stop_reason`, text/tool counts, `text_preview`, `tool_names` | Full assistant text and provider traces. |
+| `tool_executed` | `agent_id`, `task_id`, `tool_name`, `status`, `duration_ms`, `exit_status`, `summary` when present | Command strings, local paths, artifact/debug refs, raw output. |
+
+Unknown or newly added raw payload fields are treated as debug-only until they
+are added to the operator v1 subset and covered by tests/docs. This keeps
+runtime-internal event detail available through `local_debug` without making it
+an accidental public compatibility contract.
 
 ### Public ingress
 

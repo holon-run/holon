@@ -16,6 +16,7 @@ http_async_tests!(
     events_route_supports_cursor_replay,
     events_stream_supports_cursor_and_rfc3339_ts,
     events_route_preserves_replay_provenance,
+    events_route_operator_projection_keeps_stable_high_value_payload_fields,
     events_route_operator_projection_redacts_tool_payload,
     events_route_operator_projection_redacts_assistant_round_payload,
     events_route_local_debug_projection_preserves_raw_payload_with_control_auth,
