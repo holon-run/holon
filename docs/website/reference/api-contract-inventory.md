@@ -1,18 +1,18 @@
 ---
 title: API contract inventory
-summary: First-pass stability inventory for Holon's HTTP control-plane API parameters, responses, and follow-up contract work.
+summary: Post-baseline stability inventory for Holon's HTTP control-plane API parameters, responses, and Phase 2 contract work.
 order: 25
 ---
 
 # API contract inventory
 
-This page is the first-pass inventory for Holon's **HTTP control-plane API**.
+This page is the post-baseline inventory for Holon's **HTTP control-plane API**.
 It complements the [HTTP control plane](./http-control-plane.md) reference by
 recording the route list, request parameters, response shapes, and contract
-gaps that need stabilization before scripts and integrations can rely on the
-API long term.
+gaps that still need stabilization before scripts and integrations can rely on
+the API long term.
 
-- **Last reviewed against:** `holon` v0.14.1, `main` at `77fe575`.
+- **Last reviewed against:** `holon` v0.14.1, `main` at `bff2293`.
 - **Primary source:** `src/http.rs` Axum router and request/response structs.
 - **Generated schema:** [`openapi.json`](./openapi.json), produced by
   `holon::openapi::generate_openapi_json()` and checked by
@@ -22,7 +22,8 @@ API long term.
   `cargo test --test http_route_snapshot`.
 - **Client source:** `src/client.rs` for the subset consumed by the TUI/CLI.
 - **Current status:** pre-1.0 baseline. Treat shapes below as observed
-  behavior, not a final compatibility promise.
+  behavior, not a final compatibility promise. Milestone 8 established the
+  first checked baseline; the remaining gaps are Phase 2 stabilization work.
 
 ## Stability levels
 
@@ -163,7 +164,9 @@ response directly.
 | `GET` | `/agents/:agent_id/status` | Path `agent_id`; auth header when bearer mode is active. | `AgentSummary` | Candidate stable | Main read model for one agent. |
 | `GET` | `/agents/:agent_id/state` | Path `agent_id`; auth header when bearer mode is active. | `AgentStateSnapshot` | Experimental | Broad bootstrap snapshot; includes agent, session, tasks, timers, work items, waiting intents, external triggers, notifications, workspace, execution. |
 | `GET` | `/agents/:agent_id/briefs` | Path `agent_id`; query `limit?`. | `BriefRecord[]` | Candidate stable | Defaults to `20`. |
-| `GET` | `/agents/:agent_id/tasks` | Path `agent_id`; query `limit?`. | `TaskRecord[]` | Candidate stable for list; Gap for task detail APIs | Defaults to `50`; only active/recent task listing, no status/output/input/stop route yet. |
+| `GET` | `/agents/:agent_id/tasks` | Path `agent_id`; query `limit?`. | `TaskRecord[]` | Candidate stable for list; DTO schema still broad | Defaults to `50`; active/recent task listing. |
+| `GET` | `/agents/:agent_id/tasks/:task_id` | Path `agent_id`, `task_id`. | `TaskStatusSnapshot` | Candidate stable route; DTO schema still broad | Returns a single task lifecycle snapshot. |
+| `GET` | `/agents/:agent_id/tasks/:task_id/output` | Path `agent_id`, `task_id`; query `block?`, `timeout_ms?`. | `TaskOutputResult` | Candidate stable route; DTO schema still broad | Reads bounded task output and can optionally wait for readiness. |
 | `GET` | `/agents/:agent_id/timers` | Path `agent_id`; query `limit?`. | `TimerRecord[]` | Candidate stable | Defaults to `50`. |
 | `GET` | `/agents/:agent_id/transcript` | Path `agent_id`; query `limit?`. | `TranscriptEntry[]` | Experimental | Transcript data can include provider/tool internals. |
 | `GET` | `/agents/:agent_id/worktree-summary` | Path `agent_id`. | `{ agent_id, summary }` | Experimental | Summary shape follows managed worktree internals. |
@@ -245,20 +248,23 @@ Projection contract:
 |--------|------|--------------|------------------|-----------|-------|
 | `POST` | `/control/agents/:agent_id/prompt` | `{ text }` | `{ ok, agent_id, message_id }` | Candidate stable | Enqueues a trusted operator prompt with `interject` priority. |
 | `POST` | `/control/agents/:agent_id/wake` | `{ reason, source?, correlation_id?, causation_id? }` | `{ ok, agent_id, disposition }` | Candidate stable | Empty `reason` is rejected. Does not start a stopped agent. |
-| `POST` | `/control/agents/:agent_id/control` | `{ action, trust? }`; `action` is `start` or `stop`. | `{ ok }` | Candidate stable | `trust` is currently audit metadata only. |
-| `POST` | `/control/agents/:agent_id/current-run/abort` | `{ run_id?, mode?, trust? }` | `{ ok, aborted, agent_id, run_id, mode, admission_context, provided_trust }` | Candidate stable | `mode` defaults to `stop_after_abort`; deprecated alias `pause_after_abort` is accepted. |
-| `POST` | `/control/agents/:agent_id/create` | `{ template?, trust? }` | `AgentSummary` | Experimental | Path id names the created agent. |
-| `POST` | `/control/agents/:agent_id/debug-prompt` | `{ text, trust? }` | `{ ok, agent_id, dump }` | Internal/debug | Dumps prompt rendering and should not be a stable automation API. |
+| `POST` | `/control/agents/:agent_id/control` | `{ action, authority_class? }`; `action` is `start` or `stop`. | `{ ok }` | Candidate stable | `authority_class` is currently audit/provenance metadata only. |
+| `POST` | `/control/agents/:agent_id/current-run/abort` | `{ run_id?, mode?, authority_class? }` | `{ ok, aborted, agent_id, run_id, mode, admission_context, provided_trust }` | Candidate stable | `mode` defaults to `stop_after_abort`; deprecated alias `pause_after_abort` is accepted. |
+| `POST` | `/control/agents/:agent_id/create` | `{ template?, authority_class? }` | `AgentSummary` | Experimental | Path id names the created agent. |
+| `POST` | `/control/agents/:agent_id/debug-prompt` | `{ text, authority_class? }` | `{ ok, agent_id, dump }` | Internal/debug | Dumps prompt rendering and should not be a stable automation API. |
 
 ### Tasks, work items, and timers
 
 | Method | Path | Request body | Success response | Stability | Notes |
 |--------|------|--------------|------------------|-----------|-------|
-| `POST` | `/control/agents/:agent_id/tasks` | `CreateCommandTaskRequest` | `TaskRecord` | Candidate stable for creation; Gap for lifecycle management | `serde(deny_unknown_fields)` rejects legacy fields. |
+| `POST` | `/control/agents/:agent_id/tasks` | `CreateCommandTaskRequest` | `TaskRecord` | Candidate stable for creation; DTO schema still broad | `serde(deny_unknown_fields)` rejects legacy fields. |
+| `POST` | `/control/agents/:agent_id/tasks/:task_id/input` | `{ text, authority_class? }` | `TaskInputResult` | Candidate stable route; DTO schema still broad | Delivers operator-authority text to an interactive command task or supervised child-agent task. |
+| `POST` | `/control/agents/:agent_id/tasks/:task_id/stop` | `{ authority_class? }` | `TaskStopResult` | Candidate stable route; DTO schema still broad | Requests managed-task cancellation. |
 | `GET` | `/agents/:agent_id/work-items` | none | `WorkItemRecord[]` | Experimental read model; CLI schema owner | Query parameter: `limit`; used by `holon work-item list`. |
 | `GET` | `/agents/:agent_id/work-items/:work_item_id` | none | `WorkItemRecord` | Experimental read model; CLI schema owner | Used by `holon work-item get`; returns 404 when the id is not found for the target agent. |
-| `POST` | `/control/agents/:agent_id/work-items` | `{ objective, trust? }` | `WorkItemRecord` | Experimental | Only creates/enqueues work items; update/pick/complete APIs remain deferred. |
-| `POST` | `/control/agents/:agent_id/timers` | `{ duration_ms, interval_ms?, summary?, trust? }` | `TimerRecord` | Candidate stable for creation; Gap for cancellation/list detail | `duration_ms` is required; `interval_ms` makes a repeating timer. |
+| `POST` | `/control/agents/:agent_id/work-items` | `{ objective, authority_class? }` | `WorkItemRecord` | Experimental | Creates/enqueues work items; update/pick/complete APIs remain Phase 2 work. |
+| `GET` | `/agents/:agent_id/timers/:timer_id` | Path `agent_id`, `timer_id`. | `TimerRecord` | Candidate stable route; DTO schema still broad | Returns 404 when the timer id is not found for the target agent. |
+| `POST` | `/control/agents/:agent_id/timers` | `{ duration_ms, interval_ms?, summary?, authority_class? }` | `TimerRecord` | Candidate stable for creation; cancellation remains Phase 2 work | `duration_ms` is required; `interval_ms` makes a repeating timer. |
 
 `CreateCommandTaskRequest` fields:
 
@@ -273,17 +279,17 @@ Projection contract:
 | `yield_time_ms` | integer | No | Defaults to `10000`. |
 | `max_output_tokens` | integer or null | No | Bounded output preview budget. |
 | `accepts_input` | bool | No | Defaults to `false`. |
-| `trust` | `TrustLevel` or null | No | Defaults to `trusted_operator`; recorded in audit. |
+| `authority_class` | `AuthorityClass` or null | No | Defaults to operator authority for admitted control-plane requests; recorded in provenance/audit. |
 
 ### Workspace and model controls
 
 | Method | Path | Request body | Success response | Stability | Notes |
 |--------|------|--------------|------------------|-----------|-------|
-| `POST` | `/control/agents/:agent_id/workspace/attach` | `{ path, trust? }` | `{ ok, agent_id, workspace_id, workspace_anchor }` | Candidate stable | `path` is converted into a workspace entry. |
-| `POST` | `/control/agents/:agent_id/workspace/exit` | `{ trust? }` | `{ ok, agent_id }` | Candidate stable | Returns agent to default workspace behavior. |
-| `POST` | `/control/agents/:agent_id/workspace/detach` | `{ workspace_id, trust? }` | `{ ok, agent_id, workspace_id }` | Candidate stable | `workspace_id` is trimmed before use. |
-| `POST` | `/control/agents/:agent_id/model` | `{ model, reasoning_effort?, trust? }` | `{ ok, agent_id, model }` | Experimental | `reasoning_effort` must be `low`, `medium`, `high`, or `xhigh`. |
-| `POST` | `/control/agents/:agent_id/model/clear` | `{ trust? }` | `{ ok, agent_id, model }` | Experimental | Clears the agent-level model override. |
+| `POST` | `/control/agents/:agent_id/workspace/attach` | `{ path, authority_class? }` | `{ ok, agent_id, workspace_id, workspace_anchor }` | Candidate stable | `path` is converted into a workspace entry. |
+| `POST` | `/control/agents/:agent_id/workspace/exit` | `{ authority_class? }` | `{ ok, agent_id }` | Candidate stable | Returns agent to default workspace behavior. |
+| `POST` | `/control/agents/:agent_id/workspace/detach` | `{ workspace_id, authority_class? }` | `{ ok, agent_id, workspace_id }` | Candidate stable | `workspace_id` is trimmed before use. |
+| `POST` | `/control/agents/:agent_id/model` | `{ model, reasoning_effort?, authority_class? }` | `{ ok, agent_id, model }` | Experimental | `reasoning_effort` must be `low`, `medium`, `high`, or `xhigh`. |
+| `POST` | `/control/agents/:agent_id/model/clear` | `{ authority_class? }` | `{ ok, agent_id, model }` | Experimental | Clears the agent-level model override. |
 
 ### Operator transport integration
 
@@ -333,7 +339,7 @@ treated as schema surfaces, not incidental Rust structs:
 | `AgentListEntry` | `/agents/list` | Keep lightweight; avoid reintroducing heavy runtime/model payloads. |
 | `TaskRecord` | `/agents/:id/tasks`, task creation, state snapshot, events | Task kind/status enums, detail truncation, recovery metadata, output references. |
 | `WorkItemRecord` | work-item creation, state snapshot, events | State, plan status, plan artifact, todo list, blockers/recheck timestamps. |
-| `TimerRecord` | `/agents/:id/timers`, timer creation, state snapshot | Repeating timer fields and status enum. |
+| `TimerRecord` | `/agents/:id/timers`, `/agents/:id/timers/:timer_id`, timer creation, state snapshot | Repeating timer fields and status enum. |
 | `BriefRecord` | `/agents/:id/briefs` | User-facing delivery vs internal traces. |
 | `TranscriptEntry` | `/agents/:id/transcript` | Potential provider/tool internals and truncation policy. |
 | `StreamEventEnvelope` | events page and SSE stream | Projection/redaction, provenance, payload versioning. |
@@ -342,50 +348,55 @@ treated as schema surfaces, not incidental Rust structs:
 
 ## Detected contract gaps
 
-1. **No generated route/schema inventory.** The current route list is hand
-   extracted from `src/http.rs`. Add a test or generator that snapshots method,
-   path, handler, request type, query type, and response contract.
-2. **Event projection allowlist needs more real-world coverage.** `operator`
+1. **OpenAPI route/type metadata is still only partially colocated with
+   implementation.** Route coverage and schema snapshots now exist, but the
+   generated baseline still depends on a conservative OpenAPI table. Phase 2
+   moves operation metadata closer to Axum route/type definitions.
+2. **Stable DTO schemas need tightening.** Several task, work-item, timer,
+   agent, event, and envelope responses are still represented broadly in the
+   OpenAPI baseline and should become first-class typed components where they
+   are stable client contracts.
+3. **Event projection allowlist needs more real-world coverage.** `operator`
    now has a redaction contract, but additional runtime event kinds may need
    explicit allowlist additions as TUI/client consumption broadens.
-3. **Task lifecycle APIs are incomplete.** HTTP can create and list tasks, but
-   lacks task status/output/input/stop routes that correspond to runtime tool
-   operations.
 4. **WorkItem mutation APIs are incomplete.** HTTP can list/get/create/enqueue
    work items and include them in state snapshots, but update/pick/complete
    routes remain deferred.
-5. **Timer lifecycle APIs are incomplete.** HTTP can create and list timers, but
-   lacks cancellation or detail routes.
+5. **Timer lifecycle APIs are incomplete.** HTTP can create/list/get timers,
+   but lacks cancellation semantics and endpoint coverage.
 6. **Deployment guidance still needs hardening.** The HTTP ingress trust/auth
    table is documented, but production-facing guidance should still describe
    when to use bearer mode, local mode, callback capabilities, and dedicated
    operator adapters.
 7. **Tool schema is a separate API surface.** Built-in tool input/result schemas
-   are not covered by this HTTP inventory and need their own stability
-   inventory.
+   now have their own checked inventory; this HTTP inventory should link to it
+   rather than duplicate it.
 
 ## Tracking issues
 
-These follow-up issues are grouped under the
+Milestone 8 baseline issues are complete. Phase 2 follow-up issues are grouped
+under the same
 [`CLI/API Stability Contracts`](https://github.com/holon-run/holon/milestone/8)
-milestone.
+milestone and tracked by
+[#1444](https://github.com/holon-run/holon/issues/1444).
 
 | Issue | Scope |
 |-------|-------|
-| [#1396](https://github.com/holon-run/holon/issues/1396) `api: add HTTP route and schema snapshot tests` | Generate or snapshot the route/schema inventory so contract drift is visible in CI. |
-| [#1397](https://github.com/holon-run/holon/issues/1397) `api: define shared HTTP error envelope and status-code contract` | Normalize or document error JSON and HTTP status-code mapping. |
-| [#1398](https://github.com/holon-run/holon/issues/1398) `api: define success envelope policy for control-plane responses` | Decide which route classes return `{ ok, ... }` envelopes versus direct records. |
-| [#1399](https://github.com/holon-run/holon/issues/1399) `api: stabilize event replay and SSE projection contract` | Stabilize cursor behavior, SSE fields, projection, and redaction. |
-| [#1400](https://github.com/holon-run/holon/issues/1400) `api: add task, WorkItem, and timer lifecycle endpoints` | Add or explicitly defer task, work-item, and timer detail/control endpoints. |
-| [#1401](https://github.com/holon-run/holon/issues/1401) `api: document HTTP ingress trust and auth boundaries` | Publish a trust/auth table for public enqueue, webhooks, operator bindings, and callbacks. |
-| [#1402](https://github.com/holon-run/holon/issues/1402) `api: inventory and version model-facing tool schemas` | Produce the separate inventory for built-in model-facing tool schemas. |
+| [#1438](https://github.com/holon-run/holon/issues/1438) `api: migrate OpenAPI baseline to aide route/type metadata` | Move OpenAPI operation metadata closer to route and DTO definitions. |
+| [#1439](https://github.com/holon-run/holon/issues/1439) `api: tighten OpenAPI DTO schemas for stable read models` | Replace selected generic JSON schemas with typed stable DTO schemas. |
+| [#1440](https://github.com/holon-run/holon/issues/1440) `api: add WorkItem mutation HTTP lifecycle endpoints` | Add or explicitly scope update/pick/complete mutation endpoints. |
+| [#1441](https://github.com/holon-run/holon/issues/1441) `api: add Timer cancellation lifecycle endpoint` | Define timer cancellation semantics and HTTP endpoint behavior. |
+| [#1443](https://github.com/holon-run/holon/issues/1443) `events: define stable operator-facing event payload subset` | Version/document stable event fields and projection/redaction boundaries. |
 
 ## Suggested next work
 
-1. Add HTTP route/schema snapshot tests ([#1396](https://github.com/holon-run/holon/issues/1396)).
-2. Define and test the common error envelope ([#1397](https://github.com/holon-run/holon/issues/1397)).
-3. Decide per-route success envelope policy ([#1398](https://github.com/holon-run/holon/issues/1398)).
-4. Stabilize event replay/SSE projection and redaction ([#1399](https://github.com/holon-run/holon/issues/1399)).
-5. Add or explicitly defer task, work-item, and timer lifecycle endpoints ([#1400](https://github.com/holon-run/holon/issues/1400)).
-6. Document HTTP ingress trust/auth boundaries ([#1401](https://github.com/holon-run/holon/issues/1401)).
-7. Produce a separate tool-schema inventory for model-facing APIs ([#1402](https://github.com/holon-run/holon/issues/1402)).
+1. Migrate the OpenAPI baseline toward `aide` route/type metadata
+   ([#1438](https://github.com/holon-run/holon/issues/1438)).
+2. Tighten DTO schemas for stable read models and control-plane results
+   ([#1439](https://github.com/holon-run/holon/issues/1439)).
+3. Add WorkItem mutation endpoints or explicitly define the non-goals
+   ([#1440](https://github.com/holon-run/holon/issues/1440)).
+4. Add timer cancellation semantics and endpoint coverage
+   ([#1441](https://github.com/holon-run/holon/issues/1441)).
+5. Define the stable operator-facing event payload subset
+   ([#1443](https://github.com/holon-run/holon/issues/1443)).

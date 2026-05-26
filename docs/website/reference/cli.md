@@ -1,6 +1,6 @@
 ---
 title: CLI reference
-summary: Holon's current command-line interface — verified against holon --help (v0.14.0).
+summary: Holon's current command-line interface — verified against holon --help.
 order: 10
 ---
 <!-- maintenance: regenerate from `holon --help` output when commands change -->
@@ -16,7 +16,7 @@ For scripting guidance, stability levels, and support policy, see
 ## Command Tree
 
 ```
-holon (v0.14.0)
+holon (v0.14.1)
 ├── serve        Start HTTP control plane server
 ├── daemon       Background daemon lifecycle
 │   ├── start    Start the daemon
@@ -86,10 +86,10 @@ holon (v0.14.0)
 └── help         Print help
 ```
 
-> **Note:** This reference reflects the latest release. If you are running a
-> source build from `main`, some commands or flags may differ. Always run
-> `holon --help` and `holon <COMMAND> --help` for the live command reference
-> of your installed version.
+> **Note:** This reference is maintained from the checked CLI snapshot. If you
+> are running a source build from `main`, some commands or flags may differ.
+> Always run `holon --help` and `holon <COMMAND> --help` for the live command
+> reference of your installed version.
 
 ## Common Workflows
 

@@ -19,7 +19,7 @@ behavior changes.
 <!-- INDEX:START -->
 
 - [CLI reference](./cli.md)
-  Holon's current command-line interface — verified against holon --help (v0.14.0).
+  Holon's current command-line interface — verified against holon --help.
   <!-- mdorigin:index kind=article -->
 
 - [CLI contract inventory](./cli-contract-inventory.md)
@@ -47,7 +47,7 @@ behavior changes.
   <!-- mdorigin:index kind=article -->
 
 - [API contract inventory](./api-contract-inventory.md)
-  First-pass stability inventory for Holon's HTTP control-plane API parameters, responses, and follow-up contract work.
+  Post-baseline stability inventory for Holon's HTTP control-plane API parameters, responses, and Phase 2 contract work.
   <!-- mdorigin:index kind=article -->
 
 - [Model tool schema inventory](./model-tool-schema-inventory.md)
