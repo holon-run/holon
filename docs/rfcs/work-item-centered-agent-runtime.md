@@ -502,6 +502,10 @@ runtime should persist:
   projection using the same text;
 - a WorkItem result report projection that context and compaction can read.
 
+That delivery projection is terminal for the current turn. Normal turn-final
+brief generation should not emit a second user-facing result for the same
+completion report.
+
 If a WorkItem is completed without same-round report text, completion may still
 succeed, but the runtime should not synthesize a generic result report from
 arbitrary runtime evidence. It should surface a structured warning so the agent

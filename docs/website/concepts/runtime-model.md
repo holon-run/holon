@@ -67,7 +67,9 @@ visible through `GetWorkItem` and `ListWorkItems`, and indexed by
 conclude on that issue?" without re-reading the full transcript.
 
 Completion reports replace free-form manual summaries. They are tied to the
-work item lifecycle, not to individual model turns.
+work item lifecycle, not to individual model turns. Once a completion report is
+promoted, it is the terminal user-facing delivery for that turn; the scheduler
+resumes any other runnable work in a later work-queue tick.
 ```
 
 ### Tasks

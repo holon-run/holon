@@ -742,7 +742,7 @@ async fn build_response(
         .read_recent_delivery_summaries(usize::MAX)?
         .into_iter()
         .filter(|summary| !baseline.delivery_summary_ids.contains(&summary.id))
-        .max_by(|left, right| left.created_at.cmp(&right.created_at))
+        .last()
         .map(|summary| summary.text)
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty());

@@ -52,7 +52,7 @@ Tools are grouped by capability family for authority gating:
 | `PickWorkItem` | Set current focus |
 | `GetWorkItem` | Read single WorkItem with plan preview |
 | `ListWorkItems` | Query with filters |
-| `CompleteWorkItem` | Mark complete; completion report promotion |
+| `CompleteWorkItem` | Mark complete; promote same-round assistant text as the terminal completion report |
 | `WaitFor` | Record task, external, or operator waiting state and yield |
 
 ### Task control plane

@@ -40,6 +40,9 @@ and class:
 | `InternalFollowup` | The agent enqueued a self-follow-up via `Enqueue` |
 | `SystemTick` | The scheduler emitted a runtime-owned follow-up for a runnable WorkItem |
 
+`SystemTick` is also how Holon resumes other runnable WorkItems after a
+promoted `CompleteWorkItem` report ends the current turn.
+
 ### Continuation classes (`ContinuationClass`)
 
 | Class | Meaning |

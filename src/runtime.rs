@@ -97,7 +97,33 @@ use command_task::ManagedTaskHandle;
 use continuation::{resolve_continuation, ContinuationTrigger};
 #[cfg(test)]
 use subagent::sanitize_subagent_result;
-use turn::LoopControlOptions;
+use turn::{LoopControlOptions, TurnTerminalDelivery};
+
+#[derive(Debug, Clone)]
+pub(super) struct WorkItemCompletionReportPromotion {
+    pub(super) record: crate::types::WorkItemRecord,
+    pub(super) delivery_summary_id: String,
+    pub(super) brief_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum WorkItemCompletionReportPromotionOutcome {
+    /// Completion changed the WorkItem state, but did not create a new
+    /// user-facing report for terminal delivery.
+    Unchanged(crate::types::WorkItemRecord),
+    /// Completion promoted the assistant's same-round report into the
+    /// WorkItem's delivery summary and result brief.
+    Promoted(WorkItemCompletionReportPromotion),
+}
+
+impl WorkItemCompletionReportPromotionOutcome {
+    pub(super) fn into_record(self) -> crate::types::WorkItemRecord {
+        match self {
+            Self::Unchanged(record) => record,
+            Self::Promoted(promotion) => promotion.record,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct WorktreeSubagentResult {

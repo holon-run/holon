@@ -134,7 +134,7 @@ current WorkItem is the focus for the current turn:
 | `PickWorkItem` | Set current focus to an existing open WorkItem |
 | `GetWorkItem` | Read a single WorkItem with plan preview |
 | `ListWorkItems` | Query with filters: all, open, completed, current, queued, blocked, waiting_for_operator, runnable |
-| `CompleteWorkItem` | Mark complete; the next assistant-text block in the same round is promoted as the completion report |
+| `CompleteWorkItem` | Mark complete; same-round assistant text is promoted as the completion report |
 | `WaitFor` | Attach a task, external, or operator wait to the current WorkItem and yield |
 
 **Key contract:**
@@ -149,7 +149,14 @@ current WorkItem is the focus for the current turn:
   should wait.
 - `CompleteWorkItem` promotion: the operator-facing completion report must be
   written as assistant text **in the same round**. After the tool succeeds,
-  the runtime promotes that text as the canonical completion report.
+  the runtime promotes that text as the canonical completion report and
+  terminal user-facing delivery for the turn.
+- A promoted completion report writes exactly one result brief for that
+  WorkItem. The turn-final result brief is suppressed so the same completion is
+  not delivered twice.
+- Additional runnable WorkItems after completion resume through scheduler-owned
+  work-queue `SystemTick` messages, not through another provider round in the
+  completed WorkItem's turn.
 - Plan body changes go through direct file edits to `plan_artifact.path`, not
   through `UpdateWorkItem`.
 

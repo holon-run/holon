@@ -1830,6 +1830,10 @@ operator-facing report text and exactly one successful focused
 `CompleteWorkItem` call. The tool call marks the work item completed; after that
 state transition succeeds, the runtime promotes the same-round assistant text
 into the WorkItem result summary, delivery summary, and result brief.
+That promoted result brief is the terminal user-facing delivery for the turn;
+the normal turn-final result brief is suppressed to avoid delivering the same
+completion twice. Other runnable WorkItems continue through the scheduler's
+work-queue `SystemTick` path.
 
 Completion reports are explicit-only in this release line. The turn-end and
 work-item lifecycle do not synthesize fallback summaries from runtime evidence.

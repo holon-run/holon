@@ -2302,6 +2302,26 @@ impl RuntimeHandle {
         source_round: Option<usize>,
         warnings: Vec<serde_json::Value>,
     ) -> Result<WorkItemRecord> {
+        Ok(self
+            .promote_work_item_completion_report_with_metadata(
+                work_item_id,
+                report_text,
+                source_turn_index,
+                source_round,
+                warnings,
+            )
+            .await?
+            .into_record())
+    }
+
+    pub(super) async fn promote_work_item_completion_report_with_metadata(
+        &self,
+        work_item_id: String,
+        report_text: String,
+        source_turn_index: Option<u64>,
+        source_round: Option<usize>,
+        warnings: Vec<serde_json::Value>,
+    ) -> Result<WorkItemCompletionReportPromotionOutcome> {
         let agent_id = self.agent_id().await?;
         let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if existing.state != WorkItemState::Completed {
@@ -2312,10 +2332,14 @@ impl RuntimeHandle {
         }
         let report_text = report_text.trim();
         if report_text.is_empty() {
-            return Ok(existing);
+            return Ok(WorkItemCompletionReportPromotionOutcome::Unchanged(
+                existing,
+            ));
         }
         if existing.result_summary.as_deref() == Some(report_text) {
-            return Ok(existing);
+            return Ok(WorkItemCompletionReportPromotionOutcome::Unchanged(
+                existing,
+            ));
         }
         let record = WorkItemRecord {
             revision: existing.revision + 1,
@@ -2356,11 +2380,17 @@ impl RuntimeHandle {
                 "text_preview": crate::tool::helpers::truncate_text(report_text, 600),
                 "warnings": warnings.clone(),
                 "warning_count": warnings.len(),
-                "delivery_summary_id": delivery_summary.id,
-                "brief_id": brief.id,
+                "delivery_summary_id": delivery_summary.id.clone(),
+                "brief_id": brief.id.clone(),
             }),
         ))?;
-        Ok(record)
+        Ok(WorkItemCompletionReportPromotionOutcome::Promoted(
+            WorkItemCompletionReportPromotion {
+                record,
+                delivery_summary_id: delivery_summary.id,
+                brief_id: brief.id,
+            },
+        ))
     }
 
     pub async fn record_work_item_completion_warning(
