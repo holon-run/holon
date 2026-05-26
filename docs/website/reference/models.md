@@ -1,0 +1,313 @@
+---
+title: Supported Models
+description: Complete reference of all built-in models and providers supported by Holon.
+generated: auto-generated from holon source — do not edit directly
+---
+
+# Supported Models
+
+Holon includes built-in configuration for **47 providers** and **236 models**.
+
+This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
+Run `cargo run --bin holon-docgen -- models` to regenerate.
+
+## Provider Setup
+
+Each provider requires an API key or credential to use. Set the listed environment variable before
+running Holon.
+
+| Provider | Transport | Base URL | Auth Env Variable(s) |
+|----------|-----------|----------|---------------------|
+
+| `anthropic` | Anthropic Messages | `https://api.anthropic.com` | `ANTHROPIC_AUTH_TOKEN` |
+| `arcee` | OpenAI Chat Completions | `https://api.arcee.ai/api/v1` | `ARCEE_API_KEY` |
+| `bigmodel` | Anthropic Messages | `https://open.bigmodel.cn/api/anthropic` | `BIGMODEL_API_KEY` |
+| `bigmodel-anthropic` | Anthropic Messages | `https://open.bigmodel.cn/api/anthropic` | `BIGMODEL_API_KEY` |
+| `bigmodel-openai` | OpenAI Chat Completions | `https://open.bigmodel.cn/api/paas/v4` | `BIGMODEL_API_KEY` |
+| `byteplus` | OpenAI Chat Completions | `https://ark.ap-southeast.bytepluses.com/api/v3` | `BYTEPLUS_API_KEY` |
+| `byteplus-coding` | OpenAI Chat Completions | `https://ark.ap-southeast.bytepluses.com/api/coding/v3` | `BYTEPLUS_CODING_API_KEY or BYTEPLUS_API_KEY` |
+| `chutes` | OpenAI Chat Completions | `https://llm.chutes.ai/v1` | `CHUTES_API_KEY` |
+| `deepseek` | Anthropic Messages | `https://api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` |
+| `deepseek-anthropic` | Anthropic Messages | `https://api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` |
+| `deepseek-openai` | OpenAI Chat Completions | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
+| `fireworks` | OpenAI Chat Completions | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
+| `huggingface` | OpenAI Chat Completions | `https://router.huggingface.co/v1` | `HUGGINGFACE_API_KEY or HF_TOKEN` |
+| `kilocode` | OpenAI Chat Completions | `https://api.kilo.ai/api/gateway` | `KILOCODE_API_KEY` |
+| `litellm` | OpenAI Chat Completions | `http://localhost:4000` | `LITELLM_API_KEY` |
+| `minimax` | Anthropic Messages | `https://api.minimax.io/anthropic` | `MINIMAX_API_KEY` |
+| `minimax-portal` | Anthropic Messages | `https://api.minimax.io/anthropic` | `MINIMAX_API_KEY` |
+| `mistral` | OpenAI Chat Completions | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
+| `moonshot` | OpenAI Chat Completions | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` |
+| `nearai` | OpenAI Chat Completions | `https://cloud-api.near.ai/v1` | `NEARAI_API_KEY` |
+| `nvidia` | OpenAI Chat Completions | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
+| `openai` | OpenAI Responses | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `openai-codex` | OpenAI Codex | `https://chatgpt.com/backend-api/codex` | `—` |
+| `opencode-go` | OpenAI Chat Completions | `https://opencode.ai/zen/go/v1` | `OPENCODE_GO_API_KEY` |
+| `openrouter` | OpenAI Chat Completions | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| `qianfan` | OpenAI Chat Completions | `https://qianfan.baidubce.com/v2` | `QIANFAN_API_KEY` |
+| `qwen` | OpenAI Chat Completions | `https://coding-intl.dashscope.aliyuncs.com/v1` | `QWEN_API_KEY or DASHSCOPE_API_KEY` |
+| `stepfun` | OpenAI Chat Completions | `https://api.stepfun.ai/v1` | `STEPFUN_API_KEY` |
+| `stepfun-plan` | OpenAI Chat Completions | `https://api.stepfun.ai/step_plan/v1` | `STEPFUN_PLAN_API_KEY or STEPFUN_API_KEY` |
+| `synthetic` | Anthropic Messages | `https://api.synthetic.new/anthropic` | `SYNTHETIC_API_KEY` |
+| `tencent-tokenhub` | OpenAI Chat Completions | `https://tokenhub.tencentmaas.com/v1` | `TOKENHUB_API_KEY` |
+| `together` | OpenAI Chat Completions | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` |
+| `venice` | OpenAI Chat Completions | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` |
+| `vercel-ai-gateway` | Anthropic Messages | `https://ai-gateway.vercel.sh` | `AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY` |
+| `vllm` | OpenAI Chat Completions | `http://127.0.0.1:8000/v1` | `—` |
+| `volcengine` | OpenAI Chat Completions | `https://ark.cn-beijing.volces.com/api/v3` | `VOLCENGINE_API_KEY or ARK_API_KEY` |
+| `volcengine-coding` | OpenAI Chat Completions | `https://ark.cn-beijing.volces.com/api/coding/v3` | `VOLCENGINE_CODING_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
+| `xai` | OpenAI Chat Completions | `https://api.x.ai/v1` | `XAI_API_KEY` |
+| `xiaomi` | Anthropic Messages | `https://api.xiaomimimo.com/anthropic` | `XIAOMI_API_KEY` |
+| `xiaomi-anthropic` | Anthropic Messages | `https://api.xiaomimimo.com/anthropic` | `XIAOMI_API_KEY` |
+| `xiaomi-openai` | OpenAI Chat Completions | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
+| `xiaomi-token-plan` | Anthropic Messages | `https://token-plan-cn.xiaomimimo.com/anthropic` | `XIAOMI_TOKEN_PLAN_API_KEY` |
+| `xiaomi-token-plan-anthropic` | Anthropic Messages | `https://token-plan-cn.xiaomimimo.com/anthropic` | `XIAOMI_TOKEN_PLAN_API_KEY` |
+| `xiaomi-token-plan-openai` | OpenAI Chat Completions | `https://token-plan-cn.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_API_KEY` |
+| `zai` | Anthropic Messages | `https://api.z.ai/api/anthropic` | `ZAI_API_KEY` |
+| `zai-anthropic` | Anthropic Messages | `https://api.z.ai/api/anthropic` | `ZAI_API_KEY` |
+| `zai-openai` | OpenAI Chat Completions | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` |
+
+## Model Catalog
+
+The table below lists every built-in model with its context window, max output tokens,
+and capabilities.
+
+| Provider | Model | Usage | Context Window | Max Output | Reasoning | Image |
+|----------|-------|-------|----------------|------------|-----------|-------|
+
+| `anthropic` | `claude-haiku-4-5` | `anthropic/claude-haiku-4-5` | 200K | 32K | — | ✅ |
+| `anthropic` | `claude-opus-4-5` | `anthropic/claude-opus-4-5` | 200K | 64K | ✅ | ✅ |
+| `anthropic` | `claude-opus-4-6` | `anthropic/claude-opus-4-6` | 1000K | 128K | ✅ | ✅ |
+| `anthropic` | `claude-opus-4-7` | `anthropic/claude-opus-4-7` | 1000K | 128K | ✅ | ✅ |
+| `anthropic` | `claude-sonnet-4-5` | `anthropic/claude-sonnet-4-5` | 200K | 64K | ✅ | ✅ |
+| `anthropic` | `claude-sonnet-4-6` | `anthropic/claude-sonnet-4-6` | 200K | 32K | — | ✅ |
+| `arcee` | `trinity-large-preview` | `arcee/trinity-large-preview` | 131K | 16K | — | — |
+| `arcee` | `trinity-large-thinking` | `arcee/trinity-large-thinking` | 262K | 80K | ✅ | — |
+| `arcee` | `trinity-mini` | `arcee/trinity-mini` | 131K | 80K | — | — |
+| `bigmodel` | `glm-4.5` | `bigmodel/glm-4.5` | 131K | 98K | ✅ | — |
+| `bigmodel` | `glm-4.5-air` | `bigmodel/glm-4.5-air` | 131K | 98K | ✅ | — |
+| `bigmodel` | `glm-4.5-flash` | `bigmodel/glm-4.5-flash` | 131K | 98K | ✅ | — |
+| `bigmodel` | `glm-4.5v` | `bigmodel/glm-4.5v` | 64K | 16K | ✅ | ✅ |
+| `bigmodel` | `glm-4.6` | `bigmodel/glm-4.6` | 204K | 131K | ✅ | — |
+| `bigmodel` | `glm-4.6v` | `bigmodel/glm-4.6v` | 128K | 32K | ✅ | ✅ |
+| `bigmodel` | `glm-4.7` | `bigmodel/glm-4.7` | 204K | 131K | ✅ | — |
+| `bigmodel` | `glm-4.7-flash` | `bigmodel/glm-4.7-flash` | 200K | 131K | ✅ | — |
+| `bigmodel` | `glm-4.7-flashx` | `bigmodel/glm-4.7-flashx` | 200K | 128K | ✅ | — |
+| `bigmodel` | `glm-5` | `bigmodel/glm-5` | 202K | 131K | ✅ | — |
+| `bigmodel` | `glm-5-turbo` | `bigmodel/glm-5-turbo` | 202K | 131K | ✅ | — |
+| `bigmodel` | `glm-5.1` | `bigmodel/glm-5.1` | 202K | 131K | ✅ | — |
+| `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 202K | 131K | ✅ | ✅ |
+| `bigmodel-anthropic` | `glm-4.5` | `bigmodel-anthropic/glm-4.5` | 131K | 98K | ✅ | — |
+| `bigmodel-anthropic` | `glm-4.5-air` | `bigmodel-anthropic/glm-4.5-air` | 131K | 98K | ✅ | — |
+| `bigmodel-anthropic` | `glm-4.5-flash` | `bigmodel-anthropic/glm-4.5-flash` | 131K | 98K | ✅ | — |
+| `bigmodel-anthropic` | `glm-4.5v` | `bigmodel-anthropic/glm-4.5v` | 64K | 16K | ✅ | ✅ |
+| `bigmodel-anthropic` | `glm-4.6` | `bigmodel-anthropic/glm-4.6` | 204K | 131K | ✅ | — |
+| `bigmodel-anthropic` | `glm-4.6v` | `bigmodel-anthropic/glm-4.6v` | 128K | 32K | ✅ | ✅ |
+| `bigmodel-anthropic` | `glm-4.7` | `bigmodel-anthropic/glm-4.7` | 204K | 131K | ✅ | — |
+| `bigmodel-anthropic` | `glm-4.7-flash` | `bigmodel-anthropic/glm-4.7-flash` | 200K | 131K | ✅ | — |
+| `bigmodel-anthropic` | `glm-4.7-flashx` | `bigmodel-anthropic/glm-4.7-flashx` | 200K | 128K | ✅ | — |
+| `bigmodel-anthropic` | `glm-5` | `bigmodel-anthropic/glm-5` | 202K | 131K | ✅ | — |
+| `bigmodel-anthropic` | `glm-5-turbo` | `bigmodel-anthropic/glm-5-turbo` | 202K | 131K | ✅ | — |
+| `bigmodel-anthropic` | `glm-5.1` | `bigmodel-anthropic/glm-5.1` | 202K | 131K | ✅ | — |
+| `bigmodel-anthropic` | `glm-5v-turbo` | `bigmodel-anthropic/glm-5v-turbo` | 202K | 131K | ✅ | ✅ |
+| `bigmodel-openai` | `glm-4.5` | `bigmodel-openai/glm-4.5` | 131K | 98K | ✅ | — |
+| `bigmodel-openai` | `glm-4.5-air` | `bigmodel-openai/glm-4.5-air` | 131K | 98K | ✅ | — |
+| `bigmodel-openai` | `glm-4.5-flash` | `bigmodel-openai/glm-4.5-flash` | 131K | 98K | ✅ | — |
+| `bigmodel-openai` | `glm-4.5v` | `bigmodel-openai/glm-4.5v` | 64K | 16K | ✅ | ✅ |
+| `bigmodel-openai` | `glm-4.6` | `bigmodel-openai/glm-4.6` | 204K | 131K | ✅ | — |
+| `bigmodel-openai` | `glm-4.6v` | `bigmodel-openai/glm-4.6v` | 128K | 32K | ✅ | ✅ |
+| `bigmodel-openai` | `glm-4.7` | `bigmodel-openai/glm-4.7` | 204K | 131K | ✅ | — |
+| `bigmodel-openai` | `glm-4.7-flash` | `bigmodel-openai/glm-4.7-flash` | 200K | 131K | ✅ | — |
+| `bigmodel-openai` | `glm-4.7-flashx` | `bigmodel-openai/glm-4.7-flashx` | 200K | 128K | ✅ | — |
+| `bigmodel-openai` | `glm-5` | `bigmodel-openai/glm-5` | 202K | 131K | ✅ | — |
+| `bigmodel-openai` | `glm-5-turbo` | `bigmodel-openai/glm-5-turbo` | 202K | 131K | ✅ | — |
+| `bigmodel-openai` | `glm-5.1` | `bigmodel-openai/glm-5.1` | 202K | 131K | ✅ | — |
+| `bigmodel-openai` | `glm-5v-turbo` | `bigmodel-openai/glm-5v-turbo` | 202K | 131K | ✅ | ✅ |
+| `byteplus` | `moonshotai/kimi-k2.5` | `byteplus/moonshotai/kimi-k2.5` | 262K | 32K | ✅ | ✅ |
+| `byteplus` | `seed-1-8-251228` | `byteplus/seed-1-8-251228` | 256K | 4K | — | ✅ |
+| `byteplus` | `zai-org/glm-4.7` | `byteplus/zai-org/glm-4.7` | 204K | 131K | ✅ | — |
+| `byteplus-coding` | `ark-code-latest` | `byteplus-coding/ark-code-latest` | 256K | 65K | ✅ | — |
+| `chutes` | `deepseek-ai/DeepSeek-V3.2-TEE` | `chutes/deepseek-ai/DeepSeek-V3.2-TEE` | 131K | 65K | ✅ | — |
+| `chutes` | `moonshotai/Kimi-K2.5-TEE` | `chutes/moonshotai/Kimi-K2.5-TEE` | 262K | 65K | ✅ | ✅ |
+| `chutes` | `openai/gpt-oss-120b-TEE` | `chutes/openai/gpt-oss-120b-TEE` | 131K | 65K | ✅ | — |
+| `chutes` | `zai-org/GLM-4.7-TEE` | `chutes/zai-org/GLM-4.7-TEE` | 202K | 65K | ✅ | — |
+| `deepseek` | `deepseek-chat` | `deepseek/deepseek-chat` | 131K | 8K | — | — |
+| `deepseek` | `deepseek-reasoner` | `deepseek/deepseek-reasoner` | 131K | 65K | ✅ | — |
+| `deepseek` | `deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | 1000K | 384K | ✅ | — |
+| `deepseek` | `deepseek-v4-pro` | `deepseek/deepseek-v4-pro` | 1000K | 384K | ✅ | — |
+| `deepseek-anthropic` | `deepseek-chat` | `deepseek-anthropic/deepseek-chat` | 131K | 8K | — | — |
+| `deepseek-anthropic` | `deepseek-reasoner` | `deepseek-anthropic/deepseek-reasoner` | 131K | 65K | ✅ | — |
+| `deepseek-anthropic` | `deepseek-v4-flash` | `deepseek-anthropic/deepseek-v4-flash` | 1000K | 384K | ✅ | — |
+| `deepseek-anthropic` | `deepseek-v4-pro` | `deepseek-anthropic/deepseek-v4-pro` | 1000K | 384K | ✅ | — |
+| `deepseek-openai` | `deepseek-chat` | `deepseek-openai/deepseek-chat` | 131K | 8K | — | — |
+| `deepseek-openai` | `deepseek-reasoner` | `deepseek-openai/deepseek-reasoner` | 131K | 65K | ✅ | — |
+| `deepseek-openai` | `deepseek-v4-flash` | `deepseek-openai/deepseek-v4-flash` | 1000K | 384K | ✅ | — |
+| `deepseek-openai` | `deepseek-v4-pro` | `deepseek-openai/deepseek-v4-pro` | 1000K | 384K | ✅ | — |
+| `fireworks` | `accounts/fireworks/models/kimi-k2p6` | `fireworks/accounts/fireworks/models/kimi-k2p6` | 262K | 262K | — | ✅ |
+| `fireworks` | `accounts/fireworks/routers/kimi-k2p5-turbo` | `fireworks/accounts/fireworks/routers/kimi-k2p5-turbo` | 256K | 256K | — | ✅ |
+| `huggingface` | `moonshotai/Kimi-K2-Instruct` | `huggingface/moonshotai/Kimi-K2-Instruct` | 262K | 32K | — | — |
+| `kilocode` | `kilo/auto` | `kilocode/kilo/auto` | 1000K | 128K | ✅ | ✅ |
+| `litellm` | `claude-opus-4-6` | `litellm/claude-opus-4-6` | 200K | 128K | ✅ | ✅ |
+| `minimax` | `MiniMax-M2.7` | `minimax/MiniMax-M2.7` | 200K | 128K | ✅ | — |
+| `minimax` | `MiniMax-M2.7-highspeed` | `minimax/MiniMax-M2.7-highspeed` | 200K | 128K | ✅ | — |
+| `minimax-portal` | `MiniMax-M2.7` | `minimax-portal/MiniMax-M2.7` | 200K | 128K | ✅ | — |
+| `mistral` | `codestral-latest` | `mistral/codestral-latest` | 256K | 4K | — | — |
+| `mistral` | `devstral-medium-latest` | `mistral/devstral-medium-latest` | 262K | 32K | — | — |
+| `mistral` | `magistral-small` | `mistral/magistral-small` | 128K | 40K | ✅ | — |
+| `mistral` | `mistral-large-latest` | `mistral/mistral-large-latest` | 262K | 16K | — | ✅ |
+| `mistral` | `mistral-medium-2508` | `mistral/mistral-medium-2508` | 262K | 8K | — | ✅ |
+| `mistral` | `mistral-small-latest` | `mistral/mistral-small-latest` | 128K | 16K | ✅ | ✅ |
+| `mistral` | `pixtral-large-latest` | `mistral/pixtral-large-latest` | 128K | 32K | — | ✅ |
+| `moonshot` | `kimi-k2-thinking` | `moonshot/kimi-k2-thinking` | 262K | 262K | ✅ | — |
+| `moonshot` | `kimi-k2-thinking-turbo` | `moonshot/kimi-k2-thinking-turbo` | 262K | 262K | ✅ | — |
+| `moonshot` | `kimi-k2-turbo` | `moonshot/kimi-k2-turbo` | 256K | 16K | — | — |
+| `moonshot` | `kimi-k2.5` | `moonshot/kimi-k2.5` | 262K | 262K | — | ✅ |
+| `moonshot` | `kimi-k2.6` | `moonshot/kimi-k2.6` | 262K | 262K | — | ✅ |
+| `nearai` | `Qwen/Qwen3-VL-30B-A3B-Instruct` | `nearai/Qwen/Qwen3-VL-30B-A3B-Instruct` | 256K | 65K | ✅ | ✅ |
+| `nearai` | `Qwen/Qwen3.5-122B-A10B` | `nearai/Qwen/Qwen3.5-122B-A10B` | 131K | 65K | ✅ | — |
+| `nearai` | `Qwen/Qwen3.6-35B-A3B-FP8` | `nearai/Qwen/Qwen3.6-35B-A3B-FP8` | 262K | 65K | ✅ | — |
+| `nearai` | `google/gemma-4-31B-it` | `nearai/google/gemma-4-31B-it` | 262K | 32K | — | — |
+| `nearai` | `zai-org/GLM-5.1-FP8` | `nearai/zai-org/GLM-5.1-FP8` | 202K | 131K | ✅ | — |
+| `nvidia` | `minimaxai/minimax-m2.5` | `nvidia/minimaxai/minimax-m2.5` | 196K | 8K | — | — |
+| `nvidia` | `moonshotai/kimi-k2.5` | `nvidia/moonshotai/kimi-k2.5` | 262K | 8K | — | — |
+| `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | `nvidia/nvidia/nemotron-3-super-120b-a12b` | 262K | 8K | — | — |
+| `nvidia` | `z-ai/glm5` | `nvidia/z-ai/glm5` | 202K | 8K | — | — |
+| `openai` | `gpt-5.2` | `openai/gpt-5.2` | 272K | 128K | ✅ | ✅ |
+| `openai` | `gpt-5.3` | `openai/gpt-5.3` | 128K | — | ✅ | ✅ |
+| `openai` | `gpt-5.4` | `openai/gpt-5.4` | 272K | — | ✅ | ✅ |
+| `openai` | `gpt-5.4-mini` | `openai/gpt-5.4-mini` | 128K | — | ✅ | ✅ |
+| `openai` | `gpt-5.5` | `openai/gpt-5.5` | 272K | 128K | ✅ | ✅ |
+| `openai-codex` | `gpt-5.2` | `openai-codex/gpt-5.2` | 272K | 128K | ✅ | ✅ |
+| `openai-codex` | `gpt-5.3-codex` | `openai-codex/gpt-5.3-codex` | 272K | — | ✅ | ✅ |
+| `openai-codex` | `gpt-5.3-codex-spark` | `openai-codex/gpt-5.3-codex-spark` | 128K | — | ✅ | ✅ |
+| `openai-codex` | `gpt-5.4` | `openai-codex/gpt-5.4` | 272K | — | ✅ | ✅ |
+| `openai-codex` | `gpt-5.4-mini` | `openai-codex/gpt-5.4-mini` | 272K | 128K | ✅ | ✅ |
+| `openai-codex` | `gpt-5.5` | `openai-codex/gpt-5.5` | 272K | 128K | ✅ | ✅ |
+| `opencode-go` | `deepseek-v4-flash` | `opencode-go/deepseek-v4-flash` | 1000K | 384K | ✅ | — |
+| `opencode-go` | `deepseek-v4-pro` | `opencode-go/deepseek-v4-pro` | 1000K | 384K | ✅ | — |
+| `openrouter` | `auto` | `openrouter/auto` | 200K | 8K | — | ✅ |
+| `openrouter` | `moonshotai/kimi-k2.6` | `openrouter/moonshotai/kimi-k2.6` | 262K | 262K | ✅ | ✅ |
+| `openrouter` | `openrouter/healer-alpha` | `openrouter/openrouter/healer-alpha` | 262K | 65K | ✅ | ✅ |
+| `openrouter` | `openrouter/hunter-alpha` | `openrouter/openrouter/hunter-alpha` | 1048K | 65K | ✅ | — |
+| `qianfan` | `deepseek-v3.2` | `qianfan/deepseek-v3.2` | 98K | 32K | ✅ | — |
+| `qianfan` | `ernie-5.0-thinking-preview` | `qianfan/ernie-5.0-thinking-preview` | 119K | 64K | ✅ | ✅ |
+| `qwen` | `MiniMax-M2.5` | `qwen/MiniMax-M2.5` | 1000K | 65K | ✅ | — |
+| `qwen` | `glm-4.7` | `qwen/glm-4.7` | 202K | 16K | — | — |
+| `qwen` | `glm-5` | `qwen/glm-5` | 202K | 16K | — | — |
+| `qwen` | `kimi-k2.5` | `qwen/kimi-k2.5` | 262K | 32K | — | ✅ |
+| `qwen` | `qwen3-coder-next` | `qwen/qwen3-coder-next` | 262K | 65K | — | — |
+| `qwen` | `qwen3-coder-plus` | `qwen/qwen3-coder-plus` | 1000K | 65K | — | — |
+| `qwen` | `qwen3-max-2026-01-23` | `qwen/qwen3-max-2026-01-23` | 262K | 65K | — | — |
+| `qwen` | `qwen3.5-plus` | `qwen/qwen3.5-plus` | 1000K | 65K | — | ✅ |
+| `qwen` | `qwen3.6-plus` | `qwen/qwen3.6-plus` | 1000K | 65K | — | ✅ |
+| `stepfun` | `step-3.5-flash` | `stepfun/step-3.5-flash` | 262K | 65K | ✅ | — |
+| `stepfun-plan` | `step-3.5-flash` | `stepfun-plan/step-3.5-flash` | 262K | 65K | ✅ | — |
+| `stepfun-plan` | `step-3.5-flash-2603` | `stepfun-plan/step-3.5-flash-2603` | 262K | 65K | ✅ | — |
+| `synthetic` | `hf:MiniMaxAI/MiniMax-M2.5` | `synthetic/hf:MiniMaxAI/MiniMax-M2.5` | 192K | 65K | — | — |
+| `synthetic` | `hf:Qwen/Qwen3-235B-A22B-Instruct-2507` | `synthetic/hf:Qwen/Qwen3-235B-A22B-Instruct-2507` | 256K | 8K | — | — |
+| `synthetic` | `hf:Qwen/Qwen3-235B-A22B-Thinking-2507` | `synthetic/hf:Qwen/Qwen3-235B-A22B-Thinking-2507` | 256K | 8K | ✅ | — |
+| `synthetic` | `hf:Qwen/Qwen3-Coder-480B-A35B-Instruct` | `synthetic/hf:Qwen/Qwen3-Coder-480B-A35B-Instruct` | 256K | 8K | — | — |
+| `synthetic` | `hf:Qwen/Qwen3-VL-235B-A22B-Instruct` | `synthetic/hf:Qwen/Qwen3-VL-235B-A22B-Instruct` | 250K | 8K | — | ✅ |
+| `synthetic` | `hf:deepseek-ai/DeepSeek-R1-0528` | `synthetic/hf:deepseek-ai/DeepSeek-R1-0528` | 128K | 8K | — | — |
+| `synthetic` | `hf:deepseek-ai/DeepSeek-V3` | `synthetic/hf:deepseek-ai/DeepSeek-V3` | 128K | 8K | — | — |
+| `synthetic` | `hf:deepseek-ai/DeepSeek-V3-0324` | `synthetic/hf:deepseek-ai/DeepSeek-V3-0324` | 128K | 8K | — | — |
+| `synthetic` | `hf:deepseek-ai/DeepSeek-V3.1` | `synthetic/hf:deepseek-ai/DeepSeek-V3.1` | 128K | 8K | — | — |
+| `synthetic` | `hf:deepseek-ai/DeepSeek-V3.1-Terminus` | `synthetic/hf:deepseek-ai/DeepSeek-V3.1-Terminus` | 128K | 8K | — | — |
+| `synthetic` | `hf:deepseek-ai/DeepSeek-V3.2` | `synthetic/hf:deepseek-ai/DeepSeek-V3.2` | 159K | 8K | — | — |
+| `synthetic` | `hf:meta-llama/Llama-3.3-70B-Instruct` | `synthetic/hf:meta-llama/Llama-3.3-70B-Instruct` | 128K | 8K | — | — |
+| `synthetic` | `hf:meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8` | `synthetic/hf:meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8` | 524K | 8K | — | — |
+| `synthetic` | `hf:moonshotai/Kimi-K2-Instruct-0905` | `synthetic/hf:moonshotai/Kimi-K2-Instruct-0905` | 256K | 8K | — | — |
+| `synthetic` | `hf:moonshotai/Kimi-K2-Thinking` | `synthetic/hf:moonshotai/Kimi-K2-Thinking` | 256K | 8K | ✅ | — |
+| `synthetic` | `hf:moonshotai/Kimi-K2.5` | `synthetic/hf:moonshotai/Kimi-K2.5` | 256K | 8K | ✅ | ✅ |
+| `synthetic` | `hf:openai/gpt-oss-120b` | `synthetic/hf:openai/gpt-oss-120b` | 128K | 8K | — | — |
+| `synthetic` | `hf:zai-org/GLM-4.5` | `synthetic/hf:zai-org/GLM-4.5` | 128K | 128K | — | — |
+| `synthetic` | `hf:zai-org/GLM-4.6` | `synthetic/hf:zai-org/GLM-4.6` | 198K | 128K | — | — |
+| `synthetic` | `hf:zai-org/GLM-4.7` | `synthetic/hf:zai-org/GLM-4.7` | 198K | 128K | — | — |
+| `synthetic` | `hf:zai-org/GLM-5` | `synthetic/hf:zai-org/GLM-5` | 256K | 128K | ✅ | ✅ |
+| `tencent-tokenhub` | `hy3-preview` | `tencent-tokenhub/hy3-preview` | 256K | 64K | ✅ | — |
+| `together` | `deepseek-ai/DeepSeek-R1` | `together/deepseek-ai/DeepSeek-R1` | 131K | 8K | ✅ | — |
+| `together` | `deepseek-ai/DeepSeek-V3.1` | `together/deepseek-ai/DeepSeek-V3.1` | 131K | 8K | — | — |
+| `together` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | `together/meta-llama/Llama-3.3-70B-Instruct-Turbo` | 131K | 8K | — | — |
+| `together` | `meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8` | `together/meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8` | 20000K | 32K | — | ✅ |
+| `together` | `meta-llama/Llama-4-Scout-17B-16E-Instruct` | `together/meta-llama/Llama-4-Scout-17B-16E-Instruct` | 10000K | 32K | — | ✅ |
+| `together` | `moonshotai/Kimi-K2-Instruct-0905` | `together/moonshotai/Kimi-K2-Instruct-0905` | 262K | 8K | — | — |
+| `together` | `moonshotai/Kimi-K2.5` | `together/moonshotai/Kimi-K2.5` | 262K | 32K | ✅ | ✅ |
+| `together` | `zai-org/GLM-4.7` | `together/zai-org/GLM-4.7` | 202K | 8K | — | — |
+| `venice` | `claude-opus-4-6` | `venice/claude-opus-4-6` | 1000K | 128K | ✅ | ✅ |
+| `venice` | `claude-sonnet-4-6` | `venice/claude-sonnet-4-6` | 1000K | 128K | ✅ | ✅ |
+| `vercel-ai-gateway` | `anthropic/claude-opus-4.6` | `vercel-ai-gateway/anthropic/claude-opus-4.6` | 1000K | 128K | ✅ | ✅ |
+| `vercel-ai-gateway` | `moonshotai/kimi-k2.6` | `vercel-ai-gateway/moonshotai/kimi-k2.6` | 262K | 262K | ✅ | ✅ |
+| `vercel-ai-gateway` | `openai/gpt-5.4` | `vercel-ai-gateway/openai/gpt-5.4` | 200K | 128K | ✅ | ✅ |
+| `vercel-ai-gateway` | `openai/gpt-5.4-pro` | `vercel-ai-gateway/openai/gpt-5.4-pro` | 200K | 128K | ✅ | ✅ |
+| `vllm` | `meta-llama/Meta-Llama-3-8B-Instruct` | `vllm/meta-llama/Meta-Llama-3-8B-Instruct` | 131K | 8K | — | — |
+| `volcengine` | `deepseek-v3-2-251201` | `volcengine/deepseek-v3-2-251201` | 128K | 4K | — | ✅ |
+| `volcengine` | `doubao-seed-1-8-251228` | `volcengine/doubao-seed-1-8-251228` | 256K | 4K | — | ✅ |
+| `volcengine` | `doubao-seed-code-preview-251028` | `volcengine/doubao-seed-code-preview-251028` | 256K | 4K | — | ✅ |
+| `volcengine-coding` | `ark-code-latest` | `volcengine-coding/ark-code-latest` | 256K | 65K | ✅ | — |
+| `volcengine-coding` | `doubao-seed-code-preview-251028` | `volcengine-coding/doubao-seed-code-preview-251028` | 256K | 4K | — | — |
+| `xai` | `grok-3` | `xai/grok-3` | 131K | 8K | — | — |
+| `xai` | `grok-3-fast` | `xai/grok-3-fast` | 131K | 8K | — | — |
+| `xai` | `grok-3-mini` | `xai/grok-3-mini` | 131K | 8K | ✅ | — |
+| `xai` | `grok-3-mini-fast` | `xai/grok-3-mini-fast` | 131K | 8K | ✅ | — |
+| `xai` | `grok-4` | `xai/grok-4` | 256K | 64K | ✅ | — |
+| `xai` | `grok-4-1-fast` | `xai/grok-4-1-fast` | 2000K | 30K | ✅ | ✅ |
+| `xai` | `grok-4-fast` | `xai/grok-4-fast` | 2000K | 30K | ✅ | ✅ |
+| `xai` | `grok-4-fast-non-reasoning` | `xai/grok-4-fast-non-reasoning` | 2000K | 30K | — | ✅ |
+| `xai` | `grok-code-fast-1` | `xai/grok-code-fast-1` | 256K | 10K | ✅ | — |
+| `xiaomi` | `mimo-v2-flash` | `xiaomi/mimo-v2-flash` | 262K | 8K | — | — |
+| `xiaomi` | `mimo-v2-omni` | `xiaomi/mimo-v2-omni` | 262K | 32K | ✅ | ✅ |
+| `xiaomi` | `mimo-v2-pro` | `xiaomi/mimo-v2-pro` | 1048K | 32K | ✅ | — |
+| `xiaomi-anthropic` | `mimo-v2-flash` | `xiaomi-anthropic/mimo-v2-flash` | 262K | 8K | — | — |
+| `xiaomi-anthropic` | `mimo-v2-omni` | `xiaomi-anthropic/mimo-v2-omni` | 262K | 32K | ✅ | ✅ |
+| `xiaomi-anthropic` | `mimo-v2-pro` | `xiaomi-anthropic/mimo-v2-pro` | 1048K | 32K | ✅ | — |
+| `xiaomi-openai` | `mimo-v2-flash` | `xiaomi-openai/mimo-v2-flash` | 262K | 8K | — | — |
+| `xiaomi-openai` | `mimo-v2-omni` | `xiaomi-openai/mimo-v2-omni` | 262K | 32K | ✅ | ✅ |
+| `xiaomi-openai` | `mimo-v2-pro` | `xiaomi-openai/mimo-v2-pro` | 1048K | 32K | ✅ | — |
+| `xiaomi-token-plan` | `mimo-v2-flash` | `xiaomi-token-plan/mimo-v2-flash` | 262K | 8K | — | — |
+| `xiaomi-token-plan` | `mimo-v2-omni` | `xiaomi-token-plan/mimo-v2-omni` | 262K | 32K | ✅ | ✅ |
+| `xiaomi-token-plan` | `mimo-v2-pro` | `xiaomi-token-plan/mimo-v2-pro` | 1048K | 32K | ✅ | — |
+| `xiaomi-token-plan-anthropic` | `mimo-v2-flash` | `xiaomi-token-plan-anthropic/mimo-v2-flash` | 262K | 8K | — | — |
+| `xiaomi-token-plan-anthropic` | `mimo-v2-omni` | `xiaomi-token-plan-anthropic/mimo-v2-omni` | 262K | 32K | ✅ | ✅ |
+| `xiaomi-token-plan-anthropic` | `mimo-v2-pro` | `xiaomi-token-plan-anthropic/mimo-v2-pro` | 1048K | 32K | ✅ | — |
+| `xiaomi-token-plan-openai` | `mimo-v2-flash` | `xiaomi-token-plan-openai/mimo-v2-flash` | 262K | 8K | — | — |
+| `xiaomi-token-plan-openai` | `mimo-v2-omni` | `xiaomi-token-plan-openai/mimo-v2-omni` | 262K | 32K | ✅ | ✅ |
+| `xiaomi-token-plan-openai` | `mimo-v2-pro` | `xiaomi-token-plan-openai/mimo-v2-pro` | 1048K | 32K | ✅ | — |
+| `zai` | `glm-4.5` | `zai/glm-4.5` | 131K | 98K | ✅ | — |
+| `zai` | `glm-4.5-air` | `zai/glm-4.5-air` | 131K | 98K | ✅ | — |
+| `zai` | `glm-4.5-flash` | `zai/glm-4.5-flash` | 131K | 98K | ✅ | — |
+| `zai` | `glm-4.5v` | `zai/glm-4.5v` | 64K | 16K | ✅ | ✅ |
+| `zai` | `glm-4.6` | `zai/glm-4.6` | 204K | 131K | ✅ | — |
+| `zai` | `glm-4.6v` | `zai/glm-4.6v` | 128K | 32K | ✅ | ✅ |
+| `zai` | `glm-4.7` | `zai/glm-4.7` | 204K | 131K | ✅ | — |
+| `zai` | `glm-4.7-flash` | `zai/glm-4.7-flash` | 200K | 131K | ✅ | — |
+| `zai` | `glm-4.7-flashx` | `zai/glm-4.7-flashx` | 200K | 128K | ✅ | — |
+| `zai` | `glm-5` | `zai/glm-5` | 202K | 131K | ✅ | — |
+| `zai` | `glm-5-turbo` | `zai/glm-5-turbo` | 202K | 131K | ✅ | — |
+| `zai` | `glm-5.1` | `zai/glm-5.1` | 202K | 131K | ✅ | — |
+| `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202K | 131K | ✅ | ✅ |
+| `zai-anthropic` | `glm-4.5` | `zai-anthropic/glm-4.5` | 131K | 98K | ✅ | — |
+| `zai-anthropic` | `glm-4.5-air` | `zai-anthropic/glm-4.5-air` | 131K | 98K | ✅ | — |
+| `zai-anthropic` | `glm-4.5-flash` | `zai-anthropic/glm-4.5-flash` | 131K | 98K | ✅ | — |
+| `zai-anthropic` | `glm-4.5v` | `zai-anthropic/glm-4.5v` | 64K | 16K | ✅ | ✅ |
+| `zai-anthropic` | `glm-4.6` | `zai-anthropic/glm-4.6` | 204K | 131K | ✅ | — |
+| `zai-anthropic` | `glm-4.6v` | `zai-anthropic/glm-4.6v` | 128K | 32K | ✅ | ✅ |
+| `zai-anthropic` | `glm-4.7` | `zai-anthropic/glm-4.7` | 204K | 131K | ✅ | — |
+| `zai-anthropic` | `glm-4.7-flash` | `zai-anthropic/glm-4.7-flash` | 200K | 131K | ✅ | — |
+| `zai-anthropic` | `glm-4.7-flashx` | `zai-anthropic/glm-4.7-flashx` | 200K | 128K | ✅ | — |
+| `zai-anthropic` | `glm-5` | `zai-anthropic/glm-5` | 202K | 131K | ✅ | — |
+| `zai-anthropic` | `glm-5-turbo` | `zai-anthropic/glm-5-turbo` | 202K | 131K | ✅ | — |
+| `zai-anthropic` | `glm-5.1` | `zai-anthropic/glm-5.1` | 202K | 131K | ✅ | — |
+| `zai-anthropic` | `glm-5v-turbo` | `zai-anthropic/glm-5v-turbo` | 202K | 131K | ✅ | ✅ |
+| `zai-openai` | `glm-4.5` | `zai-openai/glm-4.5` | 131K | 98K | ✅ | — |
+| `zai-openai` | `glm-4.5-air` | `zai-openai/glm-4.5-air` | 131K | 98K | ✅ | — |
+| `zai-openai` | `glm-4.5-flash` | `zai-openai/glm-4.5-flash` | 131K | 98K | ✅ | — |
+| `zai-openai` | `glm-4.5v` | `zai-openai/glm-4.5v` | 64K | 16K | ✅ | ✅ |
+| `zai-openai` | `glm-4.6` | `zai-openai/glm-4.6` | 204K | 131K | ✅ | — |
+| `zai-openai` | `glm-4.6v` | `zai-openai/glm-4.6v` | 128K | 32K | ✅ | ✅ |
+| `zai-openai` | `glm-4.7` | `zai-openai/glm-4.7` | 204K | 131K | ✅ | — |
+| `zai-openai` | `glm-4.7-flash` | `zai-openai/glm-4.7-flash` | 200K | 131K | ✅ | — |
+| `zai-openai` | `glm-4.7-flashx` | `zai-openai/glm-4.7-flashx` | 200K | 128K | ✅ | — |
+| `zai-openai` | `glm-5` | `zai-openai/glm-5` | 202K | 131K | ✅ | — |
+| `zai-openai` | `glm-5-turbo` | `zai-openai/glm-5-turbo` | 202K | 131K | ✅ | — |
+| `zai-openai` | `glm-5.1` | `zai-openai/glm-5.1` | 202K | 131K | ✅ | — |
+| `zai-openai` | `glm-5v-turbo` | `zai-openai/glm-5v-turbo` | 202K | 131K | ✅ | ✅ |

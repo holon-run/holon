@@ -1304,7 +1304,7 @@ fn built_in_provider_default_config_with_settings(
     provider_id: &ProviderId,
     settings_env: &HashMap<String, String>,
 ) -> Result<Option<ProviderConfigFile>> {
-    let registry = built_in_provider_registry(&settings_env)?;
+    let registry = built_in_provider_registry_with_settings(&settings_env)?;
     Ok(registry
         .get(provider_id)
         .map(|provider| ProviderConfigFile {
@@ -1314,6 +1314,32 @@ fn built_in_provider_default_config_with_settings(
             reasoning_effort: None,
             builtin_web_search: None,
         }))
+}
+
+/// Provider metadata for documentation generation.
+#[derive(Debug, Clone)]
+pub struct ProviderDocEntry {
+    pub id: ProviderId,
+    pub transport: ProviderTransportKind,
+    pub base_url: String,
+    pub auth_env: Option<String>,
+}
+
+/// Returns built-in provider metadata for documentation generation.
+pub fn built_in_provider_doc_entries() -> Result<Vec<ProviderDocEntry>> {
+    let settings_env = HashMap::new();
+    let registry = built_in_provider_registry_with_settings(&settings_env)?;
+    let mut entries: Vec<ProviderDocEntry> = registry
+        .values()
+        .map(|provider| ProviderDocEntry {
+            id: provider.id.clone(),
+            transport: provider.transport,
+            base_url: provider.base_url.clone(),
+            auth_env: provider.auth.env.clone(),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+    Ok(entries)
 }
 
 pub fn provider_config_views(config: &AppConfig) -> Vec<ProviderConfigView> {
@@ -2326,7 +2352,7 @@ fn resolve_provider_registry(
     settings_env: &HashMap<String, String>,
     credential_store: &CredentialStoreFile,
 ) -> Result<ProviderRegistry> {
-    let mut registry = built_in_provider_registry(settings_env)?;
+    let mut registry = built_in_provider_registry_with_settings(settings_env)?;
     for (id, provider_config) in &stored_config.providers {
         let built_in = registry.remove(id);
         let runtime = materialize_provider_config(
@@ -2341,7 +2367,9 @@ fn resolve_provider_registry(
     Ok(registry)
 }
 
-fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<ProviderRegistry> {
+fn built_in_provider_registry_with_settings(
+    settings_env: &HashMap<String, String>,
+) -> Result<ProviderRegistry> {
     let mut registry = ProviderRegistry::new();
     let openai_codex = ProviderId::openai_codex();
     let openai_codex_reasoning_effort = env::var("HOLON_OPENAI_CODEX_REASONING_EFFORT")
@@ -2737,6 +2765,12 @@ fn built_in_provider_registry(settings_env: &HashMap<String, String>) -> Result<
         settings_env,
     )?;
     Ok(registry)
+}
+
+/// Public entry point for tools that need the built-in provider registry (e.g. docgen).
+pub fn built_in_provider_registry() -> Result<ProviderRegistry> {
+    let settings_env = load_settings_env()?;
+    built_in_provider_registry_with_settings(&settings_env)
 }
 
 fn insert_openai_compatible_provider(
@@ -3908,17 +3942,18 @@ mod tests {
     use crate::provider::ProviderNativeWebSearchKind;
 
     use super::{
-        built_in_provider_registry, config_schema, credential_store_path, default_holon_home,
-        get_config_key, get_config_value, list_credential_profiles_at, load_persisted_config_at,
-        parse_anthropic_cache_strategy, parse_anthropic_cache_strategy_env,
-        parse_comma_separated_values, parse_url_value, persisted_config_path,
-        provider_registry_for_tests, resolve_anthropic_context_management_config,
-        save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
-        validate_provider_config, AnthropicCacheStrategy, AnthropicContextManagementConfig,
-        AppConfig, ControlAuthMode, CredentialKind, CredentialSource, CredentialStoreFile,
-        HolonConfigFile, ModelConfigFile, ModelRef, ProviderAuthConfig,
-        ProviderBuiltinWebSearchConfig, ProviderConfigFile, ProviderId, ProviderRegistry,
-        ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID,
+        built_in_provider_registry_with_settings, config_schema, credential_store_path,
+        default_holon_home, get_config_key, get_config_value, list_credential_profiles_at,
+        load_persisted_config_at, parse_anthropic_cache_strategy,
+        parse_anthropic_cache_strategy_env, parse_comma_separated_values, parse_url_value,
+        persisted_config_path, provider_registry_for_tests,
+        resolve_anthropic_context_management_config, save_persisted_config_at, set_config_key,
+        set_credential_profile_at, unset_config_key, validate_provider_config,
+        AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig, ControlAuthMode,
+        CredentialKind, CredentialSource, CredentialStoreFile, HolonConfigFile, ModelConfigFile,
+        ModelRef, ProviderAuthConfig, ProviderBuiltinWebSearchConfig, ProviderConfigFile,
+        ProviderId, ProviderRegistry, ProviderRuntimeConfig, ProviderTransportKind,
+        RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID,
     };
 
     struct EnvVarSnapshot {
@@ -4489,7 +4524,7 @@ mod tests {
 
     #[test]
     fn built_in_provider_registry_declares_provider_specific_builtin_search() {
-        let registry = built_in_provider_registry(&HashMap::new()).unwrap();
+        let registry = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
 
         let openai_codex = registry.get(&ProviderId::openai_codex()).unwrap();
         let openai_codex_search = openai_codex.builtin_web_search.as_ref().unwrap();
@@ -4710,7 +4745,7 @@ mod tests {
     #[test]
     fn materialize_provider_config_can_disable_builtin_web_search_for_builtin_provider() {
         let id = ProviderId::openai_codex();
-        let built_in = built_in_provider_registry(&HashMap::new())
+        let built_in = built_in_provider_registry_with_settings(&HashMap::new())
             .unwrap()
             .remove(&id)
             .unwrap();
@@ -4933,7 +4968,7 @@ mod tests {
         settings_env.insert("DASHSCOPE_API_KEY".to_string(), "dashscope-key".to_string());
         settings_env.insert("NEARAI_API_KEY".to_string(), "nearai-key".to_string());
 
-        let providers = super::built_in_provider_registry(&settings_env).unwrap();
+        let providers = super::built_in_provider_registry_with_settings(&settings_env).unwrap();
 
         let openrouter = providers
             .get(&ProviderId::parse("openrouter").unwrap())
@@ -5231,7 +5266,7 @@ mod tests {
     #[test]
     fn materialize_provider_config_preserves_builtin_runtime_fields() {
         let settings_env = HashMap::new();
-        let mut built_ins = super::built_in_provider_registry(&settings_env).unwrap();
+        let mut built_ins = super::built_in_provider_registry_with_settings(&settings_env).unwrap();
         let id = ProviderId::openai_codex();
         let built_in = built_ins.remove(&id).unwrap();
 
