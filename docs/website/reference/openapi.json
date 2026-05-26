@@ -14,6 +14,26 @@
       "CallbackBody": {
         "description": "Raw callback request body. JSON and text bodies are parsed; other content types are represented internally as base64 JSON."
       },
+      "CancelTimerRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "authority_class": {
+            "enum": [
+              "operator_instruction",
+              "runtime_instruction",
+              "integration_signal",
+              "external_evidence",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "CancelTimerRequest",
+        "type": "object"
+      },
       "ClearAgentModelRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -65,8 +85,45 @@
         "type": "object"
       },
       "CreateTimerRequest": {
-        "additionalProperties": true,
-        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "additionalProperties": false,
+        "properties": {
+          "authority_class": {
+            "enum": [
+              "operator_instruction",
+              "runtime_instruction",
+              "integration_signal",
+              "external_evidence",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "interval_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "duration_ms"
+        ],
+        "title": "CreateTimerRequest",
         "type": "object"
       },
       "CreateWorkItemRequest": {
@@ -2130,6 +2187,82 @@
           "force_stop_requested"
         ],
         "title": "TaskStopResult",
+        "type": "object"
+      },
+      "TimerRecord": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fire_count": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "interval_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_fired_at": {
+            "default": null,
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_fire_at": {
+            "default": null,
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repeat": {
+            "type": "boolean"
+          },
+          "status": {
+            "default": "active",
+            "enum": [
+              "active",
+              "completed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "agent_id",
+          "created_at",
+          "duration_ms",
+          "repeat"
+        ],
+        "title": "TimerRecord",
         "type": "object"
       },
       "UninstallSkillRequest": {
@@ -4653,11 +4786,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/TimerRecord"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
@@ -4686,6 +4819,83 @@
           }
         ],
         "summary": "Create timer",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/control/agents/{agent_id}/timers/{timer_id}/cancel": {
+      "post": {
+        "description": "Cancel an active timer. Cancellation is idempotent for already-cancelled timers; completed or missing timers return a shared error envelope.",
+        "operationId": "cancelTimer",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Timer id.",
+            "in": "path",
+            "name": "timer_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelTimerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimerRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Cancel timer",
         "tags": [
           "control"
         ]
