@@ -392,7 +392,16 @@ Probe error: {details}",
                     status: daemon_status(config).await?,
                 });
             }
-            let _ = send_signal(pid, 9, "-KILL")?;
+            match send_signal(pid, 9, "-KILL")? {
+                SignalOutcome::Delivered | SignalOutcome::MissingProcess => {}
+                SignalOutcome::PermissionDenied => {
+                    // Neither TERM nor KILL could be delivered — the process
+                    // may still be running, so don't delete state files.
+                    return Err(anyhow!(
+                        "cannot stop daemon PID {pid}: permission denied (TERM and KILL both failed); run as root or the process owner to stop this daemon"
+                    ));
+                }
+            }
         }
     }
 
@@ -854,9 +863,9 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
                     return ProbeRuntime::Running(Box::new(RuntimeStatusResponse {
                         ok: true,
                         healthy: false,
-                        home_dir: config.home_dir.clone(),
-                        socket_path: config.socket_path.clone(),
-                        http_addr: config.http_addr.clone(),
+                        home_dir: metadata.home_dir.clone(),
+                        socket_path: metadata.socket_path.clone(),
+                        http_addr: metadata.http_addr.clone(),
                         pid: metadata.pid,
                         started_at: metadata.started_at,
                         config_fingerprint: metadata.config_fingerprint.clone(),
@@ -870,6 +879,22 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
             if let Ok(status) = client.runtime_readiness().await {
                 return ProbeRuntime::Running(Box::new(status));
             }
+            // TCP readiness failed but the daemon PID is alive — report Running
+            // with metadata so callers treat the daemon as live (unreachable).
+            return ProbeRuntime::Running(Box::new(RuntimeStatusResponse {
+                ok: true,
+                healthy: false,
+                home_dir: metadata.home_dir.clone(),
+                socket_path: metadata.socket_path.clone(),
+                http_addr: metadata.http_addr.clone(),
+                pid: metadata.pid,
+                started_at: metadata.started_at,
+                config_fingerprint: metadata.config_fingerprint.clone(),
+                activity: None,
+                startup_surface: None,
+                runtime_surface: None,
+                last_failure: None,
+            }));
         }
     }
 

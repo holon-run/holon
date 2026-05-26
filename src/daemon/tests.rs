@@ -395,6 +395,41 @@ async fn probe_runtime_treats_non_socket_path_as_stale() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn probe_runtime_reports_running_when_socket_missing_but_pid_alive() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    // Use the current process PID — guaranteed alive.
+    let pid = std::process::id();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    // Use metadata paths that differ from current config to verify the
+    // fallback returns persisted metadata, not caller config.
+    let metadata_home = config.home_dir.join("persisted-home");
+    let metadata_socket = metadata_home.join("run").join("holon.sock");
+    let metadata_http = "127.0.0.1:19999".to_string();
+    let metadata = RuntimeServiceMetadata {
+        pid,
+        home_dir: metadata_home.clone(),
+        socket_path: metadata_socket.clone(),
+        http_addr: metadata_http.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+    };
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    // Intentionally do NOT create the socket — simulate externally removed socket.
+    match probe_runtime(&config).await {
+        ProbeRuntime::Running(status) => {
+            assert_eq!(status.pid, pid);
+            assert_eq!(status.home_dir, metadata_home);
+            assert_eq!(status.socket_path, metadata_socket);
+            assert_eq!(status.http_addr, metadata_http);
+        }
+        other => panic!("expected Running, got {:?}", other),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn daemon_status_surfaces_dead_pid_and_leftover_socket_as_stale() {
     let config = test_config();
     let paths = daemon_paths(&config);
@@ -562,4 +597,46 @@ async fn daemon_stop_surfaces_incompatible_status_probe_guidance() {
         "failed to decode response body for GET /control/runtime/readiness over unix socket"
     ));
     assert!(socket_path.exists());
+}
+
+/// Regression: when both TERM and KILL return PermissionDenied (EPERM),
+/// `daemon_stop` must return an error and must NOT clean up state files,
+/// because the daemon process may still be running.
+///
+/// Uses PID 1 (init) as a target — non-root users always get EPERM when
+/// signaling PID 1, giving a deterministic PermissionDenied path without
+/// mocks or extra seams.
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_stop_errors_on_permission_denied_signals() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    // PID 1 (init/systemd) — always returns EPERM for non-root.
+    let pid: u32 = 1;
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    let metadata = RuntimeServiceMetadata {
+        pid,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+    };
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+    let err = daemon_stop(&config).await.unwrap_err().to_string();
+    assert!(
+        err.contains("permission denied"),
+        "expected permission denied error, got: {err}"
+    );
+    // State files must NOT be cleaned up when stop fails due to permission denied.
+    assert!(
+        paths.pid_path.exists(),
+        "PID file should still exist after permission-denied stop failure"
+    );
+    assert!(
+        paths.metadata_path.exists(),
+        "metadata file should still exist after permission-denied stop failure"
+    );
 }
