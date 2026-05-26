@@ -356,6 +356,44 @@ Creates a durable work item for the agent.
 }
 ```
 
+**`POST /control/agents/:id/work-items/:work_item_id/pick`** — Pick work item
+
+Makes an existing open work item the current focus for the agent. The response
+returns the previous focus, current focus, current work item id, and the
+recorded focus transition.
+
+```json
+{ "reason": "external scheduler selected next work", "authority_class": "integration_signal" }
+```
+
+**`PATCH /control/agents/:id/work-items/:work_item_id`** — Update work item
+
+Mutates one or more WorkItem fields. Empty updates are rejected. `blocked_by`
+uses a nested optional shape: a string sets the blocker, `null` clears it, and
+omitting the field leaves it unchanged. `recheck_after` is milliseconds and
+requires a non-empty blocker.
+
+```json
+{
+  "objective": "Fix the build and update docs",
+  "plan_status": "ready",
+  "todo_list": [{ "text": "Run cargo check", "state": "completed" }],
+  "blocked_by": "waiting for CI",
+  "recheck_after": 600000,
+  "authority_class": "operator_instruction"
+}
+```
+
+**`POST /control/agents/:id/work-items/:work_item_id/complete`** — Complete work item
+
+Marks an open work item completed and returns the updated `WorkItemRecord`.
+Cancel, close-without-completion, and delete are intentionally out of scope for
+this lifecycle surface.
+
+```json
+{ "authority_class": "operator_instruction" }
+```
+
 **`POST /control/agents/:id/timers`** — Create timer
 
 Creates a timer that will deliver a `TimerTick` to the agent.

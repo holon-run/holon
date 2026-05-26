@@ -52,6 +52,9 @@ Access modes: `local`, `tunnel`, `lan`, `tailnet`.
 |--------|------|-------------|
 | `POST` | `/control/agents/:agent_id/tasks` | Create a command task |
 | `POST` | `/control/agents/:agent_id/work-items` | Create a work item |
+| `POST` | `/control/agents/:agent_id/work-items/:work_item_id/pick` | Pick the current work item |
+| `PATCH` | `/control/agents/:agent_id/work-items/:work_item_id` | Update a work item |
+| `POST` | `/control/agents/:agent_id/work-items/:work_item_id/complete` | Complete a work item |
 | `GET` | `/agents/:agent_id/tasks` | List agent tasks |
 | `GET` | `/agents/:agent_id/briefs` | Get recent briefs/context |
 | `GET` | `/agents/:agent_id/transcript` | Get agent transcript |
@@ -127,6 +130,25 @@ curl http://localhost:8787/agents/my-agent/status
 curl -X POST http://localhost:8787/control/agents/my-agent/work-items \
   -H "Content-Type: application/json" \
   -d '{"objective": "Review and fix all clippy warnings"}'
+```
+
+### Update and complete a work item
+
+```bash
+curl -X PATCH http://localhost:8787/control/agents/my-agent/work-items/work_123 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "plan_status": "ready",
+    "todo_list": [
+      { "text": "Run cargo check", "state": "completed" }
+    ],
+    "blocked_by": "waiting for CI",
+    "recheck_after": 600000
+  }'
+
+curl -X POST http://localhost:8787/control/agents/my-agent/work-items/work_123/complete \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
 ### Wake a sleeping agent

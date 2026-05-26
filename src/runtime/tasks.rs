@@ -10,6 +10,7 @@ use crate::types::{
     WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
     CHILD_AGENT_TASK_KIND,
 };
+use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -24,13 +25,13 @@ struct TaskMessageSnapshot {
     text: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct WorkItemFocusTransitionWarning {
     pub code: String,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct WorkItemFocusTransition {
     pub previous_work_item_id: Option<String>,
     pub current_work_item_id: String,

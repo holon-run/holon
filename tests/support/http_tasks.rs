@@ -568,6 +568,159 @@ pub async fn create_work_item_route_rejects_empty_objective_with_bad_request() -
     Ok(())
 }
 
+pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+    let runtime = host.default_runtime().await?;
+
+    let first = runtime
+        .create_work_item("first queued item".into(), None, None, Vec::new())
+        .await?;
+    let second = runtime
+        .create_work_item("second queued item".into(), None, None, Vec::new())
+        .await?;
+    runtime.pick_work_item(first.id.clone()).await?;
+
+    let pick: serde_json::Value = client
+        .post(format!(
+            "{base}/control/agents/default/work-items/{second_id}/pick",
+            second_id = second.id
+        ))
+        .json(&serde_json::json!({
+            "reason": "HTTP client selected next work",
+            "authority_class": "integration_signal"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(pick["current_work_item_id"], second.id);
+    assert_eq!(pick["previous_work_item"]["id"], first.id);
+    assert_eq!(
+        pick["transition"]["reason"],
+        "HTTP client selected next work"
+    );
+
+    let update: serde_json::Value = client
+        .patch(format!(
+            "{base}/control/agents/default/work-items/{second_id}",
+            second_id = second.id
+        ))
+        .json(&serde_json::json!({
+            "objective": "refined via HTTP",
+            "plan_status": "ready",
+            "todo_list": [
+                {"text": "wire HTTP endpoint", "state": "completed"},
+                {"text": "verify behavior", "state": "in_progress"}
+            ],
+            "blocked_by": "waiting on review",
+            "recheck_after": 60000,
+            "authority_class": "integration_signal"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(update["id"], second.id);
+    assert_eq!(update["objective"], "refined via HTTP");
+    assert_eq!(update["plan_status"], "ready");
+    assert_eq!(update["blocked_by"], "waiting on review");
+    assert!(update["recheck_at"].is_string());
+    assert_eq!(update["todo_list"].as_array().expect("todo array").len(), 2);
+
+    let complete: serde_json::Value = client
+        .post(format!(
+            "{base}/control/agents/default/work-items/{second_id}/complete",
+            second_id = second.id
+        ))
+        .json(&serde_json::json!({
+            "authority_class": "integration_signal"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert_eq!(complete["id"], second.id);
+    assert_eq!(complete["state"], "completed");
+    assert!(complete.get("blocked_by").is_none());
+
+    wait_until(|| {
+        let events = runtime.storage().read_recent_events(200)?;
+        Ok([
+            "work_item_pick_requested",
+            "work_item_update_requested",
+            "work_item_complete_requested",
+        ]
+        .into_iter()
+        .all(|kind| {
+            events.iter().any(|event| {
+                event.kind == kind && event.data["provided_trust"] == "integration_signal"
+            })
+        }))
+    })
+    .await?;
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn work_item_mutation_routes_validate_bad_requests() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+    let runtime = host.default_runtime().await?;
+    let work = runtime
+        .create_work_item(
+            "validate HTTP work item mutation".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await?;
+
+    let empty_update = client
+        .patch(format!(
+            "{base}/control/agents/default/work-items/{}",
+            work.id
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(empty_update.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = empty_update.json().await?;
+    assert_eq!(
+        body["error"],
+        "request must include at least one mutation field"
+    );
+
+    let recheck_without_blocker = client
+        .patch(format!(
+            "{base}/control/agents/default/work-items/{}",
+            work.id
+        ))
+        .json(&serde_json::json!({
+            "blocked_by": null,
+            "recheck_after": 1000
+        }))
+        .send()
+        .await?;
+    assert_eq!(
+        recheck_without_blocker.status(),
+        reqwest::StatusCode::BAD_REQUEST
+    );
+
+    let missing = client
+        .post(format!(
+            "{base}/control/agents/default/work-items/missing-work/complete"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn timer_detail_route_returns_latest_timer_record() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;

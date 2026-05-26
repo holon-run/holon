@@ -980,7 +980,7 @@ pub struct BriefAttachment {
     pub value: Option<Value>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityClass {
     #[serde(alias = "trusted_operator")]
@@ -3037,14 +3037,14 @@ pub struct CommandTaskSpec {
     pub terminal_reentry: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemState {
     Open,
     Completed,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemPlanStatus {
     Draft,
@@ -3052,7 +3052,7 @@ pub enum WorkItemPlanStatus {
     NeedsInput,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemReadiness {
     Runnable,
@@ -3116,7 +3116,7 @@ impl Default for AgentPostureProjection {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct WorkItemPlanArtifact {
     #[serde(default)]
     pub owner_agent_id: String,
@@ -3134,7 +3134,7 @@ pub struct WorkItemPlanArtifact {
     pub preview_complete: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct WorkItemRecord {
     pub id: String,
     #[serde(alias = "session_id")]
@@ -3310,13 +3310,13 @@ impl DeliverySummaryRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct TodoItem {
     pub text: String,
     pub state: TodoItemState,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoItemState {
     Pending,
