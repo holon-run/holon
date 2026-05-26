@@ -395,6 +395,33 @@ async fn probe_runtime_treats_non_socket_path_as_stale() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn probe_runtime_reports_running_when_socket_missing_but_pid_alive() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    // Use the current process PID — guaranteed alive.
+    let pid = std::process::id();
+    fs::write(&paths.pid_path, format!("{pid}\n")).unwrap();
+    let metadata = RuntimeServiceMetadata {
+        pid,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+    };
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    // Intentionally do NOT create the socket — simulate externally removed socket.
+    match probe_runtime(&config).await {
+        ProbeRuntime::Running(status) => {
+            assert_eq!(status.pid, pid);
+        }
+        other => panic!("expected Running, got {:?}", other),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn daemon_status_surfaces_dead_pid_and_leftover_socket_as_stale() {
     let config = test_config();
     let paths = daemon_paths(&config);
