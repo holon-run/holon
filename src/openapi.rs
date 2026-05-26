@@ -1,3 +1,7 @@
+use aide::{
+    axum::{routing::ApiMethodDocs, ApiRouter},
+    openapi::{OpenApi, Operation},
+};
 use serde_json::{json, Value};
 
 const API_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -13,6 +17,7 @@ struct RouteSpec {
     request_schema: Option<&'static str>,
     response_kind: ResponseKind,
     auth: AuthKind,
+    metadata_source: MetadataSource,
 }
 
 #[derive(Clone, Copy)]
@@ -29,17 +34,28 @@ enum AuthKind {
     None,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MetadataSource {
+    Manual,
+    Aide,
+}
+
+// Migration boundary for #1438: public agent read routes and their default
+// compatibility aliases are registered through aide route metadata first. The
+// remaining control, mutation, callback, event stream, and placeholder request
+// schema routes stay on the conservative manual baseline until their DTO
+// contracts are tightened in follow-up work.
 const ROUTES: &[RouteSpec] = &[
     route("get", "/", "root", "discovery", "Root discovery", "Return the default agent id.", None, AuthKind::RemoteAccess),
     route("get", "/handshake", "handshake", "discovery", "Protocol handshake", "Return auth mode, protocol version, capabilities, and runtime hints.", None, AuthKind::RemoteAccess),
     route("get", "/models", "models", "discovery", "List available models", "Return model catalog entries and runtime availability.", None, AuthKind::RemoteAccess),
-    route("get", "/agents/list", "listAgents", "agents", "List agents", "Return lightweight public agent entries.", None, AuthKind::RemoteAccess),
-    route("get", "/agents/{agent_id}/status", "agentStatus", "agents", "Agent status", "Return the public AgentSummary read model.", None, AuthKind::RemoteAccess),
-    route("get", "/agents/{agent_id}/briefs", "agentBriefs", "agents", "Recent briefs", "Return recent user-facing delivery briefs. Query parameter: limit.", None, AuthKind::RemoteAccess),
-    route("get", "/agents/{agent_id}/state", "agentState", "agents", "Agent state snapshot", "Return the current bootstrap snapshot for an agent.", None, AuthKind::RemoteAccess),
-    RouteSpec { method: "get", path: "/agents/{agent_id}/events", operation_id: "agentEvents", tag: "events", summary: "Agent event page", description: "Return a bounded page of projected runtime events. Query parameters: before_seq, after_seq, limit, order, projection. The operator projection redacts raw/debug payload fields; local_debug requires control auth and preserves raw payloads.", request_schema: None, response_kind: ResponseKind::Json, auth: AuthKind::RemoteAccess },
-    RouteSpec { method: "get", path: "/agents/{agent_id}/events/stream", operation_id: "agentEventsStream", tag: "events", summary: "Agent event stream", description: "Return Server-Sent Events carrying StreamEventEnvelope JSON data. Query parameters: after_seq, limit, projection. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens.", request_schema: None, response_kind: ResponseKind::EventStream, auth: AuthKind::RemoteAccess },
-    route("get", "/agents/{agent_id}/transcript", "agentTranscript", "agents", "Recent transcript", "Return recent transcript entries. Query parameter: limit.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/agents/list", "listAgents", "agents", "List agents", "Return lightweight public agent entries.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/agents/{agent_id}/status", "agentStatus", "agents", "Agent status", "Return the public AgentSummary read model.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/agents/{agent_id}/briefs", "agentBriefs", "agents", "Recent briefs", "Return recent user-facing delivery briefs. Query parameter: limit.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/agents/{agent_id}/state", "agentState", "agents", "Agent state snapshot", "Return the current bootstrap snapshot for an agent.", None, AuthKind::RemoteAccess),
+    route("get", "/agents/{agent_id}/events", "agentEvents", "events", "Agent event page", "Return a bounded page of projected runtime events. Query parameters: before_seq, after_seq, limit, order, projection. The operator projection redacts raw/debug payload fields; local_debug requires control auth and preserves raw payloads.", None, AuthKind::RemoteAccess),
+    event_stream_route("get", "/agents/{agent_id}/events/stream", "agentEventsStream", "events", "Agent event stream", "Return Server-Sent Events carrying StreamEventEnvelope JSON data. Query parameters: after_seq, limit, projection. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/agents/{agent_id}/transcript", "agentTranscript", "agents", "Recent transcript", "Return recent transcript entries. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/tasks", "agentTasks", "tasks", "List active tasks", "Return active task records. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/tasks/{task_id}", "agentTaskStatus", "tasks", "Task status", "Return a task lifecycle snapshot by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/tasks/{task_id}/output", "agentTaskOutput", "tasks", "Task output", "Return a task output snapshot. Query parameters: block, timeout_ms.", None, AuthKind::RemoteAccess),
@@ -47,7 +63,7 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/control/agents/{agent_id}/tasks/{task_id}/stop", "taskStop", "control", "Task stop", "Request cancellation for a managed task.", Some("TaskStopRequest"), AuthKind::Control),
     route("get", "/agents/{agent_id}/work-items", "agentWorkItems", "work-items", "List work items", "Return latest work item records for the agent. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/work-items/{work_item_id}", "agentWorkItem", "work-items", "Work item detail", "Return a work item record by id.", None, AuthKind::RemoteAccess),
-    route("get", "/agents/{agent_id}/worktree-summary", "agentWorktreeSummary", "agents", "Worktree summary", "Return managed worktree summary for an agent.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/agents/{agent_id}/worktree-summary", "agentWorktreeSummary", "agents", "Worktree summary", "Return managed worktree summary for an agent.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/timers", "agentTimers", "timers", "List timers", "Return recent timer records. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/timers/{timer_id}", "agentTimer", "timers", "Timer detail", "Return a timer record by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/skills", "agentSkills", "skills", "List skills", "Return installed skills for an agent.", None, AuthKind::RemoteAccess),
@@ -77,11 +93,11 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/callbacks/wake/{callback_token}", "callbackWake", "callbacks", "Callback wake ingress", "Capability-token callback ingress for wake delivery. The token is a secret path segment and examples intentionally use a placeholder.", Some("CallbackBody"), AuthKind::Capability),
     route("post", "/control/agents/{agent_id}/skills/install", "installSkill", "skills", "Install skill", "Install an agent skill.", Some("InstallSkillRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/skills/uninstall", "uninstallSkill", "skills", "Uninstall skill", "Uninstall an agent skill.", Some("UninstallSkillRequest"), AuthKind::Control),
-    route("get", "/status", "defaultStatus", "compat", "Default agent status alias", "Compatibility alias for the default agent status route.", None, AuthKind::RemoteAccess),
-    route("get", "/briefs", "defaultBriefs", "compat", "Default agent briefs alias", "Compatibility alias for the default agent briefs route. Query parameter: limit.", None, AuthKind::RemoteAccess),
-    route("get", "/state", "defaultState", "compat", "Default agent state alias", "Compatibility alias for the default agent state route.", None, AuthKind::RemoteAccess),
-    route("get", "/transcript", "defaultTranscript", "compat", "Default agent transcript alias", "Compatibility alias for the default agent transcript route. Query parameter: limit.", None, AuthKind::RemoteAccess),
-    route("get", "/worktree-summary", "defaultWorktreeSummary", "compat", "Default agent worktree summary alias", "Compatibility alias for the default agent worktree summary route.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/status", "defaultStatus", "compat", "Default agent status alias", "Compatibility alias for the default agent status route.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/briefs", "defaultBriefs", "compat", "Default agent briefs alias", "Compatibility alias for the default agent briefs route. Query parameter: limit.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/state", "defaultState", "compat", "Default agent state alias", "Compatibility alias for the default agent state route.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/transcript", "defaultTranscript", "compat", "Default agent transcript alias", "Compatibility alias for the default agent transcript route. Query parameter: limit.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/worktree-summary", "defaultWorktreeSummary", "compat", "Default agent worktree summary alias", "Compatibility alias for the default agent worktree summary route.", None, AuthKind::RemoteAccess),
 ];
 
 const fn route(
@@ -104,6 +120,55 @@ const fn route(
         request_schema,
         response_kind: ResponseKind::Json,
         auth,
+        metadata_source: MetadataSource::Manual,
+    }
+}
+
+const fn aide_route(
+    method: &'static str,
+    path: &'static str,
+    operation_id: &'static str,
+    tag: &'static str,
+    summary: &'static str,
+    description: &'static str,
+    request_schema: Option<&'static str>,
+    auth: AuthKind,
+) -> RouteSpec {
+    RouteSpec {
+        method,
+        path,
+        operation_id,
+        tag,
+        summary,
+        description,
+        request_schema,
+        response_kind: ResponseKind::Json,
+        auth,
+        metadata_source: MetadataSource::Aide,
+    }
+}
+
+const fn event_stream_route(
+    method: &'static str,
+    path: &'static str,
+    operation_id: &'static str,
+    tag: &'static str,
+    summary: &'static str,
+    description: &'static str,
+    request_schema: Option<&'static str>,
+    auth: AuthKind,
+) -> RouteSpec {
+    RouteSpec {
+        method,
+        path,
+        operation_id,
+        tag,
+        summary,
+        description,
+        request_schema,
+        response_kind: ResponseKind::EventStream,
+        auth,
+        metadata_source: MetadataSource::Manual,
     }
 }
 
@@ -113,12 +178,16 @@ pub fn generate_openapi_json() -> Value {
 
 fn openapi_value() -> Value {
     let mut paths = serde_json::Map::new();
-    for spec in ROUTES {
+    for spec in ROUTES
+        .iter()
+        .filter(|spec| spec.metadata_source == MetadataSource::Manual)
+    {
         let entry = paths
             .entry(spec.path.to_string())
             .or_insert_with(|| json!({}));
         entry[spec.method] = operation(spec);
     }
+    merge_path_items(&mut paths, aide_route_paths());
 
     json!({
         "openapi": "3.1.0",
@@ -156,6 +225,57 @@ fn openapi_value() -> Value {
         },
         "paths": paths
     })
+}
+
+fn merge_path_items(
+    paths: &mut serde_json::Map<String, Value>,
+    incoming: serde_json::Map<String, Value>,
+) {
+    for (path, path_item) in incoming {
+        match (
+            paths.get_mut(&path).and_then(Value::as_object_mut),
+            path_item,
+        ) {
+            (Some(existing), Value::Object(incoming_methods)) => {
+                existing.extend(incoming_methods);
+            }
+            (_, value) => {
+                paths.insert(path, value);
+            }
+        }
+    }
+}
+
+fn aide_route_paths() -> serde_json::Map<String, Value> {
+    let mut router: ApiRouter<()> = ApiRouter::new();
+    for spec in ROUTES
+        .iter()
+        .filter(|spec| spec.metadata_source == MetadataSource::Aide)
+    {
+        router = router.api_route_docs(
+            spec.path,
+            ApiMethodDocs::new(spec.method, aide_operation(spec)),
+        );
+    }
+
+    let mut api = OpenApi::default();
+    let _ = router.finish_api(&mut api);
+    serde_json::to_value(api)
+        .expect("serialize aide OpenAPI route metadata")
+        .get("paths")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn aide_operation(spec: &RouteSpec) -> Operation {
+    let mut operation: Operation =
+        serde_json::from_value(operation(spec)).expect("convert baseline operation to aide");
+    operation.extensions.insert(
+        "x-holon-openapi-source".into(),
+        json!("aide::axum::ApiRouter::api_route_docs"),
+    );
+    operation
 }
 
 fn operation(spec: &RouteSpec) -> Value {
@@ -327,5 +447,45 @@ mod tests {
         assert!(operation_count >= 40, "expected baseline coverage");
         assert!(paths["/agents/{agent_id}/events/stream"]["get"].is_object());
         assert!(paths["/callbacks/wake/{callback_token}"]["post"].is_object());
+        assert_eq!(
+            paths["/agents/{agent_id}/status"]["get"]["x-holon-openapi-source"],
+            "aide::axum::ApiRouter::api_route_docs"
+        );
+        assert!(
+            paths["/control/agents/{agent_id}/tasks"]["post"]["x-holon-openapi-source"].is_null()
+        );
+    }
+
+    #[test]
+    fn aide_paths_merge_with_existing_path_items() {
+        let mut paths = serde_json::Map::new();
+        paths.insert(
+            "/shared".into(),
+            json!({
+                "get": { "operationId": "manualGet" },
+                "parameters": [{ "name": "shared" }]
+            }),
+        );
+
+        let mut incoming = serde_json::Map::new();
+        incoming.insert(
+            "/shared".into(),
+            json!({
+                "post": { "operationId": "aidePost" }
+            }),
+        );
+        incoming.insert(
+            "/aide-only".into(),
+            json!({
+                "get": { "operationId": "aideOnly" }
+            }),
+        );
+
+        merge_path_items(&mut paths, incoming);
+
+        assert_eq!(paths["/shared"]["get"]["operationId"], "manualGet");
+        assert_eq!(paths["/shared"]["post"]["operationId"], "aidePost");
+        assert_eq!(paths["/shared"]["parameters"][0]["name"], "shared");
+        assert_eq!(paths["/aide-only"]["get"]["operationId"], "aideOnly");
     }
 }
