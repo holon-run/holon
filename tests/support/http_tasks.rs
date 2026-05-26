@@ -29,7 +29,6 @@ use holon::{
 use reqwest::Client;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
-use tokio::time::{sleep, Duration, Instant};
 #[cfg(unix)]
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -37,9 +36,10 @@ use tokio::{
 };
 
 use super::{
-    attach_default_workspace, connect_addr, git, init_git_repo, read_next_sse_event, spawn_server,
-    spawn_server_for_host, spawn_server_with_config, spawn_server_with_runtime_config, tempdir,
-    test_config, test_config_with_paths, test_work_item, wait_until, ParsedSseEvent,
+    attach_default_workspace, connect_addr, eventually_async, git, init_git_repo,
+    read_next_sse_event, spawn_server, spawn_server_for_host, spawn_server_with_config,
+    spawn_server_with_runtime_config, tempdir, test_config, test_config_with_paths, test_work_item,
+    wait_until, ParsedSseEvent,
 };
 
 pub async fn create_command_task_route_rejects_legacy_kind_field() -> Result<()> {
@@ -806,7 +806,26 @@ pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result
     let completed = runtime
         .schedule_timer(1, None, Some("already completed timer".into()))
         .await?;
-    sleep(Duration::from_millis(50)).await;
+    eventually_async({
+        let client = client.clone();
+        let base = base.clone();
+        let completed_id = completed.id.clone();
+        move || {
+            let client = client.clone();
+            let base = base.clone();
+            let completed_id = completed_id.clone();
+            async move {
+                let detail: serde_json::Value = client
+                    .get(format!("{base}/agents/default/timers/{completed_id}"))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                Ok(detail["status"] == "completed")
+            }
+        }
+    })
+    .await?;
     let completed_cancel = client
         .post(format!(
             "{base}/control/agents/default/timers/{}/cancel",
