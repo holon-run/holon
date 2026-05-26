@@ -4,7 +4,7 @@ build/
 coverage/
 .DS_Store
 target/
-bin/
+/bin/
 _testwork/
 
 # Dependencies
