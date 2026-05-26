@@ -2,11 +2,303 @@ use super::*;
 
 use crate::ingress::WakeHint;
 use crate::types::{
-    WaitConditionRecord, WaitConditionSummary, WaitingIntentScope, WaitingReason, WakeSource,
+    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WaitConditionSummary,
+    WaitingIntentScope, WaitingReason, WakeSource, WorkItemRecord, WorkItemState,
 };
 use std::time::Duration;
 
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WaitForScope {
+    Agent,
+    WorkItem,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WaitForWakeKind {
+    OperatorInput,
+    TaskResult,
+    External,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct WaitForRegistration {
+    pub(crate) scope: WaitForScope,
+    pub(crate) condition: WaitConditionRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) work_item: Option<WorkItemRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) cancelled_wait_condition_ids: Vec<String>,
+}
+
 impl RuntimeHandle {
+    pub(crate) async fn register_wait_for(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<String>,
+        wake: WaitForWakeKind,
+        resource: Option<String>,
+        reason: String,
+    ) -> Result<WaitForRegistration> {
+        let runtime_agent_id = self.agent_id().await?;
+        if agent_id != runtime_agent_id {
+            return Err(anyhow!("wait_for agent mismatch: {}", agent_id));
+        }
+
+        let now = Utc::now();
+        let (kind, subject_ref, wake_sources) = wait_condition_parts(wake, resource.clone());
+        let mut work_item = None;
+        let mut cancelled_wait_condition_ids = Vec::new();
+        if let Some(work_item_id) = work_item_id.as_deref() {
+            let existing = self.validate_owned_work_item(agent_id, work_item_id)?;
+            if existing.state != WorkItemState::Open {
+                return Err(anyhow!(
+                    "cannot wait on completed work item {}",
+                    work_item_id
+                ));
+            }
+            cancelled_wait_condition_ids = self
+                .cancel_active_wait_conditions_for_work_item(
+                    agent_id,
+                    work_item_id,
+                    "wait_for_replaced",
+                )
+                .await?;
+            let updated = self
+                .write_wait_for_work_item_blocker(existing, &reason)
+                .await?;
+            self.release_current_work_item_if_matches(agent_id, &updated, "work_item_waiting")
+                .await?;
+            work_item = Some(updated);
+        }
+
+        let condition = WaitConditionRecord {
+            id: format!("wait_{}", Uuid::new_v4().simple()),
+            agent_id: agent_id.to_string(),
+            work_item_id: work_item_id.clone(),
+            status: WaitConditionStatus::Active,
+            kind,
+            source: Some("WaitFor".to_string()),
+            subject_ref,
+            waiting_for: reason.clone(),
+            wake_sources,
+            continuation: Some(serde_json::json!({
+                "created_by": "WaitFor",
+                "wake": wake,
+                "resource": resource,
+                "clear_blocker_on_task_result": wake == WaitForWakeKind::TaskResult,
+            })),
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+        };
+        self.inner.storage.append_wait_condition(&condition)?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "wait_condition_registered",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "work_item_id": work_item_id,
+                "wait_condition_id": condition.id,
+                "source": "WaitFor",
+                "kind": &condition.kind,
+                "subject_ref": &condition.subject_ref,
+                "waiting_for": &condition.waiting_for,
+                "wake_sources": &condition.wake_sources,
+                "cancelled_wait_condition_ids": &cancelled_wait_condition_ids,
+            }),
+        ))?;
+        self.inner.notify.notify_one();
+
+        Ok(WaitForRegistration {
+            scope: if condition.work_item_id.is_some() {
+                WaitForScope::WorkItem
+            } else {
+                WaitForScope::Agent
+            },
+            condition,
+            work_item,
+            cancelled_wait_condition_ids,
+        })
+    }
+
+    pub(super) async fn cancel_active_wait_conditions_for_work_item(
+        &self,
+        agent_id: &str,
+        work_item_id: &str,
+        reason: &str,
+    ) -> Result<Vec<String>> {
+        let now = Utc::now();
+        let active = self
+            .inner
+            .storage
+            .latest_active_wait_conditions_for_work_item(agent_id, work_item_id)?;
+        let mut cancelled = Vec::new();
+        for condition in active {
+            let mut cancelled_condition = condition.clone();
+            cancelled_condition.status = WaitConditionStatus::Cancelled;
+            cancelled_condition.updated_at = now;
+            cancelled_condition.cancelled_at = Some(now);
+            self.inner
+                .storage
+                .append_wait_condition(&cancelled_condition)?;
+            cancelled.push(condition.id);
+        }
+        if !cancelled.is_empty() {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "wait_conditions_cancelled",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": work_item_id,
+                    "reason": reason,
+                    "wait_condition_ids": cancelled,
+                }),
+            ))?;
+        }
+        Ok(cancelled)
+    }
+
+    pub(super) async fn resolve_task_wait_conditions(&self, task_id: &str) -> Result<Vec<String>> {
+        let agent_id = self.agent_id().await?;
+        let active_conditions = self
+            .inner
+            .storage
+            .latest_active_wait_conditions_for_agent(&agent_id)?;
+        let matching = active_conditions
+            .into_iter()
+            .filter(|condition| {
+                condition.wake_sources.iter().any(|source| {
+                    matches!(source, WakeSource::TaskResult { task_id: id } if id == task_id)
+                })
+            })
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let now = Utc::now();
+        let mut resolved_ids = Vec::new();
+        for condition in matching {
+            let mut resolved = condition.clone();
+            resolved.status = WaitConditionStatus::Resolved;
+            resolved.updated_at = now;
+            resolved.resolved_at = Some(now);
+            self.inner.storage.append_wait_condition(&resolved)?;
+            if resolved.kind == WaitConditionKind::Task {
+                self.clear_wait_for_blocker_after_task_result(&resolved)
+                    .await?;
+            }
+            resolved_ids.push(condition.id);
+        }
+        self.inner.storage.append_event(&AuditEvent::new(
+            "wait_conditions_resolved",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "reason": "task_result",
+                "wait_condition_ids": &resolved_ids,
+            }),
+        ))?;
+        self.inner.notify.notify_one();
+        Ok(resolved_ids)
+    }
+
+    async fn write_wait_for_work_item_blocker(
+        &self,
+        existing: WorkItemRecord,
+        reason: &str,
+    ) -> Result<WorkItemRecord> {
+        if existing.blocked_by.as_deref() == Some(reason)
+            && existing.recheck_at.is_none()
+            && existing.recheck_consumed_at.is_none()
+        {
+            return Ok(existing);
+        }
+        let mut record = WorkItemRecord {
+            revision: existing.revision + 1,
+            blocked_by: Some(reason.to_string()),
+            recheck_at: None,
+            recheck_consumed_at: None,
+            updated_at: Utc::now(),
+            ..existing
+        };
+        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+            self.agent_home().as_path(),
+            &mut record,
+        )?;
+        self.inner.storage.append_work_item(&record)?;
+        if plan_artifact_changed {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_plan_artifact_refreshed",
+                serde_json::json!({
+                    "work_item_id": record.id.clone(),
+                    "revision": record.revision,
+                    "plan_artifact": record.plan_artifact.clone(),
+                }),
+            ))?;
+        }
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_written",
+            serde_json::json!({
+                "action": "wait_for_blocked",
+                "record": record.clone(),
+            }),
+        ))?;
+        Ok(record)
+    }
+
+    async fn clear_wait_for_blocker_after_task_result(
+        &self,
+        condition: &WaitConditionRecord,
+    ) -> Result<()> {
+        let Some(work_item_id) = condition.work_item_id.as_deref() else {
+            return Ok(());
+        };
+        let Some(existing) = self.inner.storage.latest_work_item(work_item_id)? else {
+            return Ok(());
+        };
+        if existing.state != WorkItemState::Open {
+            return Ok(());
+        }
+        if existing.blocked_by.as_deref() != Some(condition.waiting_for.as_str()) {
+            return Ok(());
+        }
+        let mut record = WorkItemRecord {
+            revision: existing.revision + 1,
+            blocked_by: None,
+            recheck_at: None,
+            recheck_consumed_at: None,
+            updated_at: Utc::now(),
+            ..existing
+        };
+        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+            self.agent_home().as_path(),
+            &mut record,
+        )?;
+        self.inner.storage.append_work_item(&record)?;
+        if plan_artifact_changed {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_plan_artifact_refreshed",
+                serde_json::json!({
+                    "work_item_id": record.id.clone(),
+                    "revision": record.revision,
+                    "plan_artifact": record.plan_artifact.clone(),
+                }),
+            ))?;
+        }
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_written",
+            serde_json::json!({
+                "action": "wait_for_task_resolved",
+                "record": record.clone(),
+                "wait_condition_id": condition.id,
+            }),
+        ))?;
+        Ok(())
+    }
+
     pub async fn submit_wake_hint(&self, hint: WakeHint) -> Result<WakeDisposition> {
         let runtime_agent_id = self.agent_id().await?;
         let pending = PendingWakeHint {
@@ -540,6 +832,34 @@ fn reconciliation_signals_for_message(
         .iter()
         .filter_map(|condition| reconciliation_signal_for_condition(message, condition))
         .collect()
+}
+
+fn wait_condition_parts(
+    wake: WaitForWakeKind,
+    resource: Option<String>,
+) -> (WaitConditionKind, Option<String>, Vec<WakeSource>) {
+    match wake {
+        WaitForWakeKind::OperatorInput => (
+            WaitConditionKind::Operator,
+            resource,
+            vec![WakeSource::OperatorInput],
+        ),
+        WaitForWakeKind::TaskResult => {
+            let task_id = resource.expect("WaitFor task_result resource is validated by tool");
+            (
+                WaitConditionKind::Task,
+                Some(task_id.clone()),
+                vec![WakeSource::TaskResult { task_id }],
+            )
+        }
+        WaitForWakeKind::External => (
+            WaitConditionKind::External,
+            resource,
+            vec![WakeSource::ExternalIngress {
+                external_trigger_id: None,
+            }],
+        ),
+    }
 }
 
 fn reconciliation_signal_for_condition(

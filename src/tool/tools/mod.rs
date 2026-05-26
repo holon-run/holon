@@ -32,6 +32,7 @@ pub(crate) mod task_status;
 pub(crate) mod task_stop;
 pub(crate) mod update_work_item;
 pub(crate) mod use_workspace;
+pub(crate) mod wait_for;
 pub(crate) mod web_fetch;
 pub(crate) mod web_search;
 pub(crate) mod work_item_action;
@@ -45,6 +46,7 @@ pub(crate) struct BuiltinToolDefinition {
 pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
     Ok(vec![
         sleep::definition()?,
+        wait_for::definition()?,
         agent_get::definition()?,
         notify_operator::definition()?,
         enqueue::definition()?,
@@ -94,6 +96,7 @@ pub(crate) async fn execute_builtin_tool(
 ) -> Result<ToolResult> {
     match call.name.as_str() {
         sleep::NAME => sleep::execute(runtime, agent_id, authority_class, &call.input).await,
+        wait_for::NAME => wait_for::execute(runtime, agent_id, authority_class, &call.input).await,
         agent_get::NAME => {
             agent_get::execute(runtime, agent_id, authority_class, &call.input).await
         }

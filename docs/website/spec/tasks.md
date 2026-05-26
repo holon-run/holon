@@ -74,8 +74,9 @@ scheduler blocking decisions.
 
 **Key contract:**
 
-- For background tasks, use `Sleep` to wait for the terminal `TaskResult`
-  instead of polling `TaskOutput`.
+- For background tasks, use `WaitFor(wake=task_result,
+  resource=<task_id>)` to wait for the terminal `TaskResult` instead of
+  polling `TaskOutput`.
 - The terminal `TaskResult` event re-enters the agent as continuation context;
   the runtime wakes the agent automatically.
 - `TaskOutput(block=true)` is for explicit current-turn synchronous waiting,
@@ -116,5 +117,5 @@ agents), but task lifecycle is independent of WorkItem lifecycle.
 
 - [Issue #1382](https://github.com/holon-run/holon/issues/1382) removed the
   unused `Blocking` task wait policy from the public/runtime contract. Waiting
-  is expressed with `Sleep` plus terminal task re-entry, or with a bounded
-  `TaskOutput(block=true)` call inside the current turn.
+  is expressed with `WaitFor(wake=task_result)` plus terminal task re-entry, or
+  with a bounded `TaskOutput(block=true)` call inside the current turn.

@@ -969,6 +969,8 @@ Delegation rules:
   placing that agent under parent supervision
 - `Sleep` is the public primitive for resting; optional `duration_ms` is only
   for positive short session-local wake delays
+- `WaitFor` is the public primitive for recording task, external, or operator
+  waits before yielding the current turn
 - `exec_command` is the only public creation path for managed `command_task`
 - no separate public `CreateTask` tool remains
 - child agents are created with parent provenance
@@ -1787,8 +1789,8 @@ Current focus is not encoded in `WorkItemRecord.state`. The owning
 `AgentState.current_work_item_id` points at the currently selected open work
 item. Queued and blocked are derived views:
 
-- queued: open work that is not current and has no `blocked_by`
-- blocked: open work with `blocked_by`
+- queued: open work that is not current and has no `blocked_by` or active wait
+- blocked: open work with `blocked_by` or an active non-operator wait
 - completed: work whose state is `completed`
 
 Scheduler readiness is also a derived view. Internally, the runtime first
@@ -1805,8 +1807,10 @@ blockers, active task waits, and active external waits:
 The older readiness labels are projected from that scheduling state for
 compatibility:
 
-- runnable: open work with no `blocked_by` and `plan_status != needs_input`
-- waiting_for_operator: open work with `plan_status = needs_input`
+- runnable: open work with no `blocked_by`, no active wait, and
+  `plan_status != needs_input`
+- waiting_for_operator: open work with `plan_status = needs_input` or an
+  active operator wait
 - blocked: open work with `blocked_by`, an active task wait, or an active
   external wait
 - completed: completed work
@@ -1871,6 +1875,7 @@ The runtime exposes explicit trusted action tools for work-item state:
 - `CreateWorkItem`
 - `PickWorkItem`
 - `UpdateWorkItem`
+- `WaitFor`
 - `CompleteWorkItem`
 
 `CreateWorkItem` creates a new open work item:
@@ -1898,15 +1903,21 @@ item owned by the agent.
 - `objective` is optional
 - `plan_status` is optional
 - `todo_list` is optional and uses full-snapshot replacement semantics
-- `blocked_by` is optional and nullable
-- `recheck_after` is optional and applies only when setting a non-empty
-  `blocked_by`; it is a positive millisecond delay used to compute
-  `recheck_at`
 
-When `blocked_by` is set without `recheck_after`, the runtime assigns a default
-fallback recheck deadline. Updating other WorkItem fields without touching
-`blocked_by` preserves the existing deadline. Clearing `blocked_by` also clears
-`recheck_at` and `recheck_consumed_at`.
+`WaitFor` records durable waiting state and yields the current turn:
+
+- `reason` is required and becomes the human-readable wait/blocker text
+- `wake` is required and is one of `operator_input`, `task_result`, or
+  `external`
+- `resource` is required for `task_result` and `external`
+- `resource` is optional for `operator_input`
+
+If there is a current open WorkItem, `WaitFor` attaches the wait to it, marks
+the item non-runnable, and replaces earlier active waits on that WorkItem. If
+there is no current open WorkItem, `WaitFor` records an agent-scoped wait. A
+`task_result` wait is resolved automatically when the matching terminal task
+result is reduced; operator and external wakeups ask the agent to reconcile the
+state and do not automatically resolve or complete the WorkItem.
 
 `CompleteWorkItem` marks an existing work item completed:
 
@@ -1916,9 +1927,9 @@ fallback recheck deadline. Updating other WorkItem fields without touching
   same assistant round as the successful `CompleteWorkItem` call
 - completion is an explicit agent assertion; it is not blocked by generic
   active task `wait_policy`
-- completion clears `blocked_by`, `recheck_at`, and `recheck_consumed_at`, and
-  finishes the item; it does not revoke agent-scoped external trigger
-  capabilities
+- completion clears `blocked_by`, `recheck_at`, and `recheck_consumed_at`,
+  cancels active WorkItem-scoped waits, and finishes the item; it does not
+  revoke agent-scoped external trigger capabilities
 
 There is no separate agent-facing `UpdateWorkPlan` tool and no separate
 work-plan storage stream. Plan body state lives in the AgentHome plan artifact;
@@ -1929,10 +1940,10 @@ by explicit revoke or rotation.
 
 These tools are part of the explicit adoption path for work items. They do not
 require runtime-side semantic resolution of arbitrary ingress into a work item.
-Use `blocked_by`, `plan_status`, todo state, and references for durable
-WorkItem waiting posture. Use agent-scoped external trigger capabilities for
-reusable ingress from systems such as PR review, CI, merge, or durable inbox
-changes. `TaskOutput(block=true)` is only a turn-local explicit wait for a
+Use `WaitFor`, `plan_status`, todo state, and references for durable WorkItem
+waiting posture. Use agent-scoped external trigger capabilities for reusable
+ingress from systems such as PR review, CI, merge, or durable inbox changes.
+`TaskOutput(block=true)` is only a turn-local explicit wait for a
 bounded task output check; it does not create or clear durable work-item
 dependency state.
 
@@ -2048,7 +2059,8 @@ But it should not mutate away provenance.
 
 ## Wake / Sleep Lifecycle
 
-Sleep is not just absence of work. It is an explicit state.
+Sleep is not just absence of work. It is an explicit resting posture. Durable
+waiting state is recorded with `WaitFor`.
 
 ### Wake Conditions
 

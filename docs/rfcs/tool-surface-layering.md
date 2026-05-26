@@ -53,8 +53,8 @@ In particular:
   `UpdateWorkItem` owns WorkItem state such as `plan_status` and `todo_list`
 - command execution lives in `ExecCommand` / `ExecCommandBatch` plus task
   control tools
-- waiting lives partly in `Sleep`, partly in `CreateExternalTrigger`, and
-  partly in background task semantics
+- waiting is represented by `WaitFor`, while `Sleep` remains a resting posture
+  and `CreateExternalTrigger` remains an ingress capability
 
 These capabilities are not all at the same level, but they still appear in a
 mostly flat catalog.
@@ -129,6 +129,7 @@ its local execution boundary.
 Typical members include:
 
 - `Sleep`
+- `WaitFor`
 - `AgentGet`
 - `Enqueue`
 - `TaskList`
@@ -232,9 +233,9 @@ Typical members include:
 - `CreateExternalTrigger`
 - `CancelExternalTrigger`
 
-This family belongs to the waiting plane, but it is specific enough that it
-deserves to be called out separately from local waiting posture such as
-`Sleep`.
+This family belongs to the ingress plane, but it is specific enough that it
+deserves to be called out separately from explicit waiting state such as
+`WaitFor`.
 
 The next naming review targets after this family should be:
 

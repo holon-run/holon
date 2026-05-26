@@ -297,15 +297,16 @@ The item state set is intentionally the Codex-style three-state model:
 - `completed`
 
 There is no todo-item-level `blocked` state in the first model. If the whole
-objective cannot currently advance, the WorkItem uses `blocked_by`. If a single
-step no longer makes sense, the agent should edit the plan artifact or replace
-the todo list.
+objective cannot currently advance, the agent records an explicit `WaitFor`.
+`blocked_by` remains display text written by that wait path. If a single step
+no longer makes sense, the agent should edit the plan artifact or replace the
+todo list.
 
 At most one item should normally be `in_progress`.
 
 ### `blocked_by`
 
-`blocked_by` is optional WorkItem-level blocker text.
+`blocked_by` is optional WorkItem-level wait/blocker display text.
 
 It means the objective cannot currently be advanced by the agent. Examples:
 
@@ -317,9 +318,10 @@ It means the objective cannot currently be advanced by the agent. Examples:
 If only one step is awkward but the objective can still progress, do not set
 `blocked_by`. Update `todo_list` or refine the plan artifact instead.
 
-External waits should be represented through the waiting plane, timers,
-callbacks, or inbox subscriptions. `blocked_by` should explain the blocker; it
-should not be the only durable wake mechanism.
+External waits should be represented through `WaitFor(wake=external)` plus any
+external trigger, timer, callback, or inbox subscription needed for liveness.
+`blocked_by` should explain the blocker; it should not be the only durable
+wake mechanism.
 
 ## Plan-Then-Implement Flow
 
@@ -539,7 +541,6 @@ Shape:
 - `objective` optional
 - `plan_status` optional
 - `todo_list` optional
-- `blocked_by` optional
 
 `objective`
 - refines the short target for the same underlying WorkItem.
@@ -550,8 +551,8 @@ Shape:
 `todo_list`
 - replaces the full checklist snapshot.
 
-`blocked_by`
-- sets or clears the WorkItem-level blocker.
+Waiting state is recorded through `WaitFor`, not direct `UpdateWorkItem`
+blocker fields.
 
 Todo item states are:
 
@@ -677,8 +678,8 @@ A delegation record should include:
 Delegation state should be separate from WorkItem blocker state.
 
 Spawning a child agent does not automatically make the parent WorkItem blocked.
-The parent may continue working, switch to another WorkItem, or explicitly set
-`blocked_by` if it is truly waiting on the child.
+The parent may continue working, switch to another WorkItem, or call `WaitFor`
+with `wake=task_result` if it is truly waiting on the child supervision task.
 
 Child-agent results must be associated back to the parent WorkItem through the
 delegation record, not by looking at the parent agent's current focus when the

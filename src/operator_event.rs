@@ -1691,6 +1691,8 @@ fn tool_friendly_label(tool_name: &str, failed: bool) -> &'static str {
         ("UseWorkspace", true) => "Workspace selection failed",
         ("Sleep", false) => "Slept",
         ("Sleep", true) => "Sleep failed",
+        ("WaitFor", false) => "Waiting",
+        ("WaitFor", true) => "Wait failed",
         ("ReadSkill", false) => "Read skill",
         ("ReadSkill", true) => "Read skill failed",
         ("WebFetch", false) => "Fetched web page",
@@ -1717,6 +1719,7 @@ fn tool_friendly_label_is_generic(tool_name: &str) -> bool {
             | "SpawnAgent"
             | "UseWorkspace"
             | "Sleep"
+            | "WaitFor"
             | "ReadSkill"
             | "WebFetch"
             | "WebSearch"
@@ -2199,6 +2202,7 @@ mod tests {
             ("SpawnAgent", "Started child agent"),
             ("UseWorkspace", "Workspace selected"),
             ("Sleep", "Slept"),
+            ("WaitFor", "Waiting"),
         ];
         for (tool_name, expected) in samples {
             let presentation = present_operator_event(

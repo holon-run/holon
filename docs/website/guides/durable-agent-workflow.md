@@ -122,12 +122,13 @@ later through the TUI, CLI prompt, or HTTP API.
 
 #### Waiting for external triggers
 
-For CI, webhooks, or scheduled events, Holon uses external triggers. The agent
-sets `blocked_by` on the WorkItem with a description of what it's waiting for:
+For CI, webhooks, or scheduled events, Holon uses `WaitFor` plus any external
+trigger needed to wake the agent. The agent records the outside object in
+`resource` and a human-readable `reason`:
 
 ```
 > I've pushed the branch. Let's wait for CI to complete before merging.
-  [blocked_by: github CI check on feature/error-refactor]
+  [WaitFor: wake=external resource=github:owner/repo#ci-run reason="CI check on feature/error-refactor"]
 ```
 
 When CI completes and the configured trigger fires, the agent wakes, checks the
@@ -172,7 +173,7 @@ holon agent status builder  # Agent state and recent activity
 | Use case | Approach |
 |----------|---------|
 | Multi-step code changes | WorkItem with plan and todo list |
-| CI-driven workflows | blocked_by + external trigger |
+| CI-driven workflows | WaitFor(external) + external trigger |
 | Review cycles | needs_input for operator review |
 | Multi-session projects | Named agent with workspace |
 | Background automation | Daemon + agent + trigger |

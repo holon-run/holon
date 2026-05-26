@@ -2274,6 +2274,12 @@ impl RuntimeHandle {
             self.release_current_work_item_if_matches(&agent_id, &record, "work_item_completed")
                 .await?;
         }
+        self.cancel_active_wait_conditions_for_work_item(
+            &agent_id,
+            &record.id,
+            "work_item_completed",
+        )
+        .await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_written",
             serde_json::json!({
@@ -2379,7 +2385,7 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    fn validate_owned_work_item(
+    pub(super) fn validate_owned_work_item(
         &self,
         agent_id: &str,
         work_item_id: &str,
@@ -2398,7 +2404,7 @@ impl RuntimeHandle {
         Ok(record)
     }
 
-    async fn release_current_work_item_if_matches(
+    pub(super) async fn release_current_work_item_if_matches(
         &self,
         agent_id: &str,
         record: &WorkItemRecord,

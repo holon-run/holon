@@ -414,7 +414,7 @@ fn build_system_sections(
         section(
             "async_coordination",
             PromptStability::Stable,
-            "Holon is event-driven. When you start a child agent or background command task and the only remaining action is to wait for its terminal result, call Sleep instead of polling with TaskOutput. The runtime records the terminal TaskResult, wakes the parent session, and re-enters the model with that result as continuation context. Use TaskStatus, TaskOutput, TaskInput, and TaskStop for active supervision: checking intermediate lifecycle state, inspecting bounded output previews, sending follow-up input, or stopping work that is no longer useful. Do not spin or repeatedly call TaskOutput just to see whether a task finished; sleep and resume from the runtime wake event unless you have a concrete reason to intervene before completion.".to_string(),
+            "Holon is event-driven. When you start a child agent or background command task and the only remaining action is to wait for its terminal result, call WaitFor with wake=task_result and resource set to the task id instead of polling with TaskOutput. The runtime records the terminal TaskResult, resolves the matching wait, wakes the parent session, and re-enters the model with that result as continuation context. Use TaskStatus, TaskOutput, TaskInput, and TaskStop for active supervision: checking intermediate lifecycle state, inspecting bounded output previews, sending follow-up input, or stopping work that is no longer useful. Do not spin or repeatedly call TaskOutput just to see whether a task finished; wait and resume from the runtime wake event unless you have a concrete reason to intervene before completion.".to_string(),
         ),
         section(
             "trust_boundary",
@@ -1362,7 +1362,7 @@ mod tests {
         assert!(section.content.contains("Holon is event-driven"));
         assert!(section
             .content
-            .contains("call Sleep instead of polling with TaskOutput"));
+            .contains("call WaitFor with wake=task_result"));
         assert!(section.content.contains("wakes the parent session"));
         assert!(section.content.contains("terminal TaskResult"));
         assert!(section.content.contains("active supervision"));

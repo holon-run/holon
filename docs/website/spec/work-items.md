@@ -12,7 +12,8 @@ lifecycle, focus, readiness, planning, blocking, and completion semantics.
 > **Last verified:** 2026-05-26 against `src/types.rs` `WorkItemRecord`,
 > `WorkItemState`, `WorkItemPlanStatus`, `WorkItemReadiness`,
 > `WorkItemSchedulingState`, and the tool implementations in
-> `src/tool/tools/{create,update,pick,list,get,complete}_work_item.rs`.
+> `src/tool/tools/{create,update,pick,list,get,complete}_work_item.rs` and
+> `src/tool/tools/wait_for.rs`.
 
 ## Source RFCs
 
@@ -33,8 +34,8 @@ A WorkItem is a durable objective record owned by an agent. It tracks:
 | `plan_status` | `draft`, `ready`, or `needs_input` |
 | `plan_artifact` | Path to the durable plan.md artifact in agent home |
 | `todo_list` | Progress checklist snapshot |
-| `blocked_by` | Human-readable blocker description |
-| `recheck_at` | Fallback deadline for blocked re-evaluation |
+| `blocked_by` | Human-readable wait/blocker description for display |
+| `recheck_at` | Legacy fallback deadline for blocked re-evaluation |
 | `recheck_consumed_at` | Marker that the current recheck reminder was delivered |
 | `result_summary` | Completion summary (optional) |
 
@@ -74,10 +75,9 @@ The Rust enum `WorkItemPlanStatus` uses PascalCase variants (`Draft`, `Ready`,
   still being drafted, ready for execution, or waiting for operator input.
 - `plan_status=NeedsInput` makes the WorkItem **non-runnable** and means the
   scheduler must wait for operator input.
-- `blocked_by` is a human-readable string; when set, the WorkItem is
-  non-runnable. A `recheck_after` millisecond fallback deadline can be set
-  alongside the blocker via `UpdateWorkItem.recheck_after`. The stored field
-  is `recheck_at` (an absolute timestamp).
+- `WaitFor` is the agent-facing way to mark a WorkItem waiting on operator
+  input, a task result, or an external resource. It sets `blocked_by` for
+  display and records the structured active wait.
 
 ## Readiness and scheduling
 
@@ -87,7 +87,7 @@ active wait state:
 | `WorkItemSchedulingState` | Condition |
 |---------------------------|-----------|
 | `Runnable` | Open, plan not `NeedsInput`, no blocker, no active wait |
-| `WaitingOperator` | `plan_status=NeedsInput` |
+| `WaitingOperator` | `plan_status=NeedsInput` or active operator wait |
 | `WaitingTask` | Active wait on a task result |
 | `WaitingExternal` | Active wait on an external event |
 | `WaitingTimer` | Active wait on a timer |
@@ -108,9 +108,10 @@ active wait state:
 
 - Readiness is derived, not stored. `is_runnable()` and
   `is_waiting_for_operator()` are computed from current state.
-- `plan_status=NeedsInput` is the only explicit "waiting for operator" signal.
-- Blocked WorkItems with `recheck_at` carry a fallback deadline; the scheduler
-  may re-evaluate them after that time.
+- `WaitFor(wake=operator_input)` is the explicit wait signal when operator
+  input blocks the current WorkItem.
+- Older blocked WorkItems with `recheck_at` carry a fallback deadline; the
+  scheduler may re-evaluate them after that time.
 - Focus (current/queued) is separate from readiness. A blocked WorkItem can
   still be the current focus for inspection.
 
@@ -129,11 +130,12 @@ current WorkItem is the focus for the current turn:
 | Tool | Purpose |
 |------|---------|
 | `CreateWorkItem` | Create a new open WorkItem with objective, optional plan seed, and todo_list |
-| `UpdateWorkItem` | Mutate objective, plan_status, todo_list, blocked_by, recheck_after |
+| `UpdateWorkItem` | Mutate objective, plan_status, todo_list |
 | `PickWorkItem` | Set current focus to an existing open WorkItem |
 | `GetWorkItem` | Read a single WorkItem with plan preview |
 | `ListWorkItems` | Query with filters: all, open, completed, current, queued, blocked, waiting_for_operator, runnable |
 | `CompleteWorkItem` | Mark complete; the next assistant-text block in the same round is promoted as the completion report |
+| `WaitFor` | Attach a task, external, or operator wait to the current WorkItem and yield |
 
 **Key contract:**
 
@@ -142,7 +144,9 @@ current WorkItem is the focus for the current turn:
   instead of creating a new one for the same task.
 - `UpdateWorkItem.todo_list` replaces the full checklist snapshot; it is not
   an append operation.
-- `UpdateWorkItem.blocked_by` accepts `null` to clear the blocker.
+- `WaitFor` replaces direct blocker mutation for new waits. It attaches to the
+  current open WorkItem; pick another WorkItem first if that is the one that
+  should wait.
 - `CompleteWorkItem` promotion: the operator-facing completion report must be
   written as assistant text **in the same round**. After the tool succeeds,
   the runtime promotes that text as the canonical completion report.

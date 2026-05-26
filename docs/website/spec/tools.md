@@ -35,7 +35,7 @@ Tools are grouped by capability family for authority gating:
 
 | Family | Tools | Authority |
 |--------|-------|-----------|
-| `CoreAgent` | `Sleep`, `AgentGet`, `Enqueue`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
+| `CoreAgent` | `Sleep`, `WaitFor`, `AgentGet`, `Enqueue`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
 | `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `UseWorkspace` | All profiles |
 | `Web` | `WebFetch`, `WebSearch` | All profiles |
 | `AgentCreation` | `SpawnAgent` | All profiles |
@@ -48,11 +48,12 @@ Tools are grouped by capability family for authority gating:
 | Tool | Purpose |
 |------|---------|
 | `CreateWorkItem` | Create a new open WorkItem |
-| `UpdateWorkItem` | Mutate objective, plan_status, todo_list, blocked_by |
+| `UpdateWorkItem` | Mutate objective, plan_status, todo_list |
 | `PickWorkItem` | Set current focus |
 | `GetWorkItem` | Read single WorkItem with plan preview |
 | `ListWorkItems` | Query with filters |
 | `CompleteWorkItem` | Mark complete; completion report promotion |
+| `WaitFor` | Record task, external, or operator waiting state and yield |
 
 ### Task control plane
 
@@ -72,6 +73,7 @@ Tools are grouped by capability family for authority gating:
 |------|---------|
 | `AgentGet` | Read current agent-plane summary |
 | `Sleep` | Signal turn-end; let scheduler decide next action |
+| `WaitFor` | Signal turn-end after recording explicit wait state |
 | `Enqueue` | Schedule self-follow-up message |
 | `SpawnAgent` | Delegate work to a child agent |
 
