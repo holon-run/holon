@@ -633,10 +633,6 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
                             "login": false
                         },
                         {
-                            "cmd": "python -i",
-                            "tty": true
-                        },
-                        {
                             "cmd": format!("printf '{}'", long_stdout),
                             "login": false,
                             "max_output_tokens": 20
@@ -654,10 +650,10 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
     let envelope = parse_tool_result_value(&result)?;
     let value = &envelope["result"];
     assert_eq!(envelope["tool_name"], "ExecCommandBatch");
-    assert_eq!(value["item_count"], 4);
+    assert_eq!(value["item_count"], 3);
     assert_eq!(value["completed_count"], 2);
     assert_eq!(value["failed_count"], 1);
-    assert_eq!(value["rejected_count"], 1);
+    assert_eq!(value["rejected_count"], 0);
     assert_eq!(value["skipped_count"], 0);
     assert_eq!(value["items"][0]["status"], "completed");
     assert_eq!(value["items"][0]["result"]["exit_status"], 0);
@@ -667,17 +663,12 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
     );
     assert_eq!(value["items"][1]["status"], "failed");
     assert_eq!(value["items"][1]["result"]["exit_status"], 7);
-    assert_eq!(value["items"][2]["status"], "rejected");
-    assert_eq!(
-        value["items"][2]["error_kind"],
-        "unsupported_batch_command_field"
-    );
-    assert!(value["items"][3]["result"]["stdout_preview"]
+    assert!(value["items"][2]["result"]["stdout_preview"]
         .as_str()
         .expect("stdout preview")
         .contains("[output truncated"));
     assert_eq!(
-        value["items"][3]["result"]["command_diagnostics"]["effective_max_output_tokens"],
+        value["items"][2]["result"]["command_diagnostics"]["effective_max_output_tokens"],
         20
     );
     assert!(

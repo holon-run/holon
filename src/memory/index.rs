@@ -384,12 +384,11 @@ impl MemoryIndex {
         &self,
         source_ref: &str,
         max_chars: Option<usize>,
-        active_workspace_id: Option<&str>,
+        _active_workspace_id: Option<&str>,
     ) -> Result<Option<MemoryGetResult>> {
         let max_chars = max_chars
             .unwrap_or(GET_CHARS_DEFAULT)
             .clamp(1, GET_CHARS_MAX);
-        let workspace_filter = active_workspace_id.map(ToString::to_string);
         self.connection
             .query_row(
                 r#"
@@ -397,9 +396,8 @@ impl MemoryIndex {
                        title, original_body, metadata_json, updated_at
                 FROM memory_documents
                 WHERE source_ref = ?1
-                  AND (scope_kind = 'agent' OR (?2 IS NOT NULL AND workspace_id = ?2))
                 "#,
-                params![source_ref, workspace_filter],
+                params![source_ref],
                 |row| {
                     let content: String = row.get(7)?;
                     let metadata_json: String = row.get(8)?;
@@ -1199,14 +1197,15 @@ mod tests {
         assert_eq!(memory.content, "runtime exact evidence body");
         assert!(!memory.truncated);
 
-        assert!(
-            get_memory(&storage, &other_brief_ref, None, Some("ws-holon"))
-                .unwrap()
-                .is_none()
-        );
+        // source_ref is globally unique; MemoryGet resolves it regardless of
+        // active workspace (fixes #1454).
+        let other = get_memory(&storage, &other_brief_ref, None, Some("ws-holon"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(other.content, "other workspace exact evidence");
         assert!(get_memory(&storage, &brief_ref, None, None)
             .unwrap()
-            .is_none());
+            .is_some());
     }
 
     #[test]
