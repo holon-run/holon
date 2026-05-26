@@ -151,6 +151,18 @@ curl -X POST http://localhost:8787/control/agents/my-agent/work-items/work_123/c
   -d '{}'
 ```
 
+### Create and cancel a timer
+
+```bash
+curl -X POST http://localhost:8787/control/agents/my-agent/timers \
+  -H "Content-Type: application/json" \
+  -d '{"duration_ms": 60000, "summary": "reminder"}'
+
+curl -X POST http://localhost:8787/control/agents/my-agent/timers/timer_123/cancel \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
 ### Wake a sleeping agent
 
 ```bash

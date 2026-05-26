@@ -27,4 +27,5 @@ http_async_tests!(
     work_item_mutation_routes_pick_update_and_complete,
     work_item_mutation_routes_validate_bad_requests,
     timer_detail_route_returns_latest_timer_record,
+    timer_cancel_route_is_idempotent_and_updates_projection,
 );

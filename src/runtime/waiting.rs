@@ -140,6 +140,38 @@ impl RuntimeHandle {
         Ok(timer)
     }
 
+    pub async fn cancel_timer(&self, timer_id: &str) -> Result<TimerRecord> {
+        let mut timer = self
+            .inner
+            .storage
+            .latest_timer_record(timer_id)?
+            .ok_or_else(|| anyhow!("timer {timer_id} not found"))?;
+        if timer.agent_id != self.agent_id().await? {
+            return Err(anyhow!("timer {timer_id} not found"));
+        }
+        match timer.status {
+            TimerStatus::Cancelled => return Ok(timer),
+            TimerStatus::Completed => {
+                return Err(anyhow!("cannot cancel completed timer {timer_id}"))
+            }
+            TimerStatus::Active => {}
+        }
+
+        timer.status = TimerStatus::Cancelled;
+        timer.next_fire_at = None;
+        self.inner.storage.append_timer(&timer)?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "timer_cancelled",
+            serde_json::json!({
+                "timer_id": timer.id,
+                "status": timer.status,
+                "fire_count": timer.fire_count,
+            }),
+        ))?;
+        self.inner.notify.notify_waiters();
+        Ok(timer)
+    }
+
     pub(crate) async fn recover_active_timers(&self, timers: Vec<TimerRecord>) -> Result<()> {
         for timer in timers {
             self.recover_timer(timer).await?;
@@ -198,6 +230,13 @@ impl RuntimeHandle {
     }
 
     async fn fire_timer_record(&self, timer: &mut TimerRecord) -> Result<()> {
+        if let Some(latest) = self.inner.storage.latest_timer_record(&timer.id)? {
+            if latest.status != TimerStatus::Active {
+                *timer = latest;
+                return Ok(());
+            }
+        }
+
         let message = MessageEnvelope {
             metadata: Some(serde_json::json!({ "timer_id": timer.id })),
             ..MessageEnvelope::new(
