@@ -579,6 +579,9 @@ When the same assistant round contains both operator-facing completion report
 text and a successful `CompleteWorkItem` call for the focused WorkItem, the
 runtime should promote that text into the WorkItem result summary, delivery
 summary, and completion brief.
+The promoted completion brief is the terminal user-facing delivery for that
+turn; runtime finalization should not emit a second result brief with the same
+completion.
 
 The promoted result summary is not a full progress log. Detailed evidence
 remains in transcript, tool records, briefs, verification output, PRs, issues,

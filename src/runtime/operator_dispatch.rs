@@ -99,12 +99,35 @@ impl RuntimeHandle {
             )
             .await?;
 
-        let brief = if outcome.terminal_kind.is_failure() {
-            brief::make_failure(&message.agent_id, message, outcome.final_text.clone())
+        if outcome.terminal_kind.is_failure() {
+            let brief = brief::make_failure(&message.agent_id, message, outcome.final_text.clone());
+            self.persist_brief(&brief).await?;
         } else {
-            brief::make_result(&message.agent_id, message, outcome.final_text.clone())
-        };
-        self.persist_brief(&brief).await?;
+            match outcome.terminal_delivery {
+                TurnTerminalDelivery::NormalBrief => {
+                    let brief =
+                        brief::make_result(&message.agent_id, message, outcome.final_text.clone());
+                    self.persist_brief(&brief).await?;
+                }
+                TurnTerminalDelivery::WorkItemCompletionReportPromoted {
+                    work_item_id,
+                    delivery_summary_id,
+                    brief_id,
+                } => {
+                    self.inner.storage.append_event(&AuditEvent::new(
+                        "turn_terminal_brief_suppressed",
+                        serde_json::json!({
+                            "agent_id": message.agent_id.clone(),
+                            "message_id": message.id.clone(),
+                            "reason": "work_item_completion_report_promoted",
+                            "work_item_id": work_item_id,
+                            "delivery_summary_id": delivery_summary_id,
+                            "brief_id": brief_id,
+                        }),
+                    ))?;
+                }
+            }
+        }
         self.promote_turn_active_skills().await?;
 
         if outcome.should_sleep {

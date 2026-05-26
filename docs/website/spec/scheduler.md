@@ -133,6 +133,8 @@ WorkItems flow through scheduling states that the scheduler consumes:
   to do; this is distinct from `Sleep` (the initial transition).
 - `EmitSystemTick` injects an internal follow-up message to re-enter the model
   when a runnable WorkItem is found at an idle boundary.
+- When `CompleteWorkItem` promotion ends a turn, any remaining runnable
+  WorkItem is resumed by the same work-queue `SystemTick` path.
 - Wake hints are **liveness signals**: they tell the scheduler to re-evaluate
   but do not themselves carry content for the model.
 - Duplicate suppression uses idempotency keys to prevent redundant system
