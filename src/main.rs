@@ -612,8 +612,10 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     // connect even when the primary address targets a tailnet or LAN IP.
     // See: https://github.com/holon-run/holon/issues/1449
     let local_listener = if !listener.local_addr()?.ip().is_loopback() {
-        let local_addr =
-            std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), listener.local_addr()?.port());
+        let local_addr = std::net::SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            listener.local_addr()?.port(),
+        );
         let local = TcpListener::bind(local_addr)
             .await
             .with_context(|| format!("failed to bind localhost listener on {local_addr}"))?;
