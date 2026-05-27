@@ -191,7 +191,7 @@ impl RuntimeHandle {
         let _ = maybe_compact_agent(&self.inner.storage, &mut agent, &context_config)?;
         let prior_closure = self.current_closure_decision().await?;
         let continuation = ContinuationTrigger::from_message(&message, None)
-            .map(|trigger| resolve_continuation(&prior_closure, &trigger));
+            .map(|trigger| resolve_continuation(&prior_closure, &trigger, None));
         let identity = self.agent_identity_view().await?;
         self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
             .await?;
@@ -275,6 +275,7 @@ impl RuntimeHandle {
                     evidence: vec!["synthetic_subagent_prompt_preview".into()],
                 },
                 &trigger,
+                None,
             )
         });
         let context_config = self.current_context_config().await;
