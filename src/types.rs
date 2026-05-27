@@ -32,8 +32,10 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
             created_at: DateTime<Utc>,
             kind: MessageKind,
             origin: MessageOrigin,
-            #[serde(default, alias = "trust")]
+            #[serde(default)]
             authority_class: Option<AuthorityClass>,
+            #[serde(default)]
+            trust: Option<AuthorityClass>,
             priority: Priority,
             #[serde(default)]
             trigger_kind: Option<ContinuationTriggerKind>,
@@ -56,6 +58,7 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
         let compat = MessageEnvelopeCompat::deserialize(deserializer)?;
         let authority_class = compat
             .authority_class
+            .or(compat.trust)
             .ok_or_else(|| serde::de::Error::missing_field("authority_class"))?;
         Ok(Self {
             id: compat.id,
@@ -4004,6 +4007,31 @@ mod tests {
         let message: MessageEnvelope = serde_json::from_value(legacy).unwrap();
 
         assert_eq!(message.authority_class, AuthorityClass::RuntimeInstruction);
+    }
+
+    #[test]
+    fn legacy_messages_with_trust_and_authority_class_prefer_authority_class() {
+        let legacy = serde_json::json!({
+            "id": "msg-dual-field",
+            "agent_id": "default",
+            "created_at": "2026-04-22T00:00:00Z",
+            "kind": "operator_prompt",
+            "origin": {
+                "kind": "operator",
+                "actor_id": "control"
+            },
+            "trust": "trusted_system",
+            "authority_class": "operator_instruction",
+            "priority": "normal",
+            "body": {
+                "type": "text",
+                "text": "resume"
+            }
+        });
+
+        let message: MessageEnvelope = serde_json::from_value(legacy).unwrap();
+
+        assert_eq!(message.authority_class, AuthorityClass::OperatorInstruction);
     }
 
     #[test]
