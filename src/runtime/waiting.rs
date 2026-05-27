@@ -47,7 +47,7 @@ impl RuntimeHandle {
         }
 
         let now = Utc::now();
-        let (kind, subject_ref, wake_sources) = wait_condition_parts(wake, resource.clone());
+        let (kind, subject_ref, wake_sources) = wait_condition_parts(wake, resource.clone())?;
         let mut work_item = None;
         let mut cancelled_wait_condition_ids = Vec::new();
         if let Some(work_item_id) = work_item_id.as_deref() {
@@ -876,29 +876,36 @@ fn reconciliation_signals_for_message(
 fn wait_condition_parts(
     wake: WaitForWakeKind,
     resource: Option<String>,
-) -> (WaitConditionKind, Option<String>, Vec<WakeSource>) {
+) -> Result<(WaitConditionKind, Option<String>, Vec<WakeSource>)> {
     match wake {
-        WaitForWakeKind::OperatorInput => (
+        WaitForWakeKind::OperatorInput => Ok((
             WaitConditionKind::Operator,
             resource,
             vec![WakeSource::OperatorInput],
-        ),
+        )),
         WaitForWakeKind::TaskResult => {
-            let task_id = resource.expect("WaitFor task_result resource is validated by tool");
-            (
+            let task_id = wait_resource_required(wake, resource)?;
+            Ok((
                 WaitConditionKind::Task,
                 Some(task_id.clone()),
                 vec![WakeSource::TaskResult { task_id }],
-            )
+            ))
         }
-        WaitForWakeKind::External => (
+        WaitForWakeKind::External => Ok((
             WaitConditionKind::External,
-            resource,
+            Some(wait_resource_required(wake, resource)?),
             vec![WakeSource::ExternalIngress {
                 external_trigger_id: None,
             }],
-        ),
+        )),
     }
+}
+
+fn wait_resource_required(wake: WaitForWakeKind, resource: Option<String>) -> Result<String> {
+    resource
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("wait_for {:?} requires non-empty resource", wake))
 }
 
 fn reconciliation_signal_for_condition(

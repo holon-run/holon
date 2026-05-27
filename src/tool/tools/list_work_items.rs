@@ -16,8 +16,8 @@ use super::{
     serialize_success,
     work_item_query::{
         active_wait_conditions_by_work_item, latest_delivery_summaries_by_work_item,
-        lifecycle_view, query_context, readiness_for_view, view_for_record, WorkItemFocusView,
-        WorkItemLifecycleView, WorkItemQueryContext, WorkItemView,
+        lifecycle_view, query_context, readiness_for_view, view_for_record, WorkItemLifecycleView,
+        WorkItemQueryContext, WorkItemView,
     },
     BuiltinToolDefinition,
 };
@@ -141,6 +141,7 @@ fn matches_filter(
 ) -> bool {
     let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
         && record.state == WorkItemState::Open;
+    let readiness = readiness_for_view(record, active_wait_conditions);
     match filter {
         ListWorkItemsFilter::All => true,
         ListWorkItemsFilter::Open => lifecycle_view(&record.state) == WorkItemLifecycleView::Open,
@@ -150,20 +151,13 @@ fn matches_filter(
         ListWorkItemsFilter::Current => is_current,
         ListWorkItemsFilter::Queued => {
             !is_current
-                && super::work_item_query::focus_view(record, is_current)
-                    == WorkItemFocusView::Queued
+                && record.state == WorkItemState::Open
+                && readiness == WorkItemReadiness::Runnable
         }
-        ListWorkItemsFilter::Blocked => {
-            !is_current
-                && super::work_item_query::focus_view(record, is_current)
-                    == WorkItemFocusView::Blocked
-        }
+        ListWorkItemsFilter::Blocked => !is_current && readiness == WorkItemReadiness::Blocked,
         ListWorkItemsFilter::WaitingForOperator => {
-            readiness_for_view(record, active_wait_conditions)
-                == WorkItemReadiness::WaitingForOperator
+            readiness == WorkItemReadiness::WaitingForOperator
         }
-        ListWorkItemsFilter::Runnable => {
-            readiness_for_view(record, active_wait_conditions) == WorkItemReadiness::Runnable
-        }
+        ListWorkItemsFilter::Runnable => readiness == WorkItemReadiness::Runnable,
     }
 }

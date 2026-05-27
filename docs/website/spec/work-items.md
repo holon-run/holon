@@ -112,8 +112,9 @@ active wait state:
   input blocks the current WorkItem.
 - Older blocked WorkItems with `recheck_at` carry a fallback deadline; the
   scheduler may re-evaluate them after that time.
-- Focus (current/queued) is separate from readiness. A blocked WorkItem can
-  still be the current focus for inspection.
+- Current focus is separate from readiness. A blocked WorkItem can still be the
+  current focus for inspection, while queued and blocked list filters are
+  derived views over focus plus scheduler readiness.
 
 ## Focus and current work
 

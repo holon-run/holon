@@ -792,6 +792,33 @@ async fn work_item_query_tools_return_readiness_views() {
         )
         .await
         .unwrap();
+    let wait_condition_blocked = runtime
+        .create_work_item("wait condition blocked".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let now = Utc::now();
+    runtime
+        .storage()
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-external-only".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(wait_condition_blocked.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("test".into()),
+            subject_ref: Some("github:holon-run/holon#1459".into()),
+            waiting_for: "waiting for follow-up review".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: None,
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+        })
+        .unwrap();
 
     let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
     let list = |filter: &'static str| {
@@ -842,7 +869,7 @@ async fn work_item_query_tools_return_readiness_views() {
     );
 
     let queued_payload = list("queued").await;
-    assert_eq!(queued_payload["total_matching"].as_u64(), Some(2));
+    assert_eq!(queued_payload["total_matching"].as_u64(), Some(1));
     let queued_ids = queued_payload["work_items"]
         .as_array()
         .unwrap()
@@ -850,18 +877,23 @@ async fn work_item_query_tools_return_readiness_views() {
         .filter_map(|item| item["id"].as_str())
         .collect::<Vec<_>>();
     assert!(queued_ids.contains(&runnable.id.as_str()));
-    assert!(queued_ids.contains(&waiting.id.as_str()));
+    assert!(!queued_ids.contains(&waiting.id.as_str()));
+    assert!(!queued_ids.contains(&wait_condition_blocked.id.as_str()));
 
     let blocked_payload = list("blocked").await;
-    assert_eq!(blocked_payload["total_matching"].as_u64(), Some(1));
-    assert_eq!(
-        blocked_payload["work_items"][0]["id"].as_str(),
-        Some(blocked.id.as_str())
-    );
-    assert_eq!(
-        blocked_payload["work_items"][0]["readiness"].as_str(),
-        Some("blocked")
-    );
+    assert_eq!(blocked_payload["total_matching"].as_u64(), Some(2));
+    let blocked_items = blocked_payload["work_items"].as_array().unwrap();
+    let blocked_ids = blocked_items
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect::<Vec<_>>();
+    assert!(blocked_ids.contains(&blocked.id.as_str()));
+    assert!(blocked_ids.contains(&wait_condition_blocked.id.as_str()));
+    let wait_condition_view = blocked_items
+        .iter()
+        .find(|item| item["id"].as_str() == Some(wait_condition_blocked.id.as_str()))
+        .expect("wait condition blocked item should be listed");
+    assert_eq!(wait_condition_view["readiness"].as_str(), Some("blocked"));
 }
 
 #[tokio::test]
