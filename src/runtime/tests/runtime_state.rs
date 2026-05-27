@@ -618,6 +618,66 @@ async fn wait_for_task_result_marks_work_item_waiting_and_allows_sleep() {
 }
 
 #[tokio::test]
+async fn register_wait_for_validates_required_runtime_resources() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let task_missing = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::TaskResult,
+            None,
+            "waiting for task".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(task_missing
+        .to_string()
+        .contains("requires non-empty resource"));
+
+    let external_empty = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::External,
+            Some(" ".into()),
+            "waiting for external state".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(external_empty
+        .to_string()
+        .contains("requires non-empty resource"));
+
+    let operator_wait = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::OperatorInput,
+            None,
+            "waiting for operator".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(operator_wait.condition.kind, WaitConditionKind::Operator);
+    assert_eq!(operator_wait.condition.subject_ref, None);
+}
+
+#[tokio::test]
 async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocker() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
