@@ -3657,42 +3657,28 @@ pub struct ResolvedModelAvailability {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentLifecycleHint {
-    pub resume_required: bool,
     pub accepts_external_messages: bool,
-    pub wake_requires_resume: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_hint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resume_cli_hint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resume_control_path: Option<String>,
 }
 
 impl Default for AgentLifecycleHint {
     fn default() -> Self {
         Self {
-            resume_required: false,
             accepts_external_messages: true,
-            wake_requires_resume: false,
             operator_hint: None,
-            resume_cli_hint: None,
-            resume_control_path: None,
         }
     }
 }
 
 impl AgentLifecycleHint {
-    pub fn from_status(agent_id: &str, status: AgentStatus) -> Self {
+    pub fn from_status(_agent_id: &str, status: AgentStatus) -> Self {
         if status == AgentStatus::Stopped {
             return Self {
-                resume_required: true,
                 accepts_external_messages: false,
-                wake_requires_resume: true,
                 operator_hint: Some(
                     "agent is administratively stopped; start before new prompts or wakes".into(),
                 ),
-                resume_cli_hint: Some(format!("holon agent start {agent_id}")),
-                resume_control_path: Some(format!("/control/agents/{agent_id}/control")),
             };
         }
         Self::default()

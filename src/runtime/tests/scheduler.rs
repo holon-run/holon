@@ -763,6 +763,21 @@ fn idle_boundary_decision_inspects_wait_facts_while_asleep() {
 }
 
 #[test]
+fn idle_boundary_decision_does_not_treat_asleep_with_queued_input_as_idle() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Asleep;
+    agent.pending = 1;
+    storage.write_agent(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::Noop);
+    assert_eq!(decision.reason, "queue_not_empty");
+}
+
+#[test]
 fn idle_boundary_decision_reactivates_runnable_work_while_asleep() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();

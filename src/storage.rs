@@ -3063,6 +3063,36 @@ mod tests {
         let posture_for = |storage: &AppStorage, agent: &AgentState| {
             storage.agent_posture_projection(agent).unwrap().posture
         };
+        let append_wait_condition =
+            |storage: &AppStorage, work_item_id: &str, kind: WaitConditionKind| {
+                let wait_kind = format!("{kind:?}");
+                let wake_sources = match kind {
+                    WaitConditionKind::Timer => vec![WakeSource::Timer {
+                        wake_at: Utc::now() + chrono::Duration::minutes(5),
+                    }],
+                    WaitConditionKind::System => vec![WakeSource::SystemTick],
+                    _ => unreachable!("helper is only used for timer/system waits"),
+                };
+                storage
+                    .append_wait_condition(&WaitConditionRecord {
+                        id: format!("{kind:?}-condition"),
+                        agent_id: "default".into(),
+                        work_item_id: Some(work_item_id.into()),
+                        status: WaitConditionStatus::Active,
+                        kind,
+                        source: None,
+                        subject_ref: None,
+                        waiting_for: wait_kind,
+                        wake_sources,
+                        continuation: None,
+                        created_at: Utc::now(),
+                        updated_at: Utc::now(),
+                        expires_at: None,
+                        resolved_at: None,
+                        cancelled_at: None,
+                    })
+                    .unwrap();
+            };
 
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
@@ -3155,6 +3185,30 @@ mod tests {
         let mut blocked = WorkItemRecord::new("default", "blocked", WorkItemState::Open);
         blocked.blocked_by = Some("unstructured blocker".into());
         storage.append_work_item(&blocked).unwrap();
+        assert_eq!(
+            posture_for(&storage, &agent),
+            AgentSchedulingPosture::Blocked
+        );
+
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Asleep;
+        let timer_wait = WorkItemRecord::new("default", "timer wait", WorkItemState::Open);
+        storage.append_work_item(&timer_wait).unwrap();
+        append_wait_condition(&storage, &timer_wait.id, WaitConditionKind::Timer);
+        assert_eq!(
+            posture_for(&storage, &agent),
+            AgentSchedulingPosture::Blocked
+        );
+
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Asleep;
+        let system_wait = WorkItemRecord::new("default", "system wait", WorkItemState::Open);
+        storage.append_work_item(&system_wait).unwrap();
+        append_wait_condition(&storage, &system_wait.id, WaitConditionKind::System);
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::Blocked

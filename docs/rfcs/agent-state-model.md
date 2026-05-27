@@ -241,6 +241,7 @@ Initial shape:
 
 ```text
 AgentSchedulingPosture =
+  Unknown
   ActiveTurn
   HasQueuedInput
   HasRunnableWork
@@ -253,6 +254,8 @@ AgentSchedulingPosture =
 ```
 
 This posture is not manually written by the agent. It is derived.
+`Unknown` is the default value before a projection has been assembled; it is not
+part of the stable scheduling contract.
 
 Suggested precedence:
 
@@ -265,6 +268,14 @@ Suggested precedence:
 7. `WaitingForOperator` if open work requires operator input.
 8. `Blocked` if open work has only non-recoverable or unstructured blockers.
 9. `Idle` if no open work, queued input, active turn, or active wait remains.
+
+WorkItem-level waits are more specific than this reduced agent posture. In the
+current implementation, `WorkItemSchedulingState::WaitingTimer` and
+`WorkItemSchedulingState::WaitingSystem` are retained as distinct scheduler wait
+states, but project to `AgentSchedulingPosture::Blocked` at the agent summary
+level. Scheduler idle-boundary decisions still inspect the WorkItem scheduling
+state and emit the timer or system-tick action instead of treating those waits as
+plain idle.
 
 The exact precedence can evolve, but the important rule is that passive sleep
 posture must not hide higher-priority facts such as queued input or runnable
