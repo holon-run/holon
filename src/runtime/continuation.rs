@@ -10,6 +10,7 @@ pub(super) struct ContinuationTrigger {
     pub(super) contentful: bool,
     pub(super) task_terminal: bool,
     pub(super) wake_hint_source: Option<String>,
+    pub(super) task_work_item_id: Option<String>,
 }
 
 impl ContinuationTrigger {
@@ -23,6 +24,7 @@ impl ContinuationTrigger {
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
                 wake_hint_source: None,
+                task_work_item_id: None,
             }),
             MessageKind::WebhookEvent | MessageKind::CallbackEvent | MessageKind::ChannelEvent => {
                 Some(Self {
@@ -30,6 +32,7 @@ impl ContinuationTrigger {
                     contentful: body_is_contentful(&message.body),
                     task_terminal: false,
                     wake_hint_source: None,
+                    task_work_item_id: None,
                 })
             }
             MessageKind::TimerTick => Some(Self {
@@ -37,11 +40,13 @@ impl ContinuationTrigger {
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
                 wake_hint_source: None,
+                task_work_item_id: None,
             }),
             MessageKind::InternalFollowup => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
                 contentful: body_is_contentful(&message.body),
                 task_terminal: false,
+                task_work_item_id: None,
                 wake_hint_source: None,
             }),
             MessageKind::SystemTick => Some(Self {
@@ -55,6 +60,7 @@ impl ContinuationTrigger {
                     .and_then(|value| value.get("source"))
                     .and_then(serde_json::Value::as_str)
                     .map(ToString::to_string),
+                task_work_item_id: None,
             }),
             MessageKind::TaskResult => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
@@ -71,6 +77,8 @@ impl ContinuationTrigger {
                     })
                     .unwrap_or(false),
                 wake_hint_source: None,
+                task_work_item_id: task
+                    .and_then(|t| t.effective_work_item_id().map(ToString::to_string)),
             }),
             MessageKind::TaskStatus
             | MessageKind::Control
@@ -83,7 +91,13 @@ impl ContinuationTrigger {
 pub(super) fn resolve_continuation(
     prior: &ClosureDecision,
     trigger: &ContinuationTrigger,
+    agent_work_item_id: Option<&str>,
 ) -> ContinuationResolution {
+    let same_work_item = match (trigger.task_work_item_id.as_deref(), agent_work_item_id) {
+        (Some(_), None) | (None, Some(_)) => false,
+        (None, None) => true,
+        (Some(t), Some(a)) => t == a,
+    };
     let mut evidence = Vec::new();
     evidence.push(format!("trigger_kind={}", enum_label(trigger.kind)));
     if trigger.contentful {
@@ -106,12 +120,14 @@ pub(super) fn resolve_continuation(
             prior_waiting_reason,
             prior_closure_outcome,
             trigger,
+            same_work_item,
             evidence,
         );
     }
 
-    let terminal_task_result =
-        trigger.kind == ContinuationTriggerKind::TaskResult && trigger.task_terminal;
+    let terminal_task_result = trigger.kind == ContinuationTriggerKind::TaskResult
+        && trigger.task_terminal
+        && same_work_item;
     let model_reentry = terminal_task_result
         || matches!(
             trigger.kind,
@@ -149,6 +165,7 @@ fn resolve_waiting(
     prior_waiting_reason: Option<WaitingReason>,
     prior_closure_outcome: ClosureOutcome,
     trigger: &ContinuationTrigger,
+    same_work_item: bool,
     mut evidence: Vec<String>,
 ) -> ContinuationResolution {
     let reason = prior_waiting_reason;
@@ -174,7 +191,7 @@ fn resolve_waiting(
     let override_allowed = trigger.kind == ContinuationTriggerKind::OperatorInput;
     if expected {
         let model_reentry = match trigger.kind {
-            ContinuationTriggerKind::TaskResult => trigger.task_terminal,
+            ContinuationTriggerKind::TaskResult => trigger.task_terminal && same_work_item,
             ContinuationTriggerKind::ExternalEvent => trigger.contentful,
             ContinuationTriggerKind::SystemTick => trigger.contentful,
             _ => true,
@@ -226,7 +243,10 @@ fn resolve_waiting(
         };
     }
 
-    if trigger.kind == ContinuationTriggerKind::TaskResult && trigger.task_terminal {
+    if trigger.kind == ContinuationTriggerKind::TaskResult
+        && trigger.task_terminal
+        && same_work_item
+    {
         // Terminal task state is persisted before TaskResult enqueue, so
         // resuming here cannot reopen the stale active-task wait that just ended.
         evidence.push("terminal_task_result".to_string());
@@ -309,7 +329,9 @@ mod tests {
                 contentful: true,
                 task_terminal: true,
                 wake_hint_source: None,
+                task_work_item_id: None,
             },
+            None,
         );
         assert_eq!(resolution.class, ContinuationClass::ResumeExpectedWait);
         assert!(resolution.model_reentry);
@@ -324,7 +346,9 @@ mod tests {
                 contentful: false,
                 task_terminal: false,
                 wake_hint_source: Some("callback".into()),
+                task_work_item_id: None,
             },
+            None,
         );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
@@ -339,7 +363,9 @@ mod tests {
                 contentful: true,
                 task_terminal: false,
                 wake_hint_source: None,
+                task_work_item_id: None,
             },
+            None,
         );
         assert_eq!(resolution.class, ContinuationClass::ResumeOverride);
         assert!(resolution.model_reentry);
@@ -360,7 +386,9 @@ mod tests {
                 contentful: false,
                 task_terminal: false,
                 wake_hint_source: None,
+                task_work_item_id: None,
             },
+            None,
         );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
@@ -381,7 +409,9 @@ mod tests {
                 contentful: true,
                 task_terminal: true,
                 wake_hint_source: None,
+                task_work_item_id: None,
             },
+            None,
         );
         assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
         assert!(resolution.model_reentry);
@@ -402,7 +432,9 @@ mod tests {
                 contentful: true,
                 task_terminal: true,
                 wake_hint_source: None,
+                task_work_item_id: None,
             },
+            None,
         );
         assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
         assert!(resolution.model_reentry);
@@ -417,7 +449,9 @@ mod tests {
                 contentful: true,
                 task_terminal: true,
                 wake_hint_source: None,
+                task_work_item_id: None,
             },
+            None,
         );
         assert_eq!(resolution.class, ContinuationClass::ResumeOverride);
         assert!(resolution.model_reentry);
@@ -432,7 +466,9 @@ mod tests {
                 contentful: false,
                 task_terminal: false,
                 wake_hint_source: None,
+                task_work_item_id: None,
             },
+            None,
         );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
@@ -448,7 +484,9 @@ mod tests {
                 contentful: true,
                 task_terminal: false,
                 wake_hint_source: None,
+                task_work_item_id: None,
             },
+            None,
         );
 
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);

@@ -23,9 +23,13 @@ impl RuntimeHandle {
         };
         let continuation_trigger =
             ContinuationTrigger::from_message(message, task.as_ref().ok().and_then(Option::as_ref));
-        let continuation_resolution = continuation_trigger
-            .as_ref()
-            .map(|trigger| resolve_continuation(&prior_closure, trigger));
+        let continuation_resolution = continuation_trigger.as_ref().map(|trigger| {
+            resolve_continuation(
+                &prior_closure,
+                trigger,
+                scheduler_state.current_work_item_id.as_deref(),
+            )
+        });
         let model_turn_allowed = !matches!(scheduler_state.status, AgentStatus::Stopped);
         Ok(MessageDispatchPlan {
             prior_closure,
