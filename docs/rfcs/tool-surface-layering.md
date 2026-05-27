@@ -53,8 +53,8 @@ In particular:
   `UpdateWorkItem` owns WorkItem state such as `plan_status` and `todo_list`
 - command execution lives in `ExecCommand` / `ExecCommandBatch` plus task
   control tools
-- waiting is represented by `WaitFor`, while `Sleep` remains a resting posture
-  and `CreateExternalTrigger` remains an ingress capability
+- waiting is represented by `WaitFor`, while sleep is a runtime resting
+  posture and `CreateExternalTrigger` remains an ingress capability
 
 These capabilities are not all at the same level, but they still appear in a
 mostly flat catalog.
@@ -128,7 +128,6 @@ its local execution boundary.
 
 Typical members include:
 
-- `Sleep`
 - `WaitFor`
 - `AgentGet`
 - `Enqueue`

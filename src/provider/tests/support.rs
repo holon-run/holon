@@ -197,7 +197,9 @@ pub fn provider_continuation_request_with_prompt_frame() -> ProviderTurnRequest 
 }
 
 pub fn sleep_tool_spec() -> ToolSpec {
-    tool_spec_named("Sleep")
+    crate::tool::tools::sleep::definition()
+        .expect("Sleep tool definition should be valid")
+        .spec
 }
 
 pub fn trusted_tool_specs() -> Vec<ToolSpec> {

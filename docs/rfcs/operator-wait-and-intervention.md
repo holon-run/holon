@@ -56,8 +56,8 @@ The simpler phase-1 contract should only answer:
 - which operator boundary should receive it?
 - how can delivery surfaces route it?
 
-The agent can still choose to wait by calling `Sleep` after notifying the
-operator, or it can continue working if useful.
+The agent can still choose to wait by recording an explicit `WaitFor` after
+notifying the operator, or it can continue working if useful.
 
 ## Scope
 
@@ -171,8 +171,8 @@ That means:
 - the waiting reason does not become `awaiting_operator_input`
 - ordinary scheduling is not gated
 
-If the agent wants to stop after notifying the operator, it should explicitly
-call `Sleep` when it is safe to rest.
+If the agent wants to stop after notifying the operator, it should provide its
+final text and end the turn when it is safe to rest.
 
 If the agent wants to continue with a reasonable default, it can do so after
 notifying the operator.

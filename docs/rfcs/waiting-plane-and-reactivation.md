@@ -31,7 +31,7 @@ should own.
 
 Holon already has several concepts related to future resumption:
 
-- `Sleep`
+- runtime sleep posture
 - `CreateExternalTrigger`
 - `CancelExternalTrigger`
 - timers
@@ -191,7 +191,7 @@ This family should remain separate from:
 
 It is also distinct from local waiting posture:
 
-- `Sleep` means the agent is intentionally resting now
+- sleep means the runtime is intentionally resting the agent now
 - external trigger tools mean an outside system may wake or re-enter the agent
   later
 
@@ -220,17 +220,17 @@ being buried in callback implementation details.
 
 `Sleep` should be understood as:
 
-- model-owned intent to stop current active work now
+- a legacy/internal compatibility signal for stopping current active work now
 
 It is related to waiting, but it is not the whole waiting plane.
 
-A future shape such as delayed sleep or timer-backed sleep may still belong in
-this plane, but `Sleep` alone should not be the only public story for waiting.
+A future shape such as delayed sleep or timer-backed wait may still belong in
+this plane, but `Sleep` should not be the public story for waiting.
 
 So within the waiting plane, Holon should be able to explain at least two
 different sub-families:
 
-- local waiting posture such as `Sleep`
+- local runtime resting posture
 - external trigger tools such as `CreateExternalTrigger` and
   `CancelExternalTrigger`
 
@@ -250,8 +250,8 @@ A safe initial direction is:
 The following questions remain open after this RFC:
 
 - should Holon eventually expose a more explicit timer creation tool in the
-  waiting plane, or keep timer-backed waiting behind `Sleep` and control-plane
-  surfaces longer?
+  waiting plane, or keep timer-backed waiting behind control-plane surfaces
+  longer?
 - should waiting intent creation ever be more direct than today's callback
   capability model?
 - how much waiting state should appear by default in model-facing summaries

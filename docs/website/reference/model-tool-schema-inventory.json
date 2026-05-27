@@ -12,43 +12,6 @@
   },
   "tools": [
     {
-      "description": "Mark the current loop as done so the agent can sleep when no other work remains. Omit `duration_ms` for ordinary rest, or provide a positive short session-local delay to wake again.",
-      "family": "core_agent",
-      "freeform_grammar": null,
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "duration_ms": {
-            "format": "uint64",
-            "minimum": 1.0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "reason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [],
-        "type": "object"
-      },
-      "name": "Sleep",
-      "related_surfaces": [
-        "runtime agent lifecycle APIs"
-      ],
-      "result_envelope": {
-        "canonical": "ToolResultEnvelope",
-        "error_result": "ToolError",
-        "model_rendering": "canonical_json_envelope",
-        "success_result": "SleepResult"
-      },
-      "stability": "stable"
-    },
-    {
       "description": "Record an explicit wait condition and yield the current turn. Use wake=task_result with resource=<task_id> when waiting for a background task, wake=external with resource=<external object such as a URL or github:owner/repo#id> when waiting for outside state, or wake=operator_input when waiting for the operator. If there is a current open work item, WaitFor attaches to it and marks it waiting; otherwise it records an agent-level wait.",
       "family": "core_agent",
       "freeform_grammar": null,

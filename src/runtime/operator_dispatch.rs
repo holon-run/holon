@@ -131,7 +131,12 @@ impl RuntimeHandle {
         self.promote_turn_active_skills().await?;
 
         if outcome.should_sleep {
-            self.transition_to_sleep(outcome.sleep_duration_ms).await?;
+            if outcome.allow_sleep_runnable_work_override {
+                self.transition_to_sleep(outcome.sleep_duration_ms).await?;
+            } else {
+                self.transition_to_sleep_with_runnable_override(outcome.sleep_duration_ms, false)
+                    .await?;
+            }
         }
 
         Ok(())

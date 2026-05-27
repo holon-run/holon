@@ -92,9 +92,9 @@ Work item readiness is scheduler input. An open runnable work item is eligible
 for scheduler resume or a system tick, while blocked or waiting items should
 pause until their unblock condition changes.
 
-`Sleep` only rests the agent. It does not mark the current work item as blocked,
-waiting, or non-runnable. If no immediate progress is possible, call `WaitFor`
-instead of plain `Sleep`:
+Ending a turn only rests the agent. It does not mark the current work item as
+blocked, waiting, or non-runnable. If no immediate progress is possible, call
+`WaitFor`:
 
 - use `wake=operator_input` when operator input is required
 - use `wake=task_result` with `resource=<task_id>` when waiting on a task

@@ -73,7 +73,7 @@ Current implementation anchors:
          │      ┌──────────────┐             │
          │      │ AwakeRunning │             │
          │      └──────┬───────┘             │
-         │             │ closure: Sleep      │
+         │             │ turn closure        │
          │             ▼                     │
          │      ┌─────────────┐     ┌────────┴──────┐
          ├──────│    Asleep    │────►│  AwaitingTask │
@@ -93,13 +93,13 @@ Current implementation anchors:
 | `AwakeIdle` | Agent is awake but no model turn is in progress |
 | `AwakeRunning` | A model turn is currently executing |
 | `AwaitingTask` | Transitional label for an awake agent blocked on a non-terminal task result |
-| `Asleep` | Agent called `Sleep` at end of turn; no model turn running |
+| `Asleep` | Runtime accepted turn closure and no model turn is running |
 | `Stopped` | Agent lifecycle is stopped; scheduler will not start new turns |
 
 **Key contract:**
 
-- `Sleep` sets status to `Asleep` only when the scheduler accepts the rest
-  request. It is a turn-end posture, not an authoritative "idle" declaration.
+- `Asleep` is a runtime posture reached only when the scheduler accepts rest
+  after turn closure. It is not an authoritative "idle" declaration.
 - `WaitFor` records explicit wait state before yielding; it is the preferred
   path when a WorkItem or agent is waiting on task, external, or operator
   input.

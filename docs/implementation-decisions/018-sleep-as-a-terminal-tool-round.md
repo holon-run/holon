@@ -4,6 +4,8 @@ Decision:
 
 - treat a tool round containing only `Sleep` calls as a valid terminal state
 - finalize the turn immediately instead of forcing another model round
+- keep this as legacy compatibility; new model-facing tool catalogs do not
+  advertise `Sleep`
 
 Reason:
 

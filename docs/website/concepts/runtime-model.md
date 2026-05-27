@@ -92,7 +92,7 @@ Holon's scheduling primitives manage when an agent acts and when it rests:
 
 - **Enqueue** — Schedule a follow-up message for this agent. Priorities:
   `interject`, `next`, `normal`, `background`.
-- **Sleep** — Agent goes idle when no immediate work remains.
+- **Sleep** — Runtime idle posture when no immediate work remains.
 - **Wake** — External trigger or queued message reactivates the agent.
 
 These state transitions are visible — integrations don't need to infer hidden

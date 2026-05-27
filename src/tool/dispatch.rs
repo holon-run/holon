@@ -51,6 +51,7 @@ impl ToolRegistry {
         Ok(catalog
             .entries
             .iter()
+            .filter(|entry| is_model_facing_tool(&entry.spec.name))
             .map(|entry| entry.spec.clone())
             .collect())
     }
@@ -63,6 +64,7 @@ impl ToolRegistry {
         Ok(catalog
             .entries
             .iter()
+            .filter(|entry| is_model_facing_tool(&entry.spec.name))
             .map(|entry| (entry.family, entry.spec.clone()))
             .collect())
     }
@@ -74,6 +76,7 @@ impl ToolRegistry {
         Ok(
             tools::builtin_tool_definitions_for_apply_patch_surface(surface)?
                 .into_iter()
+                .filter(|definition| is_model_facing_tool(&definition.spec.name))
                 .map(|definition| (definition.family, definition.spec))
                 .collect(),
         )
@@ -230,6 +233,10 @@ fn tool_invocation_surface(call: &ToolCall) -> Option<String> {
     }
 }
 
+fn is_model_facing_tool(name: &str) -> bool {
+    name != "Sleep"
+}
+
 fn tool_result_summary(result: &ToolResult) -> String {
     if let Some(error) = result.tool_error() {
         return super::helpers::truncate_text(&error.message, 200);
@@ -333,6 +340,7 @@ mod tests {
 
         for expected in [
             "AgentGet",
+            "WaitFor",
             "SpawnAgent",
             "TaskInput",
             "TaskOutput",
@@ -351,6 +359,7 @@ mod tests {
         ] {
             assert!(names.iter().any(|name| name == expected));
         }
+        assert!(!names.iter().any(|name| name == "Sleep"));
 
         for removed in [
             "Glob",
@@ -643,6 +652,23 @@ mod tests {
     }
 
     #[test]
+    fn hidden_sleep_stays_dispatchable_but_not_model_facing() {
+        let registry = ToolRegistry::new(PathBuf::from("."));
+        let names = registry
+            .tool_specs()
+            .unwrap()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<Vec<_>>();
+
+        assert!(names.iter().all(|name| name != "Sleep"));
+        assert_eq!(
+            registry.family_for_tool("Sleep").unwrap(),
+            Some(ToolCapabilityFamily::CoreAgent)
+        );
+    }
+
+    #[test]
     fn stable_tool_specs_do_not_drift_by_trust() {
         let registry = ToolRegistry::new(PathBuf::from("."));
         let first = registry.tool_specs().unwrap();
@@ -693,28 +719,6 @@ mod tests {
     }
 
     #[test]
-    fn sleep_tool_schema_requires_reason_in_final_emitted_shape() {
-        let registry = ToolRegistry::new(PathBuf::from("."));
-        let sleep = registry
-            .tool_specs()
-            .unwrap()
-            .into_iter()
-            .find(|spec| spec.name == "Sleep")
-            .expect("Sleep should be present");
-        let final_schema =
-            emitted_tool_json_schema(&sleep.input_schema, ToolSchemaContract::Strict)
-                .expect("sleep schema");
-
-        assert!(final_schema["properties"].get("reason").is_some());
-        assert!(final_schema["properties"].get("duration_ms").is_some());
-        assert_eq!(
-            final_schema["required"],
-            serde_json::json!(["duration_ms", "reason"])
-        );
-        assert_eq!(final_schema["additionalProperties"], Value::Bool(false));
-    }
-
-    #[test]
     fn enqueue_priority_becomes_nullable_in_strict_emitted_shape() {
         let registry = ToolRegistry::new(PathBuf::from("."));
         let enqueue = registry
@@ -747,36 +751,6 @@ mod tests {
             .expect("priority enum should be an array");
         assert!(priority_enum.iter().any(|value| value == "interject"));
         assert!(priority_enum.iter().any(Value::is_null));
-    }
-
-    #[test]
-    fn sleep_duration_becomes_nullable_in_strict_emitted_shape() {
-        let registry = ToolRegistry::new(PathBuf::from("."));
-        let sleep = registry
-            .tool_specs()
-            .unwrap()
-            .into_iter()
-            .find(|spec| spec.name == "Sleep")
-            .expect("Sleep should be present");
-        let final_schema =
-            emitted_tool_json_schema(&sleep.input_schema, ToolSchemaContract::Strict)
-                .expect("sleep schema");
-        let duration_ms = &final_schema["properties"]["duration_ms"];
-
-        assert!(final_schema["required"]
-            .as_array()
-            .expect("required should be an array")
-            .iter()
-            .any(|value| value == "duration_ms"));
-        let duration_types = duration_ms["type"]
-            .as_array()
-            .expect("duration_ms type should be an array")
-            .iter()
-            .filter_map(Value::as_str)
-            .collect::<Vec<_>>();
-        assert!(duration_types.contains(&"integer"));
-        assert!(duration_types.contains(&"null"));
-        assert_eq!(duration_ms["minimum"], Value::from(1.0));
     }
 
     #[test]

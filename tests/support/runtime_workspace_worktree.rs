@@ -681,7 +681,7 @@ pub async fn worktree_subagent_task_creates_dedicated_per_task_worktree() -> Res
         ));
 
     // WT-104: Worktree is auto-removed when no changes are made, but we can verify it was created
-    let events = runtime.recent_events(50).await?;
+    let events = runtime.storage().read_recent_events(usize::MAX)?;
     assert!(
         events
             .iter()
@@ -970,7 +970,7 @@ pub async fn worktree_subagent_task_auto_removes_worktree_when_no_changes_wt104(
     );
 
     // Verify the cleanup event was logged
-    let events = runtime.recent_events(50).await?;
+    let events = runtime.storage().read_recent_events(usize::MAX)?;
     assert!(
         events
             .iter()
@@ -1062,7 +1062,7 @@ pub async fn worktree_subagent_task_retains_worktree_when_changes_detected_wt105
         ));
 
     wait_until(|| {
-        let events = runtime.storage().read_recent_events(50)?;
+        let events = runtime.storage().read_recent_events(usize::MAX)?;
         Ok(events.iter().any(|event| {
             event.kind == "worktree_created_for_task"
                 && event.data["task_id"] == task.id
@@ -1091,7 +1091,7 @@ pub async fn worktree_subagent_task_retains_worktree_when_changes_detected_wt105
     );
 
     // Verify the retained event was logged
-    let events = runtime.recent_events(50).await?;
+    let events = runtime.storage().read_recent_events(usize::MAX)?;
     let retained_events: Vec<_> = events
         .iter()
         .filter(|event| event.kind == "worktree_retained_for_review")
