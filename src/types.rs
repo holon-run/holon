@@ -2918,22 +2918,26 @@ pub enum TaskRecoverySpec {
     ChildAgentTask {
         summary: String,
         prompt: String,
+        #[serde(alias = "trust")]
         authority_class: AuthorityClass,
         workspace_mode: ChildAgentWorkspaceMode,
     },
     SubagentTask {
         summary: String,
         prompt: String,
+        #[serde(alias = "trust")]
         authority_class: AuthorityClass,
     },
     WorktreeSubagentTask {
         summary: String,
         prompt: String,
+        #[serde(alias = "trust")]
         authority_class: AuthorityClass,
     },
     CommandTask {
         summary: String,
         spec: CommandTaskSpec,
+        #[serde(alias = "trust")]
         authority_class: AuthorityClass,
         promoted_from_exec_command: bool,
     },
@@ -3422,6 +3426,7 @@ pub struct ToolExecutionRecord {
     pub completed_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub duration_ms: u64,
+    #[serde(alias = "trust")]
     pub authority_class: AuthorityClass,
     pub status: ToolExecutionStatus,
     pub input: Value,
@@ -3999,6 +4004,47 @@ mod tests {
         let message: MessageEnvelope = serde_json::from_value(legacy).unwrap();
 
         assert_eq!(message.authority_class, AuthorityClass::RuntimeInstruction);
+    }
+
+    #[test]
+    fn legacy_task_recovery_spec_deserializes_from_trust_alias() {
+        let legacy = serde_json::json!({
+            "kind": "child_agent_task",
+            "summary": "run sub-agent",
+            "prompt": "do work",
+            "trust": "trusted_operator",
+            "workspace_mode": "inherit"
+        });
+
+        let spec: TaskRecoverySpec = serde_json::from_value(legacy).unwrap();
+
+        match spec {
+            TaskRecoverySpec::ChildAgentTask {
+                authority_class, ..
+            } => {
+                assert_eq!(authority_class, AuthorityClass::OperatorInstruction);
+            }
+            other => panic!("expected ChildAgentTask, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_tool_execution_record_deserializes_from_trust_alias() {
+        let legacy = serde_json::json!({
+            "id": "tool-1",
+            "agent_id": "default",
+            "tool_name": "exec_command",
+            "created_at": "2026-04-22T00:00:00Z",
+            "duration_ms": 100,
+            "trust": "trusted_system",
+            "status": "success",
+            "input": {},
+            "output": {},
+            "summary": "ran command"
+        });
+
+        let record: ToolExecutionRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(record.authority_class, AuthorityClass::RuntimeInstruction);
     }
 
     #[test]
