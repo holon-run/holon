@@ -333,7 +333,6 @@ mod tests {
 
         for expected in [
             "AgentGet",
-            "NotifyOperator",
             "SpawnAgent",
             "TaskInput",
             "TaskOutput",
@@ -365,6 +364,7 @@ mod tests {
             "WriteFile",
             "EditFile",
             "KillCommand",
+            "NotifyOperator",
         ] {
             assert!(!names.iter().any(|name| name == removed));
         }
@@ -609,10 +609,6 @@ mod tests {
         };
 
         assert_eq!(family_for("Sleep"), ToolCapabilityFamily::CoreAgent);
-        assert_eq!(
-            family_for("NotifyOperator"),
-            ToolCapabilityFamily::OperatorNotification
-        );
         assert_eq!(family_for("MemorySearch"), ToolCapabilityFamily::CoreAgent);
         assert_eq!(family_for("MemoryGet"), ToolCapabilityFamily::CoreAgent);
         assert_eq!(

@@ -41,7 +41,7 @@ runtime_async_tests!(
     wake_hint_coalesces_while_running_and_reenters_once,
     stopped_agent_ignores_wake_hint,
     notify_operator_records_default_public_and_private_child_targets,
-    notify_operator_is_not_agent_facing_for_normal_profiles,
+    notify_operator_is_not_in_model_facing_registry,
     notify_operator_prefers_reply_route_for_delivery,
     notify_operator_ignores_reply_route_when_binding_no_longer_matches,
     notify_operator_falls_back_to_default_route_without_reply_route,

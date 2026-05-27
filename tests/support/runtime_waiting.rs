@@ -50,7 +50,7 @@ use crate::support::runtime_helpers::{
 };
 use crate::support::runtime_providers::{
     DelayedTextProvider, DelegatedBoundaryProvider, FileEditingProvider, LongShellProvider,
-    NotifyThenAgentGetProvider, RecordingPromptProvider, RuntimeFailureProvider, ShellProvider,
+    RecordingPromptProvider, RuntimeFailureProvider, ShellProvider,
     SleepOnlyCompletionAfterTextProvider, TerminalResultBriefProvider, ToolErrorProvider,
     ToolUsingProvider, TruncatedShellReinjectionProvider, UseWorkspaceProvider,
     VerboseRuntimeFailureProvider, WakeHintProvider, WorktreeCapturingProvider,
@@ -632,10 +632,15 @@ pub async fn notify_operator_records_default_public_and_private_child_targets() 
     Ok(())
 }
 
-pub async fn notify_operator_is_not_agent_facing_for_normal_profiles() -> Result<()> {
+pub async fn notify_operator_is_not_in_model_facing_registry() -> Result<()> {
     let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
+
+    assert!(!registry
+        .tool_specs()?
+        .iter()
+        .any(|tool| tool.name == "NotifyOperator"));
 
     let prompt = runtime
         .preview_prompt(
@@ -657,8 +662,8 @@ pub async fn notify_operator_is_not_agent_facing_for_normal_profiles() -> Result
             },
         )
         .await
-        .expect_err("normal agent profiles should not execute NotifyOperator");
-    assert!(error.to_string().contains("operator_notification"));
+        .expect_err("model-facing registry should not execute NotifyOperator");
+    assert!(error.to_string().contains("unknown_tool"));
     assert!(runtime.recent_operator_notifications(10).await?.is_empty());
     Ok(())
 }

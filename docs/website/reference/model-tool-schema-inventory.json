@@ -115,32 +115,6 @@
       "stability": "stable"
     },
     {
-      "description": "Create an operator-facing notification record/event for runtime policy or delivery adapters. Normal agent profiles do not expose this tool; agents should use final responses, work item blockers, and completion summaries instead of deciding notification policy themselves.",
-      "family": "operator_notification",
-      "freeform_grammar": null,
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "message"
-        ],
-        "type": "object"
-      },
-      "name": "NotifyOperator",
-      "related_surfaces": [],
-      "result_envelope": {
-        "canonical": "ToolResultEnvelope",
-        "error_result": "ToolError",
-        "model_rendering": "canonical_json_envelope",
-        "success_result": "NotifyOperatorResult"
-      },
-      "stability": "experimental"
-    },
-    {
       "description": "Enqueue a follow-up message into the current agent.",
       "family": "core_agent",
       "freeform_grammar": null,
