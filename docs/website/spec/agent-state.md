@@ -10,10 +10,12 @@ This page defines the current contract for agent state, lifecycle, and
 runtime projection in Holon. It is verified against implementation and tests
 as of the last review date noted below.
 
-> **Last verified:** 2026-05-23 against `src/types.rs` `AgentState`,
+> **Last verified:** 2026-05-27 against `src/types.rs` `AgentState`,
 > `AgentStatus`, `AgentIdentityView`, `AgentSchedulingPosture`,
 > `AgentPostureProjection`, `ClosureDecision`, `ContinuationResolution`,
-> `RuntimePosture`, and `AgentSummary`.
+> `RuntimePosture`, and `AgentSummary`; `src/storage.rs`
+> `agent_posture_projection`; `src/runtime/lifecycle.rs` `agent_summary`;
+> `src/runtime/closure.rs` closure derivation; and `src/tool/tools/agent_get.rs`.
 
 ## Source RFCs
 
@@ -40,6 +42,20 @@ single opaque status field. The key distinction is:
 `AgentSummary` is a **display projection**, not the source of truth for
 scheduling decisions. The scheduler must derive posture from queue, WorkItem,
 task, and wait state, not from summary fields.
+
+Current implementation anchors:
+
+- `RuntimeHandle::agent_summary` assembles `AgentSummary` on read from the
+  current `AgentState`, identity view, model state, execution snapshot, active
+  waits, children, external triggers, and `AppStorage::agent_posture_projection`.
+- `AgentGet` returns that assembled `AgentSummary` directly; it does not write
+  lifecycle, scheduling, or wait state.
+- `/agents` and `/agents/{id}` use the same runtime summary/list projection
+  path. `AgentListEntry` is a compact list projection and is not a scheduler
+  input.
+- `AppStorage::agent_posture_projection` derives the exposed
+  `AgentSchedulingPosture` from persisted/runtime records. No scheduler-sensitive
+  path should read `AgentSummary.scheduling_posture` back as authority.
 
 ## Agent lifecycle status (`AgentStatus`)
 
@@ -104,26 +120,32 @@ task, and wait state, not from summary fields.
 ## Scheduling posture (`AgentSchedulingPosture`)
 
 The scheduler derives a scheduling posture from current state. This is a
-**projection**, not stored state:
+**projection**, not stored state. The current reduced agent-level projection
+uses this precedence:
 
 | Posture | Condition |
 |---------|-----------|
-| `ActiveTurn` | A model turn is currently running |
-| `HasQueuedInput` | Queue contains pending operator messages |
-| `HasRunnableWork` | At least one WorkItem is runnable |
-| `WaitingForTask` | An active non-terminal task is blocking |
-| `WaitingForExternal` | Agent is waiting on an external event |
+| `Archived` | Agent lifecycle is stopped (`AgentStatus::Stopped`) |
+| `ActiveTurn` | `AgentState.current_run_id` is set |
+| `HasQueuedInput` | Queue contains a pending queued entry for the agent |
+| `HasRunnableWork` | Current or queued WorkItem is runnable |
+| `WaitingForTask` | A WorkItem has an active task wait condition |
+| `WaitingForExternal` | A WorkItem has an active external waiting intent |
 | `WaitingForOperator` | WorkItem `plan_status=needs_input` or active operator wait |
 | `Blocked` | WorkItem has `blocked_by` set or an active timer/system/non-operator wait |
 | `Idle` | No queued input, no runnable work, no blocking conditions |
 | `Unknown` | Default before first projection; not part of the stable contract |
-| `Archived` | Agent lifecycle is stopped (maps from `AgentStatus::Stopped`) |
 
 **Key contract:**
 
 - Posture is derived from queue depth, WorkItem readiness, waiting state,
   task blocking state, and external triggers.
 - Posture is snapshot-derived; it is not persisted as durable state.
+- Stopped lifecycle wins the exposed projection (`Archived`) before transient
+  run, queue, work, or wait facts.
+- Queue and runnable work outrank passive sleep posture. An `Asleep` agent with
+  queued input or runnable WorkItems is projected as `HasQueuedInput` or
+  `HasRunnableWork`, not `Idle`.
 - WorkItem-level `WaitingTimer` and `WaitingSystem` remain distinct scheduler
   wait states, but the reduced agent-level posture currently reports them as
   `Blocked`; scheduler idle-boundary decisions still inspect the WorkItem wait
@@ -150,6 +172,17 @@ When a waiting agent is reactivated, `ContinuationResolution` records:
 | `class` | ResumeExpectedWait, ResumeOverride, LocalContinuation, LivenessOnly |
 | `model_reentry` | Whether the model should be re-entered with context |
 | `matched_waiting_reason` | Whether the trigger matched the prior waiting reason |
+
+Closure derivation is separate from the display posture. It uses scheduler
+projection facts and current turn facts to choose a `ClosureOutcome`,
+`WaitingReason`, and `RuntimePosture`. In current implementation:
+
+- explicit operator waits outrank other wait conditions for closure reason;
+- blocking tasks are metadata unless represented by a current work wait;
+- active work-item or agent waiting intents map to external wait;
+- timers map to timer wait;
+- runnable work can prevent an unrelated agent-level waiting intent from
+  becoming the closure reason.
 
 ## User-facing projection (`AgentSummary`)
 
@@ -188,6 +221,20 @@ Agent lifecycle control is `Start` / `Stop`:
   and marks the agent as not runnable. Queued messages and durable records
   are preserved.
 - There is no `Pause` / `Resume`. `Stop` + `Start` is the contract.
+
+## Validation findings
+
+This page was validated against the RFCs and implementation areas listed in
+issue #1367.
+
+| Area | Finding | Classification | Current handling |
+|------|---------|----------------|------------------|
+| `AgentSummary` / `AgentGet` derivation | Summary is assembled on read; `AgentGet` is read-only and does not mutate state. | Contract matches implementation | Documented above. |
+| Projection as scheduler input | The user-facing `AgentSummary.scheduling_posture` is derived from storage/runtime facts. Scheduler-sensitive closure and run-loop paths derive from queue, WorkItems, waits, tasks, and turn state rather than reading the summary back. | Contract matches implementation | Covered by storage and runtime tests. |
+| Lifecycle labels | Current implementation preserves `Booting`, `AwakeIdle`, `AwakeRunning`, `AwaitingTask`, `Asleep`, and `Stopped`; `Paused` only deserializes as legacy alias for `Stopped`. | Contract matches implementation with transitional label | Documented as current contract and known migration gap. |
+| Agent-level timer/system waits | WorkItem scheduling keeps `WaitingTimer` and `WaitingSystem` distinct, while reduced `AgentSchedulingPosture` reports them as `Blocked`. | Intentional reduced projection | Documented; tests cover the projection. |
+| `Archived` posture | `AgentSchedulingPosture::Archived` is used for stopped agents. | Stale prior spec wording | Corrected in this page. |
+| Durable state vs runtime projection | `AgentState`, queue entries, WorkItems, tasks, wait conditions/intents, external triggers, and audit/transcript records remain authoritative; `AgentSummary` remains display/API projection. | Contract matches implementation | Documented as layer table and anchors. |
 
 ## Known gaps
 
