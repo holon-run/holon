@@ -13,10 +13,10 @@ WorkItem and use that state to decide whether an agent should continue now,
 wait for a trusted wake source, ask the operator, remain blocked, or become
 idle.
 
-`Sleep` should not by itself mean "there is no runnable work". It should become
-the agent's posture after the agent has committed enough durable state for the
-runtime to classify the work. If any WorkItem is still runnable, an indefinite
-sleep must not silently strand the agent; the runtime should enqueue or
+Sleep should not by itself mean "there is no runnable work". It should become
+the runtime posture after the agent has committed enough durable state for the
+runtime to classify the work. If any WorkItem is still runnable, turn
+closure must not silently strand the agent; the runtime should enqueue or
 schedule a continuation instead.
 
 The current agent-facing contract is intentionally small: `WaitFor` records one
@@ -50,7 +50,7 @@ They are partially encoded through:
 - task lifecycle;
 - waiting intents;
 - external trigger callbacks;
-- `Sleep` calls.
+- turn closure and legacy `Sleep` calls.
 
 That makes closure-time behavior hard to reason about. A long-lived agent can
 appear to be asleep even though it has runnable work, or it can record an
@@ -138,9 +138,9 @@ blocked_by == None
 no active WaitCondition
 ```
 
-Runnable WorkItems should cause the runtime to continue agent execution. If an
-agent calls indefinite `Sleep` while runnable WorkItems exist, the runtime must
-not treat the agent as truly idle. It should enqueue or schedule continuation.
+Runnable WorkItems should cause the runtime to continue agent execution. If a
+turn closes while runnable WorkItems exist, the runtime must not treat the
+agent as truly idle. It should enqueue or schedule continuation.
 
 ### WaitingOperator
 
@@ -423,8 +423,8 @@ provider-specific fallback policy.
 
 ## Turn-end and Sleep contract
 
-`Sleep` should be treated as a rest posture after state has been committed, not
-as the primary source of scheduling truth.
+Sleep should be treated as a runtime rest posture after state has been
+committed, not as a model-facing tool or the primary source of scheduling truth.
 
 At a turn boundary, the runtime should be able to classify the agent posture as:
 
@@ -458,8 +458,8 @@ The preferred durable forms are:
 - WorkItem completed -> `Complete`;
 - no open work -> `Idle`.
 
-If an agent calls indefinite `Sleep` while any WorkItem is `Runnable`, closure
-should enqueue or schedule a continuation instead of leaving the agent asleep.
+If a turn closes while any WorkItem is `Runnable`, closure should enqueue or
+schedule a continuation instead of leaving the agent asleep.
 
 If all open WorkItems are `WaitingTask`, indefinite sleep is safe because task
 results are runtime-owned wake sources.

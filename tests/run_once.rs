@@ -765,7 +765,8 @@ impl AgentProvider for SleepTaskProvider {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         if *calls == 1 {
-            assert!(request.tools.iter().any(|tool| tool.name == "Sleep"));
+            assert!(request.tools.iter().all(|tool| tool.name != "Sleep"));
+            assert!(request.tools.iter().any(|tool| tool.name == "WaitFor"));
             return Ok(ProviderTurnResponse {
                 blocks: vec![ModelBlock::ToolUse {
                     id: "task-1".into(),

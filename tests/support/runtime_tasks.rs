@@ -324,7 +324,7 @@ pub async fn lifecycle_stop_interrupts_active_command_task() -> Result<()> {
     assert_eq!(detail["interrupted_reason"], "agent_stopped");
     assert_eq!(detail["status_before_stop"], "running");
 
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| {
         event.kind == "task_interrupted_on_agent_stop"
             && event.data.get("id").and_then(|value| value.as_str()) == Some(task.id.as_str())
@@ -357,7 +357,7 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
     assert!(briefs
         .iter()
         .any(|brief| brief.text.contains("tool loop complete")));
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| event.kind == "tool_executed"));
     let session = runtime.agent_state().await?;
     assert_eq!(session.total_input_tokens, 200);
@@ -498,7 +498,7 @@ pub async fn shell_tools_capture_command_output() -> Result<()> {
         }
     })
     .await?;
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| event.kind == "tool_executed"));
     Ok(())
 }
@@ -829,7 +829,7 @@ pub async fn tool_schema_and_dispatch_errors_are_recorded_without_corrupting_run
     })
     .await?;
 
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(200).await?;
     let failed_events = events
         .iter()
         .filter(|event| event.kind == "tool_execution_failed")
@@ -956,7 +956,7 @@ pub async fn runtime_provider_failure_surfaces_failure_brief_and_transcript_entr
         .and_then(|value| value.as_str())
         .is_some_and(|text| text.contains("Turn failed while processing operator_prompt")));
 
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| {
         event.kind == "runtime_error"
             && event
@@ -1821,7 +1821,7 @@ pub async fn command_task_stop_cancels_running_command() -> Result<()> {
     assert_eq!(value["task"]["status"], "cancelled");
     assert_eq!(value["task"]["kind"], "command_task");
 
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| {
         event.kind == "task_result_received"
             && event.data.get("id").and_then(|value| value.as_str()) == Some(task.id.as_str())
@@ -2146,7 +2146,7 @@ pub async fn command_task_runner_failure_marks_task_failed_and_cleans_up() -> Re
         .iter()
         .any(|record| record.id == task.id));
 
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| {
         event.kind == "task_result_received"
             && event.data.get("id").and_then(|value| value.as_str()) == Some(task.id.as_str())
@@ -2244,7 +2244,7 @@ pub async fn command_task_nonzero_exit_produces_failed_output_and_runtime_state(
     let active_tasks = runtime.active_tasks(10).await?;
     assert!(!active_tasks.iter().any(|record| record.id == task.id));
 
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| {
         event.kind == "task_result_received"
             && event.data.get("id").and_then(|value| value.as_str()) == Some(task.id.as_str())

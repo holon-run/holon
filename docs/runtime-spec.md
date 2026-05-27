@@ -967,8 +967,8 @@ Delegation rules:
   session
 - spawning a new `public_named` agent may record lineage provenance without
   placing that agent under parent supervision
-- `Sleep` is the public primitive for resting; optional `duration_ms` is only
-  for positive short session-local wake delays
+- sleeping is a runtime posture reached after turn closure; `Sleep` remains
+  a legacy/internal compatibility tool, not a model-facing primitive
 - `WaitFor` is the public primitive for recording task, external, or operator
   waits before yielding the current turn
 - `exec_command` is the only public creation path for managed `command_task`
@@ -2063,8 +2063,9 @@ But it should not mutate away provenance.
 
 ## Wake / Sleep Lifecycle
 
-Sleep is not just absence of work. It is an explicit resting posture. Durable
-waiting state is recorded with `WaitFor`.
+Sleep is not just absence of work. It is an explicit runtime resting posture
+that the scheduler reaches after turn closure. Durable waiting state is
+recorded with the model-facing `WaitFor` tool.
 
 ### Wake Conditions
 
@@ -2127,7 +2128,7 @@ session now."
 
 This is the boundary between:
 
-- model intent (expressed through tools like `Sleep` or `Enqueue`)
+- model intent (expressed through public tools like `WaitFor` or `Enqueue`)
 - runtime scheduling policy
 
 ### Emission Conditions

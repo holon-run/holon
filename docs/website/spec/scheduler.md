@@ -65,7 +65,7 @@ durable state directly. Decisions are emitted and handed to the executor.
 | `WaitForExternalChange` | Block until an external event arrives |
 | `WaitForTimer` | Block until a timer fires |
 | `WaitForOperator` | Block until operator input arrives |
-| `Sleep` | Agent sleeps; no immediate action, wait for wake signal |
+| `Sleep` | Runtime moves the agent to asleep; no immediate action |
 | `StayIdle` | Agent is already asleep; no action |
 | `Stop` | Agent is stopped; no scheduling possible |
 | `Noop` | No action (duplicate suppressed, turn in progress) |
@@ -124,9 +124,9 @@ WorkItems flow through scheduling states that the scheduler consumes:
 
 ## Wake/sleep boundary
 
-- `Sleep` is a rest request. The model calls `Sleep` to signal turn-end; the
-  scheduler then decides whether the agent truly becomes `Asleep` or continues
-  with queued work.
+- `Sleep` is an internal scheduler decision after turn closure. The scheduler
+  decides whether the agent truly becomes `Asleep` or continues with queued
+  work.
 - `WaitFor` records explicit wait state and then yields the turn. It is the
   model-facing path for task, external, and operator waits.
 - `StayIdle` means the agent is already asleep and the scheduler has nothing

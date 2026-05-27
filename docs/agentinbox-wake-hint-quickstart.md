@@ -41,9 +41,10 @@ agentinbox subscription add <agent_id> src_fixture_github \
 Replace `<agent_id>` with your agent ID and `TOKEN` with the token from the
 agent's default wake-hint URL.
 
-### 4. Sleep and wait for activation
+### 4. Wait for activation
 
-Call `Sleep` in your agent. When the GitHub event occurs, the agent wakes with activation context.
+Call `WaitFor(wake=external)` with a stable resource identifier. When the
+GitHub event occurs, the agent wakes with activation context.
 
 ### 5. Read the inbox on wake
 

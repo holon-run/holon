@@ -64,6 +64,7 @@ async fn runtime_records_text_only_round_observations() {
         .unwrap();
 
     assert!(outcome.final_text.contains("runtime split"));
+    assert!(outcome.should_sleep);
 
     let events = runtime.storage().read_recent_events(10).unwrap();
     let provider_event = events

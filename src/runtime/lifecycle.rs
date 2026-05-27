@@ -1220,11 +1220,20 @@ impl RuntimeHandle {
     }
 
     pub(super) async fn transition_to_sleep(&self, duration_ms: Option<u64>) -> Result<()> {
+        self.transition_to_sleep_with_runnable_override(duration_ms, true)
+            .await
+    }
+
+    pub(super) async fn transition_to_sleep_with_runnable_override(
+        &self,
+        duration_ms: Option<u64>,
+        allow_runnable_work_override: bool,
+    ) -> Result<()> {
         let sleeping_until = duration_ms.map(|duration_ms| {
             chrono::Utc::now()
                 + chrono::Duration::milliseconds(i64::try_from(duration_ms).unwrap_or(i64::MAX))
         });
-        if sleeping_until.is_none() {
+        if sleeping_until.is_none() && allow_runnable_work_override {
             if let Some((work_item, reason)) = self.indefinite_sleep_runnable_work()? {
                 let state = {
                     let guard = self.inner.agent.lock().await;

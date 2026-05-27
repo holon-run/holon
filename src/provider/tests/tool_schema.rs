@@ -396,6 +396,8 @@ fn openai_request_payload_validates_full_tool_matrix_in_strict_mode() {
     for retired in ["Read", "Glob", "Grep"] {
         assert!(emitted_tools.iter().all(|tool| tool["name"] != retired));
     }
+    assert!(emitted_tools.iter().all(|tool| tool["name"] != "Sleep"));
+    assert!(emitted_tools.iter().any(|tool| tool["name"] == "WaitFor"));
     for tool in emitted_tools {
         if tool["type"] == "custom" {
             assert_eq!(tool["name"], "ApplyPatch");
@@ -430,23 +432,6 @@ fn openai_request_payload_validates_full_tool_matrix_in_strict_mode() {
         .expect("priority enum should be an array")
         .iter()
         .any(Value::is_null));
-
-    let sleep = emitted_tools
-        .iter()
-        .find(|tool| tool["name"] == "Sleep")
-        .expect("Sleep tool should be present");
-    let duration_types = sleep["parameters"]["properties"]["duration_ms"]["type"]
-        .as_array()
-        .expect("duration_ms type should be an array")
-        .iter()
-        .filter_map(Value::as_str)
-        .collect::<Vec<_>>();
-    assert!(duration_types.contains(&"integer"));
-    assert!(duration_types.contains(&"null"));
-    assert_eq!(
-        sleep["parameters"]["properties"]["duration_ms"]["minimum"],
-        Value::from(1.0)
-    );
 
     let memory_get = emitted_tools
         .iter()
@@ -483,6 +468,7 @@ fn openai_codex_request_payload_validates_full_tool_matrix_in_strict_mode() {
     for retired in ["Read", "Glob", "Grep"] {
         assert!(emitted_tools.iter().all(|tool| tool["name"] != retired));
     }
+    assert!(emitted_tools.iter().all(|tool| tool["name"] != "Sleep"));
     for tool in emitted_tools {
         if tool["type"] == "custom" {
             assert_eq!(tool["name"], "ApplyPatch");

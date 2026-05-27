@@ -80,7 +80,7 @@ thing. The runtime should model that directly.
 Internal reasoning, tool traces, and user-facing updates should not be the same
 channel.
 
-### 4. Sleep Is A First-Class State
+### 4. Resting Is A First-Class Runtime State
 
 The runtime should know when nothing useful should happen, and suspend cleanly
 until the next wake condition.

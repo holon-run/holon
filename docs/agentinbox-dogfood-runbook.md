@@ -84,12 +84,14 @@ Replace:
 - `--activation-target`: Your agent's wake-hint trigger URL
 - `--activation-mode activation_only`: Wakes the agent without queuing the full payload
 
-### 4. Sleep and Wait for GitHub Events
+### 4. Wait for GitHub Events
 
-Call `Sleep` in your agent to enter wait mode:
+Call `WaitFor` in your agent to record the external wait:
 
 ```json
 {
+  "wake": "external",
+  "resource": "github:owner/repo#33",
   "reason": "Waiting for GitHub review/comment events on PR #33"
 }
 ```
@@ -225,9 +227,11 @@ Here's a complete example of using this runbook:
      --home ~/.agentinbox
    ```
 
-4. **Sleep and wait**:
+4. **Record the wait**:
    ```json
    {
+     "wake": "external",
+     "resource": "github:owner/repo#33",
      "reason": "Waiting for review feedback on PR #33"
    }
    ```

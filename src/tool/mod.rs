@@ -30,8 +30,15 @@ pub use spec::{ToolCall, ToolResult, ToolSpec};
 /// inventory is snapshot-tested so CI catches accidental drift in names,
 /// families, input schemas, freeform grammars, and result envelope metadata.
 pub fn model_tool_schema_inventory() -> Result<Value> {
+    let registry = ToolRegistry::new(std::path::PathBuf::from("."));
+    let model_facing_names = registry
+        .tool_specs()?
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect::<std::collections::BTreeSet<_>>();
     let tools = tools::builtin_tool_definitions()?
         .into_iter()
+        .filter(|definition| model_facing_names.contains(&definition.spec.name))
         .map(|definition| {
             let name = definition.spec.name.clone();
             json!({

@@ -21,13 +21,6 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         .iter()
         .find(|tool| tool.name == "ApplyPatch");
 
-    if names.contains(&"Sleep") {
-        sections.push(section(
-            "tool_sleep",
-            PromptStability::Stable,
-            "Use Sleep when the current task is complete and no immediate follow-up remains. Do not use Sleep as durable waiting state for a WorkItem; use WaitFor for task_result, external, or operator_input waits. Do not idle-spin by avoiding Sleep once the agent can safely rest. Emit a delivery-ready completion summary in a text block before calling Sleep. The Sleep reason should be a concise label referencing the preceding summary. When calling Sleep, always provide `reason`. Omit `duration_ms` for ordinary indefinite rest. Optionally add a short positive `duration_ms` only when you intentionally want a session-local wake after a bounded delay; never set it to 0. Do not use `duration_ms` as a durable timer or scheduling substitute, and do not expect a task handle from Sleep. Never use Sleep with a vague reason like 'done' or 'completed'.".to_string(),
-        ));
-    }
     if names.contains(&"WaitFor") {
         sections.push(section(
             "tool_wait_for",
@@ -73,7 +66,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_work_item_scheduling",
             PromptStability::Stable,
-            "WorkItem scheduler model: an open runnable WorkItem is eligible for scheduler resume or system tick; Sleep only rests the agent and does not change WorkItem readiness. Do not leave a WorkItem runnable when no immediate progress is possible just because you called Sleep. Use WaitFor to record task_result, external, or operator_input waits; it attaches to the current open WorkItem when one is focused and otherwise records an agent-level wait. Use an external trigger when an external system can actively wake the agent; the trigger complements, but does not replace, WaitFor or explicit completion. Keep runnable WorkItems only for work that is actually ready for the scheduler to resume.".to_string(),
+            "WorkItem scheduler model: an open runnable WorkItem is eligible for scheduler resume or system tick. Ending the current response only yields the turn; it does not change WorkItem readiness. Use WaitFor to record task_result, external, or operator_input waits; it attaches to the current open WorkItem when one is focused and otherwise records an agent-level wait. Use an external trigger when an external system can actively wake the agent; the trigger complements, but does not replace, WaitFor or explicit completion. Keep runnable WorkItems only for work that is actually ready for the scheduler to resume.".to_string(),
         ));
     }
     if names.contains(&"CreateWorkItem")
@@ -166,18 +159,6 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn test_sleep_section_emitted_when_sleep_available() {
-        let tools = vec![ToolSpec {
-            name: "Sleep".into(),
-            description: String::new(),
-            input_schema: json!({}),
-            freeform_grammar: None,
-        }];
-        let sections = tool_sections(&tools);
-        assert!(sections.iter().any(|s| s.name == "tool_sleep"));
-    }
 
     #[test]
     fn test_sleep_section_not_emitted_when_sleep_unavailable() {
@@ -381,7 +362,7 @@ mod tests {
             .expect("work item scheduling section");
         assert!(section.content.contains("open runnable WorkItem"));
         assert!(section.content.contains("system tick"));
-        assert!(section.content.contains("Sleep only rests the agent"));
+        assert!(section.content.contains("Ending the current response"));
         assert!(section
             .content
             .contains("does not change WorkItem readiness"));
@@ -705,12 +686,6 @@ mod tests {
     fn test_multiple_tool_sections_emitted() {
         let tools = vec![
             ToolSpec {
-                name: "Sleep".into(),
-                description: String::new(),
-                input_schema: json!({}),
-                freeform_grammar: None,
-            },
-            ToolSpec {
                 name: "TaskOutput".into(),
                 description: String::new(),
                 input_schema: json!({}),
@@ -730,7 +705,7 @@ mod tests {
             },
         ];
         let sections = tool_sections(&tools);
-        assert!(sections.iter().any(|s| s.name == "tool_sleep"));
+        assert!(sections.iter().all(|s| s.name != "tool_sleep"));
         assert!(sections.iter().any(|s| s.name == "tool_task_control"));
         assert!(sections.iter().any(|s| s.name == "tool_exec_command"));
         assert!(sections.iter().any(|s| s.name == "tool_apply_patch"));

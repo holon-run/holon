@@ -593,8 +593,8 @@ impl AgentProvider for SleepOnlyToolProvider {
             anyhow::bail!("sleep-only round should not force another provider turn");
         }
         assert!(
-            request.tools.iter().any(|tool| tool.name == "Sleep"),
-            "Sleep must be visible in the provider tool surface"
+            request.tools.iter().all(|tool| tool.name != "Sleep"),
+            "Sleep must stay hidden from the provider tool surface"
         );
 
         Ok(ProviderTurnResponse {

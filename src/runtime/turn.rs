@@ -42,6 +42,7 @@ pub(super) struct AgentLoopOutcome {
     pub(super) final_text: String,
     pub(super) should_sleep: bool,
     pub(super) sleep_duration_ms: Option<u64>,
+    pub(super) allow_sleep_runnable_work_override: bool,
     pub(super) terminal_kind: TurnTerminalKind,
     pub(super) terminal_delivery: TurnTerminalDelivery,
 }
@@ -1388,6 +1389,7 @@ impl RuntimeHandle {
             final_text,
             should_sleep: false,
             sleep_duration_ms: None,
+            allow_sleep_runnable_work_override: false,
             terminal_kind: TurnTerminalKind::Aborted,
             terminal_delivery: TurnTerminalDelivery::NormalBrief,
         }))
@@ -1543,6 +1545,7 @@ impl RuntimeHandle {
             final_text,
             should_sleep: false,
             sleep_duration_ms: None,
+            allow_sleep_runnable_work_override: false,
             terminal_kind,
             terminal_delivery: TurnTerminalDelivery::NormalBrief,
         }))
@@ -1884,6 +1887,7 @@ impl TurnExecution<'_> {
                         final_text,
                         should_sleep: false,
                         sleep_duration_ms: None,
+                        allow_sleep_runnable_work_override: false,
                         terminal_kind: TurnTerminalKind::Aborted,
                         terminal_delivery: TurnTerminalDelivery::NormalBrief,
                     });
@@ -2106,6 +2110,7 @@ impl TurnExecution<'_> {
                             final_text,
                             should_sleep: false,
                             sleep_duration_ms: None,
+                            allow_sleep_runnable_work_override: false,
                             terminal_kind: TurnTerminalKind::BaselineOverBudget,
                             terminal_delivery: TurnTerminalDelivery::NormalBrief,
                         });
@@ -2281,6 +2286,15 @@ impl TurnExecution<'_> {
             let completed_round_assistant_blocks = assistant_blocks.clone();
             let only_sleep_tools =
                 !tool_calls.is_empty() && tool_calls.iter().all(|call| call.name == "Sleep");
+            let legacy_sleep_duration_ms = if only_sleep_tools {
+                tool_calls
+                    .iter()
+                    .filter_map(|call| call.input.get("duration_ms").and_then(Value::as_u64))
+                    .filter(|duration| *duration > 0)
+                    .last()
+            } else {
+                None
+            };
             let combined_text = text_blocks
                 .iter()
                 .map(|text| text.trim())
@@ -2603,8 +2617,9 @@ impl TurnExecution<'_> {
                     .await?;
                 return Ok(AgentLoopOutcome {
                     final_text,
-                    should_sleep,
+                    should_sleep: true,
                     sleep_duration_ms,
+                    allow_sleep_runnable_work_override: false,
                     terminal_kind: TurnTerminalKind::Completed,
                     terminal_delivery: TurnTerminalDelivery::NormalBrief,
                 });
@@ -2629,7 +2644,7 @@ impl TurnExecution<'_> {
                 }
                 let tool_call_id = call.id.clone();
                 let tool_name = call.name.clone();
-                if !allowed_tool_names.contains(&call.name) {
+                if !allowed_tool_names.contains(&call.name) && call.name != "Sleep" {
                     let error = ToolError::new(
                         "tool_not_exposed_for_round",
                         format!("tool {tool_name} was not exposed in this round"),
@@ -2931,6 +2946,7 @@ impl TurnExecution<'_> {
                         final_text,
                         should_sleep,
                         sleep_duration_ms,
+                        allow_sleep_runnable_work_override: should_sleep,
                         terminal_kind: TurnTerminalKind::Completed,
                         terminal_delivery: TurnTerminalDelivery::WorkItemCompletionReportPromoted {
                             work_item_id: promotion.record.id,
@@ -2954,7 +2970,8 @@ impl TurnExecution<'_> {
                 return Ok(AgentLoopOutcome {
                     final_text,
                     should_sleep: true,
-                    sleep_duration_ms,
+                    sleep_duration_ms: sleep_duration_ms.or(legacy_sleep_duration_ms),
+                    allow_sleep_runnable_work_override: true,
                     terminal_kind: TurnTerminalKind::Completed,
                     terminal_delivery: TurnTerminalDelivery::NormalBrief,
                 });
