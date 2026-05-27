@@ -34,7 +34,7 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
             origin: MessageOrigin,
             #[serde(default)]
             authority_class: Option<AuthorityClass>,
-            #[serde(default, alias = "trust")]
+            #[serde(default, rename = "trust")]
             legacy_trust: Option<AuthorityClass>,
             priority: Priority,
             #[serde(default)]
@@ -4033,6 +4033,32 @@ mod tests {
 
         let message: MessageEnvelope = serde_json::from_value(dual).unwrap();
         assert_eq!(message.authority_class, AuthorityClass::OperatorInstruction);
+    }
+
+    #[test]
+    fn legacy_trust_helper_field_is_not_wire_compatible() {
+        let helper_field = serde_json::json!({
+            "id": "msg-helper-field",
+            "agent_id": "default",
+            "created_at": "2026-05-27T11:11:59Z",
+            "kind": "system_tick",
+            "origin": {
+                "kind": "system",
+                "subsystem": "runtime"
+            },
+            "legacy_trust": "trusted_system",
+            "priority": "normal",
+            "body": {
+                "type": "text",
+                "text": "hello"
+            }
+        });
+
+        let err = serde_json::from_value::<MessageEnvelope>(helper_field).unwrap_err();
+        assert!(
+            err.to_string().contains("authority_class"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
