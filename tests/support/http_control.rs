@@ -780,17 +780,18 @@ pub async fn stopped_status_includes_lifecycle_start_guidance() -> Result<()> {
         .json()
         .await?;
     assert_eq!(payload["agent"]["status"], "stopped");
-    assert_eq!(payload["lifecycle"]["resume_required"], true);
     assert_eq!(payload["lifecycle"]["accepts_external_messages"], false);
-    assert_eq!(payload["lifecycle"]["wake_requires_resume"], true);
-    assert_eq!(
-        payload["lifecycle"]["resume_cli_hint"],
-        "holon agent start default"
-    );
-    assert_eq!(
-        payload["lifecycle"]["resume_control_path"],
-        "/control/agents/default/control"
-    );
+    let lifecycle = payload["lifecycle"]
+        .as_object()
+        .expect("lifecycle must be a JSON object");
+    for removed_field in [
+        "resume_required",
+        "wake_requires_resume",
+        "resume_cli_hint",
+        "resume_control_path",
+    ] {
+        assert!(!lifecycle.contains_key(removed_field));
+    }
     assert!(payload["lifecycle"]["operator_hint"]
         .as_str()
         .unwrap_or_default()

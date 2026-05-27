@@ -923,7 +923,6 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
             agent.identity.ownership.cleanup_summary()
         ),
         format!("Status: {:?}", agent.agent.status),
-        format!("Resume required: {}", agent.lifecycle.resume_required),
         format!(
             "Model: {} ({:?})",
             agent.model.effective_model.as_string(),
@@ -944,9 +943,6 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
     }
     if let Some(hint) = agent.lifecycle.operator_hint.as_deref() {
         lines.push(format!("Lifecycle hint: {}", hint));
-    }
-    if let Some(resume_cli_hint) = agent.lifecycle.resume_cli_hint.as_deref() {
-        lines.push(format!("Resume: {}", resume_cli_hint));
     }
     lines.push(format!(
         "Runtime default: {}",

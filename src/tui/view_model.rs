@@ -39,11 +39,7 @@ impl StatusbarViewModel {
 }
 
 pub(super) fn render_header_line(agent: &AgentSummary) -> String {
-    let mut line = format!("{}  {}", agent.identity.agent_id, agent_status_label(agent));
-    if agent.lifecycle.resume_required {
-        line.push_str(" · resume required");
-    }
-    line
+    format!("{}  {}", agent.identity.agent_id, agent_status_label(agent))
 }
 
 fn agent_status_label(agent: &AgentSummary) -> &'static str {

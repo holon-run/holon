@@ -120,10 +120,16 @@ enum AgentStatus {
     Booting,
     AwakeIdle,
     AwakeRunning,
+    AwaitingTask,
     Asleep,
     Stopped,
 }
 ```
+
+`AwaitingTask` is retained as a transitional lifecycle label because the
+current runtime, TUI, daemon, and waiting paths project blocking task waits
+through it. It may be folded into `AwakeIdle` plus task-wait scheduling posture
+in a later migration, but this RFC treats it as current implementation contract.
 
 `Paused` should remain readable only for legacy persisted state during the
 migration window. New lifecycle control should not generate `Paused`; it should

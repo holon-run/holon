@@ -76,7 +76,7 @@ task, and wait state, not from summary fields.
 | `Booting` | Agent is initializing; not yet handed to the scheduler |
 | `AwakeIdle` | Agent is awake but no model turn is in progress |
 | `AwakeRunning` | A model turn is currently executing |
-| `AwaitingTask` | Agent is awake but blocked on a non-terminal task result |
+| `AwaitingTask` | Transitional label for an awake agent blocked on a non-terminal task result |
 | `Asleep` | Agent called `Sleep` at end of turn; no model turn running |
 | `Stopped` | Agent lifecycle is stopped; scheduler will not start new turns |
 
@@ -89,9 +89,11 @@ task, and wait state, not from summary fields.
   input.
 - An `Asleep` agent can have runnable WorkItems. `Asleep` does **not** mean
   idle or empty.
-- `AwaitingTask` means a non-terminal task (command, child agent) blocks
-  further model reentry; the agent is still awake and the scheduler can wake
-  it when the task completes.
+- `AwaitingTask` is a transitional lifecycle label used by current runtime,
+  TUI, daemon, and waiting projections while a non-terminal task (command,
+  child agent) blocks further model reentry. It may later collapse into
+  `AwakeIdle` plus task-wait scheduling posture, but remains current contract
+  until that migration happens.
 - `Stopped` is a hard lifecycle boundary. The scheduler will not start new
   turns for a stopped agent. Stopped agents release runtime-owned execution
   resources.
@@ -112,7 +114,7 @@ The scheduler derives a scheduling posture from current state. This is a
 | `WaitingForTask` | An active non-terminal task is blocking |
 | `WaitingForExternal` | Agent is waiting on an external event |
 | `WaitingForOperator` | WorkItem `plan_status=needs_input` or active operator wait |
-| `Blocked` | WorkItem has `blocked_by` set or an active non-operator wait |
+| `Blocked` | WorkItem has `blocked_by` set or an active timer/system/non-operator wait |
 | `Idle` | No queued input, no runnable work, no blocking conditions |
 | `Unknown` | Default before first projection; not part of the stable contract |
 | `Archived` | Agent lifecycle is stopped (maps from `AgentStatus::Stopped`) |
@@ -122,6 +124,10 @@ The scheduler derives a scheduling posture from current state. This is a
 - Posture is derived from queue depth, WorkItem readiness, waiting state,
   task blocking state, and external triggers.
 - Posture is snapshot-derived; it is not persisted as durable state.
+- WorkItem-level `WaitingTimer` and `WaitingSystem` remain distinct scheduler
+  wait states, but the reduced agent-level posture currently reports them as
+  `Blocked`; scheduler idle-boundary decisions still inspect the WorkItem wait
+  state to emit the timer or system-tick action.
 - `AgentSummary.scheduling_posture` exposes this projection; consumers should
   not treat it as an authoritative scheduling input.
 
@@ -188,16 +194,16 @@ Agent lifecycle control is `Start` / `Stop`:
 - `AgentStatus` still includes transitionary states (`Booting`, `AwaitingTask`)
   that may collapse as the scheduler model matures. See follow-up if
   `AwaitingTask` becomes fully subsumed by `AwakeIdle` + task blocking.
-- `AgentLifecycleHint` is under-defined; its relationship to `AgentStatus` and
-  `AgentSchedulingPosture` is not yet a stable contract.
+- `AgentLifecycleHint` carries lifecycle delivery hints such as whether
+  external messages are accepted and optional operator guidance. Deprecated
+  Pause/Resume projection fields are not part of the contract.
 - `AgentSummary` includes some fields (`recent_operator_notifications`,
   `recent_brief_count`) whose contract is not yet hardened.
 - `AgentStatus::Asleep` remains a lifecycle/display projection, but scheduler
   idle-boundary decisions inspect wait and work facts before treating an
   already-asleep agent as idle.
-- `AgentStatus::AwaitingTask` exists in code but is not in the RFC's target
-  status set (`agent-lifecycle-control-posture.md`).
-- `AgentLifecycleHint` retains `resume_*` fields from the deprecated Pause/Resume
-  model. See [issue #1378](https://github.com/holon-run/holon/issues/1378).
+- `AgentStatus::AwaitingTask` remains a transitional status in code even though
+  it is not in the long-term target status set
+  (`agent-lifecycle-control-posture.md`).
 - `AgentSchedulingPosture::Archived` is used (for `Stopped` agents) contrary
   to the previous spec claim of "Not currently used".

@@ -432,7 +432,7 @@ fn header_view_model_shows_agent_status_without_contract() {
 }
 
 #[test]
-fn header_view_model_prefers_operator_waiting_label_and_resume_hint() {
+fn header_view_model_prefers_operator_waiting_label() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
@@ -442,16 +442,12 @@ fn header_view_model_prefers_operator_waiting_label_and_resume_hint() {
     snapshot.agent.agent.status = AgentStatus::AwakeIdle;
     snapshot.agent.closure.waiting_reason =
         Some(crate::types::WaitingReason::AwaitingOperatorInput);
-    snapshot.agent.lifecycle.resume_required = true;
     app.agents = vec![snapshot.agent.clone()];
     app.projection = Some(TuiProjection::from_snapshot(snapshot));
 
     let view_model = HeaderViewModel::from_app(&app);
 
-    assert_eq!(
-        view_model.line,
-        "holon-dev  waiting for you · resume required"
-    );
+    assert_eq!(view_model.line, "holon-dev  waiting for you");
 }
 
 #[test]
