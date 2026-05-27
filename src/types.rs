@@ -3672,7 +3672,8 @@ impl Default for AgentLifecycleHint {
 }
 
 impl AgentLifecycleHint {
-    pub fn from_status(_agent_id: &str, status: AgentStatus) -> Self {
+    #[allow(unused_variables)]
+    pub fn from_status(agent_id: &str, status: AgentStatus) -> Self {
         if status == AgentStatus::Stopped {
             return Self {
                 accepts_external_messages: false,

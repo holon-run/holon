@@ -781,7 +781,9 @@ pub async fn stopped_status_includes_lifecycle_start_guidance() -> Result<()> {
         .await?;
     assert_eq!(payload["agent"]["status"], "stopped");
     assert_eq!(payload["lifecycle"]["accepts_external_messages"], false);
-    let lifecycle = payload["lifecycle"].as_object().unwrap();
+    let lifecycle = payload["lifecycle"]
+        .as_object()
+        .expect("lifecycle must be a JSON object");
     for removed_field in [
         "resume_required",
         "wake_requires_resume",
