@@ -205,7 +205,7 @@ Stable `StreamEventEnvelope` fields:
   "ts": "2026-05-24T00:00:00Z",
   "agent_id": "main",
   "type": "task_created",
-  "projection": { "name": "operator", "raw_payload_included": false, "redactions": ["raw_output"] },
+  "projection": { "name": "operator", "raw_payload_included": true, "redactions": [] },
   "provenance": { "authority_class": "operator_instruction", "task_id": "task-..." },
   "payload": {}
 }
@@ -213,39 +213,15 @@ Stable `StreamEventEnvelope` fields:
 
 Projection contract:
 
-- `operator` is the default public projection. It preserves only the
-  operator-facing v1 field subset in `payload`, sets
-  `raw_payload_included: false`, and lists omitted raw/debug fields in
-  `redactions`. The v1 subset is intentionally shared by events page and SSE
-  stream output.
-- `local_debug` requires control auth and preserves the raw event payload with
-  `raw_payload_included: true` and an empty `redactions` list.
-
-Stable operator payload v1 fields:
-
-| Field family | Stable fields | Notes |
-|--------------|---------------|-------|
-| Identity and correlation | `agent_id`, `message_id`, `task_id`, `work_item_id`, `run_id`, `correlation_id`, `causation_id` | IDs are stable handles for joining the event with read-model routes. |
-| Provenance and admission | `origin`, `authority_class`, `delivery_surface`, `priority` | Enough to preserve operator/system/external trust boundaries without exposing the full ingress body. |
-| State and outcome | `status`, `exit_status`, `duration_ms`, `stop_reason`, `summary` | Used by task, turn, brief, and lifecycle events for operator-visible state transitions. |
-| Turn/model summary | `turn_index`, `round`, `has_text`, `has_tool_calls`, `text_block_count`, `text_char_count`, `text_preview`, `tool_call_count`, `tool_name`, `tool_names` | Summary-only fields; provider/raw message bodies remain debug-only. |
-| Workspace projection | `workspace_id`, `workspace_label`, `projection_kind` | Stable workspace identity/projection facts; host paths and access-mode internals remain debug-only unless separately stabilized. |
-| Cursor/detail summaries | `event_seq` | Included only when an event payload already carries a related cursor; the envelope `event_seq` remains the replay cursor. |
-
-Selected high-value event kinds with checked operator payload behavior:
-
-| Event kind | Stable operator fields currently asserted | Debug-only examples redacted from operator projection |
-|------------|-------------------------------------------|------------------------------------------------------|
-| `message_admitted` | `agent_id`, `message_id`, `origin`, `authority_class`, `delivery_surface`, `priority`, `summary`, `text_preview` | Raw prompt text or transport bodies such as `raw_text`. |
-| `brief_created` | `agent_id`, `run_id`, `work_item_id`, `status`, `summary`, `text_preview` | Full/raw brief payload objects such as `raw_brief`. |
-| `task_status_updated` | `agent_id`, `task_id`, `status`, `duration_ms`, `exit_status`, `summary` | Raw stdout/stderr or command-output bodies. |
-| `assistant_round_recorded` | `agent_id`, `run_id`, `turn_index`, `round`, `stop_reason`, text/tool counts, `text_preview`, `tool_names` | Full assistant text and provider traces. |
-| `tool_executed` | `agent_id`, `task_id`, `tool_name`, `status`, `duration_ms`, `exit_status`, `summary` when present | Command strings, local paths, artifact/debug refs, raw output. |
-
-Unknown or newly added raw payload fields are treated as debug-only until they
-are added to the operator v1 subset and covered by tests/docs. This keeps
-runtime-internal event detail available through `local_debug` without making it
-an accidental public compatibility contract.
+- `operator` is the default public projection. It includes the full raw event
+  payload with `raw_payload_included: true` and an empty `redactions` list.
+  Event payloads are the protocol standard — the raw event principle means
+  clients build their own projections from the full feed rather than relying
+  on server-side field filtering.
+- `local_debug` requires control auth and also includes the full raw event
+  payload with `raw_payload_included: true` and an empty `redactions` list.
+  It is kept as an explicitly authorized alias for future use cases that may
+  need different payload handling.
 
 ### Public ingress
 
@@ -416,7 +392,7 @@ milestone and tracked by
 |-------|-------|
 | [#1438](https://github.com/holon-run/holon/issues/1438) `api: migrate OpenAPI baseline to aide route/type metadata` | Move OpenAPI operation metadata closer to route and DTO definitions. |
 | [#1439](https://github.com/holon-run/holon/issues/1439) `api: tighten OpenAPI DTO schemas for stable read models` | Replace selected generic JSON schemas with typed stable DTO schemas. |
-| [#1443](https://github.com/holon-run/holon/issues/1443) `events: define stable operator-facing event payload subset` | Version/document stable event fields and projection/redaction boundaries. |
+| [#1443](https://github.com/holon-run/holon/issues/1443) `events: define stable operator-facing event payload subset` | Version/document stable event fields. The operator projection passes through the full raw event payload; event payloads are the protocol standard. |
 
 ## Suggested next work
 

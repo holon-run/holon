@@ -1694,75 +1694,15 @@ fn project_event_payload_for_replay(
             provenance,
         },
         EventReplayProjection::Operator => ProjectedReplayEvent {
-            payload: operator_replay_payload(&event.data),
+            payload: event.data.clone(),
             projection: EventReplayProjectionRecord {
                 name: projection,
-                raw_payload_included: false,
-                redactions: operator_replay_redactions(&event.data),
+                raw_payload_included: true,
+                redactions: Vec::new(),
             },
             provenance,
         },
     }
-}
-
-fn operator_replay_payload(payload: &Value) -> Value {
-    let Some(object) = payload.as_object() else {
-        return Value::Object(Map::new());
-    };
-    let mut projected = Map::new();
-    for key in OPERATOR_REPLAY_PAYLOAD_FIELDS {
-        if let Some(value) = object.get(*key).filter(|value| !value.is_null()) {
-            projected.insert((*key).to_string(), value.clone());
-        }
-    }
-    Value::Object(projected)
-}
-
-// Stable operator replay payload v1 field subset. Unknown raw event payload
-// fields stay available through the authorized local-debug projection but are
-// redacted from the default operator replay contract until documented here.
-const OPERATOR_REPLAY_PAYLOAD_FIELDS: &[&str] = &[
-    "agent_id",
-    "authority_class",
-    "causation_id",
-    "correlation_id",
-    "delivery_surface",
-    "duration_ms",
-    "event_seq",
-    "exit_status",
-    "has_text",
-    "has_tool_calls",
-    "message_id",
-    "origin",
-    "priority",
-    "projection_kind",
-    "round",
-    "run_id",
-    "status",
-    "stop_reason",
-    "summary",
-    "task_id",
-    "text_block_count",
-    "text_char_count",
-    "text_preview",
-    "tool_call_count",
-    "tool_name",
-    "tool_names",
-    "turn_index",
-    "workspace_id",
-    "workspace_label",
-    "work_item_id",
-];
-
-fn operator_replay_redactions(payload: &Value) -> Vec<String> {
-    let Some(object) = payload.as_object() else {
-        return Vec::new();
-    };
-    object
-        .keys()
-        .filter(|key| !OPERATOR_REPLAY_PAYLOAD_FIELDS.contains(&key.as_str()))
-        .cloned()
-        .collect()
 }
 
 fn event_replay_provenance(payload: &Value) -> EventReplayProvenance {

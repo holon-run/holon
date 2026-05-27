@@ -618,18 +618,35 @@ impl TuiProjection {
         self.durable_conversation_log.iter()
     }
 
+    /// Returns events for the conversation timeline at the given display mode.
+    ///
+    /// At Info level (3), this includes all conversation-candidate events from
+    /// the full `event_log`, not just the truncated `durable_conversation_log`.
+    /// The durable log is capped at 256 entries and can fill with infrastructure
+    /// events (e.g. `callback_delivered`), pushing real conversation events
+    /// (`brief_created`, `message_enqueued`) out of view.
     pub(crate) fn presentation_events(
         &self,
         display_mode: OperatorDisplayMode,
     ) -> Vec<ProjectionEventRecord> {
         let mut events = Vec::new();
         let mut seen = BTreeSet::new();
+        // Always start with events that may survive event_log rotation.
         for event in &self.durable_conversation_log {
             if seen.insert(event.id.clone()) {
                 events.push(event.clone());
             }
         }
-        if display_mode.display_level() > OperatorDisplayMode::Info.display_level() {
+        if display_mode.display_level() <= OperatorDisplayMode::Info.display_level() {
+            // Info level: also collect conversation-candidate events from the
+            // full event_log so they aren't lost when the durable log fills with
+            // infrastructure events.
+            for event in &self.event_log {
+                if is_durable_conversation_kind(&event.kind) && seen.insert(event.id.clone()) {
+                    events.push(event.clone());
+                }
+            }
+        } else {
             for event in &self.event_log {
                 if seen.insert(event.id.clone()) {
                     events.push(event.clone());
