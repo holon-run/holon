@@ -2322,13 +2322,7 @@ mod tests {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
 
         // Seed a brief and an operator message early in the event log.
-        let brief = BriefRecord::new(
-            "default",
-            BriefKind::Result,
-            "work completed",
-            None,
-            None,
-        );
+        let brief = BriefRecord::new("default", BriefKind::Result, "work completed", None, None);
         projection.apply_event(
             sample_event("brief_created", serde_json::to_value(&brief).unwrap()),
             &test_log_writer(),

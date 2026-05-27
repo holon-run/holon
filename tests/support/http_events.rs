@@ -445,14 +445,23 @@ pub async fn events_route_operator_projection_includes_tool_payload() -> Result<
     assert_eq!(replayed.data["type"], "tool_executed");
     assert_eq!(replayed.data["projection"]["name"], "operator");
     assert_eq!(replayed.data["projection"]["raw_payload_included"], true);
-    assert_eq!(replayed.data["projection"]["redactions"], serde_json::json!([]));
+    assert_eq!(
+        replayed.data["projection"]["redactions"],
+        serde_json::json!([])
+    );
     // Operator projection passes through the full raw payload.
     assert_eq!(replayed.data["payload"]["tool_name"], "ExecCommand");
     assert_eq!(replayed.data["payload"]["task_id"], "task-tool");
-    assert_eq!(replayed.data["payload"]["exec_command_cmd"], "cargo test --lib");
+    assert_eq!(
+        replayed.data["payload"]["exec_command_cmd"],
+        "cargo test --lib"
+    );
     assert_eq!(replayed.data["payload"]["raw_output"], "test result: ok");
     assert_eq!(replayed.data["payload"]["local_path"], "/tmp/output.txt");
-    assert_eq!(replayed.data["payload"]["artifact_ref"], "artifact://test-output");
+    assert_eq!(
+        replayed.data["payload"]["artifact_ref"],
+        "artifact://test-output"
+    );
 
     server.abort();
     Ok(())
@@ -504,7 +513,10 @@ pub async fn events_route_operator_projection_includes_assistant_round_payload()
     assert_eq!(replayed.data["type"], "assistant_round_recorded");
     assert_eq!(replayed.data["projection"]["name"], "operator");
     assert_eq!(replayed.data["projection"]["raw_payload_included"], true);
-    assert_eq!(replayed.data["projection"]["redactions"], serde_json::json!([]));
+    assert_eq!(
+        replayed.data["projection"]["redactions"],
+        serde_json::json!([])
+    );
     // Operator projection passes through the full raw payload.
     assert_eq!(replayed.data["payload"]["agent_id"], "default");
     assert_eq!(replayed.data["payload"]["run_id"], "run-1");
@@ -524,7 +536,10 @@ pub async fn events_route_operator_projection_includes_assistant_round_payload()
     );
     assert_eq!(replayed.data["payload"]["has_text"], true);
     assert_eq!(replayed.data["payload"]["has_tool_calls"], true);
-    assert_eq!(replayed.data["payload"]["raw_text"], "full assistant text included in operator replay");
+    assert_eq!(
+        replayed.data["payload"]["raw_text"],
+        "full assistant text included in operator replay"
+    );
     assert!(replayed.data["payload"].get("provider_trace").is_some());
 
     server.abort();
