@@ -77,7 +77,8 @@ impl ContinuationTrigger {
                     })
                     .unwrap_or(false),
                 wake_hint_source: None,
-                task_work_item_id: task.and_then(|t| t.effective_work_item_id().map(ToString::to_string)),
+                task_work_item_id: task
+                    .and_then(|t| t.effective_work_item_id().map(ToString::to_string)),
             }),
             MessageKind::TaskStatus
             | MessageKind::Control
@@ -242,7 +243,10 @@ fn resolve_waiting(
         };
     }
 
-    if trigger.kind == ContinuationTriggerKind::TaskResult && trigger.task_terminal && same_work_item {
+    if trigger.kind == ContinuationTriggerKind::TaskResult
+        && trigger.task_terminal
+        && same_work_item
+    {
         // Terminal task state is persisted before TaskResult enqueue, so
         // resuming here cannot reopen the stale active-task wait that just ended.
         evidence.push("terminal_task_result".to_string());
@@ -327,7 +331,8 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
-        None);
+            None,
+        );
         assert_eq!(resolution.class, ContinuationClass::ResumeExpectedWait);
         assert!(resolution.model_reentry);
     }
@@ -343,7 +348,8 @@ mod tests {
                 wake_hint_source: Some("callback".into()),
                 task_work_item_id: None,
             },
-        None);
+            None,
+        );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
     }
@@ -359,7 +365,8 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
-        None);
+            None,
+        );
         assert_eq!(resolution.class, ContinuationClass::ResumeOverride);
         assert!(resolution.model_reentry);
     }
@@ -381,7 +388,8 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
-        None);
+            None,
+        );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
     }
@@ -403,7 +411,8 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
-        None);
+            None,
+        );
         assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
         assert!(resolution.model_reentry);
     }
@@ -425,7 +434,8 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
-        None);
+            None,
+        );
         assert_eq!(resolution.class, ContinuationClass::LocalContinuation);
         assert!(resolution.model_reentry);
     }
@@ -441,7 +451,8 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
-        None);
+            None,
+        );
         assert_eq!(resolution.class, ContinuationClass::ResumeOverride);
         assert!(resolution.model_reentry);
     }
@@ -457,7 +468,8 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
-        None);
+            None,
+        );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
         assert!(resolution.matched_waiting_reason);
@@ -474,7 +486,8 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
             },
-        None);
+            None,
+        );
 
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
