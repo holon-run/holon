@@ -15,7 +15,7 @@ The machine-readable inventory for built-in model-facing tools is
 its versioning policy and refresh workflow are documented in the
 [model tool schema inventory reference](../reference/model-tool-schema-inventory.md).
 
-> **Last verified:** 2026-05-25 against `src/types.rs`
+> **Last verified:** 2026-05-27 against `src/types.rs`
 > `ToolCapabilityFamily`, `src/tool/tools/mod.rs` `builtin_tool_definitions()`,
 > `src/tool/spec.rs`, `src/tool/dispatch.rs`.
 
@@ -39,7 +39,11 @@ Tools are grouped by capability family for authority gating:
 | `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `UseWorkspace` | All profiles |
 | `Web` | `WebFetch`, `WebSearch` | All profiles |
 | `AgentCreation` | `SpawnAgent` | All profiles |
-| `OperatorNotification` | `NotifyOperator` | All profiles |
+
+Operator notification records, delivery callbacks, and UI rendering remain
+runtime-owned capabilities. They are not part of the model-facing tool
+inventory; `NotifyOperator` is intentionally absent from the built-in tool
+registry and machine-readable schema inventory.
 
 ## Complete tool listing
 
