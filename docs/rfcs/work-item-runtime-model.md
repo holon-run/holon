@@ -478,7 +478,8 @@ WorkItems should not replay raw transcript by default. They may appear as
 bounded recent completed summaries only when they have an explicit promoted
 completion report: prefer a non-empty `WorkItemRecord.result_summary`; otherwise
 use the newest non-empty `DeliverySummaryRecord.text` for the same work item
-(see "Work-Queue Prompt Projection" in `docs/runtime-spec.md`).
+(see [Work items spec](../website/spec/work-items.md) and the
+[runtime spec aggregate index](../runtime-spec.md)).
 
 If the agent changes focus during a turn, the tool result must return the new
 current WorkItem snapshot and state that subsequent tool calls in the turn are

@@ -53,7 +53,8 @@ page and the RFC should be updated together.
 - `docs/website/reference/` — CLI, configuration, and HTTP control-plane pages
 - `README.md` — high-level repository entry and contributor orientation
 - `docs/website/spec/` — current implementation-facing contracts
-- `docs/runtime-spec.md` — implementation-facing spec (not a user tutorial)
+- `docs/runtime-spec.md` — aggregate index mapping original v0 spec to focused
+  spec pages (not a user tutorial)
 
 **Rule:** Reference pages should be verified against the compiled runtime
 (`holon --help`, `holon config schema`). Mark the version each page was last

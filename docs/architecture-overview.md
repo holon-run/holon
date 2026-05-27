@@ -139,7 +139,7 @@ Canonical RFCs:
 
 These documents remain useful but are not the normative architecture source:
 
-- [Runtime Spec](./runtime-spec.md)
+- [Runtime Spec Aggregate Index](./runtime-spec.md) — maps original v0 spec to current [focused specs](./website/spec/)
 - [Next Phase Direction](./next-phase-direction.md)
 - [Local Operator Troubleshooting](./local-operator-troubleshooting.md)
 - [Implementation Decisions](./implementation-decisions/README.md)

@@ -78,11 +78,12 @@ Each spec page follows a consistent shape:
 ## Relationship to `docs/runtime-spec.md`
 
 [`docs/runtime-spec.md`](https://github.com/holon-run/holon/blob/main/docs/runtime-spec.md)
-is the original v0 aggregate spec. It remains the implementation-facing
-baseline, but individual topic contracts are gradually extracted into focused
-spec pages here. When a topic has a dedicated spec page, that page is the
-current authority; `runtime-spec.md` is the fallback for topics not yet
-extracted.
+is now an aggregate index that maps the original v0 monolithic spec to the
+current focused spec pages. It no longer contains normative content.
+
+**Focused spec pages here are the sole authoritative implementation-facing
+contracts.** When a topic has a dedicated spec page, that page is the
+current authority.
 
 ## For contributors
 
