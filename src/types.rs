@@ -32,8 +32,10 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
             created_at: DateTime<Utc>,
             kind: MessageKind,
             origin: MessageOrigin,
-            #[serde(default, alias = "trust")]
+            #[serde(default)]
             authority_class: Option<AuthorityClass>,
+            #[serde(default, alias = "trust")]
+            legacy_trust: Option<AuthorityClass>,
             priority: Priority,
             #[serde(default)]
             trigger_kind: Option<ContinuationTriggerKind>,
@@ -56,6 +58,7 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
         let compat = MessageEnvelopeCompat::deserialize(deserializer)?;
         let authority_class = compat
             .authority_class
+            .or(compat.legacy_trust)
             .ok_or_else(|| serde::de::Error::missing_field("authority_class"))?;
         Ok(Self {
             id: compat.id,
@@ -4004,6 +4007,32 @@ mod tests {
         let message: MessageEnvelope = serde_json::from_value(legacy).unwrap();
 
         assert_eq!(message.authority_class, AuthorityClass::RuntimeInstruction);
+    }
+
+    #[test]
+    fn message_with_both_trust_and_authority_class_deserializes_authority_class_first() {
+        // When both "trust" and "authority_class" exist, the explicit
+        // authority_class field takes precedence.
+        let dual = serde_json::json!({
+            "id": "msg-dual",
+            "agent_id": "default",
+            "created_at": "2026-05-27T11:11:59Z",
+            "kind": "operator_prompt",
+            "origin": {
+                "kind": "operator",
+                "actor_id": "control"
+            },
+            "trust": "trusted_operator",
+            "authority_class": "operator_instruction",
+            "priority": "interject",
+            "body": {
+                "type": "text",
+                "text": "hello"
+            }
+        });
+
+        let message: MessageEnvelope = serde_json::from_value(dual).unwrap();
+        assert_eq!(message.authority_class, AuthorityClass::OperatorInstruction);
     }
 
     #[test]
