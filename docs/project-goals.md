@@ -135,4 +135,5 @@ Before building integrations, Holon should produce one clear runtime spec for:
 - brief output contract
 - task orchestration contract
 
-That first draft now lives in [runtime-spec.md](runtime-spec.md).
+That first draft evolved into the [runtime spec aggregate index](runtime-spec.md),
+with current contracts extracted into [focused spec pages](website/spec/).
