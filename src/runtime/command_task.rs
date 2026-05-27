@@ -36,6 +36,8 @@ const INPUT_CHANNEL_CAPACITY: usize = 16;
 const STREAM_TAIL_CHAR_LIMIT: usize = 128_000;
 const COMBINED_TAIL_CHAR_LIMIT: usize = 256_000;
 const PROCESS_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(25);
+// After the main process exits, cap output drain so background pipe-holders cannot block forever.
+const COLLECT_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) enum ManagedTaskHandle {
     Async(JoinHandle<()>),
@@ -1194,9 +1196,14 @@ where
 }
 
 async fn collect_remaining_output(running: &mut RunningCommand, captured: &mut CapturedOutput) {
-    while let Some(chunk) = running.output_rx.recv().await {
-        captured.push(chunk);
-    }
+    let drain = async {
+        while let Some(chunk) = running.output_rx.recv().await {
+            captured.push(chunk);
+        }
+    };
+    // After the main process exits, background children may hold pipe write-ends
+    // open indefinitely.  Cap the drain so the agent cannot block forever.
+    let _ = tokio::time::timeout(COLLECT_OUTPUT_DRAIN_TIMEOUT, drain).await;
     for handle in running.reader_handles.drain(..) {
         let _ = handle.await;
     }
@@ -1207,10 +1214,17 @@ async fn collect_remaining_output_into_file(
     captured: &mut CapturedOutput,
     file: &mut tokio::fs::File,
 ) -> Result<()> {
-    while let Some(chunk) = running.output_rx.recv().await {
-        file.write_all(chunk.text.as_bytes()).await?;
-        captured.push(chunk);
-    }
+    let drain = async {
+        while let Some(chunk) = running.output_rx.recv().await {
+            if file.write_all(chunk.text.as_bytes()).await.is_err() {
+                break;
+            }
+            captured.push(chunk);
+        }
+    };
+    // After the main process exits, background children may hold pipe write-ends
+    // open indefinitely.  Cap the drain so the agent cannot block forever.
+    let _ = tokio::time::timeout(COLLECT_OUTPUT_DRAIN_TIMEOUT, drain).await;
     for handle in running.reader_handles.drain(..) {
         let _ = handle.await;
     }
