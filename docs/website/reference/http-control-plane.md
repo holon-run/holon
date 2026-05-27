@@ -192,13 +192,12 @@ server closes that stream.
 
 Projection behavior:
 
-- `operator` is the default. It keeps only operator-facing summary, status,
-  identity, cursor, and provenance-like fields in `payload`. It sets
-  `raw_payload_included: false` and lists omitted raw/debug fields under
-  `redactions`. Raw command text/output, local paths, artifact references,
-  provider traces, and raw assistant text are not included.
-- `local_debug` requires control auth and includes the full raw event payload.
-  It sets `raw_payload_included: true` and has no redactions.
+- `operator` is the default. It includes the full raw event payload with
+  `raw_payload_included: true` and an empty `redactions` list. Event payloads
+  are the protocol standard — clients build their own projections from the raw
+  feed.
+- `local_debug` requires control auth and also includes the full raw event
+  payload. It is kept as an explicitly authorized alias for future use cases.
 
 **`GET /agents/:id/transcript`** — Turn transcript
 

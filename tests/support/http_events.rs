@@ -297,7 +297,7 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
     );
     assert_eq!(
         replayed.data["projection"]["raw_payload_included"],
-        serde_json::json!(false)
+        serde_json::json!(true)
     );
 
     server.abort();
@@ -368,73 +368,46 @@ pub async fn events_route_operator_projection_keeps_stable_high_value_payload_fi
         .await?;
     let events = page["events"].as_array().expect("events");
 
+    // Operator projection passes through the full raw payload.
     let admitted = events
         .iter()
         .find(|event| event["type"] == "message_admitted")
         .expect("message_admitted projection");
-    assert_eq!(
-        admitted["payload"],
-        serde_json::json!({
-            "agent_id": "default",
-            "authority_class": "operator_instruction",
-            "delivery_surface": "http_control_prompt",
-            "message_id": "msg-stable",
-            "origin": { "kind": "operator" },
-            "priority": "interject",
-            "summary": "operator prompt admitted",
-            "text_preview": "inspect status",
-        })
-    );
-    assert_eq!(
-        admitted["projection"]["redactions"],
-        serde_json::json!(["raw_text"])
-    );
+    assert_eq!(admitted["payload"]["agent_id"], "default");
+    assert_eq!(admitted["payload"]["message_id"], "msg-stable");
+    assert_eq!(admitted["payload"]["summary"], "operator prompt admitted");
+    assert_eq!(admitted["payload"]["text_preview"], "inspect status");
+    assert_eq!(admitted["payload"]["raw_text"], "debug-only prompt body");
+    assert_eq!(admitted["projection"]["raw_payload_included"], true);
+    assert_eq!(admitted["projection"]["redactions"], serde_json::json!([]));
 
     let brief = events
         .iter()
         .find(|event| event["type"] == "brief_created")
         .expect("brief_created projection");
-    assert_eq!(
-        brief["payload"],
-        serde_json::json!({
-            "agent_id": "default",
-            "run_id": "run-stable",
-            "status": "completed",
-            "summary": "work finished",
-            "text_preview": "final summary",
-            "work_item_id": "work-stable",
-        })
-    );
-    assert_eq!(
-        brief["projection"]["redactions"],
-        serde_json::json!(["raw_brief"])
-    );
+    assert_eq!(brief["payload"]["run_id"], "run-stable");
+    assert_eq!(brief["payload"]["work_item_id"], "work-stable");
+    assert_eq!(brief["payload"]["summary"], "work finished");
+    assert_eq!(brief["payload"]["raw_brief"]["debug"], true);
+    assert_eq!(brief["projection"]["raw_payload_included"], true);
+    assert_eq!(brief["projection"]["redactions"], serde_json::json!([]));
 
     let task = events
         .iter()
         .find(|event| event["type"] == "task_status_updated")
         .expect("task_status_updated projection");
-    assert_eq!(
-        task["payload"],
-        serde_json::json!({
-            "agent_id": "default",
-            "duration_ms": 123,
-            "exit_status": 0,
-            "status": "completed",
-            "summary": "cargo check passed",
-            "task_id": "task-stable",
-        })
-    );
-    assert_eq!(
-        task["projection"]["redactions"],
-        serde_json::json!(["stdout"])
-    );
+    assert_eq!(task["payload"]["task_id"], "task-stable");
+    assert_eq!(task["payload"]["status"], "completed");
+    assert_eq!(task["payload"]["duration_ms"], 123);
+    assert_eq!(task["payload"]["stdout"], "debug-only output");
+    assert_eq!(task["projection"]["raw_payload_included"], true);
+    assert_eq!(task["projection"]["redactions"], serde_json::json!([]));
 
     server.abort();
     Ok(())
 }
 
-pub async fn events_route_operator_projection_redacts_tool_payload() -> Result<()> {
+pub async fn events_route_operator_projection_includes_tool_payload() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -453,11 +426,11 @@ pub async fn events_route_operator_projection_redacts_tool_payload() -> Result<(
         serde_json::json!({
             "agent_id": "default",
             "tool_name": "ExecCommand",
-            "task_id": "task-secret",
-            "exec_command_cmd": "cat /private/tmp/secret-command.txt",
-            "raw_output": "secret command output",
-            "local_path": "/private/tmp/secret-output.txt",
-            "artifact_ref": "artifact://secret",
+            "task_id": "task-tool",
+            "exec_command_cmd": "cargo test --lib",
+            "raw_output": "test result: ok",
+            "local_path": "/tmp/output.txt",
+            "artifact_ref": "artifact://test-output",
         }),
     ))?;
 
@@ -471,28 +444,30 @@ pub async fn events_route_operator_projection_redacts_tool_payload() -> Result<(
     assert_eq!(replayed.event, "tool_executed");
     assert_eq!(replayed.data["type"], "tool_executed");
     assert_eq!(replayed.data["projection"]["name"], "operator");
-    assert_eq!(replayed.data["projection"]["raw_payload_included"], false);
+    assert_eq!(replayed.data["projection"]["raw_payload_included"], true);
     assert_eq!(
         replayed.data["projection"]["redactions"],
-        serde_json::json!([
-            "artifact_ref",
-            "exec_command_cmd",
-            "local_path",
-            "raw_output"
-        ])
+        serde_json::json!([])
     );
+    // Operator projection passes through the full raw payload.
     assert_eq!(replayed.data["payload"]["tool_name"], "ExecCommand");
-    assert_eq!(replayed.data["payload"]["task_id"], "task-secret");
-    assert!(replayed.data["payload"].get("exec_command_cmd").is_none());
-    assert!(replayed.data["payload"].get("raw_output").is_none());
-    assert!(replayed.data["payload"].get("local_path").is_none());
-    assert!(replayed.data["payload"].get("artifact_ref").is_none());
+    assert_eq!(replayed.data["payload"]["task_id"], "task-tool");
+    assert_eq!(
+        replayed.data["payload"]["exec_command_cmd"],
+        "cargo test --lib"
+    );
+    assert_eq!(replayed.data["payload"]["raw_output"], "test result: ok");
+    assert_eq!(replayed.data["payload"]["local_path"], "/tmp/output.txt");
+    assert_eq!(
+        replayed.data["payload"]["artifact_ref"],
+        "artifact://test-output"
+    );
 
     server.abort();
     Ok(())
 }
 
-pub async fn events_route_operator_projection_redacts_assistant_round_payload() -> Result<()> {
+pub async fn events_route_operator_projection_includes_assistant_round_payload() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -521,8 +496,8 @@ pub async fn events_route_operator_projection_redacts_assistant_round_payload() 
             "tool_names": ["ExecCommand", "ReadFile"],
             "has_text": true,
             "has_tool_calls": true,
-            "raw_text": "full assistant text should stay in operator replay",
-            "provider_trace": { "secret": "debug-only" },
+            "raw_text": "full assistant text included in operator replay",
+            "provider_trace": { "detail": "debug-info" },
         }),
     ))?;
 
@@ -537,14 +512,12 @@ pub async fn events_route_operator_projection_redacts_assistant_round_payload() 
     assert_eq!(replayed.event, "assistant_round_recorded");
     assert_eq!(replayed.data["type"], "assistant_round_recorded");
     assert_eq!(replayed.data["projection"]["name"], "operator");
-    assert_eq!(
-        replayed.data["projection"]["raw_payload_included"],
-        serde_json::json!(false)
-    );
+    assert_eq!(replayed.data["projection"]["raw_payload_included"], true);
     assert_eq!(
         replayed.data["projection"]["redactions"],
-        serde_json::json!(["provider_trace", "raw_text"])
+        serde_json::json!([])
     );
+    // Operator projection passes through the full raw payload.
     assert_eq!(replayed.data["payload"]["agent_id"], "default");
     assert_eq!(replayed.data["payload"]["run_id"], "run-1");
     assert_eq!(replayed.data["payload"]["turn_index"], 7);
@@ -563,8 +536,11 @@ pub async fn events_route_operator_projection_redacts_assistant_round_payload() 
     );
     assert_eq!(replayed.data["payload"]["has_text"], true);
     assert_eq!(replayed.data["payload"]["has_tool_calls"], true);
-    assert!(replayed.data["payload"].get("raw_text").is_none());
-    assert!(replayed.data["payload"].get("provider_trace").is_none());
+    assert_eq!(
+        replayed.data["payload"]["raw_text"],
+        "full assistant text included in operator replay"
+    );
+    assert!(replayed.data["payload"].get("provider_trace").is_some());
 
     server.abort();
     Ok(())
@@ -681,14 +657,13 @@ pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after
     assert_eq!(assistant_tail["projection"]["name"], "operator");
     assert_eq!(
         assistant_tail["projection"]["raw_payload_included"],
-        serde_json::json!(false)
+        serde_json::json!(true)
     );
     assert_eq!(assistant_tail["payload"]["stop_reason"], "tool_use");
     assert_eq!(
         assistant_tail["payload"]["tool_names"],
         serde_json::json!(["ExecCommand"])
     );
-    assert!(assistant_tail["payload"].get("raw_text").is_none());
 
     runtime.storage().append_event(&AuditEvent::new(
         "tool_executed",

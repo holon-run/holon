@@ -618,18 +618,35 @@ impl TuiProjection {
         self.durable_conversation_log.iter()
     }
 
+    /// Returns events for the conversation timeline at the given display mode.
+    ///
+    /// At Info level (3), this includes all conversation-candidate events from
+    /// the full `event_log`, not just the truncated `durable_conversation_log`.
+    /// The durable log is capped at 256 entries and can fill with infrastructure
+    /// events (e.g. `callback_delivered`), pushing real conversation events
+    /// (`brief_created`, `message_enqueued`) out of view.
     pub(crate) fn presentation_events(
         &self,
         display_mode: OperatorDisplayMode,
     ) -> Vec<ProjectionEventRecord> {
         let mut events = Vec::new();
         let mut seen = BTreeSet::new();
+        // Always start with events that may survive event_log rotation.
         for event in &self.durable_conversation_log {
             if seen.insert(event.id.clone()) {
                 events.push(event.clone());
             }
         }
-        if display_mode.display_level() > OperatorDisplayMode::Info.display_level() {
+        if display_mode.display_level() <= OperatorDisplayMode::Info.display_level() {
+            // Info level: also collect conversation-candidate events from the
+            // full event_log so they aren't lost when the durable log fills with
+            // infrastructure events.
+            for event in &self.event_log {
+                if is_durable_conversation_kind(&event.kind) && seen.insert(event.id.clone()) {
+                    events.push(event.clone());
+                }
+            }
+        } else {
             for event in &self.event_log {
                 if seen.insert(event.id.clone()) {
                     events.push(event.clone());
@@ -2297,6 +2314,80 @@ mod tests {
                 "tool_executed",
                 "operator_notification_requested"
             ]
+        );
+    }
+
+    #[test]
+    fn info_presentation_events_survive_callback_delivered_churn() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+
+        // Seed a brief and an operator message early in the event log.
+        let brief = BriefRecord::new("default", BriefKind::Result, "work completed", None, None);
+        projection.apply_event(
+            sample_event("brief_created", serde_json::to_value(&brief).unwrap()),
+            &test_log_writer(),
+        );
+        let message = sample_message();
+        projection.apply_event(
+            sample_event("message_enqueued", serde_json::to_value(&message).unwrap()),
+            &test_log_writer(),
+        );
+
+        // Fill with enough callback_delivered events to exceed the
+        // durable conversation log limit (256) so the early brief/message
+        // are pushed out of the durable conversation log, but stay within
+        // the event_log limit (1024) so they remain in the event_log.
+        let callback_count = 266;
+        for index in 0..callback_count {
+            projection.apply_event(
+                AgentStreamEvent {
+                    id: format!("evt-callback-{index}"),
+                    event: "callback_delivered".into(),
+                    data: StreamEventEnvelope {
+                        id: format!("evt-callback-{index}"),
+                        event_seq: (index + 3) as u64,
+                        ts: Utc::now(),
+                        agent_id: "default".into(),
+                        event_type: "callback_delivered".into(),
+                        projection: None,
+                        provenance: None,
+                        payload: json!({
+                            "waiting_intent_id": format!("wait-{index}"),
+                            "source": "github",
+                        }),
+                    },
+                },
+                &test_log_writer(),
+            );
+        }
+
+        // The durable conversation log should be full of callback_delivered,
+        // pushing the early brief/message out.
+        assert!(
+            projection
+                .durable_conversation_events()
+                .all(|e| e.kind == "callback_delivered"),
+            "durable log should be all callback_delivered"
+        );
+
+        // But presentation_events(Info) must still surface the brief and message
+        // because it also scans the full event_log for durable events.
+        let info_events = projection.presentation_events(OperatorDisplayMode::Info);
+        let brief_count = info_events
+            .iter()
+            .filter(|e| e.kind == "brief_created")
+            .count();
+        let message_count = info_events
+            .iter()
+            .filter(|e| e.kind == "message_enqueued")
+            .count();
+        assert!(
+            brief_count >= 1,
+            "Info presentation should include brief_created even after callback_delivered churn"
+        );
+        assert!(
+            message_count >= 1,
+            "Info presentation should include message_enqueued even after callback_delivered churn"
         );
     }
 

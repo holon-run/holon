@@ -216,10 +216,11 @@ transport-local response sequence numbers.
 
 Runtime events should have clear, standard payload schemas that first-party
 clients and integrations can consume directly. The default replay projection is
-the operator projection, and it exposes only the stable operator-facing payload
-subset. Raw/debug runtime payloads remain available through the explicitly
-authorized local debug projection, but they are not part of the public replay
-compatibility contract.
+the operator projection, and it passes through the full raw event payload with
+`raw_payload_included: true`. Event payloads are the protocol standard; clients
+build their own projections from the raw feed. The `local_debug` projection
+remains available as an explicitly authorized alias that also passes through
+the full payload but requires control auth.
 
 ## Event Envelope
 
@@ -236,8 +237,8 @@ Every stream event should use one canonical envelope.
   "type": "task_status_updated",
   "projection": {
     "name": "operator",
-    "raw_payload_included": false,
-    "redactions": ["raw_output"]
+    "raw_payload_included": true,
+    "redactions": []
   },
   "provenance": {
     "origin": {"kind": "operator"},

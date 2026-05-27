@@ -456,7 +456,7 @@ impl std::fmt::Display for EventProjectionCli {
 pub enum EventsCommands {
     #[command(
         about = "Fetch a bounded page of stable event envelopes",
-        long_about = "Fetch a bounded page of stable runtime event envelopes.\n\nThe stable fields are the event envelope fields emitted by the API, including sequence, identity, timestamps, origin/trust/priority metadata, and user-facing brief/data payloads. `holon tail` and `holon transcript` remain summary views over recent operator-facing history. Use `--projection local-debug` only for diagnostic/internal payloads; those fields are not a compatibility contract."
+        long_about = "Fetch a bounded page of stable runtime event envelopes.\n\nThe stable fields are the event envelope fields emitted by the API, including sequence, identity, timestamps, origin/trust/priority metadata, and user-facing brief/data payloads. Event payloads are the protocol standard and are included in full by both the default operator projection and the local-debug projection. Use `--projection local-debug` when control auth is required for the stream endpoint."
     )]
     Tail {
         #[arg(long)]
@@ -474,7 +474,7 @@ pub enum EventsCommands {
     },
     #[command(
         about = "Stream stable event envelopes as newline-delimited JSON",
-        long_about = "Stream stable runtime event envelopes as newline-delimited JSON.\n\nThe stable fields are the event envelope fields emitted by the API, including sequence, identity, timestamps, origin/trust/priority metadata, and user-facing brief/data payloads. `holon tail` and `holon transcript` remain summary views over recent operator-facing history. Use `--projection local-debug` only for diagnostic/internal payloads; those fields are not a compatibility contract."
+        long_about = "Stream stable runtime event envelopes as newline-delimited JSON.\n\nThe stable fields are the event envelope fields emitted by the API, including sequence, identity, timestamps, origin/trust/priority metadata, and user-facing brief/data payloads. Event payloads are the protocol standard and are included in full by both the default operator projection and the local-debug projection. Use `--projection local-debug` when control auth is required for the stream endpoint."
     )]
     Stream {
         #[arg(long)]
