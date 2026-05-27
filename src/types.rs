@@ -4008,7 +4008,7 @@ mod tests {
 
         assert_eq!(message.authority_class, AuthorityClass::RuntimeInstruction);
     }
- 
+
     #[test]
     fn message_with_both_trust_and_authority_class_deserializes_authority_class_first() {
         // When both "trust" and "authority_class" exist, the explicit
@@ -4030,7 +4030,7 @@ mod tests {
                 "text": "hello"
             }
         });
- 
+
         let message: MessageEnvelope = serde_json::from_value(dual).unwrap();
         assert_eq!(message.authority_class, AuthorityClass::OperatorInstruction);
     }
