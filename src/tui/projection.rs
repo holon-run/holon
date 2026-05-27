@@ -2318,6 +2318,86 @@ mod tests {
     }
 
     #[test]
+    fn info_presentation_events_survive_callback_delivered_churn() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+
+        // Seed a brief and an operator message early in the event log.
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "work completed",
+            None,
+            None,
+        );
+        projection.apply_event(
+            sample_event("brief_created", serde_json::to_value(&brief).unwrap()),
+            &test_log_writer(),
+        );
+        let message = sample_message();
+        projection.apply_event(
+            sample_event("message_enqueued", serde_json::to_value(&message).unwrap()),
+            &test_log_writer(),
+        );
+
+        // Fill with enough callback_delivered events to exceed the
+        // durable conversation log limit (256) so the early brief/message
+        // are pushed out of the durable conversation log, but stay within
+        // the event_log limit (1024) so they remain in the event_log.
+        let callback_count = 266;
+        for index in 0..callback_count {
+            projection.apply_event(
+                AgentStreamEvent {
+                    id: format!("evt-callback-{index}"),
+                    event: "callback_delivered".into(),
+                    data: StreamEventEnvelope {
+                        id: format!("evt-callback-{index}"),
+                        event_seq: (index + 3) as u64,
+                        ts: Utc::now(),
+                        agent_id: "default".into(),
+                        event_type: "callback_delivered".into(),
+                        projection: None,
+                        provenance: None,
+                        payload: json!({
+                            "waiting_intent_id": format!("wait-{index}"),
+                            "source": "github",
+                        }),
+                    },
+                },
+                &test_log_writer(),
+            );
+        }
+
+        // The durable conversation log should be full of callback_delivered,
+        // pushing the early brief/message out.
+        assert!(
+            projection
+                .durable_conversation_events()
+                .all(|e| e.kind == "callback_delivered"),
+            "durable log should be all callback_delivered"
+        );
+
+        // But presentation_events(Info) must still surface the brief and message
+        // because it also scans the full event_log for durable events.
+        let info_events = projection.presentation_events(OperatorDisplayMode::Info);
+        let brief_count = info_events
+            .iter()
+            .filter(|e| e.kind == "brief_created")
+            .count();
+        let message_count = info_events
+            .iter()
+            .filter(|e| e.kind == "message_enqueued")
+            .count();
+        assert!(
+            brief_count >= 1,
+            "Info presentation should include brief_created even after callback_delivered churn"
+        );
+        assert!(
+            message_count >= 1,
+            "Info presentation should include message_enqueued even after callback_delivered churn"
+        );
+    }
+
+    #[test]
     fn durable_conversation_events_survive_debug_event_churn() {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
 

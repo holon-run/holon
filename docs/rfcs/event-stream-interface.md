@@ -237,8 +237,8 @@ Every stream event should use one canonical envelope.
   "type": "task_status_updated",
   "projection": {
     "name": "operator",
-    "raw_payload_included": false,
-    "redactions": ["raw_output"]
+    "raw_payload_included": true,
+    "redactions": []
   },
   "provenance": {
     "origin": {"kind": "operator"},
