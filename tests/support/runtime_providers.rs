@@ -77,67 +77,6 @@ impl AgentProvider for ToolUsingProvider {
     }
 }
 
-/// Provider that notifies operator then calls AgentGet
-pub struct NotifyThenAgentGetProvider {
-    calls: Mutex<usize>,
-}
-
-impl NotifyThenAgentGetProvider {
-    pub fn new() -> Self {
-        Self {
-            calls: Mutex::new(0),
-        }
-    }
-}
-
-#[async_trait]
-impl AgentProvider for NotifyThenAgentGetProvider {
-    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
-        let mut calls = self.calls.lock().await;
-        *calls += 1;
-        if *calls == 1 {
-            assert!(request
-                .tools
-                .iter()
-                .any(|tool| tool.name == "NotifyOperator"));
-            assert!(request.tools.iter().any(|tool| tool.name == "AgentGet"));
-            return Ok(ProviderTurnResponse {
-                blocks: vec![
-                    ModelBlock::ToolUse {
-                        id: "notify-1".into(),
-                        name: "NotifyOperator".into(),
-                        input: json!({
-                            "message": "Operator FYI\nContinuing with the default path."
-                        }),
-                    },
-                    ModelBlock::ToolUse {
-                        id: "agent-get-1".into(),
-                        name: "AgentGet".into(),
-                        input: json!({}),
-                    },
-                ],
-                stop_reason: None,
-                input_tokens: 100,
-                output_tokens: 50,
-                cache_usage: None,
-                request_diagnostics: None,
-            });
-        }
-
-        assert!(preserves_prior_tool_context(&request));
-        Ok(ProviderTurnResponse {
-            blocks: vec![ModelBlock::Text {
-                text: "continued after notifying operator".into(),
-            }],
-            stop_reason: None,
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_usage: None,
-            request_diagnostics: None,
-        })
-    }
-}
-
 /// Provider that demonstrates file editing operations
 pub struct FileEditingProvider {
     calls: Mutex<usize>,

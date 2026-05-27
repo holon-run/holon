@@ -643,7 +643,7 @@ fn build_context_management_request(
                 kind: "tool_uses",
                 value: config.keep_recent_tool_uses,
             },
-            exclude_tools: vec!["ApplyPatch", "NotifyOperator"],
+            exclude_tools: vec!["ApplyPatch"],
             clear_at_least: config.clear_at_least_input_tokens.map(|value| {
                 ContextManagementThreshold {
                     kind: "input_tokens",

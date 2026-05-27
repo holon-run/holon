@@ -1286,7 +1286,7 @@ fn context_management_diagnostic(
             "clear_at_least_input_tokens": policy.clear_at_least_input_tokens,
             "clears_tool_results_only": true,
             "excludes_errors": true,
-            "excluded_tool_names": ["ApplyPatch", "NotifyOperator"],
+            "excluded_tool_names": ["ApplyPatch"],
         },
         "eligible_tool_result_count": stats.eligible_tool_result_count,
         "eligible_tool_result_bytes": stats.eligible_tool_result_bytes,
@@ -1350,7 +1350,7 @@ fn estimate_context_management_eligible_tool_results(
 }
 
 fn is_context_management_excluded_tool(tool_name: Option<&str>) -> bool {
-    matches!(tool_name, Some("ApplyPatch" | "NotifyOperator"))
+    matches!(tool_name, Some("ApplyPatch"))
 }
 
 impl RuntimeHandle {

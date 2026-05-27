@@ -227,7 +227,6 @@ pub(crate) enum ToolCapabilityFamily {
     AgentCreation,
     AuthorityExpanding,
     ExternalTrigger,
-    OperatorNotification,
 }
 
 impl ToolCapabilityFamily {
@@ -239,7 +238,6 @@ impl ToolCapabilityFamily {
             Self::AgentCreation => "agent_creation",
             Self::AuthorityExpanding => "authority_expanding",
             Self::ExternalTrigger => "external_trigger",
-            Self::OperatorNotification => "operator_notification",
         }
     }
 }
@@ -2092,11 +2090,6 @@ pub struct OperatorNotificationRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub causation_id: Option<String>,
     pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NotifyOperatorResult {
-    pub notification: OperatorNotificationRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4482,8 +4475,6 @@ mod tests {
             .allows_tool_capability_family(ToolCapabilityFamily::AgentCreation));
         assert!(!AgentProfilePreset::PrivateChild
             .allows_tool_capability_family(ToolCapabilityFamily::AuthorityExpanding));
-        assert!(!AgentProfilePreset::PrivateChild
-            .allows_tool_capability_family(ToolCapabilityFamily::OperatorNotification));
         assert!(AgentProfilePreset::PrivateChild
             .allows_tool_capability_family(ToolCapabilityFamily::LocalEnvironment));
         assert!(AgentProfilePreset::PrivateChild
@@ -4501,7 +4492,5 @@ mod tests {
         ] {
             assert!(AgentProfilePreset::PublicNamed.allows_tool_capability_family(family));
         }
-        assert!(!AgentProfilePreset::PublicNamed
-            .allows_tool_capability_family(ToolCapabilityFamily::OperatorNotification));
     }
 }

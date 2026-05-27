@@ -93,7 +93,6 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         "ListWorkItems" => "ListWorkItemsResult",
         "MemoryGet" => "MemoryGetResponse",
         "MemorySearch" => "MemorySearchResponse",
-        "NotifyOperator" => "NotifyOperatorResult",
         "PickWorkItem" => "PickWorkItemResult",
         "Sleep" => "SleepResult",
         "WaitFor" => "WaitForResult",

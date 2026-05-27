@@ -380,7 +380,7 @@ async fn anthropic_request_emits_context_management_when_enabled() {
             "type": "clear_tool_uses_20250919",
             "trigger": { "type": "input_tokens", "value": 12000 },
             "keep": { "type": "tool_uses", "value": 4 },
-            "exclude_tools": ["ApplyPatch", "NotifyOperator"],
+            "exclude_tools": ["ApplyPatch"],
             "clear_at_least": { "type": "input_tokens", "value": 2000 }
         })
     );

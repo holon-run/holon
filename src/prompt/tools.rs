@@ -49,13 +49,6 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
             "Use AgentGet for agent-plane inspection: it returns the current agent summary, including `identity.visibility`, `identity.ownership`, and `identity.profile_preset`, plus active work focus, waiting state, execution snapshot, and visible child-agent lineage. Read those identity fields as the current agent contract: `public_named` means a public self-owned agent addressed directly by `agent_id`, while `private_child` means a private parent-supervised child that stays under a supervising task handle. Child-agent summaries expose the same ownership/profile semantics. Prefer AgentGet when you need to understand the context-owning agent itself. Prefer TaskStatus when you are inspecting a managed task handle such as a command task or a parent-supervised SpawnAgent handle. Do not use AgentGet as a transcript dump or as a substitute for TaskOutput.".to_string(),
         ));
     }
-    if names.contains(&"NotifyOperator") {
-        sections.push(section(
-            "tool_notify_operator",
-            PromptStability::Stable,
-            "NotifyOperator is a constrained runtime-policy surface for operator delivery adapters, not a normal agent progress or completion channel. Prefer final responses, WorkItem plan_status/WaitFor/completion state, briefs, and runtime-derived activity for operator-facing communication; do not duplicate those facts through ad hoc notifications.".to_string(),
-        ));
-    }
     if names.contains(&"Enqueue") {
         sections.push(section(
             "tool_enqueue",
@@ -239,24 +232,6 @@ mod tests {
         assert!(section.content.contains("identity.profile_preset"));
         assert!(section.content.contains("public_named"));
         assert!(section.content.contains("private_child"));
-    }
-
-    #[test]
-    fn test_notify_operator_section_emitted_when_available() {
-        let tools = vec![ToolSpec {
-            name: "NotifyOperator".into(),
-            description: String::new(),
-            input_schema: json!({}),
-            freeform_grammar: None,
-        }];
-        let sections = tool_sections(&tools);
-        let section = sections
-            .iter()
-            .find(|s| s.name == "tool_notify_operator")
-            .expect("notify operator section");
-        assert!(section.content.contains("runtime-policy surface"));
-        assert!(section.content.contains("not a normal agent progress"));
-        assert!(section.content.contains("WorkItem plan_status/WaitFor"));
     }
 
     #[test]

@@ -21,7 +21,6 @@ pub(crate) mod get_work_item;
 pub(crate) mod list_work_items;
 pub(crate) mod memory_get;
 pub(crate) mod memory_search;
-pub(crate) mod notify_operator;
 pub(crate) mod pick_work_item;
 pub(crate) mod sleep;
 pub(crate) mod spawn_agent;
@@ -48,7 +47,6 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         sleep::definition()?,
         wait_for::definition()?,
         agent_get::definition()?,
-        notify_operator::definition()?,
         enqueue::definition()?,
         spawn_agent::definition()?,
         task_list::definition()?,
@@ -99,9 +97,6 @@ pub(crate) async fn execute_builtin_tool(
         wait_for::NAME => wait_for::execute(runtime, agent_id, authority_class, &call.input).await,
         agent_get::NAME => {
             agent_get::execute(runtime, agent_id, authority_class, &call.input).await
-        }
-        notify_operator::NAME => {
-            notify_operator::execute(runtime, agent_id, authority_class, &call.input).await
         }
         enqueue::NAME => enqueue::execute(runtime, agent_id, authority_class, &call.input).await,
         spawn_agent::NAME => {
