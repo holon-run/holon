@@ -5,7 +5,7 @@
 //!
 //! See `docs/rfcs/presentation-item-model-and-renderer.md`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -687,6 +687,7 @@ impl PresentationReducer {
     pub(crate) fn reduce(&mut self, events: &[ProjectionEventRecord]) -> Vec<TimedItem> {
         let mut items: Vec<TimedItem> = Vec::new();
         let final_brief_texts = final_brief_texts(events);
+        let mut open_command_items: HashMap<String, usize> = HashMap::new();
 
         let mut i = 0;
         while i < events.len() {
@@ -696,45 +697,10 @@ impl PresentationReducer {
                 "process_execution_requested" => {
                     let exec_preview =
                         exec_command_preview(event).unwrap_or_else(|| event.summary.clone());
-
-                    if let Some(next) = events.get(i + 1) {
-                        if matches!(
-                            next.kind.as_str(),
-                            "tool_executed" | "tool_execution_failed"
-                        ) && next.summary.contains(&exec_preview)
-                        {
-                            let duration_ms = tool_duration_ms(next);
-                            let exit_code =
-                                tool_exit_code(next).or_else(|| match next.kind.as_str() {
-                                    "tool_execution_failed" => None,
-                                    _ => Some(0),
-                                });
-                            let stdout_summary = tool_output_summary(next);
-                            let full_stdout = tool_full_output(next);
-                            let full_stderr = tool_full_stderr(next);
-
-                            items.push(TimedItem::from_event(
-                                PresentationItem::CommandExecuted {
-                                    status: command_status_from_tool_event(next),
-                                    cmd_preview: exec_preview,
-                                    task_id: command_task_id(next),
-                                    duration_ms,
-                                    exit_code,
-                                    stdout_summary,
-                                    full_stdout,
-                                    full_stderr,
-                                    error_message: tool_error_message(next),
-                                },
-                                next,
-                            ));
-                            i += 2;
-                            continue;
-                        }
-                    }
-                    items.push(TimedItem::from_event(
+                    let item = TimedItem::with_key(
                         PresentationItem::CommandExecuted {
                             status: CommandStatus::Started,
-                            cmd_preview: exec_preview,
+                            cmd_preview: exec_preview.clone(),
                             task_id: None,
                             duration_ms: None,
                             exit_code: None,
@@ -743,8 +709,14 @@ impl PresentationReducer {
                             full_stderr: None,
                             error_message: None,
                         },
-                        event,
-                    ));
+                        event.ts,
+                        command_presentation_key(event, &exec_preview)
+                            .unwrap_or_else(|| event_dedupe_key(event)),
+                    );
+                    if let Some(key) = command_presentation_key(event, &exec_preview) {
+                        open_command_items.insert(key, items.len());
+                    }
+                    items.push(item);
                 }
 
                 "message_enqueued" => {
@@ -802,20 +774,26 @@ impl PresentationReducer {
                     let full_stdout = tool_full_output(event);
                     let full_stderr = tool_full_stderr(event);
 
-                    items.push(TimedItem::from_event(
-                        PresentationItem::CommandExecuted {
-                            status: command_status_from_tool_event(event),
-                            cmd_preview,
-                            task_id: command_task_id(event),
-                            duration_ms: tool_duration_ms(event),
-                            exit_code,
-                            stdout_summary,
-                            full_stdout,
-                            full_stderr,
-                            error_message: tool_error_message(event),
-                        },
-                        event,
-                    ));
+                    let item = PresentationItem::CommandExecuted {
+                        status: command_status_from_tool_event(event),
+                        cmd_preview: cmd_preview.clone(),
+                        task_id: command_task_id(event),
+                        duration_ms: tool_duration_ms(event),
+                        exit_code,
+                        stdout_summary,
+                        full_stdout,
+                        full_stderr,
+                        error_message: tool_error_message(event),
+                    };
+                    if let Some(key) = command_presentation_key(event, &cmd_preview) {
+                        if let Some(index) = open_command_items.remove(&key) {
+                            items[index] = TimedItem::with_key(item, event.ts, key);
+                        } else {
+                            items.push(TimedItem::from_event(item, event));
+                        }
+                    } else {
+                        items.push(TimedItem::from_event(item, event));
+                    }
                 }
 
                 "assistant_round_recorded" | "text_only_round_observed" => {
@@ -1099,6 +1077,22 @@ fn event_dedupe_key(event: &ProjectionEventRecord) -> String {
         return format!("event-id:{}", event.id);
     }
     format!("event-seq:{}:{}", event.event_seq, event.kind)
+}
+
+fn command_presentation_key(event: &ProjectionEventRecord, cmd_preview: &str) -> Option<String> {
+    if cmd_preview.trim().is_empty() {
+        return None;
+    }
+    let workdir = event
+        .payload
+        .get("workdir")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Some(format!(
+        "command:{}:{}",
+        workdir,
+        normalize_text_key(cmd_preview)
+    ))
 }
 
 fn normalize_text_key(text: &str) -> String {
@@ -1892,6 +1886,63 @@ mod tests {
             } => {
                 assert_eq!(*status, CommandStatus::Completed);
                 assert!(cmd_preview.contains("cargo test"));
+                assert_eq!(*exit_code, Some(0));
+                assert_eq!(stdout_summary, "5 passed");
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_updates_command_item_when_events_are_not_adjacent() {
+        let start = make_event(
+            "process_execution_requested",
+            "command started: cargo test",
+            json!({
+                "surface": "ExecCommand",
+                "exec_command_cmd": "cargo test --lib",
+                "cmd": "cargo test --lib"
+            }),
+        );
+        let progress = make_event(
+            "assistant_round_recorded",
+            "checking command result",
+            json!({"text_preview": "checking command result"}),
+        );
+        let finish = make_event(
+            "tool_executed",
+            "tool executed: cargo test --lib",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "cargo test --lib",
+                "duration_ms": 42,
+                "exit_status": 0,
+                "stdout_preview": "5 passed"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[start.clone(), progress, finish.clone()]);
+
+        let command_items = items
+            .iter()
+            .filter(|timed| matches!(timed.item, PresentationItem::CommandExecuted { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(command_items.len(), 1);
+        assert_eq!(
+            command_items[0].dedupe_key,
+            "command::cargo test --lib".to_string()
+        );
+        match &command_items[0].item {
+            PresentationItem::CommandExecuted {
+                status,
+                duration_ms,
+                exit_code,
+                stdout_summary,
+                ..
+            } => {
+                assert_eq!(*status, CommandStatus::Completed);
+                assert_eq!(*duration_ms, Some(42));
                 assert_eq!(*exit_code, Some(0));
                 assert_eq!(stdout_summary, "5 passed");
             }
