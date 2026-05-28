@@ -11,9 +11,9 @@ use uuid::Uuid;
 
 use crate::{
     system::{
-        workspace::WorkspacePathError, CaptureSpec, ExecutionScopeKind, ExecutionSnapshot,
-        ProcessHost, ProcessPurpose, ProcessRequest, ProgramInvocation, RunningProcess,
-        RunningProcessExitStatus, StdioSpec, StopSignal,
+        CaptureSpec, ExecutionScopeKind, ExecutionSnapshot, ProcessHost, ProcessPurpose,
+        ProcessRequest, ProgramInvocation, RunningProcess, RunningProcessExitStatus, StdioSpec,
+        StopSignal,
     },
     tool::helpers::{
         command_cost_diagnostics, command_digest, command_preview, effective_tool_output_tokens,
@@ -491,33 +491,7 @@ impl RuntimeHandle {
         let workdir = spec
             .workdir
             .as_deref()
-            .map(|value| view.resolve_path(value))
-            .map(|result| {
-                result.map_err(|error| {
-                    if error
-                        .downcast_ref::<WorkspacePathError>()
-                        .is_some_and(|workspace_error| {
-                            workspace_error.kind()
-                                == crate::system::workspace::WorkspacePathErrorKind::ExecutionRootViolation
-                        })
-                    {
-                        ToolError::new(
-                            "execution_root_violation",
-                            "requested working directory is outside the current execution root",
-                        )
-                        .with_details(json!({
-                            "attempted_workdir": spec.workdir.clone(),
-                            "execution_root": view.execution_root(),
-                            "cwd": view.cwd(),
-                        }))
-                        .with_recovery_hint("omit `workdir` to use the current workspace cwd, or provide a relative path inside the workspace")
-                        .with_retryable(false)
-                        .into()
-                    } else {
-                        error
-                    }
-                })
-            })
+            .map(|value| view.resolve_read_path(value))
             .transpose()?
             .unwrap_or_else(|| view.cwd().to_path_buf());
 

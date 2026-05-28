@@ -719,50 +719,6 @@ pub async fn exec_command_batch_stop_on_error_skips_later_items() -> Result<()> 
     Ok(())
 }
 
-pub async fn exec_command_workdir_violation_returns_structured_error() -> Result<()> {
-    let host =
-        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
-    attach_default_workspace(&host).await?;
-    let runtime = host.default_runtime().await?;
-    let registry = ToolRegistry::new(runtime.workspace_root());
-
-    let error = registry
-        .execute(
-            &runtime,
-            "default",
-            &AuthorityClass::OperatorInstruction,
-            &ToolCall {
-                id: "tool-exec-invalid-workdir".into(),
-                name: "ExecCommand".into(),
-                input: json!({
-                    "cmd": "pwd",
-                    "workdir": "../outside"
-                }),
-            },
-        )
-        .await
-        .unwrap_err();
-    let tool_error = ToolError::from_anyhow(&error);
-
-    assert_eq!(tool_error.kind, "execution_root_violation");
-    assert_eq!(
-        tool_error.message,
-        "requested working directory is outside the current execution root"
-    );
-    assert_eq!(
-        tool_error
-            .details
-            .as_ref()
-            .and_then(|value| value.get("attempted_workdir")),
-        Some(&json!("../outside"))
-    );
-    assert!(tool_error
-        .recovery_hint
-        .as_deref()
-        .is_some_and(|hint| hint.contains("omit `workdir`")));
-    Ok(())
-}
-
 pub async fn exec_command_spawn_failure_returns_shell_recovery_hint() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;

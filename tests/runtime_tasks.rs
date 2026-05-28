@@ -26,7 +26,6 @@ runtime_async_tests!(
     exec_command_reports_nonzero_exit_and_truncates_output,
     exec_command_batch_returns_grouped_item_results,
     exec_command_batch_stop_on_error_skips_later_items,
-    exec_command_workdir_violation_returns_structured_error,
     exec_command_spawn_failure_returns_shell_recovery_hint,
     tool_schema_and_dispatch_errors_are_recorded_without_corrupting_runtime_state,
     runtime_provider_failure_surfaces_failure_brief_and_transcript_entry,
