@@ -111,12 +111,6 @@ impl ChatScrollState {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CachedChatRole {
-    Operator,
-    System,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ConversationCell {
     UserMessage {
@@ -153,10 +147,15 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         .as_ref()
         .map(|projection| projection.durable_operator_message_ids())
         .unwrap_or_default();
-    let selected_agent_id = app.selected_agent_id();
+    let selected_agent_id = app.selected_agent_id().or_else(|| {
+        app.projection
+            .as_ref()
+            .map(|projection| projection.agent.identity.agent_id.as_str())
+    });
 
     if let Some(projection) = app.projection.as_ref() {
         let level = app.display_mode.display_level();
+        let agent_speaker = selected_agent_id.unwrap_or("agent");
         let events: Vec<ProjectionEventRecord> = projection
             .presentation_events(app.display_mode)
             .into_iter()
@@ -175,7 +174,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
                         &mut durable_operator_message_bodies,
                         &mut projected_cell_keys,
                         &timed.dedupe_key,
-                        rendered_to_conversation_cell(&rendered, timed.ts),
+                        rendered_to_conversation_cell(&rendered, timed.ts, agent_speaker),
                     );
                 }
             }
@@ -286,7 +285,7 @@ impl ConversationCell {
 
     fn sort_speaker(&self) -> &str {
         match self {
-            Self::UserMessage { .. } => "You",
+            Self::UserMessage { .. } => "operator",
             Self::ActiveActivity { speaker, .. } | Self::SystemNotice { speaker, .. } => speaker,
         }
     }
@@ -299,7 +298,28 @@ impl ConversationCell {
         }
     }
 
-    fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
+    fn groups_with_previous(&self, previous: &Self) -> bool {
+        match (previous, self) {
+            (
+                Self::SystemNotice {
+                    created_at: previous_ts,
+                    speaker: previous_speaker,
+                    ..
+                },
+                Self::SystemNotice {
+                    created_at,
+                    speaker,
+                    ..
+                },
+            ) => {
+                previous_speaker == speaker
+                    && chat_timestamp(*previous_ts) == chat_timestamp(*created_at)
+            }
+            _ => false,
+        }
+    }
+
+    fn render_lines(&self, width: u16, include_header: bool) -> Vec<Line<'static>> {
         match self {
             Self::UserMessage {
                 created_at,
@@ -310,16 +330,32 @@ impl ConversationCell {
                 render_active_activity_lines(speaker, body)
             }
             Self::SystemNotice {
-                created_at, body, ..
-            } => render_prefixed_markdown_lines(
-                *created_at,
+                created_at,
+                speaker,
                 body,
-                CachedChatRole::System,
+            } => render_message_block_lines(
+                *created_at,
+                ChatBlockRole::Agent,
+                speaker,
+                body,
                 width,
                 false,
+                include_header,
             ),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CachedChatRole {
+    Operator,
+    System,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChatBlockRole {
+    Operator,
+    Agent,
 }
 
 #[cfg(test)]
@@ -330,9 +366,14 @@ pub(super) fn build_chat_text(items: &[ConversationCell]) -> Text<'static> {
 pub(super) fn build_chat_text_for_width(items: &[ConversationCell], width: u16) -> Text<'static> {
     let mut text = Text::default();
     for (index, item) in items.iter().enumerate() {
-        text.lines.extend(item.render_lines(width));
+        let grouped_with_previous = index > 0 && item.groups_with_previous(&items[index - 1]);
+        text.lines
+            .extend(item.render_lines(width, !grouped_with_previous));
         if index + 1 < items.len() {
-            text.lines.push(Line::default());
+            let groups_with_next = items[index + 1].groups_with_previous(item);
+            if !groups_with_next {
+                text.lines.push(Line::default());
+            }
         }
     }
 
@@ -366,12 +407,14 @@ pub(super) fn chat_text_for_width(app: &TuiApp, width: u16) -> Text<'static> {
     text
 }
 
-fn render_prefixed_markdown_lines(
+fn render_message_block_lines(
     created_at: DateTime<chrono::Utc>,
+    role: ChatBlockRole,
+    speaker: &str,
     body: &str,
-    role: CachedChatRole,
     width: u16,
     spaced_markdown: bool,
+    include_header: bool,
 ) -> Vec<Line<'static>> {
     let body = if spaced_markdown && width >= 48 {
         render_markdown_text_spaced(body)
@@ -379,29 +422,22 @@ fn render_prefixed_markdown_lines(
         render_markdown_text(body)
     };
     let body_lines = body.lines;
-    let prefix = chat_prefix_spans(created_at, role);
-    let continuation_indent = chat_continuation_indent(created_at);
-    let mut lines = Vec::new();
-
-    if let Some((first, rest)) = body_lines.split_first() {
-        let mut spans = Vec::with_capacity(prefix.len() + first.spans.len());
-        spans.extend(prefix);
-        spans.extend(first.spans.clone());
-        lines.push(Line::from(spans).style(first.style));
-
-        for line in rest {
-            if line.spans.iter().all(|span| span.content.is_empty()) {
-                lines.push(Line::default());
-                continue;
-            }
-
-            let mut spans = Vec::with_capacity(line.spans.len() + 1);
-            spans.push(Span::raw(continuation_indent.clone()));
-            spans.extend(line.spans.clone());
-            lines.push(Line::from(spans).style(line.style));
-        }
+    let mut lines = if include_header {
+        vec![Line::from(chat_header_spans(created_at, role, speaker))]
     } else {
-        lines.push(Line::from(prefix));
+        Vec::new()
+    };
+
+    for line in body_lines {
+        if line.spans.iter().all(|span| span.content.is_empty()) {
+            lines.push(Line::default());
+            continue;
+        }
+
+        let mut spans = Vec::with_capacity(line.spans.len() + 1);
+        spans.push(Span::raw("  "));
+        spans.extend(line.spans.clone());
+        lines.push(Line::from(spans).style(line.style));
     }
     lines
 }
@@ -412,17 +448,22 @@ fn render_operator_message_lines(
     status: Option<OperatorMessageStatus>,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let mut lines =
-        render_prefixed_markdown_lines(created_at, body, CachedChatRole::Operator, width, false);
+    let mut lines = render_message_block_lines(
+        created_at,
+        ChatBlockRole::Operator,
+        "operator",
+        body,
+        width,
+        false,
+        true,
+    );
     if let Some(status) = status.and_then(operator_message_status_label) {
         if let Some(first) = lines.first_mut() {
-            first.spans.insert(
-                3,
-                Span::styled(
-                    format!("[{status}] "),
-                    Style::default().add_modifier(Modifier::DIM),
-                ),
-            );
+            first.spans.push(Span::raw(" "));
+            first.spans.push(Span::styled(
+                format!("[{status}]"),
+                Style::default().add_modifier(Modifier::DIM),
+            ));
         }
     }
     lines
@@ -485,14 +526,15 @@ fn refresh_active_activity_marker(mut text: Text<'static>) -> Text<'static> {
     text
 }
 
-fn chat_prefix_spans(
+fn chat_header_spans(
     created_at: DateTime<chrono::Utc>,
-    role: CachedChatRole,
+    role: ChatBlockRole,
+    speaker: &str,
 ) -> Vec<Span<'static>> {
     let (marker, marker_style) = match role {
-        CachedChatRole::Operator => ("› ", Style::default().add_modifier(Modifier::BOLD)),
-        CachedChatRole::System => (
-            "! ",
+        ChatBlockRole::Operator => ("> ", Style::default().add_modifier(Modifier::BOLD)),
+        ChatBlockRole::Agent => (
+            "\u{2022} ",
             Style::default()
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::DIM),
@@ -502,16 +544,15 @@ fn chat_prefix_spans(
     vec![
         Span::styled(marker, marker_style),
         Span::styled(
+            speaker.to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
             chat_timestamp(created_at),
             Style::default().add_modifier(Modifier::DIM),
         ),
-        Span::raw(" "),
     ]
-}
-
-fn chat_continuation_indent(created_at: DateTime<chrono::Utc>) -> String {
-    let prefix_width = 2 + chat_timestamp(created_at).chars().count() + 1;
-    " ".repeat(prefix_width)
 }
 
 fn chat_timestamp(created_at: DateTime<chrono::Utc>) -> String {
@@ -1160,6 +1201,7 @@ mod tests {
 pub(super) fn rendered_to_conversation_cell(
     cell: &crate::presentation::RenderedCell,
     ts: chrono::DateTime<chrono::Utc>,
+    agent_speaker: &str,
 ) -> ConversationCell {
     if cell.is_live {
         ConversationCell::ActiveActivity {
@@ -1176,7 +1218,7 @@ pub(super) fn rendered_to_conversation_cell(
     } else {
         ConversationCell::SystemNotice {
             created_at: ts,
-            speaker: cell.speaker.clone(),
+            speaker: agent_speaker.to_string(),
             body: cell.body.clone(),
         }
     }

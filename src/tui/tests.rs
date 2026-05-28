@@ -698,16 +698,16 @@ fn build_chat_text_includes_structured_operator_messages() {
         .into_iter()
         .map(|line| line.spans.into_iter().map(|span| span.content).collect())
         .collect();
-    assert!(lines.iter().any(|line| line.contains("› ")));
+    assert!(lines.iter().any(|line| line.contains("> operator ")));
     assert!(lines.iter().any(|line| line.contains("Fix the failing CI")));
-    assert!(lines.iter().any(|line| line.contains("! ")));
+    assert!(lines.iter().any(|line| line.contains("• default ")));
     assert!(lines
         .iter()
         .any(|line| line.contains("I started a worktree task.")));
 }
 
 #[test]
-fn build_chat_text_inlines_message_header_with_first_body_line() {
+fn build_chat_text_renders_message_block_header_above_body() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
@@ -734,10 +734,11 @@ fn build_chat_text_inlines_message_header_with_first_body_line() {
         .into_iter()
         .map(|line| line.spans.into_iter().map(|span| span.content).collect())
         .collect();
+    assert!(lines.iter().any(|line| line.contains("• default ")));
     assert!(lines
         .iter()
-        .any(|line| line.contains("! ") && line.contains("First line")));
-    assert!(lines.iter().any(|line| line.contains("Second line")));
+        .any(|line| line.starts_with("  ") && line.contains("First line")));
+    assert!(lines.iter().any(|line| line.starts_with("  Second line")));
 }
 
 #[test]
@@ -1819,7 +1820,7 @@ fn chat_display_mode_info_shows_hidden_stream_activity_in_working_body() {
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
     assert!(rendered.contains("Working"));
-    assert!(rendered.contains("Action    Command finished: cargo test tui"));
+    assert!(rendered.contains("cargo test tui"));
 }
 
 #[test]
@@ -2028,7 +2029,7 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
         .into_iter()
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
-    assert!(rendered.contains("Action    Command finished: cargo test tui"));
+    assert!(rendered.contains("cargo test tui"));
     assert!(!rendered.contains("Action    Waiting for activity"));
     assert!(!rendered.contains("Current   "));
 }
@@ -2067,7 +2068,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
         .into_iter()
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
-    assert!(before_switch.contains("Action    Command finished: cargo test agent-a"));
+    assert!(before_switch.contains("cargo test agent-a"));
 
     let mut switched_snapshot = sample_snapshot("agent-b", "evt-b-tool");
     switched_snapshot.agent.agent.status = AgentStatus::AwakeRunning;
@@ -2096,7 +2097,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
     assert!(rendered.contains("Working"));
-    assert!(rendered.contains("Action    Command finished: cargo test agent-b"));
+    assert!(rendered.contains("cargo test agent-b"));
     assert!(!rendered.contains("cargo test agent-a"));
 }
 
