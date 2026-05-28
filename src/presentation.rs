@@ -667,6 +667,7 @@ impl Renderable for PresentationItem {
 pub(crate) struct PresentationReducer {
     live_group: Option<LiveGroup>,
     last_ts: Option<DateTime<Utc>>,
+    open_command_keys: HashSet<String>,
     observed_assistant_text_keys: HashSet<String>,
     observed_assistant_texts: HashSet<String>,
     observed_user_message_keys: HashSet<String>,
@@ -687,7 +688,7 @@ impl PresentationReducer {
     pub(crate) fn reduce(&mut self, events: &[ProjectionEventRecord]) -> Vec<TimedItem> {
         let mut items: Vec<TimedItem> = Vec::new();
         let final_brief_texts = final_brief_texts(events);
-        let mut open_command_items: HashMap<String, usize> = HashMap::new();
+        let mut local_open_command_items: HashMap<String, usize> = HashMap::new();
 
         let mut i = 0;
         while i < events.len() {
@@ -714,7 +715,8 @@ impl PresentationReducer {
                             .unwrap_or_else(|| event_dedupe_key(event)),
                     );
                     if let Some(key) = command_presentation_key(event, &exec_preview) {
-                        open_command_items.insert(key, items.len());
+                        self.open_command_keys.insert(key.clone());
+                        local_open_command_items.insert(key, items.len());
                     }
                     items.push(item);
                 }
@@ -786,8 +788,11 @@ impl PresentationReducer {
                         error_message: tool_error_message(event),
                     };
                     if let Some(key) = command_presentation_key(event, &cmd_preview) {
-                        if let Some(index) = open_command_items.remove(&key) {
+                        if let Some(index) = local_open_command_items.remove(&key) {
                             items[index] = TimedItem::with_key(item, event.ts, key);
+                            self.open_command_keys.remove(&items[index].dedupe_key);
+                        } else if self.open_command_keys.remove(&key) {
+                            items.push(TimedItem::with_key(item, event.ts, key));
                         } else {
                             items.push(TimedItem::from_event(item, event));
                         }
@@ -1526,7 +1531,11 @@ fn tool_exit_code(event: &ProjectionEventRecord) -> Option<i32> {
 }
 
 fn tool_duration_ms(event: &ProjectionEventRecord) -> Option<u64> {
-    event.payload.get("duration_ms").and_then(Value::as_u64)
+    event
+        .payload
+        .get("duration_ms")
+        .or_else(|| exec_command_result(event).and_then(|result| result.get("duration_ms")))
+        .and_then(Value::as_u64)
 }
 
 fn tool_output_summary(event: &ProjectionEventRecord) -> String {
@@ -1603,6 +1612,7 @@ fn command_status_from_tool_event(event: &ProjectionEventRecord) -> CommandStatu
 fn command_task_id(event: &ProjectionEventRecord) -> Option<String> {
     exec_command_result(event)
         .and_then(|result| result.get("task_handle"))
+        .or_else(|| event.payload.get("task_handle"))
         .and_then(|handle| handle.get("task_id"))
         .and_then(Value::as_str)
         .map(ToString::to_string)
@@ -1934,6 +1944,69 @@ mod tests {
             "command::cargo test --lib".to_string()
         );
         match &command_items[0].item {
+            PresentationItem::CommandExecuted {
+                status,
+                duration_ms,
+                exit_code,
+                stdout_summary,
+                ..
+            } => {
+                assert_eq!(*status, CommandStatus::Completed);
+                assert_eq!(*duration_ms, Some(42));
+                assert_eq!(*exit_code, Some(0));
+                assert_eq!(stdout_summary, "5 passed");
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_updates_command_item_across_incremental_calls() {
+        let start = make_event(
+            "process_execution_requested",
+            "command started: cargo test",
+            json!({
+                "surface": "ExecCommand",
+                "cmd_display": "cargo test --lib",
+                "cmd_preview": "cargo test --lib"
+            }),
+        );
+        let finish = make_event(
+            "tool_executed",
+            "tool executed: cargo test --lib",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_result": {
+                    "cmd_display": "cargo test --lib",
+                    "duration_ms": 42,
+                    "exit_status": 0,
+                    "stdout_preview": "5 passed"
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let started = reducer.reduce(&[start]);
+        assert_eq!(started.len(), 1);
+        assert_eq!(
+            started[0].dedupe_key,
+            "command::cargo test --lib".to_string()
+        );
+        assert!(matches!(
+            started[0].item,
+            PresentationItem::CommandExecuted {
+                status: CommandStatus::Started,
+                ..
+            }
+        ));
+
+        let finished = reducer.reduce(&[finish]);
+        assert_eq!(finished.len(), 1);
+        assert_eq!(
+            finished[0].dedupe_key,
+            "command::cargo test --lib".to_string()
+        );
+        match &finished[0].item {
             PresentationItem::CommandExecuted {
                 status,
                 duration_ms,
