@@ -186,8 +186,8 @@ Default-agent aliases:
 
 | Method | Path | Inputs | Success response | Stability | Notes |
 |--------|------|--------|------------------|-----------|-------|
-| `GET` | `/agents/:agent_id/events` | Path `agent_id`; query `before_seq?`, `after_seq?`, `limit?`, `order?`, `projection?`. | `EventsPageResponse` | Candidate stable route and envelope; operator payload v1 subset | `limit` defaults to the event window and is clamped. `order` is `asc` or `desc`. `projection` is `operator` or `local_debug`. |
-| `GET` | `/agents/:agent_id/events/stream` | Path `agent_id`; query `after_seq?`, `limit?`, `projection?`; `Accept: text/event-stream` recommended. | SSE frames with JSON `StreamEventEnvelope` data. | Candidate stable route and envelope; operator payload v1 subset | SSE `id` is `event_seq`; SSE `event` is the raw audit event kind. |
+| `GET` | `/agents/:agent_id/events` | Path `agent_id`; query `before_seq?`, `after_seq?`, `limit?`, `order?`, `max_level?`. | `EventsPageResponse` | Candidate stable route and envelope | `limit` defaults to the event window and is clamped. `order` is `asc` or `desc`. `max_level` filters event inclusion only. |
+| `GET` | `/agents/:agent_id/events/stream` | Path `agent_id`; query `after_seq?`, `limit?`; `Accept: text/event-stream` recommended. | SSE frames with JSON `StreamEventEnvelope` data. | Candidate stable route and envelope | SSE `id` is `event_seq`; SSE `event` is the raw audit event kind. |
 
 Event page cursors are exclusive: `after_seq` returns records with higher
 `event_seq`, `before_seq` returns records with lower `event_seq`, and combining
@@ -205,23 +205,15 @@ Stable `StreamEventEnvelope` fields:
   "ts": "2026-05-24T00:00:00Z",
   "agent_id": "main",
   "type": "task_created",
-  "projection": { "name": "operator", "raw_payload_included": true, "redactions": [] },
   "provenance": { "authority_class": "operator_instruction", "task_id": "task-..." },
   "payload": {}
 }
 ```
 
-Projection contract:
-
-- `operator` is the default public projection. It includes the full raw event
-  payload with `raw_payload_included: true` and an empty `redactions` list.
-  Event payloads are the protocol standard — the raw event principle means
-  clients build their own projections from the full feed rather than relying
-  on server-side field filtering.
-- `local_debug` requires control auth and also includes the full raw event
-  payload with `raw_payload_included: true` and an empty `redactions` list.
-  It is kept as an explicitly authorized alias for future use cases that may
-  need different payload handling.
+Event payloads are the protocol standard and are included in full. The events
+page may filter event inclusion with `max_level=info|verbose|debug`; filtering
+does not alter `payload`. The live event stream is raw and does not support
+level filtering.
 
 ### Public ingress
 
@@ -363,9 +355,9 @@ treated as schema surfaces, not incidental Rust structs:
    agent, event, and envelope responses are still represented broadly in the
    OpenAPI baseline and should become first-class typed components where they
    are stable client contracts.
-3. **Event projection allowlist needs more real-world coverage.** `operator`
-   now has a redaction contract, but additional runtime event kinds may need
-   explicit allowlist additions as TUI/client consumption broadens.
+3. **Event level filtering needs more real-world coverage.** `max_level`
+   inclusion rules should be validated against real TUI/client sessions before
+   they are treated as final.
 4. **WorkItem mutation APIs now cover focus/update/complete.** HTTP can
    list/get/create/enqueue, pick focus, update objective/planning/blocker
    fields, and complete work items. Cancel/delete remains intentionally out of
@@ -392,7 +384,7 @@ milestone and tracked by
 |-------|-------|
 | [#1438](https://github.com/holon-run/holon/issues/1438) `api: migrate OpenAPI baseline to aide route/type metadata` | Move OpenAPI operation metadata closer to route and DTO definitions. |
 | [#1439](https://github.com/holon-run/holon/issues/1439) `api: tighten OpenAPI DTO schemas for stable read models` | Replace selected generic JSON schemas with typed stable DTO schemas. |
-| [#1443](https://github.com/holon-run/holon/issues/1443) `events: define stable operator-facing event payload subset` | Version/document stable event fields. The operator projection passes through the full raw event payload; event payloads are the protocol standard. |
+| [#1443](https://github.com/holon-run/holon/issues/1443) `events: define stable operator-facing event payload subset` | Version/document stable event fields. Event payloads are the protocol standard; `max_level` filters event inclusion only. |
 
 ## Suggested next work
 

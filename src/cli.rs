@@ -438,16 +438,18 @@ impl std::fmt::Display for EventPageOrderCli {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum EventProjectionCli {
-    Operator,
-    LocalDebug,
+pub enum EventMaxLevelCli {
+    Info,
+    Verbose,
+    Debug,
 }
 
-impl std::fmt::Display for EventProjectionCli {
+impl std::fmt::Display for EventMaxLevelCli {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Operator => f.write_str("operator"),
-            Self::LocalDebug => f.write_str("local_debug"),
+            Self::Info => f.write_str("info"),
+            Self::Verbose => f.write_str("verbose"),
+            Self::Debug => f.write_str("debug"),
         }
     }
 }
@@ -456,7 +458,7 @@ impl std::fmt::Display for EventProjectionCli {
 pub enum EventsCommands {
     #[command(
         about = "Fetch a bounded page of stable event envelopes",
-        long_about = "Fetch a bounded page of stable runtime event envelopes.\n\nThe stable fields are the event envelope fields emitted by the API, including sequence, identity, timestamps, origin/trust/priority metadata, and user-facing brief/data payloads. Event payloads are the protocol standard and are included in full by both the default operator projection and the local-debug projection. Use `--projection local-debug` when control auth is required for the stream endpoint."
+        long_about = "Fetch a bounded page of stable runtime event envelopes.\n\nThe stable fields are the event envelope fields emitted by the API, including sequence, identity, timestamps, provenance metadata, and full event payloads. Use `--max-level` to page only events visible at the selected operator display level."
     )]
     Tail {
         #[arg(long)]
@@ -467,22 +469,20 @@ pub enum EventsCommands {
         limit: usize,
         #[arg(long, value_enum, default_value_t = EventPageOrderCli::Desc)]
         order: EventPageOrderCli,
-        #[arg(long, value_enum, default_value_t = EventProjectionCli::Operator)]
-        projection: EventProjectionCli,
+        #[arg(long, value_enum)]
+        max_level: Option<EventMaxLevelCli>,
         #[arg(long)]
         agent: Option<String>,
     },
     #[command(
         about = "Stream stable event envelopes as newline-delimited JSON",
-        long_about = "Stream stable runtime event envelopes as newline-delimited JSON.\n\nThe stable fields are the event envelope fields emitted by the API, including sequence, identity, timestamps, origin/trust/priority metadata, and user-facing brief/data payloads. Event payloads are the protocol standard and are included in full by both the default operator projection and the local-debug projection. Use `--projection local-debug` when control auth is required for the stream endpoint."
+        long_about = "Stream stable runtime event envelopes as newline-delimited JSON.\n\nThe stream is the raw event feed. Filtering is supported on `holon events tail`, not on the live stream."
     )]
     Stream {
         #[arg(long)]
         after_seq: Option<u64>,
         #[arg(long)]
         limit: Option<usize>,
-        #[arg(long, value_enum, default_value_t = EventProjectionCli::Operator)]
-        projection: EventProjectionCli,
         #[arg(long, value_parser = parse_positive_usize)]
         max_events: Option<usize>,
         #[arg(long)]

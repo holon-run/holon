@@ -176,9 +176,9 @@ replaying arbitrary historical events.
 
 The event endpoint provides the incremental updates after snapshot bootstrap.
 
-The stream is per-agent. It should emit Holon's raw events relevant to the
-requested agent through an authorized replay projection, not by exposing the
-append-only internal log as a public API.
+The stream is per-agent. It should emit Holon's authorized raw event envelopes
+for the requested agent, not expose the append-only internal log as a public
+API.
 
 ### Replay Behavior
 
@@ -196,15 +196,14 @@ Replay is historical projection/state recovery only. Replayed records must not
 be treated as new ingress, must not synthesize operator intent, and must not
 trigger tool execution.
 
-### Replay Projection Boundary
+### Replay Authorization Boundary
 
 The replay surface authorizes events before delivery. Presentation visibility
 and replay authorization are related but separate concerns:
 
 - `OperatorVisibility` tells a client how prominently an already-authorized
   event-derived item should be displayed.
-- replay projection identifies the authorized replay surface and whether the
-  raw standard event payload was included.
+- replay authorization identifies which event envelopes may be delivered.
 
 Every replay envelope should preserve safe provenance needed for recovery and
 audit, including event id, per-agent durable `event_seq`, timestamp, event
@@ -215,12 +214,10 @@ work item id, correlation id, and causation id. Replay cursors are
 transport-local response sequence numbers.
 
 Runtime events should have clear, standard payload schemas that first-party
-clients and integrations can consume directly. The default replay projection is
-the operator projection, and it passes through the full raw event payload with
-`raw_payload_included: true`. Event payloads are the protocol standard; clients
-build their own projections from the raw feed. The `local_debug` projection
-remains available as an explicitly authorized alias that also passes through
-the full payload but requires control auth.
+clients and integrations can consume directly. Event payloads are the protocol
+standard and are included in full. Event pages may use `max_level` to filter
+which events are returned; live streams remain the raw event feed so clients can
+reconnect and maintain local state without losing lower-visibility events.
 
 ## Event Envelope
 
@@ -235,11 +232,6 @@ Every stream event should use one canonical envelope.
   "ts": "2026-04-18T14:00:00Z",
   "agent_id": "default",
   "type": "task_status_updated",
-  "projection": {
-    "name": "operator",
-    "raw_payload_included": true,
-    "redactions": []
-  },
   "provenance": {
     "origin": {"kind": "operator"},
     "trust": "trusted_operator",
@@ -263,16 +255,10 @@ Every stream event should use one canonical envelope.
   - agent identity
 - `type`
   - raw runtime event kind
-- `projection`
-  - the replay projection applied to this envelope
-  - `raw_payload_included=false` on the `operator` projection means raw/debug
-    fields were omitted and any omitted payload keys are listed in `redactions`
-  - `raw_payload_included=true` is reserved for explicitly authorized debug
-    projections that include the raw event payload
 - `provenance`
   - provenance fields duplicated for client recovery and indexing
 - `payload`
-  - authorized standard event payload
+  - full standard event payload
 
 ### SSE Projection
 
@@ -419,9 +405,8 @@ audit events.
 
 ## Event Payload Strategy
 
-The stream envelope should remain raw and explicit about provenance, cursor,
-and projection. The default operator payload is a documented stable subset; the
-full raw runtime payload is available only through the local debug projection.
+The stream envelope should remain raw and explicit about provenance and cursor.
+Event payloads are the documented standard payloads and are delivered in full.
 
 That means:
 

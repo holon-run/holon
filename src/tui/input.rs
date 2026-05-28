@@ -688,6 +688,9 @@ impl TuiApp {
                 let display_mode = OperatorDisplayMode::parse(&level)
                     .ok_or_else(|| anyhow!("/display expects info, verbose, debug, or 3, 4, 5"))?;
                 self.display_mode = display_mode;
+                if let Some(projection) = self.projection.as_mut() {
+                    projection.clear_event_history();
+                }
                 self.chat_text_cache.borrow_mut().take();
                 self.overlay = OverlayState::None;
                 self.status_line = format!(
@@ -695,6 +698,9 @@ impl TuiApp {
                     display_mode.name(),
                     display_mode.display_level()
                 );
+                if self.selected_agent_id().is_some() {
+                    self.begin_bootstrap_selected_agent();
+                }
             }
             SlashCommand::Abort => {
                 let agent_id = match self.selected_agent_id() {

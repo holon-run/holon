@@ -410,6 +410,7 @@ impl TuiApp {
         self.status_line = format!("Loading agent state for {agent_id}");
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
+        let display_mode = self.display_mode.name().to_string();
         tokio::spawn({
             let agent_id = agent_id.clone();
             async move {
@@ -426,18 +427,19 @@ impl TuiApp {
                             EventPageRequest {
                                 limit: Some(BOOTSTRAP_EVENT_TAIL_LIMIT),
                                 order: Some("desc".into()),
+                                max_level: Some(display_mode),
                                 ..Default::default()
                             },
                         )
                         .await?;
-                    let newest_seq = events_page.newest_seq;
+                    let cursor_seq = events_page.cursor_seq.or(events_page.newest_seq);
                     events_page.events.reverse();
                     let oldest_seq = events_page.oldest_seq;
                     let has_older = events_page.has_older;
                     anyhow::Ok((
                         snapshot,
                         events_page.events,
-                        newest_seq,
+                        cursor_seq,
                         oldest_seq,
                         has_older,
                     ))
@@ -731,7 +733,7 @@ impl TuiApp {
 
     pub(super) fn apply_stream_event(&mut self, event: AgentStreamEvent) {
         if let Some(projection) = self.projection.as_mut() {
-            projection.apply_event(event, &self.log_writer);
+            projection.apply_stream_event(event, &self.log_writer, self.display_mode);
             self.last_event_at = Some(Local::now());
             self.apply_projection_view();
             self.schedule_projection_refresh_if_stale();
@@ -763,6 +765,7 @@ impl TuiApp {
         let request_id = self.event_history_request_id;
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
+        let max_level = self.display_mode.name().to_string();
         self.status_line = "Loading older events".into();
         tokio::spawn({
             let agent_id = agent_id.clone();
@@ -774,6 +777,7 @@ impl TuiApp {
                             before_seq: Some(cursor),
                             limit: Some(EVENT_HISTORY_PAGE_LIMIT),
                             order: Some("desc".into()),
+                            max_level: Some(max_level),
                             ..Default::default()
                         },
                     )

@@ -126,7 +126,6 @@ fn audit_to_stream_event(
             ts: event.created_at,
             agent_id: agent_id.into(),
             event_type: event.kind.clone(),
-            projection: None,
             provenance: None,
             payload: event.data.clone(),
         },
