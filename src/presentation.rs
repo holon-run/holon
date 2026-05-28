@@ -23,6 +23,8 @@ pub struct HunkSummary {
     pub old_count: u32,
     pub new_start: u32,
     pub new_count: u32,
+    pub added_count: u32,
+    pub removed_count: u32,
 }
 
 /// File action kind.
@@ -548,8 +550,8 @@ impl Renderable for PresentationItem {
                 hunks,
                 full_diff,
             } => {
-                let added: u32 = hunks.iter().map(|h| h.new_count).sum();
-                let removed: u32 = hunks.iter().map(|h| h.old_count).sum();
+                let added: u32 = hunks.iter().map(|h| h.added_count).sum();
+                let removed: u32 = hunks.iter().map(|h| h.removed_count).sum();
                 let hunk_info = if hunks.is_empty() {
                     String::new()
                 } else {
@@ -560,7 +562,7 @@ impl Renderable for PresentationItem {
                 if level >= 5 {
                     if let Some(diff) = full_diff {
                         body.push('\n');
-                        for line in diff.lines().take(40) {
+                        for line in diff.lines() {
                             body.push_str(&format!("\u{2502} {}\n", line));
                         }
                     }
@@ -1323,9 +1325,39 @@ fn apply_patch_file_change_from_value(value: &Value) -> Option<PresentationItem>
     Some(PresentationItem::FileChange {
         path,
         action,
-        hunks: Vec::new(),
-        full_diff: None,
+        hunks: apply_patch_hunks_from_value(value),
+        full_diff: value
+            .get("diff_preview")
+            .and_then(Value::as_str)
+            .filter(|diff| !diff.trim().is_empty())
+            .map(ToString::to_string),
     })
+}
+
+fn apply_patch_hunks_from_value(value: &Value) -> Vec<HunkSummary> {
+    value
+        .get("hunks")
+        .and_then(Value::as_array)
+        .map(|hunks| {
+            hunks
+                .iter()
+                .filter_map(|hunk| {
+                    Some(HunkSummary {
+                        old_start: value_u32(hunk.get("old_start"))?,
+                        old_count: value_u32(hunk.get("old_count"))?,
+                        new_start: value_u32(hunk.get("new_start"))?,
+                        new_count: value_u32(hunk.get("new_count"))?,
+                        added_count: value_u32(hunk.get("added_count")).unwrap_or(0),
+                        removed_count: value_u32(hunk.get("removed_count")).unwrap_or(0),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn value_u32(value: Option<&Value>) -> Option<u32> {
+    value?.as_u64()?.try_into().ok()
 }
 
 fn file_action_from_apply_patch_action(action: &str) -> Option<FileAction> {
@@ -1803,13 +1835,15 @@ mod tests {
                 old_count: 5,
                 new_start: 12,
                 new_count: 7,
+                added_count: 2,
+                removed_count: 1,
             }],
             full_diff: Some("@@ -12,5 +12,7 @@\n-old\n+new".into()),
         };
         let cells = item.render(4);
         assert_eq!(cells.len(), 1);
         assert!(cells[0].body.contains("M src/foo.rs"));
-        assert!(cells[0].body.contains("(+7, -5)"));
+        assert!(cells[0].body.contains("(+2, -1)"));
         assert!(!cells[0].body.contains("@@"));
     }
 
@@ -1823,6 +1857,8 @@ mod tests {
                 old_count: 5,
                 new_start: 12,
                 new_count: 7,
+                added_count: 2,
+                removed_count: 1,
             }],
             full_diff: Some("@@ -12,5 +12,7 @@\n-old\n+new".into()),
         };

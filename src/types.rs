@@ -2852,11 +2852,27 @@ impl ApplyPatchAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApplyPatchHunkSummary {
+    pub old_start: u32,
+    pub old_count: u32,
+    pub new_start: u32,
+    pub new_count: u32,
+    pub added_count: u32,
+    pub removed_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApplyPatchChangedFile {
     pub action: ApplyPatchAction,
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hunks: Vec<ApplyPatchHunkSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub diff_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2913,6 +2929,10 @@ fn datetime_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         "type": "string",
         "format": "date-time"
     })
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
