@@ -2283,9 +2283,10 @@ mod tests {
     #[tokio::test]
     async fn create_named_agent_rejects_conflicting_existing_identity() {
         let (_home, host) = test_host();
+        let agent_id = "conflicting-release-bot";
 
         let child = AgentIdentityRecord::new(
-            "release-bot",
+            agent_id,
             AgentKind::Child,
             AgentVisibility::Private,
             AgentOwnership::ParentSupervised,
@@ -2296,7 +2297,7 @@ mod tests {
         host.append_agent_identity(&child).unwrap();
 
         let error = host
-            .create_named_agent("release-bot", None)
+            .create_named_agent(agent_id, None)
             .await
             .err()
             .expect("conflicting identity should fail named-agent creation");

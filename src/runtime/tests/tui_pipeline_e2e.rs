@@ -200,10 +200,6 @@ async fn e2e_tui_pipeline_smoke_scripted_agent() {
     // Verify that expected event kinds are present in the audit log.
     let event_kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
     assert!(
-        event_kinds.contains(&"process_execution_requested"),
-        "audit log should contain process_execution_requested"
-    );
-    assert!(
         event_kinds.contains(&"tool_executed"),
         "audit log should contain tool_executed"
     );
@@ -240,7 +236,7 @@ async fn e2e_tui_pipeline_smoke_scripted_agent() {
 
     let mut seen_shown = false;
     let mut seen_turn_terminal = false;
-    let mut seen_command = false;
+    let mut seen_tool = false;
 
     for line in &lines {
         let record: serde_json::Value =
@@ -261,8 +257,8 @@ async fn e2e_tui_pipeline_smoke_scripted_agent() {
             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
 
-        if reducer_kinds.contains(&"process_execution_requested") {
-            seen_command = true;
+        if reducer_kinds.contains(&"tool_executed") {
+            seen_tool = true;
         }
         if reducer_kinds.contains(&"turn_terminal") {
             seen_turn_terminal = true;
@@ -270,8 +266,8 @@ async fn e2e_tui_pipeline_smoke_scripted_agent() {
     }
 
     assert!(
-        seen_command,
-        "should contain process_execution_requested record"
+        seen_tool,
+        "should contain tool_executed presentation record"
     );
     assert!(seen_shown, "at least one record should have decision=shown");
     assert!(seen_turn_terminal, "should contain turn_terminal record");
@@ -426,12 +422,7 @@ async fn e2e_tui_complex_turn_multi_operation() {
         "presentation.jsonl should contain reducer_event_kinds"
     );
 
-    let expected_kinds = [
-        "process_execution_requested",
-        "tool_executed",
-        "assistant_round_recorded",
-        "turn_terminal",
-    ];
+    let expected_kinds = ["tool_executed", "assistant_round_recorded", "turn_terminal"];
 
     let item_kind_set: std::collections::BTreeSet<&str> =
         item_kinds.iter().map(|s| s.as_str()).collect();
@@ -618,7 +609,7 @@ async fn e2e_tui_concurrent_agents_attribution() {
     );
 
     let mut seen_shown = false;
-    let mut seen_command = false;
+    let mut seen_command_result = false;
     let mut seen_apply_patch = false;
 
     for line in &lines {
@@ -636,18 +627,16 @@ async fn e2e_tui_concurrent_agents_attribution() {
             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
 
-        if reducer_kinds.contains(&"process_execution_requested") {
-            seen_command = true;
-        }
         if reducer_kinds.contains(&"tool_executed") {
+            seen_command_result = true;
             seen_apply_patch = true;
         }
     }
 
     assert!(seen_shown, "at least one display decision should be shown");
     assert!(
-        seen_command,
-        "should contain process_execution_requested from agent-a"
+        seen_command_result,
+        "should contain tool_executed from agent-a"
     );
     assert!(
         seen_apply_patch,

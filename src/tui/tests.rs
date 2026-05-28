@@ -1688,7 +1688,7 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    projection.apply_event(
+    projection.apply_stream_event(
         AgentStreamEvent {
             id: "evt-assistant".into(),
             event: "assistant_round_recorded".into(),
@@ -1703,6 +1703,7 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        app.display_mode,
     );
     app.projection = Some(projection);
 
@@ -1712,6 +1713,7 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
     assert!(rendered.contains("Assistant hidden assistant partial"));
+    assert!(!rendered.contains("Action    hidden assistant partial"));
     assert!(!rendered.contains("Action    Waiting for activity"));
     assert!(!rendered.contains("Current   "));
 }
@@ -2003,7 +2005,7 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
             ..Default::default()
         };
     let mut refreshed_projection = TuiProjection::from_snapshot(snapshot);
-    refreshed_projection.apply_event(
+    refreshed_projection.apply_stream_event(
         AgentStreamEvent {
             id: "evt-tool".into(),
             event: "tool_executed".into(),
@@ -2021,6 +2023,7 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        app.display_mode,
     );
     app.projection = Some(refreshed_projection);
 
@@ -2043,7 +2046,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
     );
     let mut previous_projection = TuiProjection::from_snapshot(sample_snapshot("agent-a", "a0"));
     previous_projection.agent.agent.status = AgentStatus::AwakeRunning;
-    previous_projection.apply_event(
+    previous_projection.apply_stream_event(
         AgentStreamEvent {
             id: "evt-a-tool".into(),
             event: "tool_executed".into(),
@@ -2061,6 +2064,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        app.display_mode,
     );
     app.projection = Some(previous_projection);
     let before_switch: String = build_chat_text(&collect_chat_items(&app))
@@ -2097,7 +2101,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
     assert!(rendered.contains("Working"));
-    assert!(rendered.contains("cargo test agent-b"));
+    assert!(!rendered.contains("cargo test agent-b"));
     assert!(!rendered.contains("cargo test agent-a"));
 }
 
@@ -3680,7 +3684,11 @@ fn pipeline_display_level_filtering() {
     // Visibility 2 (WorkDone):       work_item_written with completed state
     // Visibility 3 (TurnResult):     brief_created (normal brief)
     // Visibility 4 (Progress):       assistant_round_recorded
-    // Visibility 5 (Trace):          process_execution_requested, tool_executed
+    // Visibility 5 (Trace):          tool_executed
+    //
+    // process_execution_requested is an input-only runtime trace for command
+    // lifecycle state and must not create a durable presentation item on its
+    // own.
 
     projection.apply_event(
         pipeline_event(
@@ -3878,8 +3886,8 @@ fn pipeline_display_level_filtering() {
         "should contain assistant_round_recorded (visibility 4)"
     );
     assert!(
-        seen_command,
-        "should contain process_execution_requested (visibility 5)"
+        !seen_command,
+        "process_execution_requested should not create a standalone presentation item"
     );
     assert!(seen_tool, "should contain tool_executed (visibility 5)");
 }
@@ -3907,13 +3915,16 @@ fn pipeline_reducer_aggregation() {
     app.projection = Some(TuiProjection::from_snapshot(snapshot));
     let projection = app.projection.as_mut().unwrap();
 
-    // ── Feed multi-event turn with event pairs that trigger reducer merging ──
+    // ── Feed a multi-event turn. Standalone process_execution_requested
+    // events are audit/runtime inputs only; presentation output starts at the
+    // corresponding tool_executed result records.
     //
-    // Events 1-2: process_execution_requested + tool_executed pair → merged by reducer
-    //   (reducer produces one CommandExecuted from 2 reducer events)
+    // Event 1: process_execution_requested → no standalone presentation item
+    // Event 2: tool_executed → command_executed presentation item
     // Event 3: brief_created → standalone (1 reducer event)
     // Event 4: assistant_round_recorded → standalone (1 reducer event)
-    // Events 5-6: second process_execution_requested + tool_executed pair → merged
+    // Event 5: second process_execution_requested → no standalone item
+    // Event 6: second tool_executed → command_executed presentation item
     // Event 7: assistant_round_recorded (second round) → standalone
 
     // Pair 1: command execution
@@ -4087,21 +4098,8 @@ fn pipeline_reducer_aggregation() {
         all_kinds.extend(reducer_event_kinds);
     }
 
-    // ── Verification 1: reducer_event_summaries non-empty for multi-event records ──
-    let merged_records: Vec<&AggRecord> = records
-        .iter()
-        .filter(|r| r.reducer_event_ids_count > 1)
-        .collect();
-    assert!(
-        !merged_records.is_empty(),
-        "should have at least one record with multiple reducer events (merged command pairs)"
-    );
-    for rec in &merged_records {
-        assert!(
-            rec.reducer_event_summaries_count > 0,
-            "merged record item_kind={} must have non-empty reducer_event_summaries",
-            rec.item_kind
-        );
+    // ── Verification 1: reducer_event_summaries match reducer_event_ids ──
+    for rec in &records {
         assert_eq!(
             rec.reducer_event_summaries_count, rec.reducer_event_ids_count,
             "reducer_event_summaries count must match reducer_event_ids count"
@@ -4131,8 +4129,8 @@ fn pipeline_reducer_aggregation() {
     }
 
     assert!(
-        kind_counts.contains_key("process_execution_requested"),
-        "should contain process_execution_requested kind; got: {:?}",
+        !kind_counts.contains_key("process_execution_requested"),
+        "process_execution_requested should not create presentation output; got: {:?}",
         kind_counts
     );
     assert!(
@@ -4481,20 +4479,17 @@ fn pipeline_multi_turn_continuity() {
         }
         if rec
             .reducer_event_kinds
-            .contains(&"process_execution_requested".to_string())
-            && rec
-                .reducer_event_kinds
-                .contains(&"tool_executed".to_string())
+            .contains(&"tool_executed".to_string())
         {
             seen_command = true;
-            // command_executed records should have reducer event ids from some turn
+            // command_executed records should reference a turn's tool result event.
             let has_turn_event = rec
                 .reducer_event_ids
                 .iter()
-                .any(|id| id == "t1-req" || id == "t2-req" || id == "t3-req");
+                .any(|id| id == "t1-tool" || id == "t2-tool" || id == "t3-tool");
             assert!(
                 has_turn_event,
-                "command_executed record should reference a turn's request event"
+                "command_executed record should reference a turn's tool result event"
             );
         }
         if rec
@@ -4531,8 +4526,8 @@ fn pipeline_multi_turn_continuity() {
     for rec in &records {
         if rec.reducer_event_ids.contains(&"t2-term".to_string()) {
             assert!(
-                !rec.reducer_event_ids.contains(&"t1-req".to_string()),
-                "turn 2 record should not contain turn 1 event ids"
+                !rec.reducer_event_ids.contains(&"t1-tool".to_string()),
+                "turn 2 record should not contain turn 1 tool event ids"
             );
             assert!(
                 !rec.reducer_event_ids.contains(&"t1-tool".to_string()),
@@ -4541,12 +4536,12 @@ fn pipeline_multi_turn_continuity() {
         }
         if rec.reducer_event_ids.contains(&"t3-term".to_string()) {
             assert!(
-                !rec.reducer_event_ids.contains(&"t1-req".to_string()),
-                "turn 3 record should not contain turn 1 event ids"
+                !rec.reducer_event_ids.contains(&"t1-tool".to_string()),
+                "turn 3 record should not contain turn 1 tool event ids"
             );
             assert!(
-                !rec.reducer_event_ids.contains(&"t2-req".to_string()),
-                "turn 3 record should not contain turn 2 event ids"
+                !rec.reducer_event_ids.contains(&"t2-tool".to_string()),
+                "turn 3 record should not contain turn 2 tool event ids"
             );
         }
     }

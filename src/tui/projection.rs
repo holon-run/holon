@@ -839,7 +839,7 @@ impl TuiProjection {
             return;
         }
 
-        if !record.presentation.is_current_activity_candidate() {
+        if !Self::is_live_working_activity_kind(&record.kind) {
             return;
         }
 
@@ -850,6 +850,16 @@ impl TuiProjection {
         }
 
         push_limited(&mut self.live_working_activity_events, record.clone(), 8);
+    }
+
+    fn is_live_working_activity_kind(kind: &str) -> bool {
+        matches!(
+            kind,
+            "assistant_round_recorded"
+                | "text_only_round_observed"
+                | "tool_executed"
+                | "tool_execution_failed"
+        )
     }
 
     pub(crate) fn recent_log_events(&self, limit: usize) -> Vec<&ProjectionEventRecord> {

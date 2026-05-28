@@ -688,7 +688,9 @@ fn latest_action_event<'a>(
     events: &'a [&'a crate::tui::projection::ProjectionEventRecord],
 ) -> Option<&'a crate::tui::projection::ProjectionEventRecord> {
     events.iter().rev().copied().find(|event| {
-        event.presentation.is_current_activity_candidate() && !action_event_body(event).is_empty()
+        event.presentation.is_current_activity_candidate()
+            && !is_progress_event(event)
+            && !action_event_body(event).is_empty()
     })
 }
 
