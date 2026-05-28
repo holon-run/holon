@@ -11,9 +11,9 @@ use uuid::Uuid;
 
 use crate::{
     system::{
-        CaptureSpec, ExecutionScopeKind, ExecutionSnapshot,
-        ProcessHost, ProcessPurpose, ProcessRequest, ProgramInvocation, RunningProcess,
-        RunningProcessExitStatus, StdioSpec, StopSignal,
+        CaptureSpec, ExecutionScopeKind, ExecutionSnapshot, ProcessHost, ProcessPurpose,
+        ProcessRequest, ProgramInvocation, RunningProcess, RunningProcessExitStatus, StdioSpec,
+        StopSignal,
     },
     tool::helpers::{
         command_cost_diagnostics, command_digest, command_preview, effective_tool_output_tokens,
