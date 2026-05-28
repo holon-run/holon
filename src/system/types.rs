@@ -46,7 +46,7 @@ impl ExecutionProfile {
                     process_execution: ExecutionGuaranteeLevel::RuntimeShaped,
                 },
                 process_execution: ProcessExecutionCapabilitySnapshot {
-                    cwd_rooting: ExecutionGuaranteeLevel::HardEnforced,
+                    cwd_rooting: ExecutionGuaranteeLevel::RuntimeShaped,
                     projection_rooting: ExecutionGuaranteeLevel::HardEnforced,
                     path_confinement: ExecutionGuaranteeLevel::NotEnforced,
                     write_confinement: ExecutionGuaranteeLevel::NotEnforced,

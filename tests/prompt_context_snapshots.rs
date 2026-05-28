@@ -37,7 +37,7 @@ Resource authority:
   - workspace_projection: hard_enforced
   - process_execution: runtime_shaped
 Process execution guarantees:
-  - cwd_rooting: hard_enforced
+  - cwd_rooting: runtime_shaped
   - projection_rooting: hard_enforced
   - path_confinement: not_enforced
   - write_confinement: not_enforced

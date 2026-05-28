@@ -1817,4 +1817,29 @@ mod tests {
             Some(resolved.output_path.to_string_lossy().as_ref())
         );
     }
+
+    #[tokio::test]
+    async fn resolve_command_task_accepts_workdir_outside_execution_root() {
+        let (_home, workspace, runtime) = test_runtime();
+        // Create a directory outside the workspace root
+        let outside_dir = workspace.path().parent().unwrap().join("outside_cwd");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+
+        let mut spec = command_spec(false, false);
+        spec.workdir = Some(outside_dir.to_string_lossy().into_owned());
+
+        let resolved = resolved_command(&runtime, &spec).await;
+        // The resolved workdir should point to the external directory, not the workspace root
+        let resolved_canonical = std::fs::canonicalize(&resolved.workdir).unwrap();
+        let outside_canonical = std::fs::canonicalize(&outside_dir).unwrap();
+        assert_eq!(
+            resolved_canonical, outside_canonical,
+            "workdir outside execution_root should be accepted and resolve to the requested directory"
+        );
+        assert_ne!(
+            resolved.workdir,
+            workspace.path(),
+            "workdir should not fall back to workspace root"
+        );
+    }
 }
