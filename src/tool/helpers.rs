@@ -156,6 +156,14 @@ pub(crate) fn command_preview(cmd: &str) -> String {
     truncate_text(&redact_command_secrets(cmd), COMMAND_PREVIEW_CHARS)
 }
 
+pub(crate) fn command_display(cmd: &str) -> String {
+    let redacted = redact_command_secrets(cmd);
+    if command_contains_heredoc(cmd) || command_contains_inline_script(cmd) {
+        return redacted.lines().take(2).collect::<Vec<_>>().join("\n");
+    }
+    redacted
+}
+
 pub(crate) fn command_digest(cmd: &str) -> String {
     let digest = Sha256::digest(cmd.as_bytes());
     format!("{digest:x}")
@@ -379,6 +387,7 @@ mod tests {
             "[omitted: command contains heredoc or inline script]"
         );
         assert!(!diagnostics.cmd_preview.contains("FINAL_SECRET_MARKER"));
+        assert_eq!(command_display(&cmd), "python - <<'PY'\nprint('secret')");
     }
 
     #[test]
@@ -393,5 +402,16 @@ mod tests {
         assert!(!preview.contains("abc123"));
         assert!(!preview.contains("hunter2"));
         assert!(!preview.contains("user:pass"));
+    }
+
+    #[test]
+    fn command_display_keeps_full_non_script_command_with_redaction() {
+        let display = command_display(
+            "TOKEN=abc123 cargo test --all-targets -- --exact some_really_long_test_name",
+        );
+
+        assert!(display.contains("TOKEN=[redacted]"));
+        assert!(display.contains("cargo test --all-targets -- --exact some_really_long_test_name"));
+        assert!(!display.contains("abc123"));
     }
 }

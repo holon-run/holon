@@ -274,6 +274,7 @@ fn presentation_item_kind(item: &PresentationItem) -> &'static str {
         PresentationItem::WaitingNotice { .. } => "waiting_notice",
         PresentationItem::WorkItemCard { .. } => "work_item_card",
         PresentationItem::AssistantProgress { .. } => "assistant_progress",
+        PresentationItem::ResumeNotice { .. } => "resume_notice",
         PresentationItem::ActionGroup { .. } => "action_group",
         PresentationItem::CommandExecuted { .. } => "command_executed",
         PresentationItem::FileRead { .. } => "file_read",

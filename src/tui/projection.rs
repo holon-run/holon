@@ -1523,8 +1523,12 @@ mod tests {
             &writer,
         );
 
-        let line = std::fs::read_to_string(writer.root().join("presentation.jsonl")).unwrap();
-        let record: Value = serde_json::from_str(line.trim()).unwrap();
+        let log = std::fs::read_to_string(writer.root().join("presentation.jsonl")).unwrap();
+        let record: Value = log
+            .lines()
+            .last()
+            .and_then(|line| serde_json::from_str(line).ok())
+            .unwrap();
         assert_eq!(record["item_kind"], "command_executed");
         assert_eq!(
             record["reducer_event_ids"],

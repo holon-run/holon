@@ -18,7 +18,8 @@ use crate::{
     },
     tool::{
         helpers::{
-            command_cost_diagnostics, command_digest, command_preview, effective_tool_output_tokens,
+            command_cost_diagnostics, command_digest, command_display, command_preview,
+            effective_tool_output_tokens,
         },
         spec::{ToolResultEnvelope, ToolResultStatus},
         ToolCall, ToolError, ToolSpec,
@@ -2671,6 +2672,7 @@ impl TurnExecution<'_> {
                             "turn_index": turn_index,
                             "run_id": run_id,
                             "exec_command_cmd": command_preview_field(&call),
+                            "exec_command_display": command_display_field(&call),
                             "exec_command_batch_items": command_batch_preview_field(&call),
                             "exec_command_cost": command_cost_field(
                                 &call,
@@ -2804,7 +2806,9 @@ impl TurnExecution<'_> {
                                 "run_id": run_id,
                                 "work_item_id": record.work_item_id.clone(),
                                 "exec_command_cmd": command_preview_field(&call),
+                                "exec_command_display": command_display_field(&call),
                                 "exec_command_batch_items": command_batch_preview_field(&call),
+                                "exec_command_result": exec_command_result_field(&call, &result.envelope),
                                 "exec_command_cost": command_cost_field(
                                     &call,
                                     runtime.inner.default_tool_output_tokens,
@@ -2855,6 +2859,7 @@ impl TurnExecution<'_> {
                                 "turn_index": turn_index,
                                 "run_id": run_id,
                                 "exec_command_cmd": command_preview_field(&call),
+                                "exec_command_display": command_display_field(&call),
                                 "exec_command_batch_items": command_batch_preview_field(&call),
                                 "exec_command_cost": command_cost_field(
                                     &call,
@@ -3156,6 +3161,13 @@ fn command_preview_field(call: &ToolCall) -> Option<String> {
         .map(command_preview)
 }
 
+fn command_display_field(call: &ToolCall) -> Option<String> {
+    (call.name == "ExecCommand")
+        .then(|| call.input.get("cmd").and_then(Value::as_str))
+        .flatten()
+        .map(command_display)
+}
+
 fn command_batch_preview_field(call: &ToolCall) -> Option<Value> {
     if call.name != "ExecCommandBatch" {
         return None;
@@ -3172,11 +3184,21 @@ fn command_batch_preview_field(call: &ToolCall) -> Option<Value> {
                     serde_json::json!({
                         "index": index,
                         "cmd": cmd,
+                        "cmd_display": item
+                            .get("cmd")
+                            .and_then(Value::as_str)
+                            .map(command_display),
                     })
                 })
         })
         .collect::<Vec<_>>();
     (!previews.is_empty()).then(|| Value::Array(previews))
+}
+
+fn exec_command_result_field(call: &ToolCall, envelope: &ToolResultEnvelope) -> Option<Value> {
+    matches!(call.name.as_str(), "ExecCommand" | "ExecCommandBatch")
+        .then(|| envelope.result.clone())
+        .flatten()
 }
 
 fn command_cost_field(

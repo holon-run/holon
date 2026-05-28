@@ -126,6 +126,16 @@ impl Outcome {
     }
 }
 
+/// Command presentation state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandStatus {
+    Started,
+    Completed,
+    Failed,
+    PromotedToTask,
+    AlreadyRunning,
+}
+
 /// State of a presentation item: stable or still evolving.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ItemState {
@@ -231,10 +241,14 @@ pub enum PresentationItem {
         summary: String,
     },
 
-    // ── Level 4+ (Verbose): Codex-like activity ───────────────────────────
+    // ── Level 4+ (Verbose): compact activity ─────────────────────────────
     AssistantProgress {
         text: String,
         state: ItemState,
+    },
+    ResumeNotice {
+        reason: String,
+        details: Option<String>,
     },
     ActionGroup {
         heading: String,
@@ -242,12 +256,15 @@ pub enum PresentationItem {
         state: ItemState,
     },
     CommandExecuted {
+        status: CommandStatus,
         cmd_preview: String,
+        task_id: Option<String>,
         duration_ms: Option<u64>,
         exit_code: Option<i32>,
         stdout_summary: String,
         full_stdout: Option<String>,
         full_stderr: Option<String>,
+        error_message: Option<String>,
     },
     FileRead {
         path: String,
@@ -307,6 +324,7 @@ impl PresentationItem {
             PresentationItem::WorkItemCard { .. } => 3,
 
             PresentationItem::AssistantProgress { .. } => 4,
+            PresentationItem::ResumeNotice { .. } => 4,
             PresentationItem::ActionGroup { .. } => 4,
             PresentationItem::CommandExecuted { .. } => 4,
             PresentationItem::FileRead { .. } => 4,
@@ -404,6 +422,18 @@ impl Renderable for PresentationItem {
                 vec![cell]
             }
 
+            PresentationItem::ResumeNotice { reason, details } => {
+                let mut body = format!("\u{21bb} {}", reason);
+                if level >= 5 {
+                    if let Some(details) = details {
+                        if !details.trim().is_empty() && details != reason {
+                            body.push_str(&format!("\n\u{2502} {}", details));
+                        }
+                    }
+                }
+                vec![RenderedCell::new("Holon", body)]
+            }
+
             PresentationItem::ActionGroup {
                 heading,
                 items,
@@ -425,29 +455,62 @@ impl Renderable for PresentationItem {
             }
 
             PresentationItem::CommandExecuted {
+                status,
                 cmd_preview,
+                task_id,
                 duration_ms,
                 exit_code,
-                stdout_summary,
+                stdout_summary: _,
                 full_stdout,
                 full_stderr,
+                error_message,
             } => {
-                let outcome = match exit_code {
-                    Some(0) => Outcome::Success,
-                    Some(_) => Outcome::Failure,
-                    None => Outcome::Unknown,
+                let symbol = match status {
+                    CommandStatus::Started => "\u{2026}",
+                    CommandStatus::PromotedToTask | CommandStatus::AlreadyRunning => "\u{21bb}",
+                    CommandStatus::Failed => Outcome::Failure.symbol(),
+                    CommandStatus::Completed => match exit_code {
+                        Some(0) => Outcome::Success.symbol(),
+                        Some(_) => Outcome::Failure.symbol(),
+                        None => Outcome::Unknown.symbol(),
+                    },
                 };
-                let mut body = format!("{} {}", outcome.symbol(), cmd_preview);
+                let mut body = format!("{} {}", symbol, cmd_preview);
                 if let Some(duration_ms) = duration_ms {
                     let duration_s = *duration_ms as f64 / 1000.0;
                     body.push_str(&format!(" ({:.1}s)", duration_s));
                 }
+                match status {
+                    CommandStatus::Started => body.push_str(" — started"),
+                    CommandStatus::PromotedToTask => {
+                        body.push_str(" — running in background");
+                        if let Some(task_id) = task_id {
+                            body.push_str(&format!(" ({task_id})"));
+                        }
+                    }
+                    CommandStatus::AlreadyRunning => {
+                        body.push_str(" — already running");
+                        if let Some(task_id) = task_id {
+                            body.push_str(&format!(" ({task_id})"));
+                        }
+                    }
+                    CommandStatus::Failed if exit_code.is_none() => body.push_str(" — failed"),
+                    CommandStatus::Completed | CommandStatus::Failed => {}
+                }
 
                 if level >= 5 {
+                    if let Some(error) = error_message {
+                        if !error.trim().is_empty() {
+                            body.push_str("\n\u{2502} error:\n");
+                            for line in error.lines() {
+                                body.push_str(&format!("\u{2502} {}\n", line));
+                            }
+                        }
+                    }
                     if let Some(stdout) = full_stdout {
                         if !stdout.trim().is_empty() {
                             body.push_str("\n\u{2502} stdout:\n");
-                            for line in stdout.lines().take(20) {
+                            for line in stdout.lines() {
                                 body.push_str(&format!("\u{2502} {}\n", line));
                             }
                         }
@@ -455,13 +518,11 @@ impl Renderable for PresentationItem {
                     if let Some(stderr) = full_stderr {
                         if !stderr.trim().is_empty() {
                             body.push_str("\n\u{2502} stderr:\n");
-                            for line in stderr.lines().take(10) {
+                            for line in stderr.lines() {
                                 body.push_str(&format!("\u{2502} {}\n", line));
                             }
                         }
                     }
-                } else if !stdout_summary.is_empty() {
-                    body.push_str(&format!("\n\u{2502} {}", stdout_summary));
                 }
 
                 vec![RenderedCell::new("Holon", body)]
@@ -631,12 +692,15 @@ impl PresentationReducer {
 
                             items.push(TimedItem::from_event(
                                 PresentationItem::CommandExecuted {
+                                    status: command_status_from_tool_event(next),
                                     cmd_preview: exec_preview,
+                                    task_id: command_task_id(next),
                                     duration_ms,
                                     exit_code,
                                     stdout_summary,
                                     full_stdout,
                                     full_stderr,
+                                    error_message: tool_error_message(next),
                                 },
                                 next,
                             ));
@@ -644,6 +708,20 @@ impl PresentationReducer {
                             continue;
                         }
                     }
+                    items.push(TimedItem::from_event(
+                        PresentationItem::CommandExecuted {
+                            status: CommandStatus::Started,
+                            cmd_preview: exec_preview,
+                            task_id: None,
+                            duration_ms: None,
+                            exit_code: None,
+                            stdout_summary: String::new(),
+                            full_stdout: None,
+                            full_stderr: None,
+                            error_message: None,
+                        },
+                        event,
+                    ));
                 }
 
                 "message_enqueued" => {
@@ -696,12 +774,15 @@ impl PresentationReducer {
 
                     items.push(TimedItem::from_event(
                         PresentationItem::CommandExecuted {
+                            status: command_status_from_tool_event(event),
                             cmd_preview,
+                            task_id: command_task_id(event),
                             duration_ms: tool_duration_ms(event),
                             exit_code,
                             stdout_summary,
                             full_stdout,
                             full_stderr,
+                            error_message: tool_error_message(event),
                         },
                         event,
                     ));
@@ -724,6 +805,17 @@ impl PresentationReducer {
                                 event,
                             ));
                         }
+                    }
+                }
+
+                "callback_delivered" | "timer_fired" | "continuation_trigger_received" => {
+                    if let Some(item) = resume_notice_item(event) {
+                        items.push(TimedItem::from_event(item, event));
+                    } else {
+                        items.push(TimedItem::from_event(
+                            self.event_to_presentation(event),
+                            event,
+                        ));
                     }
                 }
 
@@ -913,9 +1005,21 @@ impl PresentationReducer {
                 from: "message".to_string(),
                 to: event.summary.clone(),
             },
-            OperatorEventCategory::Waiting => PresentationItem::WaitingNotice {
-                reason: event.summary.clone(),
-            },
+            OperatorEventCategory::Waiting => {
+                if matches!(
+                    event.kind.as_str(),
+                    "callback_delivered" | "timer_create_requested" | "timer_created"
+                ) {
+                    PresentationItem::GenericEvent {
+                        kind: event.kind.clone(),
+                        summary: event.summary.clone(),
+                    }
+                } else {
+                    PresentationItem::WaitingNotice {
+                        reason: event.summary.clone(),
+                    }
+                }
+            }
             OperatorEventCategory::Runtime => PresentationItem::InternalTransition {
                 what: event.kind.clone(),
                 from: "".to_string(),
@@ -1072,6 +1176,65 @@ fn is_sleep_tool_event(event: &ProjectionEventRecord) -> bool {
     event.payload.get("tool_name").and_then(Value::as_str) == Some("Sleep")
 }
 
+fn resume_notice_item(event: &ProjectionEventRecord) -> Option<PresentationItem> {
+    let reason = match event.kind.as_str() {
+        "callback_delivered" => callback_resume_reason(event),
+        "timer_fired" => timer_resume_reason(event),
+        "continuation_trigger_received" => continuation_resume_reason(event),
+        _ => None,
+    }?;
+    Some(PresentationItem::ResumeNotice {
+        reason,
+        details: Some(event.summary.clone()),
+    })
+}
+
+fn callback_resume_reason(event: &ProjectionEventRecord) -> Option<String> {
+    if !callback_disposition_is_triggered(&event.payload) {
+        return None;
+    }
+    let source = event.payload.get("source").and_then(Value::as_str);
+    let resource = event.payload.get("resource").and_then(Value::as_str);
+    let reason = match (source, resource) {
+        (Some(source), Some(resource)) => {
+            format!("External event from {source} for {resource}; resuming agent")
+        }
+        (Some(source), None) => format!("External event from {source}; resuming agent"),
+        (None, Some(resource)) => format!("External event for {resource}; resuming agent"),
+        (None, None) => "External event received; resuming agent".to_string(),
+    };
+    Some(reason)
+}
+
+fn timer_resume_reason(event: &ProjectionEventRecord) -> Option<String> {
+    let reason = event
+        .payload
+        .get("summary")
+        .and_then(Value::as_str)
+        .filter(|summary| !summary.trim().is_empty())
+        .map(|summary| format!("Timer fired: {}; resuming agent", summary.trim()))
+        .unwrap_or_else(|| "Timer fired; resuming agent".to_string());
+    Some(reason)
+}
+
+fn continuation_resume_reason(event: &ProjectionEventRecord) -> Option<String> {
+    let trigger = event
+        .payload
+        .get("trigger_kind")
+        .and_then(Value::as_str)
+        .filter(|trigger| !trigger.trim().is_empty())?;
+    Some(format!(
+        "Continuation triggered by {trigger}; resuming agent"
+    ))
+}
+
+fn callback_disposition_is_triggered(payload: &Value) -> bool {
+    payload
+        .get("disposition")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("triggered"))
+}
+
 fn is_suppressed_known_runtime_event(kind: &str) -> bool {
     matches!(
         kind,
@@ -1088,33 +1251,69 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
 }
 
 fn exec_command_preview(event: &ProjectionEventRecord) -> Option<String> {
-    event
+    if let Some(cmd) = event
         .payload
-        .get("exec_command_cmd")
-        .and_then(|v| v.as_str())
-        .or_else(|| event.payload.get("cmd").and_then(|v| v.as_str()))
-        .or_else(|| event.payload.get("cmd_preview").and_then(|v| v.as_str()))
+        .get("exec_command_display")
+        .and_then(Value::as_str)
+        .or_else(|| event.payload.get("cmd_display").and_then(Value::as_str))
+    {
+        return Some(cmd.to_string());
+    }
+    if let Some(items) = event
+        .payload
+        .get("exec_command_batch_items")
+        .and_then(Value::as_array)
+    {
+        let cmds = items
+            .iter()
+            .filter_map(|item| {
+                item.get("cmd_display")
+                    .and_then(Value::as_str)
+                    .or_else(|| item.get("cmd").and_then(Value::as_str))
+            })
+            .collect::<Vec<_>>();
+        if !cmds.is_empty() {
+            return Some(cmds.join("\n"));
+        }
+    }
+    exec_command_result(event)
+        .and_then(|result| result.get("cmd_display"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            exec_command_result(event)
+                .and_then(|result| result.get("cmd"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            event
+                .payload
+                .get("exec_command_cmd")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| event.payload.get("cmd").and_then(Value::as_str))
+        .or_else(|| event.payload.get("cmd_preview").and_then(Value::as_str))
         .or_else(|| {
             event
                 .payload
                 .get("command_cost")
                 .and_then(|v| v.get("cmd_preview"))
-                .and_then(|v| v.as_str())
+                .and_then(Value::as_str)
         })
         .or_else(|| {
             event
                 .payload
                 .get("exec_command_cost")
                 .and_then(|v| v.get("cmd_preview"))
-                .and_then(|v| v.as_str())
+                .and_then(Value::as_str)
         })
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
 }
 
 fn tool_exit_code(event: &ProjectionEventRecord) -> Option<i32> {
     event
         .payload
         .get("exit_status")
+        .or_else(|| exec_command_result(event).and_then(|result| result.get("exit_status")))
         .and_then(|v: &Value| v.as_i64())
         .map(|c| c as i32)
 }
@@ -1128,6 +1327,10 @@ fn tool_output_summary(event: &ProjectionEventRecord) -> String {
         .payload
         .get("stdout_preview")
         .or_else(|| event.payload.get("output_preview"))
+        .or_else(|| exec_command_result(event).and_then(|result| result.get("stdout_preview")))
+        .or_else(|| {
+            exec_command_result(event).and_then(|result| result.get("initial_output_preview"))
+        })
         .and_then(|v: &Value| v.as_str())
         .unwrap_or("")
         .to_string()
@@ -1137,6 +1340,7 @@ fn tool_full_output(event: &ProjectionEventRecord) -> Option<String> {
     event
         .payload
         .get("stdout")
+        .or_else(|| exec_command_result(event).and_then(|result| result.get("stdout_preview")))
         .and_then(|v: &Value| v.as_str())
         .map(|s| s.to_string())
 }
@@ -1145,8 +1349,60 @@ fn tool_full_stderr(event: &ProjectionEventRecord) -> Option<String> {
     event
         .payload
         .get("stderr")
+        .or_else(|| exec_command_result(event).and_then(|result| result.get("stderr_preview")))
         .and_then(|v: &Value| v.as_str())
         .map(|s| s.to_string())
+}
+
+fn tool_error_message(event: &ProjectionEventRecord) -> Option<String> {
+    event
+        .payload
+        .get("error")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            event
+                .payload
+                .get("tool_error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+        })
+        .map(|s| s.to_string())
+}
+
+fn command_status_from_tool_event(event: &ProjectionEventRecord) -> CommandStatus {
+    if event.kind == "tool_execution_failed" {
+        return CommandStatus::Failed;
+    }
+    if let Some(disposition) = exec_command_result(event)
+        .and_then(|result| result.get("disposition"))
+        .and_then(Value::as_str)
+    {
+        return match disposition {
+            "promoted_to_task" => CommandStatus::PromotedToTask,
+            "already_running" => CommandStatus::AlreadyRunning,
+            "completed" => match tool_exit_code(event) {
+                Some(0) | None => CommandStatus::Completed,
+                Some(_) => CommandStatus::Failed,
+            },
+            _ => CommandStatus::Completed,
+        };
+    }
+    match tool_exit_code(event) {
+        Some(0) | None => CommandStatus::Completed,
+        Some(_) => CommandStatus::Failed,
+    }
+}
+
+fn command_task_id(event: &ProjectionEventRecord) -> Option<String> {
+    exec_command_result(event)
+        .and_then(|result| result.get("task_handle"))
+        .and_then(|handle| handle.get("task_id"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn exec_command_result(event: &ProjectionEventRecord) -> Option<&Value> {
+    event.payload.get("exec_command_result")
 }
 
 fn round_text_preview(event: &ProjectionEventRecord) -> Option<String> {
@@ -1217,12 +1473,15 @@ mod tests {
     #[test]
     fn is_visible_at() {
         let item = PresentationItem::CommandExecuted {
+            status: CommandStatus::Completed,
             cmd_preview: "cargo test".into(),
+            task_id: None,
             duration_ms: Some(1000),
             exit_code: Some(0),
             stdout_summary: "".into(),
             full_stdout: None,
             full_stderr: None,
+            error_message: None,
         };
         assert!(!item.is_visible_at(3));
         assert!(item.is_visible_at(4));
@@ -1232,35 +1491,82 @@ mod tests {
     #[test]
     fn command_render_level_4() {
         let item = PresentationItem::CommandExecuted {
+            status: CommandStatus::Completed,
             cmd_preview: "cargo test --lib".into(),
+            task_id: None,
             duration_ms: Some(2300),
             exit_code: Some(0),
             stdout_summary: "5 passed".into(),
             full_stdout: Some("running 5 tests\ntest result: ok".into()),
             full_stderr: None,
+            error_message: None,
         };
         let cells = item.render(4);
         assert_eq!(cells.len(), 1);
         assert!(cells[0].body.contains("cargo test --lib"));
         assert!(cells[0].body.contains("2.3s"));
-        assert!(cells[0].body.contains("5 passed"));
+        assert!(!cells[0].body.contains("5 passed"));
         assert!(!cells[0].body.contains("running 5 tests"));
     }
 
     #[test]
     fn command_render_level_5() {
         let item = PresentationItem::CommandExecuted {
+            status: CommandStatus::Completed,
             cmd_preview: "cargo test --lib".into(),
+            task_id: None,
             duration_ms: Some(2300),
             exit_code: Some(0),
             stdout_summary: "5 passed".into(),
             full_stdout: Some("running 5 tests\ntest result: ok".into()),
             full_stderr: None,
+            error_message: None,
         };
         let cells = item.render(5);
         assert_eq!(cells.len(), 1);
         assert!(cells[0].body.contains("running 5 tests"));
         assert!(cells[0].body.contains("test result: ok"));
+    }
+
+    #[test]
+    fn command_render_level_5_includes_full_error_message() {
+        let item = PresentationItem::CommandExecuted {
+            status: CommandStatus::Failed,
+            cmd_preview: "cargo test --lib".into(),
+            task_id: None,
+            duration_ms: Some(2300),
+            exit_code: None,
+            stdout_summary: "".into(),
+            full_stdout: None,
+            full_stderr: Some("stderr line 1\nstderr line 2".into()),
+            error_message: Some("error line 1\nerror line 2\nerror line 3".into()),
+        };
+        let body = &item.render(5)[0].body;
+        assert!(body.contains("error line 1"));
+        assert!(body.contains("error line 2"));
+        assert!(body.contains("error line 3"));
+        assert!(body.contains("stderr line 1"));
+        assert!(body.contains("stderr line 2"));
+    }
+
+    #[test]
+    fn command_render_promoted_level_4() {
+        let item = PresentationItem::CommandExecuted {
+            status: CommandStatus::PromotedToTask,
+            cmd_preview: "cargo test --all".into(),
+            task_id: Some("task-123".into()),
+            duration_ms: None,
+            exit_code: None,
+            stdout_summary: "running tests".into(),
+            full_stdout: None,
+            full_stderr: None,
+            error_message: None,
+        };
+        let cells = item.render(4);
+        assert_eq!(cells.len(), 1);
+        assert!(cells[0].body.contains("running in background"));
+        assert!(cells[0].body.contains("task-123"));
+        assert!(!cells[0].body.contains("running tests"));
     }
 
     #[test]
@@ -1365,11 +1671,13 @@ mod tests {
         assert_eq!(items.len(), 1);
         match &items[0].item {
             PresentationItem::CommandExecuted {
+                status,
                 cmd_preview,
                 exit_code,
                 stdout_summary,
                 ..
             } => {
+                assert_eq!(*status, CommandStatus::Completed);
                 assert!(cmd_preview.contains("cargo test"));
                 assert_eq!(*exit_code, Some(0));
                 assert_eq!(stdout_summary, "5 passed");
@@ -1397,6 +1705,95 @@ mod tests {
         match &items[0].item {
             PresentationItem::CommandExecuted { cmd_preview, .. } => {
                 assert!(cmd_preview.contains("rg pattern"));
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_standalone_process_execution_requested_becomes_started_command() {
+        let event = make_event(
+            "process_execution_requested",
+            "command started: cargo test",
+            json!({"cmd_preview": "cargo test --all"}),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::CommandExecuted {
+                status,
+                cmd_preview,
+                ..
+            } => {
+                assert_eq!(*status, CommandStatus::Started);
+                assert_eq!(cmd_preview, "cargo test --all");
+                assert!(items[0].item.render(4)[0].body.contains("started"));
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_prefers_command_display_for_script_commands() {
+        let event = make_event(
+            "process_execution_requested",
+            "command started",
+            json!({
+                "cmd_preview": "[omitted: command contains heredoc or inline script]",
+                "cmd_display": "python - <<'PY'\nprint('hello')"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::CommandExecuted { cmd_preview, .. } => {
+                assert_eq!(cmd_preview, "python - <<'PY'\nprint('hello')");
+                assert!(items[0].item.render(4)[0].body.contains("print('hello')"));
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_promoted_exec_command_uses_bounded_outcome() {
+        let event = make_event(
+            "tool_executed",
+            "tool executed: ExecCommand",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "cargo test --all",
+                "exec_command_result": {
+                    "disposition": "promoted_to_task",
+                    "task_handle": {"task_id": "task-123"},
+                    "initial_output_preview": "Compiling holon",
+                    "initial_output_truncated": false
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::CommandExecuted {
+                status,
+                task_id,
+                stdout_summary,
+                ..
+            } => {
+                assert_eq!(*status, CommandStatus::PromotedToTask);
+                assert_eq!(task_id.as_deref(), Some("task-123"));
+                assert_eq!(stdout_summary, "Compiling holon");
+                assert!(items[0].item.render(4)[0]
+                    .body
+                    .contains("running in background"));
             }
             other => panic!("expected CommandExecuted, got {:?}", other),
         }
@@ -1448,6 +1845,68 @@ mod tests {
                 assert_eq!(tokens.output, 200);
             }
             other => panic!("expected ProviderRound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_renders_external_resume_reason_at_verbose_level() {
+        let event = make_event(
+            "callback_delivered",
+            "callback_delivered",
+            json!({
+                "source": "github",
+                "resource": "pull/42",
+                "disposition": "Triggered"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::ResumeNotice { reason, details } => {
+                assert_eq!(
+                    reason,
+                    "External event from github for pull/42; resuming agent"
+                );
+                assert_eq!(items[0].item.min_display_level(), 4);
+                assert!(items[0].item.render(3).is_empty());
+                assert!(items[0].item.render(4)[0].body.contains("resuming agent"));
+                assert!(items[0].item.render(5)[0]
+                    .body
+                    .contains("External event received"));
+                assert!(details
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("github")));
+            }
+            other => panic!("expected ResumeNotice, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_keeps_non_resuming_callback_as_debug_detail() {
+        let event = make_event(
+            "callback_delivered",
+            "callback_delivered",
+            json!({
+                "source": "github",
+                "resource": "pull/42",
+                "disposition": "Coalesced"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::GenericEvent { kind, summary } => {
+                assert_eq!(kind, "callback_delivered");
+                assert!(summary.contains("External event received"));
+                assert_eq!(items[0].item.min_display_level(), 5);
+            }
+            other => panic!("expected GenericEvent fallback, got {:?}", other),
         }
     }
 
