@@ -45,16 +45,16 @@ pub struct WorkQueuePromptProjection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EventLogPageOrder {
+pub(crate) enum EventLogPageOrder {
     Asc,
     Desc,
 }
 
 #[derive(Debug, Clone)]
-pub struct EventLogPage {
-    pub events: Vec<AuditEvent>,
-    pub has_older: bool,
-    pub has_newer: bool,
+pub(crate) struct EventLogPage {
+    pub(crate) events: Vec<AuditEvent>,
+    pub(crate) has_older: bool,
+    pub(crate) has_newer: bool,
 }
 
 impl WorkQueuePromptProjection {
@@ -504,7 +504,7 @@ impl AppStorage {
         Ok(latest)
     }
 
-    pub fn read_event_page_matching<F>(
+    pub(crate) fn read_event_page_matching<F>(
         &self,
         before_seq: Option<u64>,
         after_seq: Option<u64>,

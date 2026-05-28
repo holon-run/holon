@@ -2758,7 +2758,7 @@
     },
     "/agents/{agent_id}/events": {
       "get": {
-        "description": "Return a bounded page of runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Event payloads are included in full; max_level filters event inclusion only.",
+        "description": "Return a bounded page of runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Event payloads are included in full; max_level filters event inclusion only. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.",
         "operationId": "agentEvents",
         "parameters": [
           {
@@ -2816,7 +2816,7 @@
     },
     "/agents/{agent_id}/events/stream": {
       "get": {
-        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens.",
+        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.",
         "operationId": "agentEventsStream",
         "parameters": [
           {

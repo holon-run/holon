@@ -205,9 +205,11 @@ fn is_operator_message_event(kind: &str, payload: &Value) -> bool {
     if kind != "message_enqueued" {
         return false;
     }
-    decode_value::<crate::types::MessageEnvelope>(payload.clone()).is_some_and(|message| {
-        matches!(message.origin, crate::types::MessageOrigin::Operator { .. })
-    })
+    payload
+        .get("origin")
+        .and_then(|origin| origin.get("kind"))
+        .and_then(Value::as_str)
+        == Some("operator")
 }
 
 pub fn is_durable_operator_event_kind(kind: &str) -> bool {
@@ -2139,6 +2141,32 @@ mod tests {
             Some(OperatorDisplayMode::Debug)
         );
         assert_eq!(OperatorDisplayMode::parse("trace"), None);
+    }
+
+    #[test]
+    fn display_mode_filter_handles_malformed_message_payloads() {
+        let context = OperatorPresentationContext::default();
+        assert!(!super::is_operator_event_in_display_mode(
+            "message_enqueued",
+            &json!({ "origin": { "kind": "channel" } }),
+            "message",
+            &context,
+            OperatorDisplayMode::Info
+        ));
+        assert!(!super::is_operator_event_in_display_mode(
+            "message_enqueued",
+            &json!({ "origin": "operator" }),
+            "message",
+            &context,
+            OperatorDisplayMode::Info
+        ));
+        assert!(super::is_operator_event_in_display_mode(
+            "message_enqueued",
+            &json!({ "origin": { "kind": "operator" }, "body": { "kind": "text", "text": "hi" } }),
+            "message",
+            &context,
+            OperatorDisplayMode::Info
+        ));
     }
 
     #[test]

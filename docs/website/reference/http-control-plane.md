@@ -196,6 +196,17 @@ Filtering behavior:
 - `/agents/:id/events` may use `max_level` to filter which events are returned.
 - `/agents/:id/events/stream` is raw and does not support `max_level`.
 
+Migration note:
+
+- This is a breaking event API change from the earlier projection contract.
+  Remove `projection=operator` and `projection=local_debug` query parameters.
+- `StreamEventEnvelope.projection` is no longer present. Clients that checked
+  `projection.raw_payload_included` should treat all event envelopes as
+  full-payload envelopes.
+- To reproduce the old operator-facing page density, request
+  `/agents/:id/events?max_level=info`. Stream clients should keep subscribing
+  to `/agents/:id/events/stream` and apply any presentation filtering locally.
+
 **`GET /agents/:id/transcript`** — Turn transcript
 
 Returns the current turn transcript entries.
