@@ -457,7 +457,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.process_execution.cwd_rooting,
-            ExecutionGuaranteeLevel::HardEnforced
+            ExecutionGuaranteeLevel::RuntimeShaped
         );
         assert_eq!(
             snapshot.process_execution.path_confinement,
