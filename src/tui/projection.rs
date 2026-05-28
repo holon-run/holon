@@ -1116,26 +1116,7 @@ fn presentation_debug_items_for_event(
     Vec<ProjectionEventRecord>,
     Vec<crate::presentation::TimedItem>,
 ) {
-    if matches!(
-        record.kind.as_str(),
-        "tool_executed" | "tool_execution_failed"
-    ) && matches!(
-        record.payload.get("tool_name").and_then(Value::as_str),
-        Some("ExecCommand" | "ExecCommandBatch")
-    ) {
-        if let Some(previous) = event_log
-            .iter()
-            .rev()
-            .find(|event| event.id != record.id && event.kind == "process_execution_requested")
-        {
-            let reducer_events = vec![previous.clone(), record.clone()];
-            let mut reducer = crate::presentation::PresentationReducer::new();
-            let items = reducer.reduce(reducer_events.as_slice());
-            if !items.is_empty() {
-                return (reducer_events, items);
-            }
-        }
-    }
+    let _ = event_log;
     (vec![record.clone()], timed_items.to_vec())
 }
 
@@ -1500,7 +1481,7 @@ mod tests {
     }
 
     #[test]
-    fn presentation_debug_log_uses_adjacent_command_window() {
+    fn presentation_debug_log_records_command_result_without_start_window() {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
         let writer =
             crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
@@ -1533,10 +1514,7 @@ mod tests {
             .and_then(|line| serde_json::from_str(line).ok())
             .unwrap();
         assert_eq!(record["item_kind"], "command_executed");
-        assert_eq!(
-            record["reducer_event_ids"],
-            json!(["evt-process_execution_requested", "evt-tool_executed"])
-        );
+        assert_eq!(record["reducer_event_ids"], json!(["evt-tool_executed"]));
     }
 
     #[test]

@@ -695,31 +695,7 @@ impl PresentationReducer {
             let event = &events[i];
 
             match event.kind.as_str() {
-                "process_execution_requested" => {
-                    let exec_preview =
-                        exec_command_preview(event).unwrap_or_else(|| event.summary.clone());
-                    let item = TimedItem::with_key(
-                        PresentationItem::CommandExecuted {
-                            status: CommandStatus::Started,
-                            cmd_preview: exec_preview.clone(),
-                            task_id: None,
-                            duration_ms: None,
-                            exit_code: None,
-                            stdout_summary: String::new(),
-                            full_stdout: None,
-                            full_stderr: None,
-                            error_message: None,
-                        },
-                        event.ts,
-                        command_presentation_key(event, &exec_preview)
-                            .unwrap_or_else(|| event_dedupe_key(event)),
-                    );
-                    if let Some(key) = command_presentation_key(event, &exec_preview) {
-                        self.open_command_keys.insert(key.clone());
-                        local_open_command_items.insert(key, items.len());
-                    }
-                    items.push(item);
-                }
+                "process_execution_requested" => {}
 
                 "message_enqueued" => {
                     if let Some((key, text)) = operator_message_item(event) {
@@ -802,7 +778,7 @@ impl PresentationReducer {
                         } else if self.open_command_keys.remove(&key) {
                             items.push(TimedItem::with_key(item, event.ts, key));
                         } else {
-                            items.push(TimedItem::from_event(item, event));
+                            items.push(TimedItem::with_key(item, event.ts, key));
                         }
                     } else {
                         items.push(TimedItem::from_event(item, event));
@@ -2098,18 +2074,7 @@ mod tests {
 
         let mut reducer = PresentationReducer::new();
         let started = reducer.reduce(&[start]);
-        assert_eq!(started.len(), 1);
-        assert_eq!(
-            started[0].dedupe_key,
-            "command::cargo test --lib".to_string()
-        );
-        assert!(matches!(
-            started[0].item,
-            PresentationItem::CommandExecuted {
-                status: CommandStatus::Started,
-                ..
-            }
-        ));
+        assert!(started.is_empty());
 
         let finished = reducer.reduce(&[finish]);
         assert_eq!(finished.len(), 1);
@@ -2273,7 +2238,7 @@ mod tests {
     }
 
     #[test]
-    fn reducer_standalone_process_execution_requested_becomes_started_command() {
+    fn reducer_standalone_process_execution_requested_is_not_a_command_item() {
         let event = make_event(
             "process_execution_requested",
             "command started: cargo test",
@@ -2283,29 +2248,19 @@ mod tests {
         let mut reducer = PresentationReducer::new();
         let items = reducer.reduce(&[event]);
 
-        assert_eq!(items.len(), 1);
-        match &items[0].item {
-            PresentationItem::CommandExecuted {
-                status,
-                cmd_preview,
-                ..
-            } => {
-                assert_eq!(*status, CommandStatus::Started);
-                assert_eq!(cmd_preview, "cargo test --all");
-                assert!(items[0].item.render(4)[0].body.contains("started"));
-            }
-            other => panic!("expected CommandExecuted, got {:?}", other),
-        }
+        assert!(items.is_empty());
     }
 
     #[test]
     fn reducer_prefers_command_display_for_script_commands() {
         let event = make_event(
-            "process_execution_requested",
-            "command started",
+            "tool_executed",
+            "command finished",
             json!({
+                "tool_name": "ExecCommand",
                 "cmd_preview": "[omitted: command contains heredoc or inline script]",
-                "cmd_display": "python - <<'PY'\nprint('hello')"
+                "cmd_display": "python - <<'PY'\nprint('hello')",
+                "exit_status": 0
             }),
         );
 

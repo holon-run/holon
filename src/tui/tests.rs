@@ -3514,7 +3514,7 @@ fn pipeline_single_turn_presentation_jsonl() {
             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
 
-        if reducer_kinds.contains(&"process_execution_requested") {
+        if reducer_kinds.contains(&"tool_executed") {
             seen_command = true;
             assert_eq!(record["item_kind"], "command_executed");
         }
@@ -3552,10 +3552,7 @@ fn pipeline_single_turn_presentation_jsonl() {
         }
     }
 
-    assert!(
-        seen_command,
-        "should contain process_execution_requested event"
-    );
+    assert!(seen_command, "should contain command result event");
     assert!(
         seen_assistant,
         "should contain assistant_round_recorded event"

@@ -237,19 +237,6 @@ impl RuntimeHandle {
                 });
             }
         }
-        self.append_audit_event(
-            "process_execution_requested",
-            serde_json::json!({
-                "surface": "ExecCommand",
-                "authority_class": authority_class,
-                "cmd_preview": diagnostics.cmd_preview.clone(),
-                "cmd_display": command_display(&resolved.spec.cmd),
-                "command_cost": diagnostics.clone(),
-                "execution": resolved.execution.clone(),
-                "boundary": crate::system::HostLocalBoundary::from_snapshot(&resolved.execution).audit_metadata(),
-                "workdir": resolved.workdir.clone(),
-            }),
-        )?;
         let mut running = self.start_command_process(&resolved).await?;
         let mut captured = CapturedOutput::default();
         let sleep = tokio::time::sleep(Duration::from_millis(spec.yield_time_ms));
