@@ -21,9 +21,9 @@ use holon::{
     types::{
         AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
-        ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
-        OperatorDeliveryStatus, TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState,
-        WaitingIntentStatus, WorkItemState,
+        ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
+        MessageOrigin, OperatorDeliveryStatus, Priority, TaskKind, TaskRecord, TaskStatus,
+        TodoItem, TodoItemState, WaitingIntentStatus, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -291,21 +291,13 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
         replayed.data["provenance"]["delivery_surface"],
         "http_control_prompt"
     );
-    assert_eq!(
-        replayed.data["projection"]["name"],
-        serde_json::json!("operator")
-    );
-    assert_eq!(
-        replayed.data["projection"]["raw_payload_included"],
-        serde_json::json!(true)
-    );
+    assert!(replayed.data.get("projection").is_none());
 
     server.abort();
     Ok(())
 }
 
-pub async fn events_route_operator_projection_keeps_stable_high_value_payload_fields() -> Result<()>
-{
+pub async fn events_route_payload_includes_full_fields() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -360,7 +352,7 @@ pub async fn events_route_operator_projection_keeps_stable_high_value_payload_fi
 
     let page: serde_json::Value = client
         .get(format!(
-            "{base}/agents/default/events?after_seq={after_seq}&limit=10&order=asc&projection=operator"
+            "{base}/agents/default/events?after_seq={after_seq}&limit=10&order=asc"
         ))
         .send()
         .await?
@@ -368,53 +360,120 @@ pub async fn events_route_operator_projection_keeps_stable_high_value_payload_fi
         .await?;
     let events = page["events"].as_array().expect("events");
 
-    // Operator projection passes through the full raw payload.
     let admitted = events
         .iter()
         .find(|event| event["type"] == "message_admitted")
-        .expect("message_admitted projection");
+        .expect("message_admitted event");
     assert_eq!(admitted["payload"]["agent_id"], "default");
     assert_eq!(admitted["payload"]["message_id"], "msg-stable");
     assert_eq!(admitted["payload"]["summary"], "operator prompt admitted");
     assert_eq!(admitted["payload"]["text_preview"], "inspect status");
     assert_eq!(admitted["payload"]["raw_text"], "debug-only prompt body");
-    assert_eq!(admitted["projection"]["raw_payload_included"], true);
-    assert_eq!(admitted["projection"]["redactions"], serde_json::json!([]));
+    assert!(admitted.get("projection").is_none());
 
     let brief = events
         .iter()
         .find(|event| event["type"] == "brief_created")
-        .expect("brief_created projection");
+        .expect("brief_created event");
     assert_eq!(brief["payload"]["run_id"], "run-stable");
     assert_eq!(brief["payload"]["work_item_id"], "work-stable");
     assert_eq!(brief["payload"]["summary"], "work finished");
     assert_eq!(brief["payload"]["raw_brief"]["debug"], true);
-    assert_eq!(brief["projection"]["raw_payload_included"], true);
-    assert_eq!(brief["projection"]["redactions"], serde_json::json!([]));
+    assert!(brief.get("projection").is_none());
 
     let task = events
         .iter()
         .find(|event| event["type"] == "task_status_updated")
-        .expect("task_status_updated projection");
+        .expect("task_status_updated event");
     assert_eq!(task["payload"]["task_id"], "task-stable");
     assert_eq!(task["payload"]["status"], "completed");
     assert_eq!(task["payload"]["duration_ms"], 123);
     assert_eq!(task["payload"]["stdout"], "debug-only output");
-    assert_eq!(task["projection"]["raw_payload_included"], true);
-    assert_eq!(task["projection"]["redactions"], serde_json::json!([]));
+    assert!(task.get("projection").is_none());
 
     server.abort();
     Ok(())
 }
 
-pub async fn events_route_operator_projection_includes_tool_payload() -> Result<()> {
+pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    let operator_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "visible operator input".into(),
+        },
+    );
+    runtime.storage().append_event(&AuditEvent::new(
+        "message_enqueued",
+        serde_json::to_value(operator_message)?,
+    ))?;
+    for index in 0..150 {
+        runtime.storage().append_event(&AuditEvent::new(
+            "callback_delivered",
+            serde_json::json!({
+                "waiting_intent_id": format!("wait-{index}"),
+                "source": "github",
+            }),
+        ))?;
+    }
+    let brief = BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "visible final brief",
+        None,
+        None,
+    );
+    runtime.storage().append_event(&AuditEvent::new(
+        "brief_created",
+        serde_json::to_value(brief)?,
+    ))?;
+
+    let page: serde_json::Value = client
+        .get(format!(
+            "{base}/agents/default/events?limit=2&order=desc&max_level=info"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let events = page["events"].as_array().expect("events");
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["type"], "brief_created");
+    assert_eq!(events[1]["type"], "message_enqueued");
+    assert_eq!(page["has_older"], false);
+    assert!(page["cursor_seq"].as_u64().is_some());
+
+    let unfiltered: serde_json::Value = client
+        .get(format!("{base}/agents/default/events?limit=32&order=desc"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(unfiltered["events"]
+        .as_array()
+        .expect("events")
+        .iter()
+        .any(|event| event["type"] == "callback_delivered"));
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn events_stream_includes_tool_payload() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
-        .json(&serde_json::json!({ "text": "operator projection bootstrap" }))
+        .json(&serde_json::json!({ "text": "event stream bootstrap" }))
         .send()
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
@@ -436,20 +495,14 @@ pub async fn events_route_operator_projection_includes_tool_payload() -> Result<
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}&projection=operator"
+            "{base}/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
     let replayed = next_sse_event_kind(&mut stream, "tool_executed").await?;
     assert_eq!(replayed.event, "tool_executed");
     assert_eq!(replayed.data["type"], "tool_executed");
-    assert_eq!(replayed.data["projection"]["name"], "operator");
-    assert_eq!(replayed.data["projection"]["raw_payload_included"], true);
-    assert_eq!(
-        replayed.data["projection"]["redactions"],
-        serde_json::json!([])
-    );
-    // Operator projection passes through the full raw payload.
+    assert!(replayed.data.get("projection").is_none());
     assert_eq!(replayed.data["payload"]["tool_name"], "ExecCommand");
     assert_eq!(replayed.data["payload"]["task_id"], "task-tool");
     assert_eq!(
@@ -467,14 +520,14 @@ pub async fn events_route_operator_projection_includes_tool_payload() -> Result<
     Ok(())
 }
 
-pub async fn events_route_operator_projection_includes_assistant_round_payload() -> Result<()> {
+pub async fn events_stream_includes_assistant_round_payload() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
 
     client
         .post(format!("{base}/control/agents/default/prompt"))
-        .json(&serde_json::json!({ "text": "assistant round projection bootstrap" }))
+        .json(&serde_json::json!({ "text": "assistant round stream bootstrap" }))
         .send()
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
@@ -503,7 +556,7 @@ pub async fn events_route_operator_projection_includes_assistant_round_payload()
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}&projection=operator"
+            "{base}/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
@@ -511,13 +564,7 @@ pub async fn events_route_operator_projection_includes_assistant_round_payload()
 
     assert_eq!(replayed.event, "assistant_round_recorded");
     assert_eq!(replayed.data["type"], "assistant_round_recorded");
-    assert_eq!(replayed.data["projection"]["name"], "operator");
-    assert_eq!(replayed.data["projection"]["raw_payload_included"], true);
-    assert_eq!(
-        replayed.data["projection"]["redactions"],
-        serde_json::json!([])
-    );
-    // Operator projection passes through the full raw payload.
+    assert!(replayed.data.get("projection").is_none());
     assert_eq!(replayed.data["payload"]["agent_id"], "default");
     assert_eq!(replayed.data["payload"]["run_id"], "run-1");
     assert_eq!(replayed.data["payload"]["turn_index"], 7);
@@ -546,8 +593,7 @@ pub async fn events_route_operator_projection_includes_assistant_round_payload()
     Ok(())
 }
 
-pub async fn events_route_local_debug_projection_preserves_raw_payload_with_control_auth(
-) -> Result<()> {
+pub async fn events_stream_preserves_raw_payload_with_control_auth() -> Result<()> {
     let config = test_config_with_paths(
         tempdir()?.keep(),
         tempdir()?.keep(),
@@ -565,7 +611,7 @@ pub async fn events_route_local_debug_projection_preserves_raw_payload_with_cont
     client
         .post(format!("{base}/control/agents/default/prompt"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({ "text": "workspace projection bootstrap" }))
+        .json(&serde_json::json!({ "text": "workspace stream bootstrap" }))
         .send()
         .await?
         .error_for_status()?;
@@ -588,7 +634,7 @@ pub async fn events_route_local_debug_projection_preserves_raw_payload_with_cont
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}&projection=local_debug"
+            "{base}/agents/default/events/stream?after_seq={after_seq}"
         ))
         .bearer_auth(token)
         .send()
@@ -597,11 +643,7 @@ pub async fn events_route_local_debug_projection_preserves_raw_payload_with_cont
 
     assert_eq!(replayed.event, "workspace_used");
     assert_eq!(replayed.data["type"], "workspace_used");
-    assert_eq!(replayed.data["projection"]["name"], "local_debug");
-    assert_eq!(
-        replayed.data["projection"]["raw_payload_included"],
-        serde_json::json!(true)
-    );
+    assert!(replayed.data.get("projection").is_none());
     assert_eq!(replayed.data["payload"]["workspace_id"], "ws-1");
     assert_eq!(replayed.data["payload"]["workspace_label"], "holon");
     assert_eq!(
@@ -613,8 +655,7 @@ pub async fn events_route_local_debug_projection_preserves_raw_payload_with_cont
     Ok(())
 }
 
-pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after_cursor(
-) -> Result<()> {
+pub async fn events_page_cursor_seq_seeds_stream_resume() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -637,9 +678,7 @@ pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after
     ))?;
 
     let page: serde_json::Value = client
-        .get(format!(
-            "{base}/agents/default/events?limit=10&order=desc&projection=operator"
-        ))
+        .get(format!("{base}/agents/default/events?limit=10&order=desc"))
         .send()
         .await?
         .json()
@@ -651,14 +690,10 @@ pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after
         .iter()
         .find(|event| event["type"] == "assistant_round_recorded")
         .expect("events page should include the appended assistant round");
-    let after_seq = assistant_tail["event_seq"]
+    let after_seq = page["cursor_seq"]
         .as_u64()
-        .expect("assistant round event seq should be present");
-    assert_eq!(assistant_tail["projection"]["name"], "operator");
-    assert_eq!(
-        assistant_tail["projection"]["raw_payload_included"],
-        serde_json::json!(true)
-    );
+        .expect("events page should include cursor_seq");
+    assert!(assistant_tail.get("projection").is_none());
     assert_eq!(assistant_tail["payload"]["stop_reason"], "tool_use");
     assert_eq!(
         assistant_tail["payload"]["tool_names"],
@@ -676,7 +711,7 @@ pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after
 
     let mut stream = client
         .get(format!(
-            "{base}/agents/default/events/stream?after_seq={after_seq}&projection=operator"
+            "{base}/agents/default/events/stream?after_seq={after_seq}"
         ))
         .send()
         .await?;
@@ -688,7 +723,7 @@ pub async fn state_snapshot_seeds_projected_events_tail_and_stream_resumes_after
     Ok(())
 }
 
-pub async fn events_route_local_debug_projection_requires_control_auth() -> Result<()> {
+pub async fn events_stream_requires_control_auth_when_configured() -> Result<()> {
     let config = test_config_with_paths(
         tempdir()?.keep(),
         tempdir()?.keep(),
@@ -699,9 +734,7 @@ pub async fn events_route_local_debug_projection_requires_control_auth() -> Resu
     let client = reqwest::Client::new();
 
     let response = client
-        .get(format!(
-            "{base}/agents/default/events/stream?projection=local_debug"
-        ))
+        .get(format!("{base}/agents/default/events/stream"))
         .send()
         .await?;
     assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);

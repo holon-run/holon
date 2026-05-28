@@ -44,6 +44,19 @@ pub struct WorkQueuePromptProjection {
     pub completed_recent: Vec<WorkItemReadinessProjection>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventLogPageOrder {
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventLogPage {
+    pub events: Vec<AuditEvent>,
+    pub has_older: bool,
+    pub has_newer: bool,
+}
+
 impl WorkQueuePromptProjection {
     pub fn has_non_current_candidates(&self) -> bool {
         self.triggered_blocked.iter().any(|item| !item.is_current)
@@ -480,6 +493,100 @@ impl AppStorage {
 
     pub fn read_recent_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
         read_recent_jsonl(&self.events_path, limit)
+    }
+
+    pub fn latest_event_seq(&self) -> Result<Option<u64>> {
+        let mut latest = None;
+        scan_jsonl_reverse::<AuditEvent, _>(&self.events_path, |event| {
+            latest = Some(event.event_seq);
+            false
+        })?;
+        Ok(latest)
+    }
+
+    pub fn read_event_page_matching<F>(
+        &self,
+        before_seq: Option<u64>,
+        after_seq: Option<u64>,
+        limit: usize,
+        order: EventLogPageOrder,
+        mut matches: F,
+    ) -> Result<EventLogPage>
+    where
+        F: FnMut(&AuditEvent) -> bool,
+    {
+        if limit == 0 || !self.events_path.exists() {
+            return Ok(EventLogPage {
+                events: Vec::new(),
+                has_older: false,
+                has_newer: false,
+            });
+        }
+
+        let lower = after_seq.unwrap_or(0);
+        let upper = before_seq.unwrap_or(u64::MAX);
+        let mut page = Vec::with_capacity(limit.saturating_add(1).min(1024));
+        match order {
+            EventLogPageOrder::Desc => {
+                scan_jsonl_reverse::<AuditEvent, _>(&self.events_path, |event| {
+                    if event.event_seq >= upper {
+                        return true;
+                    }
+                    if event.event_seq <= lower {
+                        return false;
+                    }
+                    if matches(&event) {
+                        page.push(event);
+                    }
+                    page.len() <= limit
+                })?;
+                let has_older = page.len() > limit;
+                if has_older {
+                    page.truncate(limit);
+                }
+                Ok(EventLogPage {
+                    events: page,
+                    has_older,
+                    has_newer: false,
+                })
+            }
+            EventLogPageOrder::Asc => {
+                let file = fs::File::open(&self.events_path)
+                    .with_context(|| format!("failed to read {}", self.events_path.display()))?;
+                for line in BufReader::new(file).lines() {
+                    let line = line.with_context(|| {
+                        format!("failed to read {}", self.events_path.display())
+                    })?;
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let event: AuditEvent = serde_json::from_str(&line).with_context(|| {
+                        format!("failed to decode line from {}", self.events_path.display())
+                    })?;
+                    if event.event_seq <= lower {
+                        continue;
+                    }
+                    if event.event_seq >= upper {
+                        break;
+                    }
+                    if matches(&event) {
+                        page.push(event);
+                    }
+                    if page.len() > limit {
+                        break;
+                    }
+                }
+                let has_newer = page.len() > limit;
+                if has_newer {
+                    page.truncate(limit);
+                }
+                Ok(EventLogPage {
+                    events: page,
+                    has_older: false,
+                    has_newer,
+                })
+            }
+        }
     }
 
     pub fn read_recent_briefs(&self, limit: usize) -> Result<Vec<BriefRecord>> {

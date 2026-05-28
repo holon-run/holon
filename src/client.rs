@@ -147,7 +147,6 @@ pub struct ControlPromptResponse {
 pub struct EventStreamRequest {
     pub after_seq: Option<u64>,
     pub limit: Option<usize>,
-    pub projection: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -156,7 +155,7 @@ pub struct EventPageRequest {
     pub after_seq: Option<u64>,
     pub limit: Option<usize>,
     pub order: Option<String>,
-    pub projection: Option<String>,
+    pub max_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -164,6 +163,8 @@ pub struct EventPageResponse {
     pub events: Vec<StreamEventEnvelope>,
     pub oldest_seq: Option<u64>,
     pub newest_seq: Option<u64>,
+    #[serde(default)]
+    pub cursor_seq: Option<u64>,
     pub has_older: bool,
     pub has_newer: bool,
     pub order: String,
@@ -178,8 +179,6 @@ pub struct StreamEventEnvelope {
     pub agent_id: String,
     #[serde(rename = "type")]
     pub event_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub projection: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Value>,
     pub payload: Value,
@@ -1193,9 +1192,6 @@ fn event_stream_path(agent_id: &str, request: &EventStreamRequest) -> Result<Str
         if let Some(after_seq) = request.after_seq {
             query.append_pair("after_seq", &after_seq.to_string());
         }
-        if let Some(projection) = request.projection.as_deref() {
-            query.append_pair("projection", projection);
-        }
     }
 
     let mut path = url.path().to_string();
@@ -1226,8 +1222,8 @@ fn event_page_path(agent_id: &str, request: &EventPageRequest) -> Result<String>
         if let Some(order) = request.order.as_deref() {
             query.append_pair("order", order);
         }
-        if let Some(projection) = request.projection.as_deref() {
-            query.append_pair("projection", projection);
+        if let Some(max_level) = request.max_level.as_deref() {
+            query.append_pair("max_level", max_level);
         }
     }
     let mut path = url.path().to_string();
@@ -1562,14 +1558,10 @@ mod tests {
             &EventStreamRequest {
                 after_seq: Some(123),
                 limit: Some(20),
-                projection: Some("local_debug".into()),
             },
         )
         .unwrap();
-        assert_eq!(
-            path,
-            "/agents/default/events/stream?limit=20&after_seq=123&projection=local_debug"
-        );
+        assert_eq!(path, "/agents/default/events/stream?limit=20&after_seq=123");
     }
 
     #[test]
@@ -1579,7 +1571,6 @@ mod tests {
             &EventStreamRequest {
                 after_seq: Some(42),
                 limit: None,
-                projection: None,
             },
         )
         .unwrap();
@@ -1696,7 +1687,6 @@ mod tests {
                 .with_timezone(&chrono::Utc),
             agent_id: "agent-1".into(),
             event_type: "agent_message".into(),
-            projection: None,
             provenance: None,
             payload: serde_json::json!({"body": "hello"}),
         };

@@ -343,7 +343,6 @@ fn apply_brief_event(app: &mut TuiApp, brief: BriefRecord) {
                 ts: brief.created_at,
                 agent_id: brief.agent_id.clone(),
                 event_type: "brief_created".into(),
-                projection: None,
                 provenance: None,
                 payload: serde_json::to_value(brief).unwrap(),
             },
@@ -397,7 +396,6 @@ fn collect_chat_items_does_not_write_presentation_debug_log() {
         ts: Utc::now(),
         agent_id: "default".into(),
         event_type: "assistant_round_recorded".into(),
-        projection: None,
         provenance: None,
         payload: json!({ "round": 1, "text_preview": "history progress" }),
     }];
@@ -1669,7 +1667,6 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "work_item_written".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({
                     "action": "created",
@@ -1699,7 +1696,6 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "assistant_round_recorded".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({ "round": 1, "text_preview": "hidden assistant partial" }),
             },
@@ -1739,7 +1735,6 @@ fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
@@ -1759,7 +1754,6 @@ fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "agent_state_changed".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({ "status": "AwakeRunning" }),
             },
@@ -1802,7 +1796,6 @@ fn chat_text_omits_task_system_events() {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "task_result_received".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({
                     "id": "task-1",
@@ -1856,7 +1849,6 @@ fn chat_text_keeps_active_activity_after_brief_event() {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
@@ -1876,7 +1868,6 @@ fn chat_text_keeps_active_activity_after_brief_event() {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "brief_created".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({
                     "id": "brief-1",
@@ -1932,7 +1923,6 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
@@ -1973,7 +1963,6 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
                 ts: Utc::now(),
                 agent_id: "agent-a".into(),
                 event_type: "tool_executed".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
@@ -1999,10 +1988,6 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
         ts: Utc::now(),
         agent_id: "agent-b".into(),
         event_type: "tool_executed".into(),
-        projection: Some(json!({
-            "name": "operator",
-            "raw_payload_included": true,
-        })),
         provenance: None,
         payload: json!({
             "tool_name": "ExecCommand",
@@ -2047,7 +2032,6 @@ fn chat_text_does_not_show_stale_activity_when_agent_is_idle() {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
@@ -2128,7 +2112,6 @@ fn active_activity_timestamp_does_not_sort_before_tail_history() {
                 ts,
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
@@ -2827,7 +2810,6 @@ fn events_overlay_selection_stays_pinned_to_same_event_id() {
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "provider_round_completed".into(),
-                projection: None,
                 provenance: None,
                 payload: json!({"round": 1, "stop_reason": "end_turn"}),
             },
@@ -2851,7 +2833,6 @@ fn events_overlay_selection_stays_pinned_to_same_event_id() {
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "provider_round_completed".into(),
-                    projection: None,
                     provenance: None,
                     payload: json!({"round": 2, "stop_reason": "end_turn"}),
                 },
@@ -3160,7 +3141,6 @@ fn stale_projection_event_schedules_refresh() {
             ts: Utc::now(),
             agent_id: "default".into(),
             event_type: "waiting_intent_created".into(),
-            projection: None,
             provenance: None,
             payload: json!({
                 "waiting_intent_id": "wait-2",
@@ -3421,7 +3401,6 @@ fn pipeline_event_envelope(
         ts: Utc::now(),
         agent_id: agent_id.into(),
         event_type: event_type.into(),
-        projection: None,
         provenance: None,
         payload,
     }

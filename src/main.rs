@@ -1376,7 +1376,7 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
             after_seq,
             limit,
             order,
-            projection,
+            max_level,
             agent,
         } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
@@ -1389,7 +1389,7 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
                         after_seq,
                         limit: Some(limit),
                         order: Some(order.to_string()),
-                        projection: Some(projection.to_string()),
+                        max_level: max_level.map(|level| level.to_string()),
                     },
                 )
                 .await?;
@@ -1398,7 +1398,6 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
         EventsCommands::Stream {
             after_seq,
             limit,
-            projection,
             max_events,
             agent,
         } => {
@@ -1407,11 +1406,7 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
             let mut stream = client
                 .stream_agent_events(
                     &agent,
-                    holon::client::EventStreamRequest {
-                        after_seq,
-                        limit,
-                        projection: Some(projection.to_string()),
-                    },
+                    holon::client::EventStreamRequest { after_seq, limit },
                 )
                 .await?;
             let mut seen = 0usize;

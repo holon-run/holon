@@ -223,7 +223,7 @@ contracts are stabilized.
 
 ```bash
 holon events tail --limit 20
-holon events tail --order asc --projection operator
+holon events tail --order asc --max-level info
 holon events stream --after-seq 42 --max-events 100
 ```
 

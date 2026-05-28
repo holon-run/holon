@@ -19,8 +19,9 @@ use crate::{
         StreamEventEnvelope,
     },
     operator_event::{
-        is_activity_reset_event_kind, is_durable_operator_event_kind, present_operator_event,
-        OperatorEventCategory, OperatorEventPresentation, OperatorPresentationContext,
+        is_activity_reset_event_kind, is_durable_operator_event_kind,
+        is_operator_event_in_display_mode, present_operator_event, OperatorEventCategory,
+        OperatorEventPresentation, OperatorPresentationContext,
     },
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
@@ -147,6 +148,14 @@ impl TuiProjection {
         self.durable_conversation_log.clear();
         self.cursor = cursor;
         self.seed_event_log(events_tail);
+    }
+
+    pub(crate) fn clear_event_history(&mut self) {
+        self.event_log.clear();
+        self.durable_conversation_log.clear();
+        self.history_oldest_cursor = None;
+        self.history_has_older = false;
+        self.history_paging_active = false;
     }
 
     pub(crate) fn merge_event_tail(
@@ -288,43 +297,72 @@ impl TuiProjection {
     }
 
     pub(crate) fn apply_event(&mut self, event: AgentStreamEvent, log_writer: &TuiLogWriter) {
+        self.apply_event_internal(event, log_writer, None);
+    }
+
+    pub(crate) fn apply_stream_event(
+        &mut self,
+        event: AgentStreamEvent,
+        log_writer: &TuiLogWriter,
+        display_mode: OperatorDisplayMode,
+    ) {
+        self.apply_event_internal(event, log_writer, Some(display_mode));
+    }
+
+    fn apply_event_internal(
+        &mut self,
+        event: AgentStreamEvent,
+        log_writer: &TuiLogWriter,
+        display_mode: Option<OperatorDisplayMode>,
+    ) {
         if self.has_event_identity(effective_stream_event_id(&event), event.data.event_seq) {
             return;
         }
         let presentation_context = self.operator_presentation_context();
         let record = projection_event_record_from_stream_event(&event, &presentation_context);
-        let event_log_limit = if self.history_paging_active {
-            EVENT_HISTORY_LOG_LIMIT
-        } else {
-            EVENT_LOG_LIMIT
-        };
-        push_limited(&mut self.event_log, record.clone(), event_log_limit);
-        if is_durable_conversation_kind(&record.kind) {
-            push_limited(
-                &mut self.durable_conversation_log,
-                record.clone(),
-                DURABLE_CONVERSATION_LOG_LIMIT,
-            );
-        }
-        if let Err(error) = log_writer.write_event(&record) {
-            if !TUI_EVENT_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
-                tracing::warn!("failed to persist TUI log event: {error}");
+        let cache_event = display_mode.is_none_or(|display_mode| {
+            is_operator_event_in_display_mode(
+                &record.kind,
+                &record.payload,
+                &record.summary,
+                &presentation_context,
+                display_mode,
+            )
+        });
+        if cache_event {
+            let event_log_limit = if self.history_paging_active {
+                EVENT_HISTORY_LOG_LIMIT
+            } else {
+                EVENT_LOG_LIMIT
+            };
+            push_limited(&mut self.event_log, record.clone(), event_log_limit);
+            if is_durable_conversation_kind(&record.kind) {
+                push_limited(
+                    &mut self.durable_conversation_log,
+                    record.clone(),
+                    DURABLE_CONVERSATION_LOG_LIMIT,
+                );
             }
-        }
-        if is_presentation_reducer_event(&record) {
-            let timed_items = self
-                .presentation_reducer
-                .reduce(std::slice::from_ref(&record));
-            let (reducer_events, log_items) = presentation_debug_items_for_event(
-                self.event_log.as_slice(),
-                &record,
-                timed_items.as_slice(),
-            );
-            if let Err(error) =
-                log_writer.write_presentation_items(reducer_events.as_slice(), log_items.as_slice())
-            {
-                if !TUI_PRESENTATION_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
-                    tracing::warn!("failed to persist TUI presentation log: {error}");
+            if let Err(error) = log_writer.write_event(&record) {
+                if !TUI_EVENT_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
+                    tracing::warn!("failed to persist TUI log event: {error}");
+                }
+            }
+            if is_presentation_reducer_event(&record) {
+                let timed_items = self
+                    .presentation_reducer
+                    .reduce(std::slice::from_ref(&record));
+                let (reducer_events, log_items) = presentation_debug_items_for_event(
+                    self.event_log.as_slice(),
+                    &record,
+                    timed_items.as_slice(),
+                );
+                if let Err(error) = log_writer
+                    .write_presentation_items(reducer_events.as_slice(), log_items.as_slice())
+                {
+                    if !TUI_PRESENTATION_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
+                        tracing::warn!("failed to persist TUI presentation log: {error}");
+                    }
                 }
             }
         }
@@ -726,13 +764,13 @@ impl TuiProjection {
         event: &ProjectionEventRecord,
         display_mode: OperatorDisplayMode,
     ) -> bool {
-        match display_mode {
-            OperatorDisplayMode::Info => is_info_event(event),
-            OperatorDisplayMode::Verbose => is_info_event(event) || is_verbose_event(event),
-            OperatorDisplayMode::Debug => {
-                is_info_event(event) || is_verbose_event(event) || is_debug_event(event)
-            }
-        }
+        is_operator_event_in_display_mode(
+            &event.kind,
+            &event.payload,
+            &event.summary,
+            &self.operator_presentation_context(),
+            display_mode,
+        )
     }
 
     fn operator_presentation_context(&self) -> OperatorPresentationContext {
@@ -1057,218 +1095,6 @@ fn work_item_rank(item: &WorkItemRecord) -> u8 {
         WorkItemState::Open => 1,
         WorkItemState::Completed => 2,
     }
-}
-
-fn work_item_event_completed(event: &ProjectionEventRecord) -> bool {
-    event
-        .payload
-        .get("record")
-        .cloned()
-        .and_then(decode_value::<WorkItemRecord>)
-        .is_some_and(|record| record.state == WorkItemState::Completed)
-}
-
-fn is_info_event(event: &ProjectionEventRecord) -> bool {
-    event.presentation.is_conversation_candidate()
-        && matches!(
-            event.presentation.visibility,
-            OperatorVisibility::ActionRequired
-                | OperatorVisibility::TurnResult
-                | OperatorVisibility::WorkDone
-        )
-}
-
-fn is_verbose_event(event: &ProjectionEventRecord) -> bool {
-    match event.kind.as_str() {
-        "assistant_round_recorded" => assistant_round_has_text(event),
-        "text_only_round_observed" => text_only_round_has_useful_text(event),
-        "max_output_tokens_recovery"
-        | "turn_local_compaction_applied"
-        | "turn_local_checkpoint_resume_requested"
-        | "turn_local_baseline_over_budget" => true,
-        "process_execution_requested" => process_execution_has_preview(event),
-        "tool_executed" | "tool_execution_failed" => true,
-        "truncated_mutation_tool_call_rejected" => true,
-        "task_result_received"
-        | "task_child_spawned"
-        | "supervised_child_task_recovery_failed"
-        | "command_task_runner_failed"
-        | "command_task_result_enqueue_failed" => true,
-        "task_status_updated" => task_status_is_terminal(event),
-        "work_item_written" => work_item_event_completed(event),
-        "work_item_delegation_completed"
-        | "work_item_waiting_intents_cancelled"
-        | "missing_current_work_item_before_wait"
-        | "waiting_intent_created"
-        | "stale_waiting_intents_cancelled"
-        | "callback_delivered"
-        | "timer_fired"
-        | "timer_fire_failed"
-        | "workspace_attached"
-        | "workspace_entered"
-        | "workspace_exited"
-        | "workspace_detached"
-        | "worktree_entered"
-        | "worktree_exited"
-        | "worktree_created_for_task"
-        | "worktree_retained_for_review"
-        | "worktree_auto_cleaned_up"
-        | "worktree_auto_cleanup_failed"
-        | "task_worktree_cleanup_failed"
-        | "skill_installed"
-        | "skill_uninstalled"
-        | "agent_created"
-        | "agent_model_override_set"
-        | "agent_model_override_cleared"
-        | "current_run_aborted"
-        | "control_applied"
-        | "runtime_service_shutdown_requested"
-        | "turn_context_length_exceeded"
-        | "recovery_cleared_missing_worktree_session"
-        | "operator_notification_mirror_failed" => true,
-        _ => false,
-    }
-}
-
-fn is_debug_event(event: &ProjectionEventRecord) -> bool {
-    match event.kind.as_str() {
-        "provider_round_completed" => provider_round_has_useful_telemetry(event),
-        "message_processing_aborted"
-        | "operator_interjection_admitted"
-        | "task_created"
-        | "task_status_updated"
-        | "task_input_delivered"
-        | "task_create_requested"
-        | "supervised_child_task_monitor_reattached"
-        | "work_item_picked"
-        | "work_item_enqueue_requested"
-        | "work_item_turn_end_committed"
-        | "work_item_turn_end_commit_skipped"
-        | "work_item_stale_reminder_injected"
-        | "work_item_stale_reminder_skipped"
-        | "work_item_delegation_created"
-        | "waiting_intent_cancelled"
-        | "timer_create_requested"
-        | "timer_created"
-        | "workspace_attach_requested"
-        | "workspace_exit_requested"
-        | "workspace_detach_requested"
-        | "workspace_used"
-        | "task_worktree_metadata_recorded"
-        | "task_worktree_cleanup_already_removed"
-        | "task_worktree_cleanup_retained"
-        | "task_worktree_branch_cleanup_retained"
-        | "skill_activated"
-        | "agent_model_override_requested"
-        | "agent_model_override_clear_requested"
-        | "control_request_admitted"
-        | "wake_requested"
-        | "continuation_trigger_received"
-        | "continuation_resolved"
-        | "closure_decided"
-        | "debug_prompt_requested"
-        | "turn_context_built"
-        | "turn_local_checkpoint_requested"
-        | "turn_local_checkpoint_recorded"
-        | "episode_memory_finalized"
-        | "working_memory_updated"
-        | "operator_delivery_submitted"
-        | "operator_delivery_completed"
-        | "operator_transport_binding_upserted"
-        | "command_task_running_persisted" => true,
-        _ => false,
-    }
-}
-
-fn assistant_round_has_text(event: &ProjectionEventRecord) -> bool {
-    event
-        .payload
-        .get("text_preview")
-        .and_then(Value::as_str)
-        .is_some_and(|text| !text.trim().is_empty())
-}
-
-fn text_only_round_has_useful_text(event: &ProjectionEventRecord) -> bool {
-    event
-        .payload
-        .get("text_preview")
-        .and_then(Value::as_str)
-        .is_some_and(|text| !text.trim().is_empty())
-        || event
-            .payload
-            .get("triggered_recovery")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-}
-
-fn provider_round_has_useful_telemetry(event: &ProjectionEventRecord) -> bool {
-    let model = event
-        .payload
-        .get("active_model")
-        .and_then(Value::as_str)
-        .or_else(|| event.payload.get("requested_model").and_then(Value::as_str))
-        .is_some_and(|model| {
-            let model = model.trim();
-            !model.is_empty() && model != "model"
-        });
-    let stop = event
-        .payload
-        .get("stop_reason")
-        .and_then(Value::as_str)
-        .is_some_and(|stop| {
-            let stop = stop.trim();
-            !stop.is_empty() && stop != "unknown"
-        });
-    let tokens = event
-        .payload
-        .get("input_tokens")
-        .and_then(Value::as_u64)
-        .is_some()
-        || event
-            .payload
-            .get("output_tokens")
-            .and_then(Value::as_u64)
-            .is_some();
-    let tools = event
-        .payload
-        .get("tool_call_count")
-        .and_then(Value::as_u64)
-        .is_some_and(|count| count > 0);
-    model || stop || tokens || tools
-}
-
-fn process_execution_has_preview(event: &ProjectionEventRecord) -> bool {
-    event
-        .payload
-        .get("cmd_preview")
-        .and_then(Value::as_str)
-        .is_some_and(|cmd| !cmd.trim().is_empty())
-        || event
-            .payload
-            .get("command_cost")
-            .and_then(|value| value.get("cmd_preview"))
-            .and_then(Value::as_str)
-            .is_some_and(|cmd| !cmd.trim().is_empty())
-}
-
-fn task_status_is_terminal(event: &ProjectionEventRecord) -> bool {
-    event
-        .payload
-        .get("status")
-        .and_then(Value::as_str)
-        .is_some_and(|status| {
-            matches!(
-                status,
-                "Completed"
-                    | "completed"
-                    | "Failed"
-                    | "failed"
-                    | "Cancelled"
-                    | "cancelled"
-                    | "Interrupted"
-                    | "interrupted"
-            )
-        })
 }
 
 pub(crate) fn is_presentation_reducer_event(event: &ProjectionEventRecord) -> bool {
@@ -1623,11 +1449,6 @@ mod tests {
             ts: Utc::now(),
             agent_id: "default".into(),
             event_type: "assistant_round_recorded".into(),
-            projection: Some(json!({
-                "name": "operator",
-                "raw_payload_included": true,
-                "redactions": [],
-            })),
             provenance: None,
             payload: json!({
                 "stop_reason": "tool_use",
@@ -2349,7 +2170,6 @@ mod tests {
                         ts: Utc::now(),
                         agent_id: "default".into(),
                         event_type: "callback_delivered".into(),
-                        projection: None,
                         provenance: None,
                         payload: json!({
                             "waiting_intent_id": format!("wait-{index}"),
@@ -2427,7 +2247,6 @@ mod tests {
                         ts: Utc::now(),
                         agent_id: "default".into(),
                         event_type: "provider_round_completed".into(),
-                        projection: None,
                         provenance: None,
                         payload: json!({ "text_preview": format!("partial-{index}") }),
                     },
@@ -2923,7 +2742,6 @@ mod tests {
             ts: Utc::now(),
             agent_id: "default".into(),
             event_type: kind.into(),
-            projection: None,
             provenance: None,
             payload,
         }

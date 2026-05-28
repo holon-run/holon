@@ -145,15 +145,16 @@ Returns recent runtime events (turn entries, system events). Query parameters:
 | `after_seq` | Return events with durable `event_seq` higher than this value |
 | `limit` | Max events to return (default 128) |
 | `order` | `asc` or `desc` (default) |
-| `projection` | `local_debug` (control token required) or `operator` (default) |
+| `max_level` | Optional inclusion filter: `info`, `verbose`, or `debug` |
 
 The JSON response is an `EventsPageResponse`:
 
 | Field | Contract |
 |-------|----------|
-| `events` | Array of `StreamEventEnvelope` records using the selected projection |
+| `events` | Array of full-payload `StreamEventEnvelope` records matching the requested level filter |
 | `oldest_seq` / `newest_seq` | Lowest/highest durable `event_seq` in the returned page, or `null` for an empty page |
-| `has_older` / `has_newer` | Whether more records are available before/after the returned window |
+| `cursor_seq` | Raw event-log high-watermark captured while serving the page; clients can start the raw stream after this cursor |
+| `has_older` / `has_newer` | Whether more matching records are available before/after the returned window |
 | `order` | Echoes the requested order |
 | `limit` | Effective limit after server clamping |
 
@@ -164,8 +165,8 @@ rather than a cursor error.
 
 **`GET /agents/:id/events/stream`** — Server-sent events
 
-SSE stream of agent events. Supports `after_seq`, `limit`, and `projection`
-query params. The SSE `id` field is the per-agent durable `event_seq`, and the
+SSE stream of raw agent events. Supports `after_seq` and `limit` query params.
+The SSE `id` field is the per-agent durable `event_seq`, and the
 SSE `event` field is set to the raw audit event kind (e.g. `turn_entry`,
 `wake_requested`, `task_create_requested`), not a limited set of names.
 
@@ -178,9 +179,8 @@ Each SSE `data` frame is a JSON `StreamEventEnvelope` with these stable fields:
 | `ts` | RFC 3339 timestamp |
 | `agent_id` | Agent that owns the event log |
 | `type` | Raw audit event kind; equal to the SSE `event` field |
-| `projection` | Projection metadata: `name`, `raw_payload_included`, and `redactions` |
 | `provenance` | Stable provenance fields extracted from the raw payload when present |
-| `payload` | Projected payload for the requested projection |
+| `payload` | Full event payload |
 
 When `after_seq` is omitted, the stream starts after the current tail and only
 emits future events. When `after_seq=0`, it replays from the beginning of the
@@ -190,14 +190,11 @@ cursor_not_found` and `after_seq`/`event_seq` extension fields before opening
 the SSE stream. If an already-open stream falls behind the replay window, the
 server closes that stream.
 
-Projection behavior:
+Filtering behavior:
 
-- `operator` is the default. It includes the full raw event payload with
-  `raw_payload_included: true` and an empty `redactions` list. Event payloads
-  are the protocol standard — clients build their own projections from the raw
-  feed.
-- `local_debug` requires control auth and also includes the full raw event
-  payload. It is kept as an explicitly authorized alias for future use cases.
+- Event payloads are always included in full.
+- `/agents/:id/events` may use `max_level` to filter which events are returned.
+- `/agents/:id/events/stream` is raw and does not support `max_level`.
 
 **`GET /agents/:id/transcript`** — Turn transcript
 

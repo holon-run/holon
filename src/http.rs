@@ -51,9 +51,12 @@ use crate::{
     },
     host::{PublicAgentError, RuntimeHost},
     ingress::{InboundRequest, WakeDisposition, WakeHint},
+    operator_event::{
+        is_operator_event_in_display_mode, OperatorDisplayMode, OperatorPresentationContext,
+    },
     policy::{default_authority_for_origin, validate_message_kind_for_origin},
     runtime::{CurrentRunAbortError, CurrentRunAbortMode, CurrentRunAbortRequest},
-    storage::FileActivityMarker,
+    storage::{EventLogPageOrder, FileActivityMarker},
     system::{ExecutionScopeKind, ExecutionSnapshot, HostLocalBoundary},
     types::{
         ActiveWorkspaceEntry, AdmissionContext, AgentRegistryStatus, AgentSummary, AgentVisibility,
@@ -63,7 +66,7 @@ use crate::{
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
         TaskStatus, TaskStatusSnapshot, TaskStopResult, TimerRecord, TodoItem, TurnTerminalRecord,
-        WaitingIntentRecord, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+        WaitingIntentRecord, WaitingReason, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
         WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
@@ -443,7 +446,7 @@ pub struct EventsQuery {
     after_seq: Option<u64>,
     limit: Option<usize>,
     order: Option<EventPageOrder>,
-    projection: Option<EventReplayProjection>,
+    max_level: Option<OperatorDisplayMode>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -451,7 +454,6 @@ pub struct EventsQuery {
 pub struct EventStreamQuery {
     after_seq: Option<u64>,
     limit: Option<usize>,
-    projection: Option<EventReplayProjection>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -461,18 +463,13 @@ enum EventPageOrder {
     Desc,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum EventReplayProjection {
-    LocalDebug,
-    Operator,
-}
-
-#[derive(Debug, Serialize)]
-struct EventReplayProjectionRecord {
-    name: EventReplayProjection,
-    raw_payload_included: bool,
-    redactions: Vec<String>,
+impl From<EventPageOrder> for EventLogPageOrder {
+    fn from(order: EventPageOrder) -> Self {
+        match order {
+            EventPageOrder::Asc => Self::Asc,
+            EventPageOrder::Desc => Self::Desc,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -480,6 +477,7 @@ struct EventsPageResponse {
     events: Vec<StreamEventEnvelope>,
     oldest_seq: Option<u64>,
     newest_seq: Option<u64>,
+    cursor_seq: Option<u64>,
     has_older: bool,
     has_newer: bool,
     order: EventPageOrder,
@@ -552,7 +550,6 @@ struct StreamEventEnvelope {
     agent_id: String,
     #[serde(rename = "type")]
     event_type: String,
-    projection: EventReplayProjectionRecord,
     provenance: EventReplayProvenance,
     payload: Value,
 }
@@ -561,7 +558,6 @@ struct EventStreamState {
     runtime: crate::runtime::RuntimeHandle,
     runtime_id: String,
     event_window_limit: usize,
-    projection: EventReplayProjection,
     event_marker: FileActivityMarker,
     last_seen_seq: u64,
     buffered: VecDeque<AuditEvent>,
@@ -1407,43 +1403,48 @@ pub async fn events(
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    let projection = query.projection.unwrap_or(EventReplayProjection::Operator);
-    if state.require_control_token || projection == EventReplayProjection::LocalDebug {
+    if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     }
-
-    let page =
-        if query.before_seq.is_none() && query.after_seq.is_none() && order == EventPageOrder::Desc
-        {
-            let mut tail = runtime
-                .storage()
-                .read_recent_events(limit.saturating_add(1))
-                .map_err(error_response)?;
-            let has_older = tail.len() > limit;
-            if has_older {
-                tail.remove(0);
-            }
-            tail.reverse();
-            EventPage {
-                events: tail,
-                has_older,
-                has_newer: false,
-            }
-        } else {
-            let all_events = runtime.all_events().map_err(error_response)?;
-            event_page(&all_events, query.before_seq, query.after_seq, limit, order)
-        };
+    let cursor_seq = runtime
+        .storage()
+        .latest_event_seq()
+        .map_err(error_response)?;
+    let filter_context = event_filter_context(&runtime)
+        .await
+        .map_err(error_response)?;
+    let max_level = query.max_level;
+    let page = runtime
+        .storage()
+        .read_event_page_matching(
+            query.before_seq,
+            query.after_seq,
+            limit,
+            order.into(),
+            |event| match max_level {
+                Some(level) => is_operator_event_in_display_mode(
+                    &event.kind,
+                    &event.data,
+                    &event_fallback_summary(event),
+                    &filter_context,
+                    level,
+                ),
+                None => true,
+            },
+        )
+        .map_err(error_response)?;
     let oldest_seq = oldest_seq(&page.events, order);
     let newest_seq = newest_seq(&page.events, order);
     let events = page
         .events
         .iter()
-        .map(|event| stream_event_envelope(&agent_id, event, projection))
+        .map(|event| stream_event_envelope(&agent_id, event))
         .collect();
     Ok(Json(EventsPageResponse {
         events,
         oldest_seq,
         newest_seq,
+        cursor_seq,
         has_older: page.has_older,
         has_newer: page.has_newer,
         order,
@@ -1467,8 +1468,7 @@ pub async fn events_stream(
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    let projection = query.projection.unwrap_or(EventReplayProjection::Operator);
-    if state.require_control_token || projection == EventReplayProjection::LocalDebug {
+    if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     }
     let initial_event_marker = runtime
@@ -1489,14 +1489,13 @@ pub async fn events_stream(
             runtime,
             runtime_id: agent_id,
             event_window_limit,
-            projection,
             event_marker: initial_event_marker,
             last_seen_seq,
             buffered,
         };
         loop {
             if let Some(event) = state.buffered.pop_front() {
-                let envelope = stream_event_envelope(&state.runtime_id, &event, state.projection);
+                let envelope = stream_event_envelope(&state.runtime_id, &event);
                 state.last_seen_seq = event.event_seq;
                 let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
                 if tx
@@ -1595,49 +1594,6 @@ fn refresh_buffered_events(
     Ok(())
 }
 
-#[derive(Debug)]
-struct EventPage {
-    events: Vec<AuditEvent>,
-    has_older: bool,
-    has_newer: bool,
-}
-
-fn event_page(
-    events: &[AuditEvent],
-    before_seq: Option<u64>,
-    after_seq: Option<u64>,
-    limit: usize,
-    order: EventPageOrder,
-) -> EventPage {
-    let lower = after_seq.unwrap_or(0);
-    let upper = before_seq.unwrap_or(u64::MAX);
-    let mut filtered = events
-        .iter()
-        .filter(|event| event.event_seq > lower && event.event_seq < upper)
-        .cloned()
-        .collect::<Vec<_>>();
-    let has_more = filtered.len() > limit;
-    match order {
-        EventPageOrder::Asc => {
-            filtered.truncate(limit);
-            EventPage {
-                events: filtered,
-                has_older: false,
-                has_newer: has_more,
-            }
-        }
-        EventPageOrder::Desc => {
-            filtered.reverse();
-            filtered.truncate(limit);
-            EventPage {
-                events: filtered,
-                has_older: has_more,
-                has_newer: false,
-            }
-        }
-    }
-}
-
 fn oldest_seq(events: &[AuditEvent], order: EventPageOrder) -> Option<u64> {
     match order {
         EventPageOrder::Asc => events.first(),
@@ -1654,55 +1610,44 @@ fn newest_seq(events: &[AuditEvent], order: EventPageOrder) -> Option<u64> {
     .map(|event| event.event_seq)
 }
 
-fn stream_event_envelope(
-    agent_id: &str,
-    event: &AuditEvent,
-    projection: EventReplayProjection,
-) -> StreamEventEnvelope {
-    let projected = project_event_payload_for_replay(event, projection);
+fn stream_event_envelope(agent_id: &str, event: &AuditEvent) -> StreamEventEnvelope {
     StreamEventEnvelope {
         id: event.id.clone(),
         event_seq: event.event_seq,
         ts: event.created_at,
         agent_id: agent_id.to_string(),
         event_type: event.kind.clone(),
-        projection: projected.projection,
-        provenance: projected.provenance,
-        payload: projected.payload,
+        provenance: event_replay_provenance(&event.data),
+        payload: event.data.clone(),
     }
 }
 
-struct ProjectedReplayEvent {
-    payload: Value,
-    projection: EventReplayProjectionRecord,
-    provenance: EventReplayProvenance,
+async fn event_filter_context(
+    runtime: &crate::runtime::RuntimeHandle,
+) -> Result<OperatorPresentationContext> {
+    let agent = runtime.agent_summary().await?;
+    let completed_work_item_ids = runtime
+        .latest_work_items()
+        .await?
+        .into_iter()
+        .filter(|item| item.state == WorkItemState::Completed)
+        .map(|item| item.id)
+        .collect();
+    Ok(OperatorPresentationContext {
+        awaiting_operator_input: agent.closure.waiting_reason
+            == Some(WaitingReason::AwaitingOperatorInput),
+        completed_work_item_ids,
+    })
 }
 
-fn project_event_payload_for_replay(
-    event: &AuditEvent,
-    projection: EventReplayProjection,
-) -> ProjectedReplayEvent {
-    let provenance = event_replay_provenance(&event.data);
-    match projection {
-        EventReplayProjection::LocalDebug => ProjectedReplayEvent {
-            payload: event.data.clone(),
-            projection: EventReplayProjectionRecord {
-                name: projection,
-                raw_payload_included: true,
-                redactions: Vec::new(),
-            },
-            provenance,
-        },
-        EventReplayProjection::Operator => ProjectedReplayEvent {
-            payload: event.data.clone(),
-            projection: EventReplayProjectionRecord {
-                name: projection,
-                raw_payload_included: true,
-                redactions: Vec::new(),
-            },
-            provenance,
-        },
-    }
+fn event_fallback_summary(event: &AuditEvent) -> String {
+    event
+        .data
+        .get("summary")
+        .and_then(Value::as_str)
+        .filter(|summary| !summary.trim().is_empty())
+        .unwrap_or(event.kind.as_str())
+        .to_string()
 }
 
 fn event_replay_provenance(payload: &Value) -> EventReplayProvenance {

@@ -489,15 +489,6 @@ pub async fn local_client_over_http_can_stream_events_with_cursor_query() -> Res
     assert_eq!(
         first_event
             .data
-            .projection
-            .as_ref()
-            .and_then(|projection| projection.get("name"))
-            .and_then(|name| name.as_str()),
-        Some("operator")
-    );
-    assert_eq!(
-        first_event
-            .data
             .provenance
             .as_ref()
             .and_then(|provenance| provenance.get("authority_class"))
