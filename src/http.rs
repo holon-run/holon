@@ -1410,10 +1410,15 @@ pub async fn events(
         .storage()
         .latest_event_seq()
         .map_err(error_response)?;
-    let filter_context = event_filter_context(&runtime)
-        .await
-        .map_err(error_response)?;
     let max_level = query.max_level;
+    let filter_context = match max_level {
+        Some(_) => Some(
+            event_filter_context(&runtime)
+                .await
+                .map_err(error_response)?,
+        ),
+        None => None,
+    };
     let page = runtime
         .storage()
         .read_event_page_matching(
@@ -1421,15 +1426,15 @@ pub async fn events(
             query.after_seq,
             limit,
             order.into(),
-            |event| match max_level {
-                Some(level) => is_operator_event_in_display_mode(
+            |event| match (max_level, filter_context.as_ref()) {
+                (Some(level), Some(filter_context)) => is_operator_event_in_display_mode(
                     &event.kind,
                     &event.data,
                     &event_fallback_summary(event),
-                    &filter_context,
+                    filter_context,
                     level,
                 ),
-                None => true,
+                _ => true,
             },
         )
         .map_err(error_response)?;

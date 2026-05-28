@@ -215,6 +215,15 @@ page may filter event inclusion with `max_level=info|verbose|debug`; filtering
 does not alter `payload`. The live event stream is raw and does not support
 level filtering.
 
+Breaking migration from the removed projection contract:
+
+- delete `projection=operator` / `projection=local_debug` from event page and
+  stream requests
+- stop reading `StreamEventEnvelope.projection`; all envelopes now include the
+  full standard payload
+- use `/agents/:id/events?max_level=info` for an operator-density historical
+  page and client-side filtering for the raw stream
+
 ### Public ingress
 
 | Method | Path | Inputs | Success response | Stability | Notes |
