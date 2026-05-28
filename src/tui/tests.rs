@@ -12,6 +12,7 @@ use super::{
     runtime::{
         is_cursor_not_found_error, reconnect_delay_for_attempt, AgentListChange,
         TuiConnectionState, TuiRuntimeMessage, BOOTSTRAP_EVENT_TAIL_LIMIT,
+        EVENT_HISTORY_PAGE_LIMIT,
     },
     state::{tui_state_path, TuiClientState},
     view_model::{HeaderViewModel, StatusbarViewModel},
@@ -3118,7 +3119,12 @@ fn reconnect_backoff_increases_and_caps() {
 
 #[test]
 fn bootstrap_event_tail_limit_stays_small_for_remote_startup() {
-    assert_eq!(BOOTSTRAP_EVENT_TAIL_LIMIT, 50);
+    assert_eq!(BOOTSTRAP_EVENT_TAIL_LIMIT, 20);
+}
+
+#[test]
+fn event_history_page_limit_stays_screen_sized_for_filtered_loads() {
+    assert_eq!(EVENT_HISTORY_PAGE_LIMIT, 32);
 }
 
 #[test]
