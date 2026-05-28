@@ -111,12 +111,6 @@ impl ChatScrollState {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CachedChatRole {
-    Operator,
-    System,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ConversationCell {
     UserMessage {
@@ -133,6 +127,7 @@ pub(super) enum ConversationCell {
         created_at: DateTime<chrono::Utc>,
         speaker: String,
         body: String,
+        display_kind: ConversationDisplayKind,
     },
 }
 
@@ -153,10 +148,15 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         .as_ref()
         .map(|projection| projection.durable_operator_message_ids())
         .unwrap_or_default();
-    let selected_agent_id = app.selected_agent_id();
+    let selected_agent_id = app.selected_agent_id().or_else(|| {
+        app.projection
+            .as_ref()
+            .map(|projection| projection.agent.identity.agent_id.as_str())
+    });
 
     if let Some(projection) = app.projection.as_ref() {
         let level = app.display_mode.display_level();
+        let agent_speaker = selected_agent_id.unwrap_or("agent");
         let events: Vec<ProjectionEventRecord> = projection
             .presentation_events(app.display_mode)
             .into_iter()
@@ -169,13 +169,19 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
 
         for timed in &timed_items {
             if timed.item.is_visible_at(level) {
+                let display_kind = conversation_display_kind(&timed.item);
                 for rendered in timed.item.render(level) {
                     push_projected_conversation_cell(
                         &mut cells,
                         &mut durable_operator_message_bodies,
                         &mut projected_cell_keys,
                         &timed.dedupe_key,
-                        rendered_to_conversation_cell(&rendered, timed.ts),
+                        rendered_to_conversation_cell(
+                            &rendered,
+                            timed.ts,
+                            agent_speaker,
+                            display_kind,
+                        ),
                     );
                 }
             }
@@ -256,9 +262,10 @@ fn push_projected_conversation_cell(
 
 fn projected_conversation_cell_key(source_key: &str, cell: &ConversationCell) -> String {
     format!(
-        "{}|{:?}|{}|{}",
+        "{}|{:?}|{:?}|{}|{}",
         source_key,
         cell.role(),
+        cell.display_kind(),
         cell.sort_speaker(),
         normalized_operator_message_body_key(cell.sort_body())
     )
@@ -277,6 +284,14 @@ impl ConversationCell {
         }
     }
 
+    fn display_kind(&self) -> ConversationDisplayKind {
+        match self {
+            Self::UserMessage { .. } => ConversationDisplayKind::Operator,
+            Self::ActiveActivity { .. } => ConversationDisplayKind::Activity,
+            Self::SystemNotice { display_kind, .. } => *display_kind,
+        }
+    }
+
     fn role(&self) -> CachedChatRole {
         match self {
             Self::UserMessage { .. } => CachedChatRole::Operator,
@@ -286,7 +301,7 @@ impl ConversationCell {
 
     fn sort_speaker(&self) -> &str {
         match self {
-            Self::UserMessage { .. } => "You",
+            Self::UserMessage { .. } => "operator",
             Self::ActiveActivity { speaker, .. } | Self::SystemNotice { speaker, .. } => speaker,
         }
     }
@@ -299,7 +314,29 @@ impl ConversationCell {
         }
     }
 
-    fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
+    fn groups_with_previous(&self, previous: &Self) -> bool {
+        match (previous, self) {
+            (
+                Self::SystemNotice {
+                    speaker: previous_speaker,
+                    display_kind: previous_kind,
+                    ..
+                },
+                Self::SystemNotice {
+                    speaker,
+                    display_kind,
+                    ..
+                },
+            ) => {
+                *previous_kind == ConversationDisplayKind::Activity
+                    && *display_kind == ConversationDisplayKind::Activity
+                    && previous_speaker == speaker
+            }
+            _ => false,
+        }
+    }
+
+    fn render_lines(&self, width: u16, include_header: bool) -> Vec<Line<'static>> {
         match self {
             Self::UserMessage {
                 created_at,
@@ -310,16 +347,41 @@ impl ConversationCell {
                 render_active_activity_lines(speaker, body)
             }
             Self::SystemNotice {
-                created_at, body, ..
-            } => render_prefixed_markdown_lines(
-                *created_at,
+                created_at,
+                speaker,
                 body,
-                CachedChatRole::System,
+                display_kind,
+            } => render_message_block_lines(
+                *created_at,
+                ChatBlockRole::Agent,
+                speaker,
+                body,
+                *display_kind,
                 width,
                 false,
+                include_header,
             ),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CachedChatRole {
+    Operator,
+    System,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChatBlockRole {
+    Operator,
+    Agent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ConversationDisplayKind {
+    Operator,
+    Narrative,
+    Activity,
 }
 
 #[cfg(test)]
@@ -330,9 +392,14 @@ pub(super) fn build_chat_text(items: &[ConversationCell]) -> Text<'static> {
 pub(super) fn build_chat_text_for_width(items: &[ConversationCell], width: u16) -> Text<'static> {
     let mut text = Text::default();
     for (index, item) in items.iter().enumerate() {
-        text.lines.extend(item.render_lines(width));
+        let grouped_with_previous = index > 0 && item.groups_with_previous(&items[index - 1]);
+        text.lines
+            .extend(item.render_lines(width, !grouped_with_previous));
         if index + 1 < items.len() {
-            text.lines.push(Line::default());
+            let groups_with_next = items[index + 1].groups_with_previous(item);
+            if !groups_with_next {
+                text.lines.push(Line::default());
+            }
         }
     }
 
@@ -366,12 +433,15 @@ pub(super) fn chat_text_for_width(app: &TuiApp, width: u16) -> Text<'static> {
     text
 }
 
-fn render_prefixed_markdown_lines(
+fn render_message_block_lines(
     created_at: DateTime<chrono::Utc>,
+    role: ChatBlockRole,
+    speaker: &str,
     body: &str,
-    role: CachedChatRole,
+    display_kind: ConversationDisplayKind,
     width: u16,
     spaced_markdown: bool,
+    include_header: bool,
 ) -> Vec<Line<'static>> {
     let body = if spaced_markdown && width >= 48 {
         render_markdown_text_spaced(body)
@@ -379,31 +449,31 @@ fn render_prefixed_markdown_lines(
         render_markdown_text(body)
     };
     let body_lines = body.lines;
-    let prefix = chat_prefix_spans(created_at, role);
-    let continuation_indent = chat_continuation_indent(created_at);
-    let mut lines = Vec::new();
-
-    if let Some((first, rest)) = body_lines.split_first() {
-        let mut spans = Vec::with_capacity(prefix.len() + first.spans.len());
-        spans.extend(prefix);
-        spans.extend(first.spans.clone());
-        lines.push(Line::from(spans).style(first.style));
-
-        for line in rest {
-            if line.spans.iter().all(|span| span.content.is_empty()) {
-                lines.push(Line::default());
-                continue;
-            }
-
-            let mut spans = Vec::with_capacity(line.spans.len() + 1);
-            spans.push(Span::raw(continuation_indent.clone()));
-            spans.extend(line.spans.clone());
-            lines.push(Line::from(spans).style(line.style));
-        }
+    let mut lines = if include_header {
+        vec![Line::from(chat_header_spans(created_at, role, speaker))]
     } else {
-        lines.push(Line::from(prefix));
+        Vec::new()
+    };
+
+    for line in body_lines {
+        if line.spans.iter().all(|span| span.content.is_empty()) {
+            lines.push(Line::default());
+            continue;
+        }
+
+        let mut spans = Vec::with_capacity(line.spans.len() + 1);
+        spans.push(Span::raw(message_body_indent(display_kind)));
+        spans.extend(line.spans.clone());
+        lines.push(Line::from(spans).style(line.style));
     }
     lines
+}
+
+fn message_body_indent(display_kind: ConversationDisplayKind) -> &'static str {
+    match display_kind {
+        ConversationDisplayKind::Activity => "    ",
+        ConversationDisplayKind::Operator | ConversationDisplayKind::Narrative => "  ",
+    }
 }
 
 fn render_operator_message_lines(
@@ -412,17 +482,23 @@ fn render_operator_message_lines(
     status: Option<OperatorMessageStatus>,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let mut lines =
-        render_prefixed_markdown_lines(created_at, body, CachedChatRole::Operator, width, false);
+    let mut lines = render_message_block_lines(
+        created_at,
+        ChatBlockRole::Operator,
+        "operator",
+        body,
+        ConversationDisplayKind::Operator,
+        width,
+        false,
+        true,
+    );
     if let Some(status) = status.and_then(operator_message_status_label) {
         if let Some(first) = lines.first_mut() {
-            first.spans.insert(
-                3,
-                Span::styled(
-                    format!("[{status}] "),
-                    Style::default().add_modifier(Modifier::DIM),
-                ),
-            );
+            first.spans.push(Span::raw(" "));
+            first.spans.push(Span::styled(
+                format!("[{status}]"),
+                Style::default().add_modifier(Modifier::DIM),
+            ));
         }
     }
     lines
@@ -485,14 +561,15 @@ fn refresh_active_activity_marker(mut text: Text<'static>) -> Text<'static> {
     text
 }
 
-fn chat_prefix_spans(
+fn chat_header_spans(
     created_at: DateTime<chrono::Utc>,
-    role: CachedChatRole,
+    role: ChatBlockRole,
+    speaker: &str,
 ) -> Vec<Span<'static>> {
     let (marker, marker_style) = match role {
-        CachedChatRole::Operator => ("› ", Style::default().add_modifier(Modifier::BOLD)),
-        CachedChatRole::System => (
-            "! ",
+        ChatBlockRole::Operator => ("> ", Style::default().add_modifier(Modifier::BOLD)),
+        ChatBlockRole::Agent => (
+            "\u{2022} ",
             Style::default()
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::DIM),
@@ -502,20 +579,45 @@ fn chat_prefix_spans(
     vec![
         Span::styled(marker, marker_style),
         Span::styled(
+            speaker.to_string(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
             chat_timestamp(created_at),
             Style::default().add_modifier(Modifier::DIM),
         ),
-        Span::raw(" "),
     ]
-}
-
-fn chat_continuation_indent(created_at: DateTime<chrono::Utc>) -> String {
-    let prefix_width = 2 + chat_timestamp(created_at).chars().count() + 1;
-    " ".repeat(prefix_width)
 }
 
 fn chat_timestamp(created_at: DateTime<chrono::Utc>) -> String {
     created_at.with_timezone(&Local).format("%H:%M").to_string()
+}
+
+fn conversation_display_kind(item: &PresentationItem) -> ConversationDisplayKind {
+    match item {
+        PresentationItem::UserMessage { .. } => ConversationDisplayKind::Operator,
+        PresentationItem::AssistantResult { .. }
+        | PresentationItem::AssistantProgress { .. }
+        | PresentationItem::PlanShown { .. } => ConversationDisplayKind::Narrative,
+        PresentationItem::SystemAlert { .. }
+        | PresentationItem::WaitingNotice { .. }
+        | PresentationItem::WorkItemCard { .. }
+        | PresentationItem::ResumeNotice { .. }
+        | PresentationItem::ActionGroup { .. }
+        | PresentationItem::CommandExecuted { .. }
+        | PresentationItem::FileRead { .. }
+        | PresentationItem::FileChange { .. }
+        | PresentationItem::PatchFailure { .. }
+        | PresentationItem::ToolAction { .. }
+        | PresentationItem::ProviderRound { .. }
+        | PresentationItem::InternalTransition { .. }
+        | PresentationItem::TaskLifecycle { .. }
+        | PresentationItem::WorkItemBookkeeping { .. }
+        | PresentationItem::WorkspaceChange { .. }
+        | PresentationItem::ContinuationDetail { .. }
+        | PresentationItem::GenericEvent { .. } => ConversationDisplayKind::Activity,
+    }
 }
 
 fn active_activity_status_label(speaker: &str) -> Option<&'static str> {
@@ -571,9 +673,13 @@ fn active_activity_item(
         return None;
     }
 
-    let hidden_events = projection
-        .map(|projection| projection.hidden_current_turn_events(app.display_mode))
-        .unwrap_or_default();
+    let hidden_events = if app.display_mode == crate::operator_event::OperatorDisplayMode::Info {
+        projection
+            .map(|projection| projection.live_working_activity_events(app.display_mode))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let latest_action = latest_action_event(hidden_events.as_slice());
     let latest_assistant = latest_assistant_message(hidden_events.as_slice());
     let latest_event_ts =
@@ -643,7 +749,9 @@ fn latest_action_event<'a>(
     events: &'a [&'a crate::tui::projection::ProjectionEventRecord],
 ) -> Option<&'a crate::tui::projection::ProjectionEventRecord> {
     events.iter().rev().copied().find(|event| {
-        event.presentation.is_current_activity_candidate() && !action_event_body(event).is_empty()
+        event.presentation.is_current_activity_candidate()
+            && !is_progress_event(event)
+            && !action_event_body(event).is_empty()
     })
 }
 
@@ -1156,6 +1264,8 @@ mod tests {
 pub(super) fn rendered_to_conversation_cell(
     cell: &crate::presentation::RenderedCell,
     ts: chrono::DateTime<chrono::Utc>,
+    agent_speaker: &str,
+    display_kind: ConversationDisplayKind,
 ) -> ConversationCell {
     if cell.is_live {
         ConversationCell::ActiveActivity {
@@ -1172,8 +1282,9 @@ pub(super) fn rendered_to_conversation_cell(
     } else {
         ConversationCell::SystemNotice {
             created_at: ts,
-            speaker: cell.speaker.clone(),
+            speaker: agent_speaker.to_string(),
             body: cell.body.clone(),
+            display_kind,
         }
     }
 }

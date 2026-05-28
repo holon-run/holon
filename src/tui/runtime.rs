@@ -11,8 +11,8 @@ const REFRESH_RETRY_DELAY: Duration = Duration::from_secs(1);
 const AGENT_LIST_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const TASK_LIMIT: usize = 40;
 const OPTIMISTIC_OPERATOR_MESSAGE_LIMIT: usize = 64;
-pub(super) const BOOTSTRAP_EVENT_TAIL_LIMIT: usize = 50;
-const EVENT_HISTORY_PAGE_LIMIT: usize = 128;
+pub(super) const BOOTSTRAP_EVENT_TAIL_LIMIT: usize = 20;
+pub(super) const EVENT_HISTORY_PAGE_LIMIT: usize = 32;
 const STREAM_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]

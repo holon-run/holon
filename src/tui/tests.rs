@@ -3,6 +3,7 @@ use super::{
     chat::{
         build_chat_text, chat_text, collect_chat_items, is_operator_origin_value,
         paragraph_max_scroll, paragraph_max_scroll_unframed, ChatScrollState, ConversationCell,
+        ConversationDisplayKind,
     },
     composer::ComposerState,
     determine_alt_screen_mode_for_terminal,
@@ -12,6 +13,7 @@ use super::{
     runtime::{
         is_cursor_not_found_error, reconnect_delay_for_attempt, AgentListChange,
         TuiConnectionState, TuiRuntimeMessage, BOOTSTRAP_EVENT_TAIL_LIMIT,
+        EVENT_HISTORY_PAGE_LIMIT,
     },
     state::{tui_state_path, TuiClientState},
     view_model::{HeaderViewModel, StatusbarViewModel},
@@ -697,16 +699,16 @@ fn build_chat_text_includes_structured_operator_messages() {
         .into_iter()
         .map(|line| line.spans.into_iter().map(|span| span.content).collect())
         .collect();
-    assert!(lines.iter().any(|line| line.contains("› ")));
+    assert!(lines.iter().any(|line| line.contains("> operator ")));
     assert!(lines.iter().any(|line| line.contains("Fix the failing CI")));
-    assert!(lines.iter().any(|line| line.contains("! ")));
+    assert!(lines.iter().any(|line| line.contains("• default ")));
     assert!(lines
         .iter()
         .any(|line| line.contains("I started a worktree task.")));
 }
 
 #[test]
-fn build_chat_text_inlines_message_header_with_first_body_line() {
+fn build_chat_text_renders_message_block_header_above_body() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
@@ -733,10 +735,57 @@ fn build_chat_text_inlines_message_header_with_first_body_line() {
         .into_iter()
         .map(|line| line.spans.into_iter().map(|span| span.content).collect())
         .collect();
+    assert!(lines.iter().any(|line| line.contains("• default ")));
     assert!(lines
         .iter()
-        .any(|line| line.contains("! ") && line.contains("First line")));
-    assert!(lines.iter().any(|line| line.contains("Second line")));
+        .any(|line| line.starts_with("  ") && line.contains("First line")));
+    assert!(lines.iter().any(|line| line.starts_with("  Second line")));
+}
+
+#[test]
+fn build_chat_text_groups_activity_by_kind_not_minute() {
+    let first_created_at = Utc::now();
+    let second_created_at = first_created_at + chrono::Duration::minutes(2);
+    let items = vec![
+        ConversationCell::SystemNotice {
+            created_at: first_created_at,
+            speaker: "holon-pm".into(),
+            body: "first activity".into(),
+            display_kind: ConversationDisplayKind::Activity,
+        },
+        ConversationCell::SystemNotice {
+            created_at: second_created_at,
+            speaker: "holon-pm".into(),
+            body: "second activity".into(),
+            display_kind: ConversationDisplayKind::Activity,
+        },
+        ConversationCell::SystemNotice {
+            created_at: second_created_at,
+            speaker: "holon-pm".into(),
+            body: "narrative line".into(),
+            display_kind: ConversationDisplayKind::Narrative,
+        },
+    ];
+
+    let lines: Vec<String> = build_chat_text(&items)
+        .lines
+        .into_iter()
+        .map(|line| line.spans.into_iter().map(|span| span.content).collect())
+        .collect();
+    let header_count = lines
+        .iter()
+        .filter(|line| line.contains("• holon-pm "))
+        .count();
+    assert_eq!(header_count, 2);
+    assert!(lines
+        .iter()
+        .any(|line| line.starts_with("    first activity")));
+    assert!(lines
+        .iter()
+        .any(|line| line.starts_with("    second activity")));
+    assert!(lines
+        .iter()
+        .any(|line| line.starts_with("  narrative line")));
 }
 
 #[test]
@@ -1686,7 +1735,7 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    projection.apply_event(
+    projection.apply_stream_event(
         AgentStreamEvent {
             id: "evt-assistant".into(),
             event: "assistant_round_recorded".into(),
@@ -1701,6 +1750,7 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        app.display_mode,
     );
     app.projection = Some(projection);
 
@@ -1710,6 +1760,7 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
     assert!(rendered.contains("Assistant hidden assistant partial"));
+    assert!(!rendered.contains("Action    hidden assistant partial"));
     assert!(!rendered.contains("Action    Waiting for activity"));
     assert!(!rendered.contains("Current   "));
 }
@@ -1777,6 +1828,94 @@ fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
     assert!(!rendered.contains("State sync"));
     assert!(!rendered.contains("agent_state_changed"));
     assert!(rendered.contains("Working"));
+}
+
+#[test]
+fn chat_display_mode_info_shows_hidden_stream_activity_in_working_body() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.display_mode = OperatorDisplayMode::Info;
+    let mut snapshot = sample_snapshot("default", "evt-0");
+    snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.apply_stream_event(
+        AgentStreamEvent {
+            id: "evt-tool".into(),
+            event: "tool_executed".into(),
+            data: StreamEventEnvelope {
+                id: "evt-tool".into(),
+                event_seq: 2,
+                ts: Utc::now(),
+                agent_id: "default".into(),
+                event_type: "tool_executed".into(),
+                provenance: None,
+                payload: json!({
+                    "tool_name": "ExecCommand",
+                    "exec_command_cmd": "cargo test tui"
+                }),
+            },
+        },
+        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        app.display_mode,
+    );
+    app.projection = Some(projection);
+
+    let rendered: String = build_chat_text(&collect_chat_items(&app))
+        .lines
+        .into_iter()
+        .flat_map(|line| line.spans.into_iter().map(|span| span.content))
+        .collect();
+    assert!(rendered.contains("Working"));
+    assert!(rendered.contains("cargo test tui"));
+}
+
+#[test]
+fn chat_display_mode_verbose_keeps_working_marker_without_activity_body() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.display_mode = OperatorDisplayMode::Verbose;
+    let mut snapshot = sample_snapshot("default", "evt-0");
+    snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.apply_stream_event(
+        AgentStreamEvent {
+            id: "evt-tool".into(),
+            event: "tool_executed".into(),
+            data: StreamEventEnvelope {
+                id: "evt-tool".into(),
+                event_seq: 2,
+                ts: Utc::now(),
+                agent_id: "default".into(),
+                event_type: "tool_executed".into(),
+                provenance: None,
+                payload: json!({
+                    "tool_name": "ExecCommand",
+                    "exec_command_cmd": "cargo test tui"
+                }),
+            },
+        },
+        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        app.display_mode,
+    );
+    app.projection = Some(projection);
+
+    let items = collect_chat_items(&app);
+    assert!(items.iter().any(|item| matches!(
+        item,
+        ConversationCell::SystemNotice { body, .. }
+            if body.contains("cargo test tui")
+    )));
+    let active_item = items.last().expect("active activity item");
+    match active_item {
+        ConversationCell::ActiveActivity { body, .. } => assert!(body.is_empty()),
+        other => panic!("expected active activity item, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1913,7 +2052,7 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
             ..Default::default()
         };
     let mut refreshed_projection = TuiProjection::from_snapshot(snapshot);
-    refreshed_projection.apply_event(
+    refreshed_projection.apply_stream_event(
         AgentStreamEvent {
             id: "evt-tool".into(),
             event: "tool_executed".into(),
@@ -1931,6 +2070,7 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        app.display_mode,
     );
     app.projection = Some(refreshed_projection);
 
@@ -1939,7 +2079,7 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
         .into_iter()
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
-    assert!(rendered.contains("Action    Command finished: cargo test tui"));
+    assert!(rendered.contains("cargo test tui"));
     assert!(!rendered.contains("Action    Waiting for activity"));
     assert!(!rendered.contains("Current   "));
 }
@@ -1953,7 +2093,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
     );
     let mut previous_projection = TuiProjection::from_snapshot(sample_snapshot("agent-a", "a0"));
     previous_projection.agent.agent.status = AgentStatus::AwakeRunning;
-    previous_projection.apply_event(
+    previous_projection.apply_stream_event(
         AgentStreamEvent {
             id: "evt-a-tool".into(),
             event: "tool_executed".into(),
@@ -1971,6 +2111,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
             },
         },
         &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        app.display_mode,
     );
     app.projection = Some(previous_projection);
     let before_switch: String = build_chat_text(&collect_chat_items(&app))
@@ -1978,7 +2119,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
         .into_iter()
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
-    assert!(before_switch.contains("Action    Command finished: cargo test agent-a"));
+    assert!(before_switch.contains("cargo test agent-a"));
 
     let mut switched_snapshot = sample_snapshot("agent-b", "evt-b-tool");
     switched_snapshot.agent.agent.status = AgentStatus::AwakeRunning;
@@ -2007,7 +2148,7 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
         .flat_map(|line| line.spans.into_iter().map(|span| span.content))
         .collect();
     assert!(rendered.contains("Working"));
-    assert!(rendered.contains("Action    Command finished: cargo test agent-b"));
+    assert!(!rendered.contains("cargo test agent-b"));
     assert!(!rendered.contains("cargo test agent-a"));
 }
 
@@ -3030,7 +3171,12 @@ fn reconnect_backoff_increases_and_caps() {
 
 #[test]
 fn bootstrap_event_tail_limit_stays_small_for_remote_startup() {
-    assert_eq!(BOOTSTRAP_EVENT_TAIL_LIMIT, 50);
+    assert_eq!(BOOTSTRAP_EVENT_TAIL_LIMIT, 20);
+}
+
+#[test]
+fn event_history_page_limit_stays_screen_sized_for_filtered_loads() {
+    assert_eq!(EVENT_HISTORY_PAGE_LIMIT, 32);
 }
 
 #[test]
@@ -3514,7 +3660,7 @@ fn pipeline_single_turn_presentation_jsonl() {
             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
 
-        if reducer_kinds.contains(&"process_execution_requested") {
+        if reducer_kinds.contains(&"tool_executed") {
             seen_command = true;
             assert_eq!(record["item_kind"], "command_executed");
         }
@@ -3552,10 +3698,7 @@ fn pipeline_single_turn_presentation_jsonl() {
         }
     }
 
-    assert!(
-        seen_command,
-        "should contain process_execution_requested event"
-    );
+    assert!(seen_command, "should contain command result event");
     assert!(
         seen_assistant,
         "should contain assistant_round_recorded event"
@@ -3588,7 +3731,11 @@ fn pipeline_display_level_filtering() {
     // Visibility 2 (WorkDone):       work_item_written with completed state
     // Visibility 3 (TurnResult):     brief_created (normal brief)
     // Visibility 4 (Progress):       assistant_round_recorded
-    // Visibility 5 (Trace):          process_execution_requested, tool_executed
+    // Visibility 5 (Trace):          tool_executed
+    //
+    // process_execution_requested is an input-only runtime trace for command
+    // lifecycle state and must not create a durable presentation item on its
+    // own.
 
     projection.apply_event(
         pipeline_event(
@@ -3786,8 +3933,8 @@ fn pipeline_display_level_filtering() {
         "should contain assistant_round_recorded (visibility 4)"
     );
     assert!(
-        seen_command,
-        "should contain process_execution_requested (visibility 5)"
+        !seen_command,
+        "process_execution_requested should not create a standalone presentation item"
     );
     assert!(seen_tool, "should contain tool_executed (visibility 5)");
 }
@@ -3815,13 +3962,16 @@ fn pipeline_reducer_aggregation() {
     app.projection = Some(TuiProjection::from_snapshot(snapshot));
     let projection = app.projection.as_mut().unwrap();
 
-    // ── Feed multi-event turn with event pairs that trigger reducer merging ──
+    // ── Feed a multi-event turn. Standalone process_execution_requested
+    // events are audit/runtime inputs only; presentation output starts at the
+    // corresponding tool_executed result records.
     //
-    // Events 1-2: process_execution_requested + tool_executed pair → merged by reducer
-    //   (reducer produces one CommandExecuted from 2 reducer events)
+    // Event 1: process_execution_requested → no standalone presentation item
+    // Event 2: tool_executed → command_executed presentation item
     // Event 3: brief_created → standalone (1 reducer event)
     // Event 4: assistant_round_recorded → standalone (1 reducer event)
-    // Events 5-6: second process_execution_requested + tool_executed pair → merged
+    // Event 5: second process_execution_requested → no standalone item
+    // Event 6: second tool_executed → command_executed presentation item
     // Event 7: assistant_round_recorded (second round) → standalone
 
     // Pair 1: command execution
@@ -3995,21 +4145,8 @@ fn pipeline_reducer_aggregation() {
         all_kinds.extend(reducer_event_kinds);
     }
 
-    // ── Verification 1: reducer_event_summaries non-empty for multi-event records ──
-    let merged_records: Vec<&AggRecord> = records
-        .iter()
-        .filter(|r| r.reducer_event_ids_count > 1)
-        .collect();
-    assert!(
-        !merged_records.is_empty(),
-        "should have at least one record with multiple reducer events (merged command pairs)"
-    );
-    for rec in &merged_records {
-        assert!(
-            rec.reducer_event_summaries_count > 0,
-            "merged record item_kind={} must have non-empty reducer_event_summaries",
-            rec.item_kind
-        );
+    // ── Verification 1: reducer_event_summaries match reducer_event_ids ──
+    for rec in &records {
         assert_eq!(
             rec.reducer_event_summaries_count, rec.reducer_event_ids_count,
             "reducer_event_summaries count must match reducer_event_ids count"
@@ -4039,8 +4176,8 @@ fn pipeline_reducer_aggregation() {
     }
 
     assert!(
-        kind_counts.contains_key("process_execution_requested"),
-        "should contain process_execution_requested kind; got: {:?}",
+        !kind_counts.contains_key("process_execution_requested"),
+        "process_execution_requested should not create presentation output; got: {:?}",
         kind_counts
     );
     assert!(
@@ -4389,20 +4526,17 @@ fn pipeline_multi_turn_continuity() {
         }
         if rec
             .reducer_event_kinds
-            .contains(&"process_execution_requested".to_string())
-            && rec
-                .reducer_event_kinds
-                .contains(&"tool_executed".to_string())
+            .contains(&"tool_executed".to_string())
         {
             seen_command = true;
-            // command_executed records should have reducer event ids from some turn
+            // command_executed records should reference a turn's tool result event.
             let has_turn_event = rec
                 .reducer_event_ids
                 .iter()
-                .any(|id| id == "t1-req" || id == "t2-req" || id == "t3-req");
+                .any(|id| id == "t1-tool" || id == "t2-tool" || id == "t3-tool");
             assert!(
                 has_turn_event,
-                "command_executed record should reference a turn's request event"
+                "command_executed record should reference a turn's tool result event"
             );
         }
         if rec
@@ -4439,8 +4573,8 @@ fn pipeline_multi_turn_continuity() {
     for rec in &records {
         if rec.reducer_event_ids.contains(&"t2-term".to_string()) {
             assert!(
-                !rec.reducer_event_ids.contains(&"t1-req".to_string()),
-                "turn 2 record should not contain turn 1 event ids"
+                !rec.reducer_event_ids.contains(&"t1-tool".to_string()),
+                "turn 2 record should not contain turn 1 tool event ids"
             );
             assert!(
                 !rec.reducer_event_ids.contains(&"t1-tool".to_string()),
@@ -4449,12 +4583,12 @@ fn pipeline_multi_turn_continuity() {
         }
         if rec.reducer_event_ids.contains(&"t3-term".to_string()) {
             assert!(
-                !rec.reducer_event_ids.contains(&"t1-req".to_string()),
-                "turn 3 record should not contain turn 1 event ids"
+                !rec.reducer_event_ids.contains(&"t1-tool".to_string()),
+                "turn 3 record should not contain turn 1 tool event ids"
             );
             assert!(
-                !rec.reducer_event_ids.contains(&"t2-req".to_string()),
-                "turn 3 record should not contain turn 2 event ids"
+                !rec.reducer_event_ids.contains(&"t2-tool".to_string()),
+                "turn 3 record should not contain turn 2 tool event ids"
             );
         }
     }

@@ -5,7 +5,7 @@
 //!
 //! See `docs/rfcs/presentation-item-model-and-renderer.md`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -23,6 +23,8 @@ pub struct HunkSummary {
     pub old_count: u32,
     pub new_start: u32,
     pub new_count: u32,
+    pub added_count: u32,
+    pub removed_count: u32,
 }
 
 /// File action kind.
@@ -124,6 +126,16 @@ impl Outcome {
             Outcome::Unknown => "?",
         }
     }
+}
+
+/// Command presentation state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandStatus {
+    Started,
+    Completed,
+    Failed,
+    PromotedToTask,
+    AlreadyRunning,
 }
 
 /// State of a presentation item: stable or still evolving.
@@ -231,10 +243,14 @@ pub enum PresentationItem {
         summary: String,
     },
 
-    // ── Level 4+ (Verbose): Codex-like activity ───────────────────────────
+    // ── Level 4+ (Verbose): compact activity ─────────────────────────────
     AssistantProgress {
         text: String,
         state: ItemState,
+    },
+    ResumeNotice {
+        reason: String,
+        details: Option<String>,
     },
     ActionGroup {
         heading: String,
@@ -242,12 +258,15 @@ pub enum PresentationItem {
         state: ItemState,
     },
     CommandExecuted {
+        status: CommandStatus,
         cmd_preview: String,
+        task_id: Option<String>,
         duration_ms: Option<u64>,
         exit_code: Option<i32>,
         stdout_summary: String,
         full_stdout: Option<String>,
         full_stderr: Option<String>,
+        error_message: Option<String>,
     },
     FileRead {
         path: String,
@@ -258,6 +277,13 @@ pub enum PresentationItem {
         action: FileAction,
         hunks: Vec<HunkSummary>,
         full_diff: Option<String>,
+    },
+    PatchFailure {
+        summary: String,
+        error_message: Option<String>,
+    },
+    ToolAction {
+        summary: String,
     },
     PlanShown {
         plan_text: String,
@@ -307,10 +333,13 @@ impl PresentationItem {
             PresentationItem::WorkItemCard { .. } => 3,
 
             PresentationItem::AssistantProgress { .. } => 4,
+            PresentationItem::ResumeNotice { .. } => 4,
             PresentationItem::ActionGroup { .. } => 4,
             PresentationItem::CommandExecuted { .. } => 4,
             PresentationItem::FileRead { .. } => 4,
             PresentationItem::FileChange { .. } => 4,
+            PresentationItem::PatchFailure { .. } => 4,
+            PresentationItem::ToolAction { .. } => 4,
             PresentationItem::PlanShown { .. } => 4,
 
             PresentationItem::ProviderRound { .. } => 5,
@@ -404,6 +433,18 @@ impl Renderable for PresentationItem {
                 vec![cell]
             }
 
+            PresentationItem::ResumeNotice { reason, details } => {
+                let mut body = format!("\u{21bb} {}", reason);
+                if level >= 5 {
+                    if let Some(details) = details {
+                        if !details.trim().is_empty() && details != reason {
+                            body.push_str(&format!("\n\u{2502} {}", details));
+                        }
+                    }
+                }
+                vec![RenderedCell::new("Holon", body)]
+            }
+
             PresentationItem::ActionGroup {
                 heading,
                 items,
@@ -425,29 +466,62 @@ impl Renderable for PresentationItem {
             }
 
             PresentationItem::CommandExecuted {
+                status,
                 cmd_preview,
+                task_id,
                 duration_ms,
                 exit_code,
-                stdout_summary,
+                stdout_summary: _,
                 full_stdout,
                 full_stderr,
+                error_message,
             } => {
-                let outcome = match exit_code {
-                    Some(0) => Outcome::Success,
-                    Some(_) => Outcome::Failure,
-                    None => Outcome::Unknown,
+                let symbol = match status {
+                    CommandStatus::Started => "\u{2026}",
+                    CommandStatus::PromotedToTask | CommandStatus::AlreadyRunning => "\u{21bb}",
+                    CommandStatus::Failed => Outcome::Failure.symbol(),
+                    CommandStatus::Completed => match exit_code {
+                        Some(0) => Outcome::Success.symbol(),
+                        Some(_) => Outcome::Failure.symbol(),
+                        None => Outcome::Unknown.symbol(),
+                    },
                 };
-                let mut body = format!("{} {}", outcome.symbol(), cmd_preview);
+                let mut body = format!("{} {}", symbol, cmd_preview);
                 if let Some(duration_ms) = duration_ms {
                     let duration_s = *duration_ms as f64 / 1000.0;
                     body.push_str(&format!(" ({:.1}s)", duration_s));
                 }
+                match status {
+                    CommandStatus::Started => body.push_str(" — started"),
+                    CommandStatus::PromotedToTask => {
+                        body.push_str(" — running in background");
+                        if let Some(task_id) = task_id {
+                            body.push_str(&format!(" ({task_id})"));
+                        }
+                    }
+                    CommandStatus::AlreadyRunning => {
+                        body.push_str(" — already running");
+                        if let Some(task_id) = task_id {
+                            body.push_str(&format!(" ({task_id})"));
+                        }
+                    }
+                    CommandStatus::Failed if exit_code.is_none() => body.push_str(" — failed"),
+                    CommandStatus::Completed | CommandStatus::Failed => {}
+                }
 
                 if level >= 5 {
+                    if let Some(error) = error_message {
+                        if !error.trim().is_empty() {
+                            body.push_str("\n\u{2502} error:\n");
+                            for line in error.lines() {
+                                body.push_str(&format!("\u{2502} {}\n", line));
+                            }
+                        }
+                    }
                     if let Some(stdout) = full_stdout {
                         if !stdout.trim().is_empty() {
                             body.push_str("\n\u{2502} stdout:\n");
-                            for line in stdout.lines().take(20) {
+                            for line in stdout.lines() {
                                 body.push_str(&format!("\u{2502} {}\n", line));
                             }
                         }
@@ -455,13 +529,11 @@ impl Renderable for PresentationItem {
                     if let Some(stderr) = full_stderr {
                         if !stderr.trim().is_empty() {
                             body.push_str("\n\u{2502} stderr:\n");
-                            for line in stderr.lines().take(10) {
+                            for line in stderr.lines() {
                                 body.push_str(&format!("\u{2502} {}\n", line));
                             }
                         }
                     }
-                } else if !stdout_summary.is_empty() {
-                    body.push_str(&format!("\n\u{2502} {}", stdout_summary));
                 }
 
                 vec![RenderedCell::new("Holon", body)]
@@ -482,8 +554,8 @@ impl Renderable for PresentationItem {
                 hunks,
                 full_diff,
             } => {
-                let added: u32 = hunks.iter().map(|h| h.new_count).sum();
-                let removed: u32 = hunks.iter().map(|h| h.old_count).sum();
+                let added: u32 = hunks.iter().map(|h| h.added_count).sum();
+                let removed: u32 = hunks.iter().map(|h| h.removed_count).sum();
                 let hunk_info = if hunks.is_empty() {
                     String::new()
                 } else {
@@ -494,12 +566,34 @@ impl Renderable for PresentationItem {
                 if level >= 5 {
                     if let Some(diff) = full_diff {
                         body.push('\n');
-                        for line in diff.lines().take(40) {
+                        for line in diff.lines() {
                             body.push_str(&format!("\u{2502} {}\n", line));
                         }
                     }
                 }
                 vec![RenderedCell::new("Holon", body).indented(1)]
+            }
+
+            PresentationItem::PatchFailure {
+                summary,
+                error_message,
+            } => {
+                let mut body = format!("{} {}", Outcome::Failure.symbol(), summary);
+                if level >= 5 {
+                    if let Some(error) = error_message {
+                        if !error.trim().is_empty() {
+                            body.push_str("\n\u{2502} error:\n");
+                            for line in error.lines() {
+                                body.push_str(&format!("\u{2502} {}\n", line));
+                            }
+                        }
+                    }
+                }
+                vec![RenderedCell::new("Holon", body)]
+            }
+
+            PresentationItem::ToolAction { summary } => {
+                vec![RenderedCell::new("Holon", summary.clone()).indented(1)]
             }
 
             PresentationItem::PlanShown { plan_text } => {
@@ -583,6 +677,7 @@ impl Renderable for PresentationItem {
 pub(crate) struct PresentationReducer {
     live_group: Option<LiveGroup>,
     last_ts: Option<DateTime<Utc>>,
+    open_command_keys: HashSet<String>,
     observed_assistant_text_keys: HashSet<String>,
     observed_assistant_texts: HashSet<String>,
     observed_user_message_keys: HashSet<String>,
@@ -603,48 +698,14 @@ impl PresentationReducer {
     pub(crate) fn reduce(&mut self, events: &[ProjectionEventRecord]) -> Vec<TimedItem> {
         let mut items: Vec<TimedItem> = Vec::new();
         let final_brief_texts = final_brief_texts(events);
+        let mut local_open_command_items: HashMap<String, usize> = HashMap::new();
 
         let mut i = 0;
         while i < events.len() {
             let event = &events[i];
 
             match event.kind.as_str() {
-                "process_execution_requested" => {
-                    let exec_preview =
-                        exec_command_preview(event).unwrap_or_else(|| event.summary.clone());
-
-                    if let Some(next) = events.get(i + 1) {
-                        if matches!(
-                            next.kind.as_str(),
-                            "tool_executed" | "tool_execution_failed"
-                        ) && next.summary.contains(&exec_preview)
-                        {
-                            let duration_ms = tool_duration_ms(next);
-                            let exit_code =
-                                tool_exit_code(next).or_else(|| match next.kind.as_str() {
-                                    "tool_execution_failed" => None,
-                                    _ => Some(0),
-                                });
-                            let stdout_summary = tool_output_summary(next);
-                            let full_stdout = tool_full_output(next);
-                            let full_stderr = tool_full_stderr(next);
-
-                            items.push(TimedItem::from_event(
-                                PresentationItem::CommandExecuted {
-                                    cmd_preview: exec_preview,
-                                    duration_ms,
-                                    exit_code,
-                                    stdout_summary,
-                                    full_stdout,
-                                    full_stderr,
-                                },
-                                next,
-                            ));
-                            i += 2;
-                            continue;
-                        }
-                    }
-                }
+                "process_execution_requested" => {}
 
                 "message_enqueued" => {
                     if let Some((key, text)) = operator_message_item(event) {
@@ -684,6 +745,21 @@ impl PresentationReducer {
                         i += 1;
                         continue;
                     }
+                    if is_apply_patch_tool_event(event) {
+                        for item in apply_patch_items(event) {
+                            items.push(TimedItem::from_event(item, event));
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    if !is_exec_command_tool_event(event) {
+                        items.push(TimedItem::from_event(
+                            self.event_to_presentation(event),
+                            event,
+                        ));
+                        i += 1;
+                        continue;
+                    }
                     let cmd_preview =
                         exec_command_preview(event).unwrap_or_else(|| event.summary.clone());
                     let exit_code = tool_exit_code(event).or_else(|| match event.kind.as_str() {
@@ -694,17 +770,29 @@ impl PresentationReducer {
                     let full_stdout = tool_full_output(event);
                     let full_stderr = tool_full_stderr(event);
 
-                    items.push(TimedItem::from_event(
-                        PresentationItem::CommandExecuted {
-                            cmd_preview,
-                            duration_ms: tool_duration_ms(event),
-                            exit_code,
-                            stdout_summary,
-                            full_stdout,
-                            full_stderr,
-                        },
-                        event,
-                    ));
+                    let item = PresentationItem::CommandExecuted {
+                        status: command_status_from_tool_event(event),
+                        cmd_preview: cmd_preview.clone(),
+                        task_id: command_task_id(event),
+                        duration_ms: tool_duration_ms(event),
+                        exit_code,
+                        stdout_summary,
+                        full_stdout,
+                        full_stderr,
+                        error_message: tool_error_message(event),
+                    };
+                    if let Some(key) = command_presentation_key(event, &cmd_preview) {
+                        if let Some(index) = local_open_command_items.remove(&key) {
+                            items[index] = TimedItem::with_key(item, event.ts, key);
+                            self.open_command_keys.remove(&items[index].dedupe_key);
+                        } else if self.open_command_keys.remove(&key) {
+                            items.push(TimedItem::with_key(item, event.ts, key));
+                        } else {
+                            items.push(TimedItem::with_key(item, event.ts, key));
+                        }
+                    } else {
+                        items.push(TimedItem::from_event(item, event));
+                    }
                 }
 
                 "assistant_round_recorded" | "text_only_round_observed" => {
@@ -724,6 +812,17 @@ impl PresentationReducer {
                                 event,
                             ));
                         }
+                    }
+                }
+
+                "callback_delivered" | "timer_fired" | "continuation_trigger_received" => {
+                    if let Some(item) = resume_notice_item(event) {
+                        items.push(TimedItem::from_event(item, event));
+                    } else {
+                        items.push(TimedItem::from_event(
+                            self.event_to_presentation(event),
+                            event,
+                        ));
                     }
                 }
 
@@ -913,13 +1012,28 @@ impl PresentationReducer {
                 from: "message".to_string(),
                 to: event.summary.clone(),
             },
-            OperatorEventCategory::Waiting => PresentationItem::WaitingNotice {
-                reason: event.summary.clone(),
-            },
+            OperatorEventCategory::Waiting => {
+                if matches!(
+                    event.kind.as_str(),
+                    "callback_delivered" | "timer_create_requested" | "timer_created"
+                ) {
+                    PresentationItem::GenericEvent {
+                        kind: event.kind.clone(),
+                        summary: event.summary.clone(),
+                    }
+                } else {
+                    PresentationItem::WaitingNotice {
+                        reason: event.summary.clone(),
+                    }
+                }
+            }
             OperatorEventCategory::Runtime => PresentationItem::InternalTransition {
                 what: event.kind.clone(),
                 from: "".to_string(),
                 to: event.summary.clone(),
+            },
+            OperatorEventCategory::Tool => PresentationItem::ToolAction {
+                summary: event.summary.clone(),
             },
             _ => PresentationItem::GenericEvent {
                 kind: event.kind.clone(),
@@ -965,6 +1079,22 @@ fn event_dedupe_key(event: &ProjectionEventRecord) -> String {
         return format!("event-id:{}", event.id);
     }
     format!("event-seq:{}:{}", event.event_seq, event.kind)
+}
+
+fn command_presentation_key(event: &ProjectionEventRecord, cmd_preview: &str) -> Option<String> {
+    if cmd_preview.trim().is_empty() {
+        return None;
+    }
+    let workdir = event
+        .payload
+        .get("workdir")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Some(format!(
+        "command:{}:{}",
+        workdir,
+        normalize_text_key(cmd_preview)
+    ))
 }
 
 fn normalize_text_key(text: &str) -> String {
@@ -1072,6 +1202,285 @@ fn is_sleep_tool_event(event: &ProjectionEventRecord) -> bool {
     event.payload.get("tool_name").and_then(Value::as_str) == Some("Sleep")
 }
 
+fn is_exec_command_tool_event(event: &ProjectionEventRecord) -> bool {
+    matches!(
+        event.payload.get("tool_name").and_then(Value::as_str),
+        Some("ExecCommand" | "ExecCommandBatch")
+    )
+}
+
+fn is_apply_patch_tool_event(event: &ProjectionEventRecord) -> bool {
+    event.payload.get("tool_name").and_then(Value::as_str) == Some("ApplyPatch")
+}
+
+fn apply_patch_items(event: &ProjectionEventRecord) -> Vec<PresentationItem> {
+    if event.kind == "tool_execution_failed" {
+        return vec![PresentationItem::PatchFailure {
+            summary: patch_failure_summary(event),
+            error_message: tool_raw_error_message(event),
+        }];
+    }
+
+    let mut changes = apply_patch_result(event)
+        .map(apply_patch_file_changes_from_result)
+        .unwrap_or_default();
+    if changes.is_empty() {
+        changes = apply_patch_file_changes_from_summary(
+            event
+                .payload
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or(&event.summary),
+        );
+    }
+
+    if changes.is_empty() {
+        vec![PresentationItem::GenericEvent {
+            kind: event.kind.clone(),
+            summary: event.summary.clone(),
+        }]
+    } else {
+        changes
+    }
+}
+
+fn patch_failure_summary(event: &ProjectionEventRecord) -> String {
+    let summary = tool_error_message(event)
+        .and_then(|error| {
+            error
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(|line| format!("Patch failed: {line}"))
+        })
+        .unwrap_or_else(|| {
+            event
+                .summary
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        });
+    if summary.is_empty() {
+        "Patch failed".to_string()
+    } else if summary.starts_with("Patch failed") {
+        summary
+    } else {
+        format!("Patch failed: {summary}")
+    }
+}
+
+fn apply_patch_result(event: &ProjectionEventRecord) -> Option<&Value> {
+    event
+        .payload
+        .get("apply_patch_result")
+        .or_else(|| event.payload.get("result"))
+}
+
+fn apply_patch_file_changes_from_result(result: &Value) -> Vec<PresentationItem> {
+    let changes = result
+        .get("changed_files")
+        .and_then(Value::as_array)
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(apply_patch_file_change_from_value)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !changes.is_empty() {
+        return changes;
+    }
+
+    result
+        .get("changed_paths")
+        .and_then(Value::as_array)
+        .map(|paths| {
+            paths
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|path| !path.trim().is_empty())
+                .map(|path| PresentationItem::FileChange {
+                    path: path.to_string(),
+                    action: FileAction::Modified,
+                    hunks: Vec::new(),
+                    full_diff: None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn apply_patch_file_change_from_value(value: &Value) -> Option<PresentationItem> {
+    let action = value
+        .get("action")
+        .and_then(Value::as_str)
+        .and_then(file_action_from_apply_patch_action)
+        .unwrap_or(FileAction::Modified);
+    let path = value.get("path").and_then(Value::as_str)?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let path = if action == FileAction::Renamed {
+        match value.get("from_path").and_then(Value::as_str) {
+            Some(from_path) if !from_path.trim().is_empty() => {
+                format!("{} -> {}", from_path.trim(), path)
+            }
+            _ => path.to_string(),
+        }
+    } else {
+        path.to_string()
+    };
+    Some(PresentationItem::FileChange {
+        path,
+        action,
+        hunks: apply_patch_hunks_from_value(value),
+        full_diff: value
+            .get("diff_preview")
+            .and_then(Value::as_str)
+            .filter(|diff| !diff.trim().is_empty())
+            .map(ToString::to_string),
+    })
+}
+
+fn apply_patch_hunks_from_value(value: &Value) -> Vec<HunkSummary> {
+    value
+        .get("hunks")
+        .and_then(Value::as_array)
+        .map(|hunks| {
+            hunks
+                .iter()
+                .filter_map(|hunk| {
+                    Some(HunkSummary {
+                        old_start: value_u32(hunk.get("old_start"))?,
+                        old_count: value_u32(hunk.get("old_count"))?,
+                        new_start: value_u32(hunk.get("new_start"))?,
+                        new_count: value_u32(hunk.get("new_count"))?,
+                        added_count: value_u32(hunk.get("added_count")).unwrap_or(0),
+                        removed_count: value_u32(hunk.get("removed_count")).unwrap_or(0),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn value_u32(value: Option<&Value>) -> Option<u32> {
+    value?.as_u64()?.try_into().ok()
+}
+
+fn file_action_from_apply_patch_action(action: &str) -> Option<FileAction> {
+    match action {
+        "add" => Some(FileAction::Added),
+        "modify" => Some(FileAction::Modified),
+        "delete" => Some(FileAction::Deleted),
+        "move" => Some(FileAction::Renamed),
+        _ => None,
+    }
+}
+
+fn apply_patch_file_changes_from_summary(summary: &str) -> Vec<PresentationItem> {
+    let Some((_, changed)) = summary.split_once("patched ") else {
+        return Vec::new();
+    };
+    changed
+        .split(',')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            let (marker, path) = entry.split_once(':')?;
+            let action = file_action_from_apply_patch_marker(marker.trim())?;
+            let path = path.trim();
+            if path.is_empty() {
+                return None;
+            }
+            let path = if action == FileAction::Renamed {
+                path.split_once("->")
+                    .map(|(from, to)| format!("{} -> {}", from.trim(), to.trim()))
+                    .unwrap_or_else(|| path.to_string())
+            } else {
+                path.to_string()
+            };
+            Some(PresentationItem::FileChange {
+                path,
+                action,
+                hunks: Vec::new(),
+                full_diff: None,
+            })
+        })
+        .collect()
+}
+
+fn file_action_from_apply_patch_marker(marker: &str) -> Option<FileAction> {
+    match marker {
+        "A" => Some(FileAction::Added),
+        "M" => Some(FileAction::Modified),
+        "D" => Some(FileAction::Deleted),
+        "R" => Some(FileAction::Renamed),
+        _ => None,
+    }
+}
+
+fn resume_notice_item(event: &ProjectionEventRecord) -> Option<PresentationItem> {
+    let reason = match event.kind.as_str() {
+        "callback_delivered" => callback_resume_reason(event),
+        "timer_fired" => timer_resume_reason(event),
+        "continuation_trigger_received" => continuation_resume_reason(event),
+        _ => None,
+    }?;
+    Some(PresentationItem::ResumeNotice {
+        reason,
+        details: Some(event.summary.clone()),
+    })
+}
+
+fn callback_resume_reason(event: &ProjectionEventRecord) -> Option<String> {
+    if !callback_disposition_is_triggered(&event.payload) {
+        return None;
+    }
+    let source = event.payload.get("source").and_then(Value::as_str);
+    let resource = event.payload.get("resource").and_then(Value::as_str);
+    let reason = match (source, resource) {
+        (Some(source), Some(resource)) => {
+            format!("External event from {source} for {resource}; resuming agent")
+        }
+        (Some(source), None) => format!("External event from {source}; resuming agent"),
+        (None, Some(resource)) => format!("External event for {resource}; resuming agent"),
+        (None, None) => "External event received; resuming agent".to_string(),
+    };
+    Some(reason)
+}
+
+fn timer_resume_reason(event: &ProjectionEventRecord) -> Option<String> {
+    let reason = event
+        .payload
+        .get("summary")
+        .and_then(Value::as_str)
+        .filter(|summary| !summary.trim().is_empty())
+        .map(|summary| format!("Timer fired: {}; resuming agent", summary.trim()))
+        .unwrap_or_else(|| "Timer fired; resuming agent".to_string());
+    Some(reason)
+}
+
+fn continuation_resume_reason(event: &ProjectionEventRecord) -> Option<String> {
+    let trigger = event
+        .payload
+        .get("trigger_kind")
+        .and_then(Value::as_str)
+        .filter(|trigger| !trigger.trim().is_empty())?;
+    Some(format!(
+        "Continuation triggered by {trigger}; resuming agent"
+    ))
+}
+
+fn callback_disposition_is_triggered(payload: &Value) -> bool {
+    payload
+        .get("disposition")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("triggered"))
+}
+
 fn is_suppressed_known_runtime_event(kind: &str) -> bool {
     matches!(
         kind,
@@ -1088,39 +1497,95 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
 }
 
 fn exec_command_preview(event: &ProjectionEventRecord) -> Option<String> {
-    event
+    if let Some(cmd) = event
         .payload
-        .get("exec_command_cmd")
-        .and_then(|v| v.as_str())
-        .or_else(|| event.payload.get("cmd").and_then(|v| v.as_str()))
-        .or_else(|| event.payload.get("cmd_preview").and_then(|v| v.as_str()))
+        .get("exec_command_display")
+        .and_then(Value::as_str)
+        .or_else(|| event.payload.get("cmd_display").and_then(Value::as_str))
+    {
+        return Some(cmd.to_string());
+    }
+    if let Some(items) = event
+        .payload
+        .get("exec_command_batch_items")
+        .and_then(Value::as_array)
+    {
+        let cmds = items
+            .iter()
+            .filter_map(|item| {
+                item.get("cmd_display")
+                    .and_then(Value::as_str)
+                    .or_else(|| item.get("cmd").and_then(Value::as_str))
+            })
+            .collect::<Vec<_>>();
+        if !cmds.is_empty() {
+            return Some(cmds.join("\n"));
+        }
+    }
+    exec_command_result(event)
+        .and_then(|result| result.get("cmd_display"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            exec_command_result(event)
+                .and_then(|result| result.get("cmd"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            event
+                .payload
+                .get("exec_command_cmd")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| event.payload.get("cmd").and_then(Value::as_str))
+        .or_else(|| event.payload.get("cmd_preview").and_then(Value::as_str))
         .or_else(|| {
             event
                 .payload
                 .get("command_cost")
                 .and_then(|v| v.get("cmd_preview"))
-                .and_then(|v| v.as_str())
+                .and_then(Value::as_str)
         })
         .or_else(|| {
             event
                 .payload
                 .get("exec_command_cost")
                 .and_then(|v| v.get("cmd_preview"))
-                .and_then(|v| v.as_str())
+                .and_then(Value::as_str)
         })
-        .map(|s| s.to_string())
+        .or_else(|| command_preview_from_summary(&event.summary))
+        .map(ToString::to_string)
+}
+
+fn command_preview_from_summary(summary: &str) -> Option<&str> {
+    [
+        "Command started:",
+        "Command finished:",
+        "Command failed:",
+        "Command batch started:",
+        "Command batch finished:",
+        "Command batch failed:",
+    ]
+    .iter()
+    .find_map(|prefix| summary.strip_prefix(prefix))
+    .map(str::trim)
+    .filter(|cmd| !cmd.is_empty())
 }
 
 fn tool_exit_code(event: &ProjectionEventRecord) -> Option<i32> {
     event
         .payload
         .get("exit_status")
+        .or_else(|| exec_command_result(event).and_then(|result| result.get("exit_status")))
         .and_then(|v: &Value| v.as_i64())
         .map(|c| c as i32)
 }
 
 fn tool_duration_ms(event: &ProjectionEventRecord) -> Option<u64> {
-    event.payload.get("duration_ms").and_then(Value::as_u64)
+    event
+        .payload
+        .get("duration_ms")
+        .or_else(|| exec_command_result(event).and_then(|result| result.get("duration_ms")))
+        .and_then(Value::as_u64)
 }
 
 fn tool_output_summary(event: &ProjectionEventRecord) -> String {
@@ -1128,6 +1593,10 @@ fn tool_output_summary(event: &ProjectionEventRecord) -> String {
         .payload
         .get("stdout_preview")
         .or_else(|| event.payload.get("output_preview"))
+        .or_else(|| exec_command_result(event).and_then(|result| result.get("stdout_preview")))
+        .or_else(|| {
+            exec_command_result(event).and_then(|result| result.get("initial_output_preview"))
+        })
         .and_then(|v: &Value| v.as_str())
         .unwrap_or("")
         .to_string()
@@ -1137,6 +1606,7 @@ fn tool_full_output(event: &ProjectionEventRecord) -> Option<String> {
     event
         .payload
         .get("stdout")
+        .or_else(|| exec_command_result(event).and_then(|result| result.get("stdout_preview")))
         .and_then(|v: &Value| v.as_str())
         .map(|s| s.to_string())
 }
@@ -1145,8 +1615,89 @@ fn tool_full_stderr(event: &ProjectionEventRecord) -> Option<String> {
     event
         .payload
         .get("stderr")
+        .or_else(|| exec_command_result(event).and_then(|result| result.get("stderr_preview")))
         .and_then(|v: &Value| v.as_str())
         .map(|s| s.to_string())
+}
+
+fn tool_error_message(event: &ProjectionEventRecord) -> Option<String> {
+    if let Some(message) = event
+        .payload
+        .get("tool_error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        return Some(message);
+    }
+
+    let raw_error = event.payload.get("error").and_then(Value::as_str)?;
+    error_json_message(raw_error).or_else(|| Some(raw_error.to_string()))
+}
+
+fn error_json_message(error: &str) -> Option<String> {
+    serde_json::from_str::<Value>(error)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| value.get("kind").and_then(Value::as_str))
+                .map(str::to_string)
+        })
+        .filter(|message| !message.trim().is_empty())
+}
+
+fn tool_raw_error_message(event: &ProjectionEventRecord) -> Option<String> {
+    event
+        .payload
+        .get("error")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            event
+                .payload
+                .get("tool_error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+        })
+        .map(|s| s.to_string())
+}
+
+fn command_status_from_tool_event(event: &ProjectionEventRecord) -> CommandStatus {
+    if event.kind == "tool_execution_failed" {
+        return CommandStatus::Failed;
+    }
+    if let Some(disposition) = exec_command_result(event)
+        .and_then(|result| result.get("disposition"))
+        .and_then(Value::as_str)
+    {
+        return match disposition {
+            "promoted_to_task" => CommandStatus::PromotedToTask,
+            "already_running" => CommandStatus::AlreadyRunning,
+            "completed" => match tool_exit_code(event) {
+                Some(0) | None => CommandStatus::Completed,
+                Some(_) => CommandStatus::Failed,
+            },
+            _ => CommandStatus::Completed,
+        };
+    }
+    match tool_exit_code(event) {
+        Some(0) | None => CommandStatus::Completed,
+        Some(_) => CommandStatus::Failed,
+    }
+}
+
+fn command_task_id(event: &ProjectionEventRecord) -> Option<String> {
+    exec_command_result(event)
+        .and_then(|result| result.get("task_handle"))
+        .or_else(|| event.payload.get("task_handle"))
+        .and_then(|handle| handle.get("task_id"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn exec_command_result(event: &ProjectionEventRecord) -> Option<&Value> {
+    event.payload.get("exec_command_result")
 }
 
 fn round_text_preview(event: &ProjectionEventRecord) -> Option<String> {
@@ -1217,12 +1768,15 @@ mod tests {
     #[test]
     fn is_visible_at() {
         let item = PresentationItem::CommandExecuted {
+            status: CommandStatus::Completed,
             cmd_preview: "cargo test".into(),
+            task_id: None,
             duration_ms: Some(1000),
             exit_code: Some(0),
             stdout_summary: "".into(),
             full_stdout: None,
             full_stderr: None,
+            error_message: None,
         };
         assert!(!item.is_visible_at(3));
         assert!(item.is_visible_at(4));
@@ -1232,35 +1786,82 @@ mod tests {
     #[test]
     fn command_render_level_4() {
         let item = PresentationItem::CommandExecuted {
+            status: CommandStatus::Completed,
             cmd_preview: "cargo test --lib".into(),
+            task_id: None,
             duration_ms: Some(2300),
             exit_code: Some(0),
             stdout_summary: "5 passed".into(),
             full_stdout: Some("running 5 tests\ntest result: ok".into()),
             full_stderr: None,
+            error_message: None,
         };
         let cells = item.render(4);
         assert_eq!(cells.len(), 1);
         assert!(cells[0].body.contains("cargo test --lib"));
         assert!(cells[0].body.contains("2.3s"));
-        assert!(cells[0].body.contains("5 passed"));
+        assert!(!cells[0].body.contains("5 passed"));
         assert!(!cells[0].body.contains("running 5 tests"));
     }
 
     #[test]
     fn command_render_level_5() {
         let item = PresentationItem::CommandExecuted {
+            status: CommandStatus::Completed,
             cmd_preview: "cargo test --lib".into(),
+            task_id: None,
             duration_ms: Some(2300),
             exit_code: Some(0),
             stdout_summary: "5 passed".into(),
             full_stdout: Some("running 5 tests\ntest result: ok".into()),
             full_stderr: None,
+            error_message: None,
         };
         let cells = item.render(5);
         assert_eq!(cells.len(), 1);
         assert!(cells[0].body.contains("running 5 tests"));
         assert!(cells[0].body.contains("test result: ok"));
+    }
+
+    #[test]
+    fn command_render_level_5_includes_full_error_message() {
+        let item = PresentationItem::CommandExecuted {
+            status: CommandStatus::Failed,
+            cmd_preview: "cargo test --lib".into(),
+            task_id: None,
+            duration_ms: Some(2300),
+            exit_code: None,
+            stdout_summary: "".into(),
+            full_stdout: None,
+            full_stderr: Some("stderr line 1\nstderr line 2".into()),
+            error_message: Some("error line 1\nerror line 2\nerror line 3".into()),
+        };
+        let body = &item.render(5)[0].body;
+        assert!(body.contains("error line 1"));
+        assert!(body.contains("error line 2"));
+        assert!(body.contains("error line 3"));
+        assert!(body.contains("stderr line 1"));
+        assert!(body.contains("stderr line 2"));
+    }
+
+    #[test]
+    fn command_render_promoted_level_4() {
+        let item = PresentationItem::CommandExecuted {
+            status: CommandStatus::PromotedToTask,
+            cmd_preview: "cargo test --all".into(),
+            task_id: Some("task-123".into()),
+            duration_ms: None,
+            exit_code: None,
+            stdout_summary: "running tests".into(),
+            full_stdout: None,
+            full_stderr: None,
+            error_message: None,
+        };
+        let cells = item.render(4);
+        assert_eq!(cells.len(), 1);
+        assert!(cells[0].body.contains("running in background"));
+        assert!(cells[0].body.contains("task-123"));
+        assert!(!cells[0].body.contains("running tests"));
     }
 
     #[test]
@@ -1273,13 +1874,15 @@ mod tests {
                 old_count: 5,
                 new_start: 12,
                 new_count: 7,
+                added_count: 2,
+                removed_count: 1,
             }],
             full_diff: Some("@@ -12,5 +12,7 @@\n-old\n+new".into()),
         };
         let cells = item.render(4);
         assert_eq!(cells.len(), 1);
         assert!(cells[0].body.contains("M src/foo.rs"));
-        assert!(cells[0].body.contains("(+7, -5)"));
+        assert!(cells[0].body.contains("(+2, -1)"));
         assert!(!cells[0].body.contains("@@"));
     }
 
@@ -1293,6 +1896,8 @@ mod tests {
                 old_count: 5,
                 new_start: 12,
                 new_count: 7,
+                added_count: 2,
+                removed_count: 1,
             }],
             full_diff: Some("@@ -12,5 +12,7 @@\n-old\n+new".into()),
         };
@@ -1365,12 +1970,203 @@ mod tests {
         assert_eq!(items.len(), 1);
         match &items[0].item {
             PresentationItem::CommandExecuted {
+                status,
                 cmd_preview,
                 exit_code,
                 stdout_summary,
                 ..
             } => {
+                assert_eq!(*status, CommandStatus::Completed);
                 assert!(cmd_preview.contains("cargo test"));
+                assert_eq!(*exit_code, Some(0));
+                assert_eq!(stdout_summary, "5 passed");
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_merges_legacy_summary_command_start_and_finish() {
+        let start = make_event(
+            "process_execution_requested",
+            "Command started: agentinbox inbox ack --agent-id holon-pm",
+            json!({}),
+        );
+        let finish = make_event(
+            "tool_executed",
+            "Command finished: agentinbox inbox ack --agent-id holon-pm",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "agentinbox inbox ack --agent-id holon-pm",
+                "exit_status": 0
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[start, finish]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::CommandExecuted { cmd_preview, .. } => {
+                assert_eq!(cmd_preview, "agentinbox inbox ack --agent-id holon-pm");
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_merges_exec_command_batch_start_and_finish() {
+        let batch_items = json!([
+            {"index": 1, "cmd": "cargo fmt --all -- --check", "cmd_display": "cargo fmt --all -- --check"},
+            {"index": 2, "cmd": "cargo test presentation --lib", "cmd_display": "cargo test presentation --lib"}
+        ]);
+        let start = make_event(
+            "process_execution_requested",
+            "Command batch started",
+            json!({
+                "surface": "ExecCommandBatch",
+                "exec_command_batch_items": batch_items.clone()
+            }),
+        );
+        let finish = make_event(
+            "tool_executed",
+            "Command batch finished",
+            json!({
+                "tool_name": "ExecCommandBatch",
+                "exec_command_batch_items": batch_items,
+                "duration_ms": 42,
+                "exec_command_result": {
+                    "completed_count": 2,
+                    "item_count": 2,
+                    "summary_text": "ExecCommandBatch completed 2/2 items"
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[start, finish]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::CommandExecuted {
+                status,
+                cmd_preview,
+                duration_ms,
+                ..
+            } => {
+                assert_eq!(*status, CommandStatus::Completed);
+                assert_eq!(
+                    cmd_preview,
+                    "cargo fmt --all -- --check\ncargo test presentation --lib"
+                );
+                assert_eq!(*duration_ms, Some(42));
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_updates_command_item_when_events_are_not_adjacent() {
+        let start = make_event(
+            "process_execution_requested",
+            "command started: cargo test",
+            json!({
+                "surface": "ExecCommand",
+                "exec_command_cmd": "cargo test --lib",
+                "cmd": "cargo test --lib"
+            }),
+        );
+        let progress = make_event(
+            "assistant_round_recorded",
+            "checking command result",
+            json!({"text_preview": "checking command result"}),
+        );
+        let finish = make_event(
+            "tool_executed",
+            "tool executed: cargo test --lib",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "cargo test --lib",
+                "duration_ms": 42,
+                "exit_status": 0,
+                "stdout_preview": "5 passed"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[start.clone(), progress, finish.clone()]);
+
+        let command_items = items
+            .iter()
+            .filter(|timed| matches!(timed.item, PresentationItem::CommandExecuted { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(command_items.len(), 1);
+        assert_eq!(
+            command_items[0].dedupe_key,
+            "command::cargo test --lib".to_string()
+        );
+        match &command_items[0].item {
+            PresentationItem::CommandExecuted {
+                status,
+                duration_ms,
+                exit_code,
+                stdout_summary,
+                ..
+            } => {
+                assert_eq!(*status, CommandStatus::Completed);
+                assert_eq!(*duration_ms, Some(42));
+                assert_eq!(*exit_code, Some(0));
+                assert_eq!(stdout_summary, "5 passed");
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_updates_command_item_across_incremental_calls() {
+        let start = make_event(
+            "process_execution_requested",
+            "command started: cargo test",
+            json!({
+                "surface": "ExecCommand",
+                "cmd_display": "cargo test --lib",
+                "cmd_preview": "cargo test --lib"
+            }),
+        );
+        let finish = make_event(
+            "tool_executed",
+            "tool executed: cargo test --lib",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_result": {
+                    "cmd_display": "cargo test --lib",
+                    "duration_ms": 42,
+                    "exit_status": 0,
+                    "stdout_preview": "5 passed"
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let started = reducer.reduce(&[start]);
+        assert!(started.is_empty());
+
+        let finished = reducer.reduce(&[finish]);
+        assert_eq!(finished.len(), 1);
+        assert_eq!(
+            finished[0].dedupe_key,
+            "command::cargo test --lib".to_string()
+        );
+        match &finished[0].item {
+            PresentationItem::CommandExecuted {
+                status,
+                duration_ms,
+                exit_code,
+                stdout_summary,
+                ..
+            } => {
+                assert_eq!(*status, CommandStatus::Completed);
+                assert_eq!(*duration_ms, Some(42));
                 assert_eq!(*exit_code, Some(0));
                 assert_eq!(stdout_summary, "5 passed");
             }
@@ -1397,6 +2193,233 @@ mod tests {
         match &items[0].item {
             PresentationItem::CommandExecuted { cmd_preview, .. } => {
                 assert!(cmd_preview.contains("rg pattern"));
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_does_not_render_non_exec_tool_as_command() {
+        let event = make_event(
+            "tool_executed",
+            "Updated work item: UpdateWorkItem",
+            json!({
+                "tool_name": "UpdateWorkItem",
+                "summary": "updated work item"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        assert!(!matches!(
+            items[0].item,
+            PresentationItem::CommandExecuted { .. }
+        ));
+    }
+
+    #[test]
+    fn reducer_apply_patch_result_becomes_file_changes() {
+        let event = make_event(
+            "tool_executed",
+            "Applied patch: patched M:src/lib.rs, A:README.md",
+            json!({
+                "tool_name": "ApplyPatch",
+                "apply_patch_result": {
+                    "changed_files": [
+                        {"action": "modify", "path": "src/lib.rs"},
+                        {"action": "add", "path": "README.md"}
+                    ],
+                    "changed_paths": ["src/lib.rs", "README.md"],
+                    "changed_file_count": 2
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 2);
+        match &items[0].item {
+            PresentationItem::FileChange { action, path, .. } => {
+                assert_eq!(*action, FileAction::Modified);
+                assert_eq!(path, "src/lib.rs");
+                assert!(items[0].item.render(4)[0].body.contains("M src/lib.rs"));
+            }
+            other => panic!("expected FileChange, got {:?}", other),
+        }
+        match &items[1].item {
+            PresentationItem::FileChange { action, path, .. } => {
+                assert_eq!(*action, FileAction::Added);
+                assert_eq!(path, "README.md");
+                assert!(items[1].item.render(4)[0].body.contains("A README.md"));
+            }
+            other => panic!("expected FileChange, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_apply_patch_summary_fallback_becomes_file_change() {
+        let event = make_event(
+            "tool_executed",
+            "Applied patch: patched M:src/presentation.rs",
+            json!({
+                "tool_name": "ApplyPatch",
+                "summary": "patched M:src/presentation.rs"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::FileChange { action, path, .. } => {
+                assert_eq!(*action, FileAction::Modified);
+                assert_eq!(path, "src/presentation.rs");
+            }
+            other => panic!("expected FileChange, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_apply_patch_failure_is_not_command() {
+        let event = make_event(
+            "tool_execution_failed",
+            "Patch failed: context not found",
+            json!({
+                "tool_name": "ApplyPatch",
+                "error": "context not found\nexpected lines: old text"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::PatchFailure { error_message, .. } => {
+                assert_eq!(
+                    error_message.as_deref(),
+                    Some("context not found\nexpected lines: old text")
+                );
+                assert!(items[0].item.render(4)[0].body.contains("Patch failed"));
+                assert!(!items[0].item.render(4)[0].body.contains("expected lines"));
+                assert!(items[0].item.render(5)[0].body.contains("expected lines"));
+            }
+            other => panic!("expected PatchFailure, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_apply_patch_failure_prefers_structured_message_over_raw_json() {
+        let event = make_event(
+            "tool_execution_failed",
+            "Patch failed: {",
+            json!({
+                "tool_name": "ApplyPatch",
+                "error": "{\n  \"kind\": \"invalid_tool_input\",\n  \"message\": \"input for ApplyPatch does not match the advertised tool schema\",\n  \"retryable\": false\n}",
+                "tool_error": {
+                    "kind": "invalid_tool_input",
+                    "message": "input for ApplyPatch does not match the advertised tool schema",
+                    "retryable": false
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::PatchFailure { summary, .. } => {
+                assert_eq!(
+                    summary,
+                    "Patch failed: input for ApplyPatch does not match the advertised tool schema"
+                );
+                let rendered = items[0].item.render(4)[0].body.clone();
+                assert!(rendered.contains("ApplyPatch does not match"));
+                assert!(!rendered.contains("Patch failed: {"));
+            }
+            other => panic!("expected PatchFailure, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_standalone_process_execution_requested_is_not_a_command_item() {
+        let event = make_event(
+            "process_execution_requested",
+            "command started: cargo test",
+            json!({"cmd_preview": "cargo test --all"}),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn reducer_prefers_command_display_for_script_commands() {
+        let event = make_event(
+            "tool_executed",
+            "command finished",
+            json!({
+                "tool_name": "ExecCommand",
+                "cmd_preview": "[omitted: command contains heredoc or inline script]",
+                "cmd_display": "python - <<'PY'\nprint('hello')",
+                "exit_status": 0
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::CommandExecuted { cmd_preview, .. } => {
+                assert_eq!(cmd_preview, "python - <<'PY'\nprint('hello')");
+                assert!(items[0].item.render(4)[0].body.contains("print('hello')"));
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_promoted_exec_command_uses_bounded_outcome() {
+        let event = make_event(
+            "tool_executed",
+            "tool executed: ExecCommand",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "cargo test --all",
+                "exec_command_result": {
+                    "disposition": "promoted_to_task",
+                    "task_handle": {"task_id": "task-123"},
+                    "initial_output_preview": "Compiling holon",
+                    "initial_output_truncated": false
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::CommandExecuted {
+                status,
+                task_id,
+                stdout_summary,
+                ..
+            } => {
+                assert_eq!(*status, CommandStatus::PromotedToTask);
+                assert_eq!(task_id.as_deref(), Some("task-123"));
+                assert_eq!(stdout_summary, "Compiling holon");
+                assert!(items[0].item.render(4)[0]
+                    .body
+                    .contains("running in background"));
             }
             other => panic!("expected CommandExecuted, got {:?}", other),
         }
@@ -1448,6 +2471,68 @@ mod tests {
                 assert_eq!(tokens.output, 200);
             }
             other => panic!("expected ProviderRound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_renders_external_resume_reason_at_verbose_level() {
+        let event = make_event(
+            "callback_delivered",
+            "callback_delivered",
+            json!({
+                "source": "github",
+                "resource": "pull/42",
+                "disposition": "Triggered"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::ResumeNotice { reason, details } => {
+                assert_eq!(
+                    reason,
+                    "External event from github for pull/42; resuming agent"
+                );
+                assert_eq!(items[0].item.min_display_level(), 4);
+                assert!(items[0].item.render(3).is_empty());
+                assert!(items[0].item.render(4)[0].body.contains("resuming agent"));
+                assert!(items[0].item.render(5)[0]
+                    .body
+                    .contains("External event received"));
+                assert!(details
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("github")));
+            }
+            other => panic!("expected ResumeNotice, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_keeps_non_resuming_callback_as_debug_detail() {
+        let event = make_event(
+            "callback_delivered",
+            "callback_delivered",
+            json!({
+                "source": "github",
+                "resource": "pull/42",
+                "disposition": "Coalesced"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::GenericEvent { kind, summary } => {
+                assert_eq!(kind, "callback_delivered");
+                assert!(summary.contains("External event received"));
+                assert_eq!(items[0].item.min_display_level(), 5);
+            }
+            other => panic!("expected GenericEvent fallback, got {:?}", other),
         }
     }
 

@@ -16,9 +16,9 @@ use crate::{
         StopSignal,
     },
     tool::helpers::{
-        command_cost_diagnostics, command_digest, command_preview, effective_tool_output_tokens,
-        output_char_budget, truncate_output_to_char_budget, truncate_output_with_flag,
-        truncate_text,
+        command_cost_diagnostics, command_digest, command_display, command_preview,
+        effective_tool_output_tokens, output_char_budget, truncate_output_to_char_budget,
+        truncate_output_with_flag, truncate_text,
     },
     tool::ToolError,
     types::{
@@ -237,18 +237,6 @@ impl RuntimeHandle {
                 });
             }
         }
-        self.append_audit_event(
-            "process_execution_requested",
-            serde_json::json!({
-                "surface": "ExecCommand",
-                "authority_class": authority_class,
-                "cmd_preview": diagnostics.cmd_preview.clone(),
-                "command_cost": diagnostics.clone(),
-                "execution": resolved.execution.clone(),
-                "boundary": crate::system::HostLocalBoundary::from_snapshot(&resolved.execution).audit_metadata(),
-                "workdir": resolved.workdir.clone(),
-            }),
-        )?;
         let mut running = self.start_command_process(&resolved).await?;
         let mut captured = CapturedOutput::default();
         let sleep = tokio::time::sleep(Duration::from_millis(spec.yield_time_ms));
@@ -345,25 +333,13 @@ impl RuntimeHandle {
     pub(crate) async fn execute_exec_command_once(
         &self,
         mut spec: CommandTaskSpec,
-        authority_class: &AuthorityClass,
+        _authority_class: &AuthorityClass,
     ) -> Result<ExecCommandResult> {
         self.ensure_process_execution_exposed("ExecCommandBatch")
             .await?;
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
-        self.append_audit_event(
-            "process_execution_requested",
-            serde_json::json!({
-                "surface": "ExecCommandBatch",
-                "authority_class": authority_class,
-                "cmd_preview": diagnostics.cmd_preview.clone(),
-                "command_cost": diagnostics.clone(),
-                "execution": resolved.execution.clone(),
-                "boundary": crate::system::HostLocalBoundary::from_snapshot(&resolved.execution).audit_metadata(),
-                "workdir": resolved.workdir.clone(),
-            }),
-        )?;
         let mut captured = CapturedOutput::default();
         let mut running = self.start_command_process(&resolved).await?;
         let sleep = tokio::time::sleep(Duration::from_millis(resolved.spec.yield_time_ms));
@@ -579,6 +555,7 @@ impl RuntimeHandle {
                 "task_id": task_id,
                 "authority_class": authority_class,
                 "cmd_preview": diagnostics.cmd_preview.clone(),
+                "cmd_display": command_display(&resolved.spec.cmd),
                 "command_cost": diagnostics,
                 "execution": resolved.execution.clone(),
                 "boundary": crate::system::HostLocalBoundary::from_snapshot(&resolved.execution).audit_metadata(),

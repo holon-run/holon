@@ -568,6 +568,7 @@ impl RuntimeHandle {
             "timer_fired",
             serde_json::json!({
                 "timer_id": timer.id,
+                "summary": timer.summary.clone(),
                 "status": timer.status,
                 "fire_count": timer.fire_count,
                 "next_fire_at": timer.next_fire_at,

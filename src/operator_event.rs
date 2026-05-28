@@ -33,7 +33,7 @@ impl OperatorVisibility {
 pub enum OperatorDisplayMode {
     /// Result-oriented operator view.
     Info = 3,
-    /// Codex-like activity view.
+    /// Compact activity view.
     Verbose = 4,
     /// Detailed but still curated operator view.
     Debug = 5,
@@ -474,8 +474,6 @@ fn is_verbose_event(kind: &str, payload: &Value) -> bool {
         | "missing_current_work_item_before_wait"
         | "waiting_intent_created"
         | "stale_waiting_intents_cancelled"
-        | "callback_delivered"
-        | "timer_fired"
         | "timer_fire_failed"
         | "workspace_attached"
         | "workspace_entered"
@@ -499,6 +497,9 @@ fn is_verbose_event(kind: &str, payload: &Value) -> bool {
         | "turn_context_length_exceeded"
         | "recovery_cleared_missing_worktree_session"
         | "operator_notification_mirror_failed" => true,
+        "callback_delivered" => callback_disposition_is_triggered(payload),
+        "timer_fired" => true,
+        "continuation_trigger_received" => continuation_trigger_explains_resume(payload),
         _ => false,
     }
 }
@@ -521,8 +522,10 @@ fn is_debug_event(kind: &str, payload: &Value) -> bool {
         | "work_item_stale_reminder_skipped"
         | "work_item_delegation_created"
         | "waiting_intent_cancelled"
+        | "callback_delivered"
         | "timer_create_requested"
         | "timer_created"
+        | "timer_fired"
         | "workspace_attach_requested"
         | "workspace_exit_requested"
         | "workspace_detach_requested"
@@ -608,6 +611,28 @@ fn task_status_is_terminal(payload: &Value) -> bool {
                     | "interrupted"
             )
         })
+}
+
+fn callback_disposition_is_triggered(payload: &Value) -> bool {
+    payload
+        .get("disposition")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("triggered"))
+}
+
+fn continuation_trigger_explains_resume(payload: &Value) -> bool {
+    payload
+        .get("contentful")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || payload
+            .get("task_terminal")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || payload
+            .get("wake_hint_source")
+            .and_then(Value::as_str)
+            .is_some_and(|source| !source.trim().is_empty())
 }
 
 fn event_text(
@@ -1251,13 +1276,25 @@ fn callback_delivered_text(
 ) -> (String, Option<String>, String) {
     let waiting_id = payload.get("waiting_intent_id").and_then(Value::as_str);
     let source = payload.get("source").and_then(Value::as_str);
-    let summary = match (source, waiting_id) {
-        (Some(source), Some(waiting_id)) => {
+    let resource = payload.get("resource").and_then(Value::as_str);
+    let triggered = callback_disposition_is_triggered(payload);
+    let summary = match (source, resource, waiting_id) {
+        (Some(source), Some(resource), _) if triggered => {
+            format!("External event received from {source} for {resource}; resuming agent")
+        }
+        (Some(source), None, _) if triggered => {
+            format!("External event received from {source}; resuming agent")
+        }
+        (None, Some(resource), _) if triggered => {
+            format!("External event received for {resource}; resuming agent")
+        }
+        (None, None, _) if triggered => "External event received; resuming agent".into(),
+        (Some(source), _, Some(waiting_id)) => {
             format!("External event received from {source} for wait {waiting_id}")
         }
-        (Some(source), None) => format!("External event received from {source}"),
-        (None, Some(waiting_id)) => format!("External event received for wait {waiting_id}"),
-        (None, None) => "External event received".into(),
+        (Some(source), _, None) => format!("External event received from {source}"),
+        (None, _, Some(waiting_id)) => format!("External event received for wait {waiting_id}"),
+        (None, _, None) => "External event received".into(),
     };
     (
         "External event received".into(),
@@ -1505,22 +1542,24 @@ fn work_item_delegation_text(payload: &Value, completed: bool) -> (String, Optio
 
 fn process_execution_text(
     payload: &Value,
-    _fallback_summary: &str,
+    fallback_summary: &str,
 ) -> (String, Option<String>, String) {
     let surface = payload
         .get("surface")
         .and_then(Value::as_str)
         .unwrap_or("process");
     let cmd_preview = payload
-        .get("cmd_preview")
+        .get("cmd_display")
         .and_then(Value::as_str)
+        .or_else(|| payload.get("exec_command_display").and_then(Value::as_str))
+        .or_else(|| payload.get("cmd_preview").and_then(Value::as_str))
         .or_else(|| {
             payload
                 .get("command_cost")
                 .and_then(|value| value.get("cmd_preview"))
                 .and_then(Value::as_str)
         })
-        .map(collapse_whitespace)
+        .map(ToString::to_string)
         .filter(|cmd| !cmd.is_empty());
     let label = match surface {
         "ExecCommand" | "ExecCommandBatch" => "Command started",
@@ -1534,7 +1573,33 @@ fn process_execution_text(
             format!("{label}: {cmd_preview}"),
         );
     }
+    if let Some((legacy_label, legacy_cmd)) = legacy_command_summary(fallback_summary) {
+        return (
+            legacy_label.to_string(),
+            Some(legacy_cmd.to_string()),
+            fallback_summary.to_string(),
+        );
+    }
     (label.into(), None, label.into())
+}
+
+fn legacy_command_summary(summary: &str) -> Option<(&str, &str)> {
+    [
+        "Command started:",
+        "Command finished:",
+        "Command failed:",
+        "Command batch started:",
+        "Command batch finished:",
+        "Command batch failed:",
+    ]
+    .iter()
+    .find_map(|prefix| {
+        summary
+            .strip_prefix(prefix)
+            .map(str::trim)
+            .filter(|cmd| !cmd.is_empty())
+            .map(|cmd| (prefix.trim_end_matches(':'), cmd))
+    })
 }
 
 fn assistant_round_recorded_text(payload: &Value) -> (String, Option<String>, String) {
@@ -1815,7 +1880,11 @@ fn tool_text(
     let failed = kind == "tool_execution_failed";
     let friendly = tool_friendly_label(tool_name, failed);
     if tool_name == "ExecCommand" {
-        if let Some(cmd) = payload.get("exec_command_cmd").and_then(Value::as_str) {
+        if let Some(cmd) = payload
+            .get("exec_command_display")
+            .and_then(Value::as_str)
+            .or_else(|| payload.get("exec_command_cmd").and_then(Value::as_str))
+        {
             let summary = if failed {
                 format!("Command failed: {cmd}")
             } else {
@@ -1855,8 +1924,12 @@ fn command_batch_detail(payload: &Value) -> Option<String> {
         .and_then(Value::as_array)?;
     let cmds = items
         .iter()
-        .filter_map(|item| item.get("cmd").and_then(Value::as_str))
-        .map(collapse_whitespace)
+        .filter_map(|item| {
+            item.get("cmd_display")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("cmd").and_then(Value::as_str))
+        })
+        .map(|cmd| cmd.trim().to_string())
         .filter(|cmd| !cmd.is_empty())
         .take(2)
         .collect::<Vec<_>>();
@@ -2166,6 +2239,80 @@ mod tests {
             "message",
             &context,
             OperatorDisplayMode::Info
+        ));
+    }
+
+    #[test]
+    fn external_wake_events_are_verbose_only_when_they_resume_work() {
+        let context = OperatorPresentationContext::default();
+        let triggered = json!({
+            "source": "github",
+            "resource": "pull/42",
+            "disposition": "Triggered"
+        });
+        assert!(!super::is_operator_event_in_display_mode(
+            "callback_delivered",
+            &triggered,
+            "callback_delivered",
+            &context,
+            OperatorDisplayMode::Info
+        ));
+        assert!(super::is_operator_event_in_display_mode(
+            "callback_delivered",
+            &triggered,
+            "callback_delivered",
+            &context,
+            OperatorDisplayMode::Verbose
+        ));
+
+        let coalesced = json!({
+            "source": "github",
+            "resource": "pull/42",
+            "disposition": "Coalesced"
+        });
+        assert!(!super::is_operator_event_in_display_mode(
+            "callback_delivered",
+            &coalesced,
+            "callback_delivered",
+            &context,
+            OperatorDisplayMode::Verbose
+        ));
+        assert!(super::is_operator_event_in_display_mode(
+            "callback_delivered",
+            &coalesced,
+            "callback_delivered",
+            &context,
+            OperatorDisplayMode::Debug
+        ));
+
+        let presentation = present_operator_event(
+            "callback_delivered",
+            &triggered,
+            "callback_delivered",
+            &context,
+        );
+        assert_eq!(
+            presentation.summary,
+            "External event received from github for pull/42; resuming agent"
+        );
+    }
+
+    #[test]
+    fn continuation_triggers_are_verbose_when_they_explain_resume() {
+        let context = OperatorPresentationContext::default();
+        assert!(super::is_operator_event_in_display_mode(
+            "continuation_trigger_received",
+            &json!({ "trigger_kind": "task_result", "task_terminal": true }),
+            "continuation_trigger_received",
+            &context,
+            OperatorDisplayMode::Verbose
+        ));
+        assert!(!super::is_operator_event_in_display_mode(
+            "continuation_trigger_received",
+            &json!({ "trigger_kind": "control_tick" }),
+            "continuation_trigger_received",
+            &context,
+            OperatorDisplayMode::Verbose
         ));
     }
 
@@ -2483,6 +2630,21 @@ mod tests {
         assert_eq!(
             batch.summary,
             "Command batch finished: 3 items: rg operator_event src; cargo test operator_event; ..."
+        );
+
+        let script = present_operator_event(
+            "process_execution_requested",
+            &json!({
+                "surface": "ExecCommand",
+                "cmd_preview": "[omitted: command contains heredoc or inline script]",
+                "cmd_display": "python - <<'PY'\nprint('hello')"
+            }),
+            "process_execution_requested",
+            &context,
+        );
+        assert_eq!(
+            script.summary,
+            "Command started: python - <<'PY'\nprint('hello')"
         );
 
         let workspace = present_operator_event(

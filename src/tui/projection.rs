@@ -90,6 +90,7 @@ pub(crate) struct TuiProjection {
     pub(crate) stale_slices: BTreeSet<ProjectionSlice>,
     event_log: Vec<ProjectionEventRecord>,
     durable_conversation_log: Vec<ProjectionEventRecord>,
+    live_working_activity_events: Vec<ProjectionEventRecord>,
 }
 
 impl TuiProjection {
@@ -117,6 +118,7 @@ impl TuiProjection {
             stale_slices: BTreeSet::new(),
             event_log: Vec::new(),
             durable_conversation_log: Vec::new(),
+            live_working_activity_events: Vec::new(),
         };
         projection
     }
@@ -320,6 +322,9 @@ impl TuiProjection {
         }
         let presentation_context = self.operator_presentation_context();
         let record = projection_event_record_from_stream_event(&event, &presentation_context);
+        if let Some(display_mode) = display_mode {
+            self.update_live_working_activity(&record, display_mode);
+        }
         let cache_event = display_mode.is_none_or(|display_mode| {
             is_operator_event_in_display_mode(
                 &record.kind,
@@ -755,6 +760,16 @@ impl TuiProjection {
         events
     }
 
+    pub(crate) fn live_working_activity_events(
+        &self,
+        display_mode: OperatorDisplayMode,
+    ) -> Vec<&ProjectionEventRecord> {
+        if display_mode != OperatorDisplayMode::Info {
+            return Vec::new();
+        }
+        self.live_working_activity_events.iter().collect()
+    }
+
     pub(crate) fn operator_visibility(&self, event: &ProjectionEventRecord) -> OperatorVisibility {
         event.presentation.visibility
     }
@@ -807,6 +822,44 @@ impl TuiProjection {
                 "turn_started" | "message_processing_started" | "message_enqueued"
             )
         })
+    }
+
+    fn update_live_working_activity(
+        &mut self,
+        record: &ProjectionEventRecord,
+        display_mode: OperatorDisplayMode,
+    ) {
+        if is_activity_reset_kind(&record.kind) {
+            self.live_working_activity_events.clear();
+            return;
+        }
+
+        if display_mode != OperatorDisplayMode::Info {
+            self.live_working_activity_events.clear();
+            return;
+        }
+
+        if !Self::is_live_working_activity_kind(&record.kind) {
+            return;
+        }
+
+        if self.is_visible_in_display_mode(record, OperatorDisplayMode::Info)
+            || !self.is_visible_in_display_mode(record, OperatorDisplayMode::Debug)
+        {
+            return;
+        }
+
+        push_limited(&mut self.live_working_activity_events, record.clone(), 8);
+    }
+
+    fn is_live_working_activity_kind(kind: &str) -> bool {
+        matches!(
+            kind,
+            "assistant_round_recorded"
+                | "text_only_round_observed"
+                | "tool_executed"
+                | "tool_execution_failed"
+        )
     }
 
     pub(crate) fn recent_log_events(&self, limit: usize) -> Vec<&ProjectionEventRecord> {
@@ -1116,23 +1169,7 @@ fn presentation_debug_items_for_event(
     Vec<ProjectionEventRecord>,
     Vec<crate::presentation::TimedItem>,
 ) {
-    if matches!(
-        record.kind.as_str(),
-        "tool_executed" | "tool_execution_failed"
-    ) {
-        if let Some(previous) = event_log
-            .iter()
-            .rev()
-            .find(|event| event.id != record.id && event.kind == "process_execution_requested")
-        {
-            let reducer_events = vec![previous.clone(), record.clone()];
-            let mut reducer = crate::presentation::PresentationReducer::new();
-            let items = reducer.reduce(reducer_events.as_slice());
-            if !items.is_empty() {
-                return (reducer_events, items);
-            }
-        }
-    }
+    let _ = event_log;
     (vec![record.clone()], timed_items.to_vec())
 }
 
@@ -1497,7 +1534,7 @@ mod tests {
     }
 
     #[test]
-    fn presentation_debug_log_uses_adjacent_command_window() {
+    fn presentation_debug_log_records_command_result_without_start_window() {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
         let writer =
             crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
@@ -1523,13 +1560,50 @@ mod tests {
             &writer,
         );
 
-        let line = std::fs::read_to_string(writer.root().join("presentation.jsonl")).unwrap();
-        let record: Value = serde_json::from_str(line.trim()).unwrap();
+        let log = std::fs::read_to_string(writer.root().join("presentation.jsonl")).unwrap();
+        let record: Value = log
+            .lines()
+            .last()
+            .and_then(|line| serde_json::from_str(line).ok())
+            .unwrap();
         assert_eq!(record["item_kind"], "command_executed");
-        assert_eq!(
-            record["reducer_event_ids"],
-            json!(["evt-process_execution_requested", "evt-tool_executed"])
+        assert_eq!(record["reducer_event_ids"], json!(["evt-tool_executed"]));
+    }
+
+    #[test]
+    fn presentation_debug_log_does_not_pair_non_exec_tool_with_command_window() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let writer =
+            crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
+
+        projection.apply_event(
+            sample_event(
+                "process_execution_requested",
+                json!({ "exec_command_cmd": "agentinbox inbox ack --agent-id holon-pm" }),
+            ),
+            &writer,
         );
+        projection.apply_event(
+            sample_event(
+                "tool_executed",
+                json!({
+                    "tool_name": "UpdateWorkItem",
+                    "summary": "updated work item"
+                }),
+            ),
+            &writer,
+        );
+
+        let log = std::fs::read_to_string(writer.root().join("presentation.jsonl")).unwrap();
+        let records = log
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records.last().unwrap()["reducer_event_ids"],
+            json!(["evt-tool_executed"])
+        );
+        assert_ne!(records.last().unwrap()["item_kind"], "command_executed");
     }
 
     #[test]

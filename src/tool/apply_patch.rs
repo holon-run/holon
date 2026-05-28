@@ -6,9 +6,12 @@ use super::helpers::normalize_path;
 use crate::{
     tool::ToolError,
     types::{
-        ApplyPatchAction, ApplyPatchChangedFile, ApplyPatchDiagnostic, ApplyPatchIgnoredMetadata,
+        ApplyPatchAction, ApplyPatchChangedFile, ApplyPatchDiagnostic, ApplyPatchHunkSummary,
+        ApplyPatchIgnoredMetadata,
     },
 };
+
+const DIFF_PREVIEW_MAX_LINES: usize = 80;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApplyPatchOutcome {
@@ -962,11 +965,12 @@ async fn apply_file_patches(
                     &patch.hunks,
                 )?;
                 state.insert(target, Some(updated));
-                changed_files.push(ApplyPatchChangedFile {
-                    action: ApplyPatchAction::Add,
-                    path: path.to_string(),
-                    from_path: None,
-                });
+                changed_files.push(apply_patch_changed_file(
+                    ApplyPatchAction::Add,
+                    path,
+                    None,
+                    patch,
+                ));
             }
             PatchOperationKind::Delete { path } => {
                 let target = resolve_patch_path(workspace_root, path)?;
@@ -977,11 +981,12 @@ async fn apply_file_patches(
                     let _ = apply_hunks(path, existing, &patch.hunks)?;
                 }
                 state.insert(target, None);
-                changed_files.push(ApplyPatchChangedFile {
-                    action: ApplyPatchAction::Delete,
-                    path: path.to_string(),
-                    from_path: None,
-                });
+                changed_files.push(apply_patch_changed_file(
+                    ApplyPatchAction::Delete,
+                    path,
+                    None,
+                    patch,
+                ));
             }
             PatchOperationKind::Modify { path } => {
                 let target = resolve_patch_path(workspace_root, path)?;
@@ -990,11 +995,12 @@ async fn apply_file_patches(
                     .ok_or_else(|| missing_file("update", path, &target, workspace_root))?;
                 let updated = apply_hunks(path, existing, &patch.hunks)?;
                 state.insert(target, Some(updated));
-                changed_files.push(ApplyPatchChangedFile {
-                    action: ApplyPatchAction::Modify,
-                    path: path.to_string(),
-                    from_path: None,
-                });
+                changed_files.push(apply_patch_changed_file(
+                    ApplyPatchAction::Modify,
+                    path,
+                    None,
+                    patch,
+                ));
             }
             PatchOperationKind::Rename {
                 from,
@@ -1017,11 +1023,12 @@ async fn apply_file_patches(
                 };
                 state.insert(source, None);
                 state.insert(target, Some(final_state));
-                changed_files.push(ApplyPatchChangedFile {
-                    action: ApplyPatchAction::Move,
-                    path: to.to_string(),
-                    from_path: Some(from.to_string()),
-                });
+                changed_files.push(apply_patch_changed_file(
+                    ApplyPatchAction::Move,
+                    to,
+                    Some(from),
+                    patch,
+                ));
             }
         }
     }
@@ -1070,6 +1077,93 @@ async fn apply_file_patches(
         ignored_metadata,
         diagnostics,
     ))
+}
+
+fn apply_patch_changed_file(
+    action: ApplyPatchAction,
+    path: &str,
+    from_path: Option<&str>,
+    patch: &FilePatch,
+) -> ApplyPatchChangedFile {
+    let (diff_preview, diff_truncated) = normalized_diff_preview(patch);
+    ApplyPatchChangedFile {
+        action,
+        path: path.to_string(),
+        from_path: from_path.map(ToString::to_string),
+        hunks: patch.hunks.iter().map(apply_patch_hunk_summary).collect(),
+        diff_preview,
+        diff_truncated,
+    }
+}
+
+fn apply_patch_hunk_summary(hunk: &PatchHunk) -> ApplyPatchHunkSummary {
+    ApplyPatchHunkSummary {
+        old_start: hunk.old_start.try_into().unwrap_or(u32::MAX),
+        old_count: hunk.old_count.try_into().unwrap_or(u32::MAX),
+        new_start: hunk.new_start.try_into().unwrap_or(u32::MAX),
+        new_count: hunk.new_count.try_into().unwrap_or(u32::MAX),
+        added_count: hunk
+            .lines
+            .iter()
+            .filter(|line| line.kind == HunkLineKind::Add)
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX),
+        removed_count: hunk
+            .lines
+            .iter()
+            .filter(|line| line.kind == HunkLineKind::Remove)
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX),
+    }
+}
+
+fn normalized_diff_preview(patch: &FilePatch) -> (Option<String>, bool) {
+    let mut lines = Vec::new();
+    lines.push(format!("--- {}", diff_header_path(&patch.old_path, 'a')));
+    lines.push(format!("+++ {}", diff_header_path(&patch.new_path, 'b')));
+
+    for hunk in &patch.hunks {
+        lines.push(format!(
+            "@@ -{},{} +{},{} @@",
+            hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+        ));
+        for line in &hunk.lines {
+            let prefix = match line.kind {
+                HunkLineKind::Context => ' ',
+                HunkLineKind::Add => '+',
+                HunkLineKind::Remove => '-',
+            };
+            lines.push(format!("{prefix}{}", line.text));
+        }
+        if hunk.no_newline_at_end {
+            lines.push(r"\ No newline at end of file".to_string());
+        }
+    }
+
+    let total = lines.len();
+    let truncated = total > DIFF_PREVIEW_MAX_LINES;
+    if truncated {
+        lines.truncate(DIFF_PREVIEW_MAX_LINES);
+        lines.push(format!(
+            "... diff truncated: showing {} of {} lines",
+            DIFF_PREVIEW_MAX_LINES, total
+        ));
+    }
+
+    if lines.is_empty() {
+        (None, false)
+    } else {
+        (Some(lines.join("\n")), truncated)
+    }
+}
+
+fn diff_header_path(path: &PatchPath, prefix: char) -> String {
+    match path {
+        PatchPath::Workspace(path) => format!("{prefix}/{path}"),
+        PatchPath::DevNull => "/dev/null".to_string(),
+    }
 }
 
 enum PatchOperationKind<'a> {
