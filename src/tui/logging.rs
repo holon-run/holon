@@ -280,6 +280,7 @@ fn presentation_item_kind(item: &PresentationItem) -> &'static str {
         PresentationItem::FileRead { .. } => "file_read",
         PresentationItem::FileChange { .. } => "file_change",
         PresentationItem::PatchFailure { .. } => "patch_failure",
+        PresentationItem::ToolAction { .. } => "tool_action",
         PresentationItem::PlanShown { .. } => "plan_shown",
         PresentationItem::ProviderRound { .. } => "provider_round",
         PresentationItem::InternalTransition { .. } => "internal_transition",

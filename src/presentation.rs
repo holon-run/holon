@@ -282,6 +282,9 @@ pub enum PresentationItem {
         summary: String,
         error_message: Option<String>,
     },
+    ToolAction {
+        summary: String,
+    },
     PlanShown {
         plan_text: String,
     },
@@ -336,6 +339,7 @@ impl PresentationItem {
             PresentationItem::FileRead { .. } => 4,
             PresentationItem::FileChange { .. } => 4,
             PresentationItem::PatchFailure { .. } => 4,
+            PresentationItem::ToolAction { .. } => 4,
             PresentationItem::PlanShown { .. } => 4,
 
             PresentationItem::ProviderRound { .. } => 5,
@@ -586,6 +590,10 @@ impl Renderable for PresentationItem {
                     }
                 }
                 vec![RenderedCell::new("Holon", body)]
+            }
+
+            PresentationItem::ToolAction { summary } => {
+                vec![RenderedCell::new("Holon", summary.clone()).indented(1)]
             }
 
             PresentationItem::PlanShown { plan_text } => {
@@ -1024,6 +1032,9 @@ impl PresentationReducer {
                 from: "".to_string(),
                 to: event.summary.clone(),
             },
+            OperatorEventCategory::Tool => PresentationItem::ToolAction {
+                summary: event.summary.clone(),
+            },
             _ => PresentationItem::GenericEvent {
                 kind: event.kind.clone(),
                 summary: event.summary.clone(),
@@ -1206,7 +1217,7 @@ fn apply_patch_items(event: &ProjectionEventRecord) -> Vec<PresentationItem> {
     if event.kind == "tool_execution_failed" {
         return vec![PresentationItem::PatchFailure {
             summary: patch_failure_summary(event),
-            error_message: tool_error_message(event),
+            error_message: tool_raw_error_message(event),
         }];
     }
 
@@ -1610,6 +1621,34 @@ fn tool_full_stderr(event: &ProjectionEventRecord) -> Option<String> {
 }
 
 fn tool_error_message(event: &ProjectionEventRecord) -> Option<String> {
+    if let Some(message) = event
+        .payload
+        .get("tool_error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        return Some(message);
+    }
+
+    let raw_error = event.payload.get("error").and_then(Value::as_str)?;
+    error_json_message(raw_error).or_else(|| Some(raw_error.to_string()))
+}
+
+fn error_json_message(error: &str) -> Option<String> {
+    serde_json::from_str::<Value>(error)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| value.get("kind").and_then(Value::as_str))
+                .map(str::to_string)
+        })
+        .filter(|message| !message.trim().is_empty())
+}
+
+fn tool_raw_error_message(event: &ProjectionEventRecord) -> Option<String> {
     event
         .payload
         .get("error")
@@ -2268,6 +2307,40 @@ mod tests {
                 assert!(items[0].item.render(4)[0].body.contains("Patch failed"));
                 assert!(!items[0].item.render(4)[0].body.contains("expected lines"));
                 assert!(items[0].item.render(5)[0].body.contains("expected lines"));
+            }
+            other => panic!("expected PatchFailure, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_apply_patch_failure_prefers_structured_message_over_raw_json() {
+        let event = make_event(
+            "tool_execution_failed",
+            "Patch failed: {",
+            json!({
+                "tool_name": "ApplyPatch",
+                "error": "{\n  \"kind\": \"invalid_tool_input\",\n  \"message\": \"input for ApplyPatch does not match the advertised tool schema\",\n  \"retryable\": false\n}",
+                "tool_error": {
+                    "kind": "invalid_tool_input",
+                    "message": "input for ApplyPatch does not match the advertised tool schema",
+                    "retryable": false
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::PatchFailure { summary, .. } => {
+                assert_eq!(
+                    summary,
+                    "Patch failed: input for ApplyPatch does not match the advertised tool schema"
+                );
+                let rendered = items[0].item.render(4)[0].body.clone();
+                assert!(rendered.contains("ApplyPatch does not match"));
+                assert!(!rendered.contains("Patch failed: {"));
             }
             other => panic!("expected PatchFailure, got {:?}", other),
         }

@@ -90,6 +90,7 @@ pub(crate) struct TuiProjection {
     pub(crate) stale_slices: BTreeSet<ProjectionSlice>,
     event_log: Vec<ProjectionEventRecord>,
     durable_conversation_log: Vec<ProjectionEventRecord>,
+    live_working_activity_events: Vec<ProjectionEventRecord>,
 }
 
 impl TuiProjection {
@@ -117,6 +118,7 @@ impl TuiProjection {
             stale_slices: BTreeSet::new(),
             event_log: Vec::new(),
             durable_conversation_log: Vec::new(),
+            live_working_activity_events: Vec::new(),
         };
         projection
     }
@@ -320,6 +322,9 @@ impl TuiProjection {
         }
         let presentation_context = self.operator_presentation_context();
         let record = projection_event_record_from_stream_event(&event, &presentation_context);
+        if let Some(display_mode) = display_mode {
+            self.update_live_working_activity(&record, display_mode);
+        }
         let cache_event = display_mode.is_none_or(|display_mode| {
             is_operator_event_in_display_mode(
                 &record.kind,
@@ -755,6 +760,16 @@ impl TuiProjection {
         events
     }
 
+    pub(crate) fn live_working_activity_events(
+        &self,
+        display_mode: OperatorDisplayMode,
+    ) -> Vec<&ProjectionEventRecord> {
+        if display_mode != OperatorDisplayMode::Info {
+            return Vec::new();
+        }
+        self.live_working_activity_events.iter().collect()
+    }
+
     pub(crate) fn operator_visibility(&self, event: &ProjectionEventRecord) -> OperatorVisibility {
         event.presentation.visibility
     }
@@ -807,6 +822,34 @@ impl TuiProjection {
                 "turn_started" | "message_processing_started" | "message_enqueued"
             )
         })
+    }
+
+    fn update_live_working_activity(
+        &mut self,
+        record: &ProjectionEventRecord,
+        display_mode: OperatorDisplayMode,
+    ) {
+        if is_activity_reset_kind(&record.kind) {
+            self.live_working_activity_events.clear();
+            return;
+        }
+
+        if display_mode != OperatorDisplayMode::Info {
+            self.live_working_activity_events.clear();
+            return;
+        }
+
+        if !record.presentation.is_current_activity_candidate() {
+            return;
+        }
+
+        if self.is_visible_in_display_mode(record, OperatorDisplayMode::Info)
+            || !self.is_visible_in_display_mode(record, OperatorDisplayMode::Debug)
+        {
+            return;
+        }
+
+        push_limited(&mut self.live_working_activity_events, record.clone(), 8);
     }
 
     pub(crate) fn recent_log_events(&self, limit: usize) -> Vec<&ProjectionEventRecord> {

@@ -571,9 +571,13 @@ fn active_activity_item(
         return None;
     }
 
-    let hidden_events = projection
-        .map(|projection| projection.hidden_current_turn_events(app.display_mode))
-        .unwrap_or_default();
+    let hidden_events = if app.display_mode == crate::operator_event::OperatorDisplayMode::Info {
+        projection
+            .map(|projection| projection.live_working_activity_events(app.display_mode))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let latest_action = latest_action_event(hidden_events.as_slice());
     let latest_assistant = latest_assistant_message(hidden_events.as_slice());
     let latest_event_ts =
