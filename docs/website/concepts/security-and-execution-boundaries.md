@@ -31,7 +31,7 @@ describes the current policy snapshot and what is enforced:
 
 | Boundary | Level | What it means |
 |----------|-------|---------------|
-| `cwd_rooting` | hard_enforced | Commands cannot escape the workspace root as their working directory |
+| `cwd_rooting` | runtime_shaped | The runtime allows workdir outside the workspace root when explicitly requested; sandboxing is the responsibility of the execution backend |
 | `projection_rooting` | hard_enforced | Filesystem views are constrained to the projected root |
 | `path_confinement` | not_enforced | The runtime does not prevent access outside the workspace by path |
 | `write_confinement` | not_enforced | Write operations are not restricted to the workspace |

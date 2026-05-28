@@ -46,7 +46,7 @@ impl ExecutionProfile {
                     process_execution: ExecutionGuaranteeLevel::RuntimeShaped,
                 },
                 process_execution: ProcessExecutionCapabilitySnapshot {
-                    cwd_rooting: ExecutionGuaranteeLevel::HardEnforced,
+                    cwd_rooting: ExecutionGuaranteeLevel::RuntimeShaped,
                     projection_rooting: ExecutionGuaranteeLevel::HardEnforced,
                     path_confinement: ExecutionGuaranteeLevel::NotEnforced,
                     write_confinement: ExecutionGuaranteeLevel::NotEnforced,
@@ -457,7 +457,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.process_execution.cwd_rooting,
-            ExecutionGuaranteeLevel::HardEnforced
+            ExecutionGuaranteeLevel::RuntimeShaped
         );
         assert_eq!(
             snapshot.process_execution.path_confinement,
