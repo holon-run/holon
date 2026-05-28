@@ -47,8 +47,8 @@ Boundaries marked `not_enforced` rely on the operator's host configuration
 Holon provides workspace binding that constrains where the agent operates:
 
 - **Workspace root** — the agent's default working directory. The runtime
-  enforces that commands start inside this root, but the agent or its commands
-  can navigate elsewhere by path.
+  defaults commands to start inside this root, but an explicit workdir may
+  point outside the workspace when the execution backend allows it.
 - **Projection root** — constrains the filesystem view presented to the agent.
   When enforced, the agent only sees files under the projection root.
 - **ApplyPatch targets** — file mutation tools resolve relative paths against
