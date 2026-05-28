@@ -766,6 +766,14 @@ impl PresentationReducer {
                         i += 1;
                         continue;
                     }
+                    if !is_exec_command_tool_event(event) {
+                        items.push(TimedItem::from_event(
+                            self.event_to_presentation(event),
+                            event,
+                        ));
+                        i += 1;
+                        continue;
+                    }
                     let cmd_preview =
                         exec_command_preview(event).unwrap_or_else(|| event.summary.clone());
                     let exit_code = tool_exit_code(event).or_else(|| match event.kind.as_str() {
@@ -1205,6 +1213,13 @@ fn is_sleep_tool_event(event: &ProjectionEventRecord) -> bool {
     event.payload.get("tool_name").and_then(Value::as_str) == Some("Sleep")
 }
 
+fn is_exec_command_tool_event(event: &ProjectionEventRecord) -> bool {
+    matches!(
+        event.payload.get("tool_name").and_then(Value::as_str),
+        Some("ExecCommand" | "ExecCommandBatch")
+    )
+}
+
 fn is_apply_patch_tool_event(event: &ProjectionEventRecord) -> bool {
     event.payload.get("tool_name").and_then(Value::as_str) == Some("ApplyPatch")
 }
@@ -1518,7 +1533,23 @@ fn exec_command_preview(event: &ProjectionEventRecord) -> Option<String> {
                 .and_then(|v| v.get("cmd_preview"))
                 .and_then(Value::as_str)
         })
+        .or_else(|| command_preview_from_summary(&event.summary))
         .map(ToString::to_string)
+}
+
+fn command_preview_from_summary(summary: &str) -> Option<&str> {
+    [
+        "Command started:",
+        "Command finished:",
+        "Command failed:",
+        "Command batch started:",
+        "Command batch finished:",
+        "Command batch failed:",
+    ]
+    .iter()
+    .find_map(|prefix| summary.strip_prefix(prefix))
+    .map(str::trim)
+    .filter(|cmd| !cmd.is_empty())
 }
 
 fn tool_exit_code(event: &ProjectionEventRecord) -> Option<i32> {
@@ -1904,6 +1935,86 @@ mod tests {
     }
 
     #[test]
+    fn reducer_merges_legacy_summary_command_start_and_finish() {
+        let start = make_event(
+            "process_execution_requested",
+            "Command started: agentinbox inbox ack --agent-id holon-pm",
+            json!({}),
+        );
+        let finish = make_event(
+            "tool_executed",
+            "Command finished: agentinbox inbox ack --agent-id holon-pm",
+            json!({
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "agentinbox inbox ack --agent-id holon-pm",
+                "exit_status": 0
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[start, finish]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::CommandExecuted { cmd_preview, .. } => {
+                assert_eq!(cmd_preview, "agentinbox inbox ack --agent-id holon-pm");
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_merges_exec_command_batch_start_and_finish() {
+        let batch_items = json!([
+            {"index": 1, "cmd": "cargo fmt --all -- --check", "cmd_display": "cargo fmt --all -- --check"},
+            {"index": 2, "cmd": "cargo test presentation --lib", "cmd_display": "cargo test presentation --lib"}
+        ]);
+        let start = make_event(
+            "process_execution_requested",
+            "Command batch started",
+            json!({
+                "surface": "ExecCommandBatch",
+                "exec_command_batch_items": batch_items.clone()
+            }),
+        );
+        let finish = make_event(
+            "tool_executed",
+            "Command batch finished",
+            json!({
+                "tool_name": "ExecCommandBatch",
+                "exec_command_batch_items": batch_items,
+                "duration_ms": 42,
+                "exec_command_result": {
+                    "completed_count": 2,
+                    "item_count": 2,
+                    "summary_text": "ExecCommandBatch completed 2/2 items"
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[start, finish]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::CommandExecuted {
+                status,
+                cmd_preview,
+                duration_ms,
+                ..
+            } => {
+                assert_eq!(*status, CommandStatus::Completed);
+                assert_eq!(
+                    cmd_preview,
+                    "cargo fmt --all -- --check\ncargo test presentation --lib"
+                );
+                assert_eq!(*duration_ms, Some(42));
+            }
+            other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn reducer_updates_command_item_when_events_are_not_adjacent() {
         let start = make_event(
             "process_execution_requested",
@@ -2045,6 +2156,27 @@ mod tests {
             }
             other => panic!("expected CommandExecuted, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn reducer_does_not_render_non_exec_tool_as_command() {
+        let event = make_event(
+            "tool_executed",
+            "Updated work item: UpdateWorkItem",
+            json!({
+                "tool_name": "UpdateWorkItem",
+                "summary": "updated work item"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        assert!(!matches!(
+            items[0].item,
+            PresentationItem::CommandExecuted { .. }
+        ));
     }
 
     #[test]

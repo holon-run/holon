@@ -1542,7 +1542,7 @@ fn work_item_delegation_text(payload: &Value, completed: bool) -> (String, Optio
 
 fn process_execution_text(
     payload: &Value,
-    _fallback_summary: &str,
+    fallback_summary: &str,
 ) -> (String, Option<String>, String) {
     let surface = payload
         .get("surface")
@@ -1573,7 +1573,33 @@ fn process_execution_text(
             format!("{label}: {cmd_preview}"),
         );
     }
+    if let Some((legacy_label, legacy_cmd)) = legacy_command_summary(fallback_summary) {
+        return (
+            legacy_label.to_string(),
+            Some(legacy_cmd.to_string()),
+            fallback_summary.to_string(),
+        );
+    }
     (label.into(), None, label.into())
+}
+
+fn legacy_command_summary(summary: &str) -> Option<(&str, &str)> {
+    [
+        "Command started:",
+        "Command finished:",
+        "Command failed:",
+        "Command batch started:",
+        "Command batch finished:",
+        "Command batch failed:",
+    ]
+    .iter()
+    .find_map(|prefix| {
+        summary
+            .strip_prefix(prefix)
+            .map(str::trim)
+            .filter(|cmd| !cmd.is_empty())
+            .map(|cmd| (prefix.trim_end_matches(':'), cmd))
+    })
 }
 
 fn assistant_round_recorded_text(payload: &Value) -> (String, Option<String>, String) {

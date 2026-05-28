@@ -1119,6 +1119,9 @@ fn presentation_debug_items_for_event(
     if matches!(
         record.kind.as_str(),
         "tool_executed" | "tool_execution_failed"
+    ) && matches!(
+        record.payload.get("tool_name").and_then(Value::as_str),
+        Some("ExecCommand" | "ExecCommandBatch")
     ) {
         if let Some(previous) = event_log
             .iter()
@@ -1534,6 +1537,42 @@ mod tests {
             record["reducer_event_ids"],
             json!(["evt-process_execution_requested", "evt-tool_executed"])
         );
+    }
+
+    #[test]
+    fn presentation_debug_log_does_not_pair_non_exec_tool_with_command_window() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let writer =
+            crate::tui::logging::TuiLogWriter::new_temp_with_presentation_logging(4096).unwrap();
+
+        projection.apply_event(
+            sample_event(
+                "process_execution_requested",
+                json!({ "exec_command_cmd": "agentinbox inbox ack --agent-id holon-pm" }),
+            ),
+            &writer,
+        );
+        projection.apply_event(
+            sample_event(
+                "tool_executed",
+                json!({
+                    "tool_name": "UpdateWorkItem",
+                    "summary": "updated work item"
+                }),
+            ),
+            &writer,
+        );
+
+        let log = std::fs::read_to_string(writer.root().join("presentation.jsonl")).unwrap();
+        let records = log
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records.last().unwrap()["reducer_event_ids"],
+            json!(["evt-tool_executed"])
+        );
+        assert_ne!(records.last().unwrap()["item_kind"], "command_executed");
     }
 
     #[test]

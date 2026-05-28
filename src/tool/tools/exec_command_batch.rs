@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::{
     runtime::RuntimeHandle,
     tool::{
-        helpers::{command_preview, invalid_tool_input, parse_tool_args},
+        helpers::{command_display, command_preview, invalid_tool_input, parse_tool_args},
         spec::ToolResultStatus,
         ToolError, ToolResult,
     },
@@ -59,6 +59,15 @@ pub(crate) async fn execute(
 ) -> Result<ToolResult> {
     let args: ExecCommandBatchArgs = parse_tool_args(NAME, input)?;
     validate_batch_shape(&args)?;
+
+    runtime.append_audit_event(
+        "process_execution_requested",
+        json!({
+            "surface": NAME,
+            "authority_class": authority_class,
+            "exec_command_batch_items": batch_preview_items(&args.items),
+        }),
+    )?;
 
     let stop_on_error = args.stop_on_error.unwrap_or(false);
     let mut results = Vec::with_capacity(args.items.len());
@@ -151,6 +160,23 @@ fn validate_batch_shape(args: &ExecCommandBatchArgs) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn batch_preview_items(items: &[ExecCommandBatchItemArgs]) -> Value {
+    Value::Array(
+        items
+            .iter()
+            .enumerate()
+            .map(|(offset, item)| {
+                json!({
+                    "index": offset + 1,
+                    "cmd": command_preview(&item.cmd),
+                    "cmd_display": command_display(&item.cmd),
+                    "workdir": item.workdir,
+                })
+            })
+            .collect(),
+    )
 }
 
 async fn execute_batch_item(

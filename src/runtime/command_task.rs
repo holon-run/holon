@@ -346,26 +346,13 @@ impl RuntimeHandle {
     pub(crate) async fn execute_exec_command_once(
         &self,
         mut spec: CommandTaskSpec,
-        authority_class: &AuthorityClass,
+        _authority_class: &AuthorityClass,
     ) -> Result<ExecCommandResult> {
         self.ensure_process_execution_exposed("ExecCommandBatch")
             .await?;
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
-        self.append_audit_event(
-            "process_execution_requested",
-            serde_json::json!({
-                "surface": "ExecCommandBatch",
-                "authority_class": authority_class,
-                "cmd_preview": diagnostics.cmd_preview.clone(),
-                "cmd_display": command_display(&resolved.spec.cmd),
-                "command_cost": diagnostics.clone(),
-                "execution": resolved.execution.clone(),
-                "boundary": crate::system::HostLocalBoundary::from_snapshot(&resolved.execution).audit_metadata(),
-                "workdir": resolved.workdir.clone(),
-            }),
-        )?;
         let mut captured = CapturedOutput::default();
         let mut running = self.start_command_process(&resolved).await?;
         let sleep = tokio::time::sleep(Duration::from_millis(resolved.spec.yield_time_ms));
