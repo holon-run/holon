@@ -2809,6 +2809,7 @@ impl TurnExecution<'_> {
                                 "exec_command_display": command_display_field(&call),
                                 "exec_command_batch_items": command_batch_preview_field(&call),
                                 "exec_command_result": exec_command_result_field(&call, &result.envelope),
+                                "apply_patch_result": apply_patch_result_field(&call, &result.envelope),
                                 "exec_command_cost": command_cost_field(
                                     &call,
                                     runtime.inner.default_tool_output_tokens,
@@ -3197,6 +3198,12 @@ fn command_batch_preview_field(call: &ToolCall) -> Option<Value> {
 
 fn exec_command_result_field(call: &ToolCall, envelope: &ToolResultEnvelope) -> Option<Value> {
     matches!(call.name.as_str(), "ExecCommand" | "ExecCommandBatch")
+        .then(|| envelope.result.clone())
+        .flatten()
+}
+
+fn apply_patch_result_field(call: &ToolCall, envelope: &ToolResultEnvelope) -> Option<Value> {
+    (call.name == "ApplyPatch")
         .then(|| envelope.result.clone())
         .flatten()
 }

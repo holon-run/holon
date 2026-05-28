@@ -279,6 +279,7 @@ fn presentation_item_kind(item: &PresentationItem) -> &'static str {
         PresentationItem::CommandExecuted { .. } => "command_executed",
         PresentationItem::FileRead { .. } => "file_read",
         PresentationItem::FileChange { .. } => "file_change",
+        PresentationItem::PatchFailure { .. } => "patch_failure",
         PresentationItem::PlanShown { .. } => "plan_shown",
         PresentationItem::ProviderRound { .. } => "provider_round",
         PresentationItem::InternalTransition { .. } => "internal_transition",

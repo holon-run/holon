@@ -276,6 +276,10 @@ pub enum PresentationItem {
         hunks: Vec<HunkSummary>,
         full_diff: Option<String>,
     },
+    PatchFailure {
+        summary: String,
+        error_message: Option<String>,
+    },
     PlanShown {
         plan_text: String,
     },
@@ -329,6 +333,7 @@ impl PresentationItem {
             PresentationItem::CommandExecuted { .. } => 4,
             PresentationItem::FileRead { .. } => 4,
             PresentationItem::FileChange { .. } => 4,
+            PresentationItem::PatchFailure { .. } => 4,
             PresentationItem::PlanShown { .. } => 4,
 
             PresentationItem::ProviderRound { .. } => 5,
@@ -563,6 +568,24 @@ impl Renderable for PresentationItem {
                 vec![RenderedCell::new("Holon", body).indented(1)]
             }
 
+            PresentationItem::PatchFailure {
+                summary,
+                error_message,
+            } => {
+                let mut body = format!("{} {}", Outcome::Failure.symbol(), summary);
+                if level >= 5 {
+                    if let Some(error) = error_message {
+                        if !error.trim().is_empty() {
+                            body.push_str("\n\u{2502} error:\n");
+                            for line in error.lines() {
+                                body.push_str(&format!("\u{2502} {}\n", line));
+                            }
+                        }
+                    }
+                }
+                vec![RenderedCell::new("Holon", body)]
+            }
+
             PresentationItem::PlanShown { plan_text } => {
                 let body = if level >= 5 {
                     format!("Plan:\n{}", plan_text)
@@ -759,6 +782,13 @@ impl PresentationReducer {
                             },
                             event,
                         ));
+                        i += 1;
+                        continue;
+                    }
+                    if is_apply_patch_tool_event(event) {
+                        for item in apply_patch_items(event) {
+                            items.push(TimedItem::from_event(item, event));
+                        }
                         i += 1;
                         continue;
                     }
@@ -1174,6 +1204,189 @@ fn strip_preview_ellipsis(text: &str) -> String {
 
 fn is_sleep_tool_event(event: &ProjectionEventRecord) -> bool {
     event.payload.get("tool_name").and_then(Value::as_str) == Some("Sleep")
+}
+
+fn is_apply_patch_tool_event(event: &ProjectionEventRecord) -> bool {
+    event.payload.get("tool_name").and_then(Value::as_str) == Some("ApplyPatch")
+}
+
+fn apply_patch_items(event: &ProjectionEventRecord) -> Vec<PresentationItem> {
+    if event.kind == "tool_execution_failed" {
+        return vec![PresentationItem::PatchFailure {
+            summary: patch_failure_summary(event),
+            error_message: tool_error_message(event),
+        }];
+    }
+
+    let mut changes = apply_patch_result(event)
+        .map(apply_patch_file_changes_from_result)
+        .unwrap_or_default();
+    if changes.is_empty() {
+        changes = apply_patch_file_changes_from_summary(
+            event
+                .payload
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or(&event.summary),
+        );
+    }
+
+    if changes.is_empty() {
+        vec![PresentationItem::GenericEvent {
+            kind: event.kind.clone(),
+            summary: event.summary.clone(),
+        }]
+    } else {
+        changes
+    }
+}
+
+fn patch_failure_summary(event: &ProjectionEventRecord) -> String {
+    let summary = tool_error_message(event)
+        .and_then(|error| {
+            error
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(|line| format!("Patch failed: {line}"))
+        })
+        .unwrap_or_else(|| {
+            event
+                .summary
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        });
+    if summary.is_empty() {
+        "Patch failed".to_string()
+    } else if summary.starts_with("Patch failed") {
+        summary
+    } else {
+        format!("Patch failed: {summary}")
+    }
+}
+
+fn apply_patch_result(event: &ProjectionEventRecord) -> Option<&Value> {
+    event
+        .payload
+        .get("apply_patch_result")
+        .or_else(|| event.payload.get("result"))
+}
+
+fn apply_patch_file_changes_from_result(result: &Value) -> Vec<PresentationItem> {
+    let changes = result
+        .get("changed_files")
+        .and_then(Value::as_array)
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(apply_patch_file_change_from_value)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if !changes.is_empty() {
+        return changes;
+    }
+
+    result
+        .get("changed_paths")
+        .and_then(Value::as_array)
+        .map(|paths| {
+            paths
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|path| !path.trim().is_empty())
+                .map(|path| PresentationItem::FileChange {
+                    path: path.to_string(),
+                    action: FileAction::Modified,
+                    hunks: Vec::new(),
+                    full_diff: None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn apply_patch_file_change_from_value(value: &Value) -> Option<PresentationItem> {
+    let action = value
+        .get("action")
+        .and_then(Value::as_str)
+        .and_then(file_action_from_apply_patch_action)
+        .unwrap_or(FileAction::Modified);
+    let path = value.get("path").and_then(Value::as_str)?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let path = if action == FileAction::Renamed {
+        match value.get("from_path").and_then(Value::as_str) {
+            Some(from_path) if !from_path.trim().is_empty() => {
+                format!("{} -> {}", from_path.trim(), path)
+            }
+            _ => path.to_string(),
+        }
+    } else {
+        path.to_string()
+    };
+    Some(PresentationItem::FileChange {
+        path,
+        action,
+        hunks: Vec::new(),
+        full_diff: None,
+    })
+}
+
+fn file_action_from_apply_patch_action(action: &str) -> Option<FileAction> {
+    match action {
+        "add" => Some(FileAction::Added),
+        "modify" => Some(FileAction::Modified),
+        "delete" => Some(FileAction::Deleted),
+        "move" => Some(FileAction::Renamed),
+        _ => None,
+    }
+}
+
+fn apply_patch_file_changes_from_summary(summary: &str) -> Vec<PresentationItem> {
+    let Some((_, changed)) = summary.split_once("patched ") else {
+        return Vec::new();
+    };
+    changed
+        .split(',')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            let (marker, path) = entry.split_once(':')?;
+            let action = file_action_from_apply_patch_marker(marker.trim())?;
+            let path = path.trim();
+            if path.is_empty() {
+                return None;
+            }
+            let path = if action == FileAction::Renamed {
+                path.split_once("->")
+                    .map(|(from, to)| format!("{} -> {}", from.trim(), to.trim()))
+                    .unwrap_or_else(|| path.to_string())
+            } else {
+                path.to_string()
+            };
+            Some(PresentationItem::FileChange {
+                path,
+                action,
+                hunks: Vec::new(),
+                full_diff: None,
+            })
+        })
+        .collect()
+}
+
+fn file_action_from_apply_patch_marker(marker: &str) -> Option<FileAction> {
+    match marker {
+        "A" => Some(FileAction::Added),
+        "M" => Some(FileAction::Modified),
+        "D" => Some(FileAction::Deleted),
+        "R" => Some(FileAction::Renamed),
+        _ => None,
+    }
 }
 
 fn resume_notice_item(event: &ProjectionEventRecord) -> Option<PresentationItem> {
@@ -1707,6 +1920,99 @@ mod tests {
                 assert!(cmd_preview.contains("rg pattern"));
             }
             other => panic!("expected CommandExecuted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_apply_patch_result_becomes_file_changes() {
+        let event = make_event(
+            "tool_executed",
+            "Applied patch: patched M:src/lib.rs, A:README.md",
+            json!({
+                "tool_name": "ApplyPatch",
+                "apply_patch_result": {
+                    "changed_files": [
+                        {"action": "modify", "path": "src/lib.rs"},
+                        {"action": "add", "path": "README.md"}
+                    ],
+                    "changed_paths": ["src/lib.rs", "README.md"],
+                    "changed_file_count": 2
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 2);
+        match &items[0].item {
+            PresentationItem::FileChange { action, path, .. } => {
+                assert_eq!(*action, FileAction::Modified);
+                assert_eq!(path, "src/lib.rs");
+                assert!(items[0].item.render(4)[0].body.contains("M src/lib.rs"));
+            }
+            other => panic!("expected FileChange, got {:?}", other),
+        }
+        match &items[1].item {
+            PresentationItem::FileChange { action, path, .. } => {
+                assert_eq!(*action, FileAction::Added);
+                assert_eq!(path, "README.md");
+                assert!(items[1].item.render(4)[0].body.contains("A README.md"));
+            }
+            other => panic!("expected FileChange, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_apply_patch_summary_fallback_becomes_file_change() {
+        let event = make_event(
+            "tool_executed",
+            "Applied patch: patched M:src/presentation.rs",
+            json!({
+                "tool_name": "ApplyPatch",
+                "summary": "patched M:src/presentation.rs"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::FileChange { action, path, .. } => {
+                assert_eq!(*action, FileAction::Modified);
+                assert_eq!(path, "src/presentation.rs");
+            }
+            other => panic!("expected FileChange, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_apply_patch_failure_is_not_command() {
+        let event = make_event(
+            "tool_execution_failed",
+            "Patch failed: context not found",
+            json!({
+                "tool_name": "ApplyPatch",
+                "error": "context not found\nexpected lines: old text"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::PatchFailure { error_message, .. } => {
+                assert_eq!(
+                    error_message.as_deref(),
+                    Some("context not found\nexpected lines: old text")
+                );
+                assert!(items[0].item.render(4)[0].body.contains("Patch failed"));
+                assert!(!items[0].item.render(4)[0].body.contains("expected lines"));
+                assert!(items[0].item.render(5)[0].body.contains("expected lines"));
+            }
+            other => panic!("expected PatchFailure, got {:?}", other),
         }
     }
 
