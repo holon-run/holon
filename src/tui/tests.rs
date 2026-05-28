@@ -3,6 +3,7 @@ use super::{
     chat::{
         build_chat_text, chat_text, collect_chat_items, is_operator_origin_value,
         paragraph_max_scroll, paragraph_max_scroll_unframed, ChatScrollState, ConversationCell,
+        ConversationDisplayKind,
     },
     composer::ComposerState,
     determine_alt_screen_mode_for_terminal,
@@ -739,6 +740,52 @@ fn build_chat_text_renders_message_block_header_above_body() {
         .iter()
         .any(|line| line.starts_with("  ") && line.contains("First line")));
     assert!(lines.iter().any(|line| line.starts_with("  Second line")));
+}
+
+#[test]
+fn build_chat_text_groups_activity_by_kind_not_minute() {
+    let first_created_at = Utc::now();
+    let second_created_at = first_created_at + chrono::Duration::minutes(2);
+    let items = vec![
+        ConversationCell::SystemNotice {
+            created_at: first_created_at,
+            speaker: "holon-pm".into(),
+            body: "first activity".into(),
+            display_kind: ConversationDisplayKind::Activity,
+        },
+        ConversationCell::SystemNotice {
+            created_at: second_created_at,
+            speaker: "holon-pm".into(),
+            body: "second activity".into(),
+            display_kind: ConversationDisplayKind::Activity,
+        },
+        ConversationCell::SystemNotice {
+            created_at: second_created_at,
+            speaker: "holon-pm".into(),
+            body: "narrative line".into(),
+            display_kind: ConversationDisplayKind::Narrative,
+        },
+    ];
+
+    let lines: Vec<String> = build_chat_text(&items)
+        .lines
+        .into_iter()
+        .map(|line| line.spans.into_iter().map(|span| span.content).collect())
+        .collect();
+    let header_count = lines
+        .iter()
+        .filter(|line| line.contains("• holon-pm "))
+        .count();
+    assert_eq!(header_count, 2);
+    assert!(lines
+        .iter()
+        .any(|line| line.starts_with("    first activity")));
+    assert!(lines
+        .iter()
+        .any(|line| line.starts_with("    second activity")));
+    assert!(lines
+        .iter()
+        .any(|line| line.starts_with("  narrative line")));
 }
 
 #[test]

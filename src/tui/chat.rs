@@ -127,6 +127,7 @@ pub(super) enum ConversationCell {
         created_at: DateTime<chrono::Utc>,
         speaker: String,
         body: String,
+        display_kind: ConversationDisplayKind,
     },
 }
 
@@ -168,13 +169,19 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
 
         for timed in &timed_items {
             if timed.item.is_visible_at(level) {
+                let display_kind = conversation_display_kind(&timed.item);
                 for rendered in timed.item.render(level) {
                     push_projected_conversation_cell(
                         &mut cells,
                         &mut durable_operator_message_bodies,
                         &mut projected_cell_keys,
                         &timed.dedupe_key,
-                        rendered_to_conversation_cell(&rendered, timed.ts, agent_speaker),
+                        rendered_to_conversation_cell(
+                            &rendered,
+                            timed.ts,
+                            agent_speaker,
+                            display_kind,
+                        ),
                     );
                 }
             }
@@ -255,9 +262,10 @@ fn push_projected_conversation_cell(
 
 fn projected_conversation_cell_key(source_key: &str, cell: &ConversationCell) -> String {
     format!(
-        "{}|{:?}|{}|{}",
+        "{}|{:?}|{:?}|{}|{}",
         source_key,
         cell.role(),
+        cell.display_kind(),
         cell.sort_speaker(),
         normalized_operator_message_body_key(cell.sort_body())
     )
@@ -273,6 +281,14 @@ impl ConversationCell {
             Self::UserMessage { created_at, .. }
             | Self::ActiveActivity { created_at, .. }
             | Self::SystemNotice { created_at, .. } => *created_at,
+        }
+    }
+
+    fn display_kind(&self) -> ConversationDisplayKind {
+        match self {
+            Self::UserMessage { .. } => ConversationDisplayKind::Operator,
+            Self::ActiveActivity { .. } => ConversationDisplayKind::Activity,
+            Self::SystemNotice { display_kind, .. } => *display_kind,
         }
     }
 
@@ -302,18 +318,19 @@ impl ConversationCell {
         match (previous, self) {
             (
                 Self::SystemNotice {
-                    created_at: previous_ts,
                     speaker: previous_speaker,
+                    display_kind: previous_kind,
                     ..
                 },
                 Self::SystemNotice {
-                    created_at,
                     speaker,
+                    display_kind,
                     ..
                 },
             ) => {
-                previous_speaker == speaker
-                    && chat_timestamp(*previous_ts) == chat_timestamp(*created_at)
+                *previous_kind == ConversationDisplayKind::Activity
+                    && *display_kind == ConversationDisplayKind::Activity
+                    && previous_speaker == speaker
             }
             _ => false,
         }
@@ -333,11 +350,13 @@ impl ConversationCell {
                 created_at,
                 speaker,
                 body,
+                display_kind,
             } => render_message_block_lines(
                 *created_at,
                 ChatBlockRole::Agent,
                 speaker,
                 body,
+                *display_kind,
                 width,
                 false,
                 include_header,
@@ -356,6 +375,13 @@ pub(super) enum CachedChatRole {
 enum ChatBlockRole {
     Operator,
     Agent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ConversationDisplayKind {
+    Operator,
+    Narrative,
+    Activity,
 }
 
 #[cfg(test)]
@@ -412,6 +438,7 @@ fn render_message_block_lines(
     role: ChatBlockRole,
     speaker: &str,
     body: &str,
+    display_kind: ConversationDisplayKind,
     width: u16,
     spaced_markdown: bool,
     include_header: bool,
@@ -435,11 +462,18 @@ fn render_message_block_lines(
         }
 
         let mut spans = Vec::with_capacity(line.spans.len() + 1);
-        spans.push(Span::raw("  "));
+        spans.push(Span::raw(message_body_indent(display_kind)));
         spans.extend(line.spans.clone());
         lines.push(Line::from(spans).style(line.style));
     }
     lines
+}
+
+fn message_body_indent(display_kind: ConversationDisplayKind) -> &'static str {
+    match display_kind {
+        ConversationDisplayKind::Activity => "    ",
+        ConversationDisplayKind::Operator | ConversationDisplayKind::Narrative => "  ",
+    }
 }
 
 fn render_operator_message_lines(
@@ -453,6 +487,7 @@ fn render_operator_message_lines(
         ChatBlockRole::Operator,
         "operator",
         body,
+        ConversationDisplayKind::Operator,
         width,
         false,
         true,
@@ -557,6 +592,32 @@ fn chat_header_spans(
 
 fn chat_timestamp(created_at: DateTime<chrono::Utc>) -> String {
     created_at.with_timezone(&Local).format("%H:%M").to_string()
+}
+
+fn conversation_display_kind(item: &PresentationItem) -> ConversationDisplayKind {
+    match item {
+        PresentationItem::UserMessage { .. } => ConversationDisplayKind::Operator,
+        PresentationItem::AssistantResult { .. }
+        | PresentationItem::AssistantProgress { .. }
+        | PresentationItem::PlanShown { .. } => ConversationDisplayKind::Narrative,
+        PresentationItem::SystemAlert { .. }
+        | PresentationItem::WaitingNotice { .. }
+        | PresentationItem::WorkItemCard { .. }
+        | PresentationItem::ResumeNotice { .. }
+        | PresentationItem::ActionGroup { .. }
+        | PresentationItem::CommandExecuted { .. }
+        | PresentationItem::FileRead { .. }
+        | PresentationItem::FileChange { .. }
+        | PresentationItem::PatchFailure { .. }
+        | PresentationItem::ToolAction { .. }
+        | PresentationItem::ProviderRound { .. }
+        | PresentationItem::InternalTransition { .. }
+        | PresentationItem::TaskLifecycle { .. }
+        | PresentationItem::WorkItemBookkeeping { .. }
+        | PresentationItem::WorkspaceChange { .. }
+        | PresentationItem::ContinuationDetail { .. }
+        | PresentationItem::GenericEvent { .. } => ConversationDisplayKind::Activity,
+    }
 }
 
 fn active_activity_status_label(speaker: &str) -> Option<&'static str> {
@@ -1204,6 +1265,7 @@ pub(super) fn rendered_to_conversation_cell(
     cell: &crate::presentation::RenderedCell,
     ts: chrono::DateTime<chrono::Utc>,
     agent_speaker: &str,
+    display_kind: ConversationDisplayKind,
 ) -> ConversationCell {
     if cell.is_live {
         ConversationCell::ActiveActivity {
@@ -1222,6 +1284,7 @@ pub(super) fn rendered_to_conversation_cell(
             created_at: ts,
             speaker: agent_speaker.to_string(),
             body: cell.body.clone(),
+            display_kind,
         }
     }
 }
