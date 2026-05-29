@@ -428,6 +428,38 @@ async fn probe_runtime_reports_running_when_socket_missing_but_pid_alive() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn probe_runtime_reports_running_when_socket_refuses_but_pid_alive() {
+    let config = test_config();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+    drop(listener);
+
+    // Use the current process PID — guaranteed alive.
+    let pid = std::process::id();
+    let metadata = RuntimeServiceMetadata {
+        pid,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+    };
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+    match probe_runtime(&config).await {
+        ProbeRuntime::Running(status) => {
+            assert_eq!(status.pid, pid);
+            assert_eq!(status.home_dir, config.home_dir);
+            assert_eq!(status.socket_path, config.socket_path);
+            assert_eq!(status.http_addr, config.http_addr);
+        }
+        other => panic!("expected Running, got {:?}", other),
+    }
+}
+
 #[test]
 fn runtime_status_metadata_match_rejects_foreign_runtime() {
     let config = test_config();
