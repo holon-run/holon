@@ -27,6 +27,8 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
         #[derive(Deserialize)]
         struct MessageEnvelopeCompat {
             id: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            message_seq: Option<u64>,
             #[serde(alias = "session_id")]
             agent_id: String,
             created_at: DateTime<Utc>,
@@ -62,6 +64,7 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
             .ok_or_else(|| serde::de::Error::missing_field("authority_class"))?;
         Ok(Self {
             id: compat.id,
+            message_seq: compat.message_seq,
             agent_id: compat.agent_id,
             created_at: compat.created_at,
             kind: compat.kind,
@@ -1001,6 +1004,8 @@ pub enum AuthorityClass {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct MessageEnvelope {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_seq: Option<u64>,
     #[serde(alias = "session_id")]
     pub agent_id: String,
     pub created_at: DateTime<Utc>,
@@ -1037,6 +1042,7 @@ impl MessageEnvelope {
     ) -> Self {
         Self {
             id: ids::message_id(),
+            message_seq: None,
             agent_id: agent_id.into(),
             created_at: Utc::now(),
             kind,
@@ -3489,6 +3495,8 @@ pub enum TranscriptEntryKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TranscriptEntry {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_seq: Option<u64>,
     #[serde(alias = "session_id")]
     pub agent_id: String,
     pub created_at: DateTime<Utc>,
@@ -3511,6 +3519,7 @@ impl TranscriptEntry {
     ) -> Self {
         Self {
             id: ids::transcript_entry_id(),
+            transcript_seq: None,
             agent_id: agent_id.into(),
             created_at: Utc::now(),
             kind,

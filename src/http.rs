@@ -1284,6 +1284,7 @@ mod tests {
 
         let entry = TranscriptEntry {
             id: "entry-1".into(),
+            transcript_seq: None,
             agent_id: "default".into(),
             created_at: now,
             kind: TranscriptEntryKind::ToolResults,
