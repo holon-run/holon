@@ -44,7 +44,6 @@ holon (v0.14.1)
 │   ├── schema   Show all config keys with types and defaults
 │   └── doctor   Full system health check
 ├── prompt       Send a prompt to an agent (lightweight)
-├── status       Show agent status
 ├── tail         Show recent log tail
 ├── transcript   Show conversation transcript
 ├── events       Read stable runtime event envelopes

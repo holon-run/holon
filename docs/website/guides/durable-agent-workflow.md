@@ -80,9 +80,6 @@ Reconnect later or from another terminal:
 
 ```bash
 # Quick status check (no TUI needed)
-holon status
-
-# See what the agent is doing
 holon agent status builder
 
 # Reconnect the TUI to interact

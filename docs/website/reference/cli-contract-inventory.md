@@ -106,7 +106,6 @@ These commands require a reachable local control plane unless noted otherwise.
 | Command | Args | Options | Output | Initial stability | Notes |
 |---|---|---|---|---:|---|
 | `holon prompt` | `<TEXT>` | `--agent <AGENT>` | JSON control prompt response | `experimental` | Lightweight prompt path; response shape belongs to control-plane API inventory. |
-| `holon status` | none | `--agent <AGENT>` | JSON agent status | `stable` candidate | Agent summary is a key operator/API surface. |
 | `holon tail` | none | `--limit <LIMIT>` default `20`; `--agent <AGENT>` | JSON recent briefs/log tail | `stable` candidate | Result shape should align with brief/output contract. |
 | `holon transcript` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | JSON transcript entries | `stable` candidate | Transcript entry stability needs API inventory. |
 | `holon task run` | `<SUMMARY>` | required `--cmd <CMD>`; `--workdir <WORKDIR>`; `--shell <SHELL>`; `--login <true\|false>`; `--tty`; `--yield-time-ms <MS>`; `--max-output-tokens <N>`; `--agent <AGENT>` | pretty JSON control-plane response | `experimental` | Creates command tasks through the control plane. |

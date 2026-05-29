@@ -52,7 +52,7 @@ Current script-facing candidates include:
 - `holon daemon status`, `holon daemon logs`, and the daemon lifecycle commands.
 - `holon config get|set|unset|schema` and credential/provider management
   commands that print JSON.
-- `holon status`, `holon agent list`, and `holon agent status`.
+- `holon agent list` and `holon agent status`.
 - `holon workspace attach|exit|detach`, subject to workspace identity contract
   stability.
 - `holon run --json` and `holon solve --json` only for the documented response

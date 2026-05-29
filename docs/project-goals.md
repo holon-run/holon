@@ -46,7 +46,7 @@ framework magic:
   into logs
 - explicit local daemon log inspection path for startup/shutdown debugging
 - one documented local troubleshooting order across `run`, `daemon status`,
-  `daemon logs`, `status` / `transcript`, `tui`, and foreground `serve`
+  `daemon logs`, `agent status` / `transcript`, `tui`, and foreground `serve`
 - explicit provider-attempt timeline diagnostics for retry, fail-fast, and
   fallback behavior on operator-facing runtime surfaces
 - explicit operator-facing token usage summaries for run/status plus per-turn

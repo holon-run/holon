@@ -53,10 +53,6 @@ pub enum Commands {
         #[arg(long)]
         agent: Option<String>,
     },
-    Status {
-        #[arg(long)]
-        agent: Option<String>,
-    },
     Tail {
         #[arg(long, default_value_t = 20)]
         limit: usize,

@@ -191,6 +191,7 @@ fn unreachable_control_plane_exits_nonzero_without_machine_stdout() {
     let (mut command, _home) = isolated_holon_command();
     let output = command
         .env("HOLON_HTTP_ADDR", "127.0.0.1:9")
+        .arg("agent")
         .arg("status")
         .output()
         .expect("run holon");
