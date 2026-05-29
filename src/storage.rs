@@ -1563,13 +1563,11 @@ impl AppStorage {
                 | crate::types::QueueEntryStatus::Dropped => None,
             })
             .collect::<Vec<_>>();
-        replay_messages.sort_by(|left, right| {
-            left.created_at.cmp(&right.created_at).then_with(|| {
-                match (left.message_seq, right.message_seq) {
-                    (Some(left_seq), Some(right_seq)) => left_seq.cmp(&right_seq),
-                    _ => std::cmp::Ordering::Equal,
-                }
-            })
+        replay_messages.sort_by(|left, right| match (left.message_seq, right.message_seq) {
+            (Some(left_seq), Some(right_seq)) => left_seq
+                .cmp(&right_seq)
+                .then_with(|| left.created_at.cmp(&right.created_at)),
+            _ => left.created_at.cmp(&right.created_at),
         });
 
         let active_tasks = self.latest_active_task_records(usize::MAX)?;
@@ -3710,7 +3708,7 @@ mod tests {
     }
 
     #[test]
-    fn recovery_snapshot_orders_message_replay_by_timestamp_before_sequence() {
+    fn recovery_snapshot_orders_message_replay_by_sequence_before_timestamp() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         let created_at = Utc::now();
@@ -3765,7 +3763,7 @@ mod tests {
                 .iter()
                 .map(|message| message.id.as_str())
                 .collect::<Vec<_>>(),
-            vec![earlier.id.as_str(), later.id.as_str()]
+            vec![later.id.as_str(), earlier.id.as_str()]
         );
     }
 

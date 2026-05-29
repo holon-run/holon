@@ -6,6 +6,7 @@ use anyhow::{anyhow, Result};
 
 use crate::{
     config::AppConfig,
+    ids,
     storage::AppStorage,
     system::WorkspaceAccessMode,
     types::{AgentIdentityRecord, WorkspaceEntry, WorkspaceOccupancyRecord},
@@ -142,7 +143,7 @@ impl RuntimeRegistry {
             ));
         }
         let record = WorkspaceOccupancyRecord {
-            occupancy_id: format!("occ-{}", uuid::Uuid::new_v4().simple()),
+            occupancy_id: ids::workspace_occupancy_id(),
             execution_root_id: execution_root_id.to_string(),
             workspace_id: workspace_id.to_string(),
             holder_agent_id: holder_agent_id.to_string(),

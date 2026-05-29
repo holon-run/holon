@@ -14,7 +14,7 @@ fn short_random_hex() -> String {
         .collect()
 }
 
-fn runtime_id(prefix: &str) -> String {
+pub(crate) fn runtime_id(prefix: &str) -> String {
     format!("{prefix}_{}", short_random_hex())
 }
 
@@ -47,7 +47,7 @@ pub fn brief_id() -> String {
 }
 
 pub fn transcript_entry_id() -> String {
-    runtime_id("transcript")
+    runtime_id("tr")
 }
 
 pub fn episode_id() -> String {
@@ -63,7 +63,7 @@ pub fn timer_id() -> String {
 }
 
 pub fn delivery_summary_id() -> String {
-    runtime_id("delivery")
+    runtime_id("deliv")
 }
 
 pub fn external_trigger_id() -> String {
@@ -76,6 +76,18 @@ pub fn operator_notification_id() -> String {
 
 pub fn operator_delivery_intent_id() -> String {
     runtime_id("odi")
+}
+
+pub fn workspace_occupancy_id() -> String {
+    runtime_id("occ")
+}
+
+pub fn audit_event_id() -> String {
+    runtime_id("event")
+}
+
+pub fn work_item_delegation_id() -> String {
+    runtime_id("delegation")
 }
 
 pub fn capability_id(prefix: &str) -> String {
@@ -107,14 +119,17 @@ mod tests {
             (workspace_id(), "ws"),
             (work_item_id(), "work"),
             (brief_id(), "brief"),
-            (transcript_entry_id(), "transcript"),
+            (transcript_entry_id(), "tr"),
             (episode_id(), "ep"),
             (wait_condition_id(), "wait"),
             (timer_id(), "timer"),
-            (delivery_summary_id(), "delivery"),
+            (delivery_summary_id(), "deliv"),
             (external_trigger_id(), "trigger"),
             (operator_notification_id(), "notify"),
             (operator_delivery_intent_id(), "odi"),
+            (workspace_occupancy_id(), "occ"),
+            (audit_event_id(), "event"),
+            (work_item_delegation_id(), "delegation"),
         ] {
             assert_runtime_id(&id, prefix);
         }

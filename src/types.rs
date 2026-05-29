@@ -3289,7 +3289,7 @@ impl WorkItemDelegationRecord {
     ) -> Self {
         let now = Utc::now();
         Self {
-            delegation_id: ids::capability_id("delegation"),
+            delegation_id: ids::work_item_delegation_id(),
             parent_agent_id: parent_agent_id.into(),
             parent_work_item_id: parent_work_item_id.into(),
             child_agent_id: child_agent_id.into(),
@@ -3612,7 +3612,7 @@ pub struct AuditEvent {
 impl AuditEvent {
     pub fn new(kind: impl Into<String>, data: Value) -> Self {
         Self {
-            id: ids::capability_id("event"),
+            id: ids::audit_event_id(),
             event_seq: 0,
             created_at: Utc::now(),
             kind: kind.into(),
