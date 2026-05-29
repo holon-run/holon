@@ -51,6 +51,7 @@ impl RuntimeHandle {
                         && descriptor.scope == ExternalTriggerScope::Agent
                         && descriptor.target_agent_id == agent_id
                         && descriptor.delivery_mode == delivery_mode
+                        && descriptor.trigger_url.is_some()
                 })
         {
             return capability_from_record(&descriptor);
