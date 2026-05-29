@@ -100,13 +100,16 @@ impl RuntimeHandle {
             .await?;
 
         if outcome.terminal_kind.is_failure() {
-            let brief = brief::make_failure(&message.agent_id, message, outcome.final_text.clone());
+            let mut brief =
+                brief::make_failure(&message.agent_id, message, outcome.final_text.clone());
+            brief.turn_index = Some(outcome.turn_index);
             self.persist_brief(&brief).await?;
         } else {
             match outcome.terminal_delivery {
                 TurnTerminalDelivery::NormalBrief => {
-                    let brief =
+                    let mut brief =
                         brief::make_result(&message.agent_id, message, outcome.final_text.clone());
+                    brief.turn_index = Some(outcome.turn_index);
                     self.persist_brief(&brief).await?;
                 }
                 TurnTerminalDelivery::WorkItemCompletionReportPromoted {

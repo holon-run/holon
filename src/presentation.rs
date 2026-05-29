@@ -152,6 +152,8 @@ pub enum ItemState {
 pub struct TimedItem {
     pub item: PresentationItem,
     pub ts: DateTime<Utc>,
+    pub event_seq: u64,
+    pub turn_index: Option<u64>,
     pub dedupe_key: String,
 }
 
@@ -160,6 +162,8 @@ impl TimedItem {
         Self {
             item,
             ts: event.ts,
+            event_seq: event.event_seq,
+            turn_index: event.payload.get("turn_index").and_then(Value::as_u64),
             dedupe_key: event_dedupe_key(event),
         }
     }
@@ -172,6 +176,22 @@ impl TimedItem {
         Self {
             item,
             ts,
+            event_seq: 0,
+            turn_index: None,
+            dedupe_key: dedupe_key.into(),
+        }
+    }
+
+    pub(crate) fn with_event_key(
+        item: PresentationItem,
+        event: &ProjectionEventRecord,
+        dedupe_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            item,
+            ts: event.ts,
+            event_seq: event.event_seq,
+            turn_index: event.payload.get("turn_index").and_then(Value::as_u64),
             dedupe_key: dedupe_key.into(),
         }
     }
@@ -783,12 +803,12 @@ impl PresentationReducer {
                     };
                     if let Some(key) = command_presentation_key(event, &cmd_preview) {
                         if let Some(index) = local_open_command_items.remove(&key) {
-                            items[index] = TimedItem::with_key(item, event.ts, key);
+                            items[index] = TimedItem::with_event_key(item, event, key);
                             self.open_command_keys.remove(&items[index].dedupe_key);
                         } else if self.open_command_keys.remove(&key) {
-                            items.push(TimedItem::with_key(item, event.ts, key));
+                            items.push(TimedItem::with_event_key(item, event, key));
                         } else {
-                            items.push(TimedItem::with_key(item, event.ts, key));
+                            items.push(TimedItem::with_event_key(item, event, key));
                         }
                     } else {
                         items.push(TimedItem::from_event(item, event));
