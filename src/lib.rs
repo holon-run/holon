@@ -2,6 +2,7 @@ pub mod agent_template;
 pub mod agents_md;
 mod auth;
 mod callbacks;
+pub mod ids;
 
 pub mod brief;
 pub mod cli;

@@ -176,7 +176,7 @@ impl RuntimeHandle {
             workspace_mode,
         };
         let task = TaskRecord {
-            id: Uuid::new_v4().to_string(),
+            id: crate::ids::task_id(),
             agent_id: agent_id.clone(),
             kind: TaskKind::ChildAgentTask,
             status: TaskStatus::Queued,
@@ -500,7 +500,7 @@ impl RuntimeHandle {
             workspace_mode,
         };
         let task = TaskRecord {
-            id: Uuid::new_v4().to_string(),
+            id: crate::ids::task_id(),
             agent_id: agent_id.clone(),
             kind: TaskKind::ChildAgentTask,
             status: TaskStatus::Queued,
@@ -852,7 +852,7 @@ impl RuntimeHandle {
             workspace_mode,
         };
         let task = TaskRecord {
-            id: Uuid::new_v4().to_string(),
+            id: crate::ids::task_id(),
             agent_id,
             kind: TaskKind::ChildAgentTask,
             status: TaskStatus::Queued,

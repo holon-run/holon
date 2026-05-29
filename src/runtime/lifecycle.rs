@@ -771,7 +771,7 @@ impl RuntimeHandle {
             return Ok(existing);
         }
         let workspace = WorkspaceEntry::new(
-            format!("ws-{}", Uuid::new_v4().simple()),
+            crate::ids::workspace_id(),
             normalized_anchor.clone(),
             normalized_anchor
                 .file_name()

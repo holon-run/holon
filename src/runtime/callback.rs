@@ -56,7 +56,7 @@ impl RuntimeHandle {
             return capability_from_record(&descriptor);
         }
 
-        let external_trigger_id = Uuid::new_v4().to_string();
+        let external_trigger_id = crate::ids::external_trigger_id();
         let token = generate_callback_token();
         let trigger_url = build_callback_url(&self.inner.callback_base_url, &delivery_mode, &token);
         let descriptor = ExternalTriggerRecord {

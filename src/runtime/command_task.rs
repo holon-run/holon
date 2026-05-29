@@ -517,7 +517,7 @@ impl RuntimeHandle {
         initial_capture: CapturedOutput,
     ) -> Result<TaskRecord> {
         let agent_id = self.agent_id().await?;
-        let task_id = uuid::Uuid::new_v4().to_string();
+        let task_id = crate::ids::task_id();
         resolved.output_path = self.command_task_output_path(&task_id)?;
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
         let detail = command_task_detail(

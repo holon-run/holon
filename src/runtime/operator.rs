@@ -34,7 +34,7 @@ impl RuntimeHandle {
                     .map(|item| item.id)
             });
         let record = OperatorNotificationRecord {
-            notification_id: Uuid::new_v4().to_string(),
+            notification_id: crate::ids::operator_notification_id(),
             agent_id: target_parent_agent_id
                 .clone()
                 .unwrap_or_else(|| requested_by_agent_id.clone()),
@@ -195,7 +195,7 @@ impl RuntimeHandle {
         } else {
             binding.default_route_id.clone()
         };
-        let delivery_intent_id = format!("odi_{}", Uuid::new_v4().simple());
+        let delivery_intent_id = crate::ids::operator_delivery_intent_id();
         let now = Utc::now();
         let mut record = OperatorDeliveryRecord {
             delivery_intent_id: delivery_intent_id.clone(),
