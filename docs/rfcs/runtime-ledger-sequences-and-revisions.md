@@ -2,6 +2,7 @@
 title: RFC: Runtime Ledger Sequences and Object Revisions
 date: 2026-05-29
 status: draft
+Handle: rfc-runtime-ledger-sequences-and-revisions
 ---
 
 # RFC: Runtime Ledger Sequences and Object Revisions

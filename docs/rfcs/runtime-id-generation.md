@@ -2,6 +2,7 @@
 title: RFC: Runtime ID Generation
 date: 2026-05-29
 status: draft
+Handle: rfc-runtime-id-generation
 ---
 
 # RFC: Runtime ID Generation
@@ -115,8 +116,8 @@ timer_m2x7q4ac
 ```
 
 The random part should be long enough for local runtime uniqueness, but not as
-verbose as a UUID. A first-pass target is 64 bits of randomness encoded with a
-URL- and shell-friendly alphabet.
+verbose as a UUID. A first-pass target is about 60 bits of randomness encoded
+with a URL- and shell-friendly alphabet.
 
 ### Capability and secret IDs
 
@@ -131,9 +132,11 @@ Examples:
 - operator delivery tokens
 - any URL or token accepted by an external system as bearer authority
 
-These IDs must remain high entropy. They should use at least 128 bits of
-randomness and may continue using UUID-simple or longer random tokens when that
-is clearer or easier to audit.
+These IDs must remain high entropy. New capability-bearing tokens should use at
+least 128 bits of randomness, such as 26 or more base32 characters or an
+equivalent longer random token. Existing UUID-simple capability tokens may
+remain valid for compatibility, but new capability generators should not treat a
+UUID-simple payload as satisfying a 128-bit floor.
 
 The runtime may still give these IDs readable prefixes such as `cb_`, but the
 prefix is diagnostic only. The random payload remains capability-grade.
