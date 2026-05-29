@@ -188,17 +188,17 @@ holon transcript --limit 50
 ## Current release
 
 The current Rust-line release is
-[`v0.14.0`](https://github.com/holon-run/holon/releases/tag/v0.14.0).
+[`v0.15.0`](https://github.com/holon-run/holon/releases/tag/v0.15.0).
 
 Highlights:
 
-- more reliable event-driven scheduling
-- stronger long-lived WorkItem, task, and agent state
-- provider routing and web-search improvements
-- TUI, daemon, and remote transport hardening
-- improved workspace, worktree, and tool diagnostics
+- stable event and lifecycle APIs for daemon clients
+- stronger WorkItem, task, message, and transcript sequencing
+- expanded CLI coverage for runtime lifecycle inspection
+- clearer workspace, worktree, and execution-root behavior
+- updated runtime contracts for ID generation and ledger compatibility
 
-See the [v0.14.0 release notes](https://github.com/holon-run/holon/releases/tag/v0.14.0)
+See the [v0.15.0 release notes](https://github.com/holon-run/holon/releases/tag/v0.15.0)
 for the full changelog and release assets.
 
 ## Status and compatibility
