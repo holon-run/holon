@@ -5,9 +5,9 @@ use serde::{de, Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use uuid::Uuid;
 
 use crate::config::ModelRef;
+use crate::ids;
 use crate::model_catalog::ResolvedRuntimeModelPolicy;
 use crate::system::{
     ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind,
@@ -1036,7 +1036,7 @@ impl MessageEnvelope {
         body: MessageBody,
     ) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: ids::message_id(),
             agent_id: agent_id.into(),
             created_at: Utc::now(),
             kind,
@@ -1423,7 +1423,7 @@ impl ActiveEpisodeBuilder {
     ) -> Self {
         let now = Utc::now();
         Self {
-            id: format!("ep_{}", Uuid::new_v4().simple()),
+            id: ids::episode_id(),
             started_at: now,
             start_turn_index,
             latest_turn_index: start_turn_index,
@@ -3193,7 +3193,7 @@ impl WorkItemRecord {
         let now = Utc::now();
         let agent_id = agent_id.into();
         Self {
-            id: format!("work_{}", Uuid::new_v4().simple()),
+            id: ids::work_item_id(),
             workspace_id: agent_home_workspace_id(&agent_id),
             agent_id,
             revision: 1,
@@ -3283,7 +3283,7 @@ impl WorkItemDelegationRecord {
     ) -> Self {
         let now = Utc::now();
         Self {
-            delegation_id: format!("delegation_{}", Uuid::new_v4().simple()),
+            delegation_id: ids::capability_id("delegation"),
             parent_agent_id: parent_agent_id.into(),
             parent_work_item_id: parent_work_item_id.into(),
             child_agent_id: child_agent_id.into(),
@@ -3319,7 +3319,7 @@ impl DeliverySummaryRecord {
         evidence: Option<Value>,
     ) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: ids::delivery_summary_id(),
             agent_id: agent_id.into(),
             work_item_id: work_item_id.into(),
             created_at: Utc::now(),
@@ -3510,7 +3510,7 @@ impl TranscriptEntry {
         data: Value,
     ) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: ids::transcript_entry_id(),
             agent_id: agent_id.into(),
             created_at: Utc::now(),
             kind,
@@ -3575,7 +3575,7 @@ impl BriefRecord {
     ) -> Self {
         let agent_id = agent_id.into();
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: ids::brief_id(),
             workspace_id: agent_home_workspace_id(&agent_id),
             agent_id,
             work_item_id: None,
@@ -3603,7 +3603,7 @@ pub struct AuditEvent {
 impl AuditEvent {
     pub fn new(kind: impl Into<String>, data: Value) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: ids::capability_id("event"),
             event_seq: 0,
             created_at: Utc::now(),
             kind: kind.into(),

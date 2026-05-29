@@ -188,11 +188,7 @@ impl RuntimeRegistry {
             .file_name()
             .and_then(|name| name.to_str())
             .map(ToString::to_string);
-        let entry = WorkspaceEntry::new(
-            format!("ws-{}", uuid::Uuid::new_v4().simple()),
-            workspace_anchor,
-            repo_name,
-        );
+        let entry = WorkspaceEntry::new(crate::ids::workspace_id(), workspace_anchor, repo_name);
         self.inner.host_storage.append_workspace_entry(&entry)?;
         Ok(entry)
     }

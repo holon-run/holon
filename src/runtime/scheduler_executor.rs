@@ -364,7 +364,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 .queue
                 .pop_if_next(&candidate.message.id)
                 .expect("queue head was just checked");
-            let run_id = Uuid::new_v4().to_string();
+            let run_id = crate::ids::run_id();
             let abort_token = CancellationToken::new();
             guard.state.pending = guard.queue.len();
             scheduler::apply_running_projection(&mut guard.state, run_id.clone());

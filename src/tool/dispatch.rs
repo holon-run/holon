@@ -5,7 +5,6 @@ use serde_json::json;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::LazyLock;
-use uuid::Uuid;
 
 use crate::{
     runtime::RuntimeHandle,
@@ -169,7 +168,7 @@ impl ToolRegistry {
             .num_milliseconds()
             .max(0) as u64;
         let record = ToolExecutionRecord {
-            id: Uuid::new_v4().to_string(),
+            id: crate::ids::tool_execution_id(),
             agent_id: agent_id.to_string(),
             work_item_id: None,
             turn_index: 0,

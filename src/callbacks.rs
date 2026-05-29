@@ -1,10 +1,8 @@
-use sha2::{Digest, Sha256};
-use uuid::Uuid;
-
 use crate::types::CallbackDeliveryMode;
+use sha2::{Digest, Sha256};
 
 pub(crate) fn generate_callback_token() -> String {
-    format!("cb_{}", Uuid::new_v4().simple())
+    crate::ids::capability_id("cb")
 }
 
 pub(crate) fn hash_callback_token(token: &str) -> String {

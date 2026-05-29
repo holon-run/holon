@@ -387,7 +387,7 @@ async fn recovered_agent_with_none_workspace_initializes_active_entry() {
     );
     let entry = state.active_workspace_entry.as_ref().unwrap();
     assert!(
-        entry.workspace_id.starts_with("ws-"),
+        entry.workspace_id.starts_with("ws_"),
         "workspace_id should be generated for initial workspace"
     );
     assert_eq!(

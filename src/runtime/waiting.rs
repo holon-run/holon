@@ -74,7 +74,7 @@ impl RuntimeHandle {
         }
 
         let condition = WaitConditionRecord {
-            id: format!("wait_{}", Uuid::new_v4().simple()),
+            id: crate::ids::wait_condition_id(),
             agent_id: agent_id.to_string(),
             work_item_id: work_item_id.clone(),
             status: WaitConditionStatus::Active,
@@ -411,7 +411,7 @@ impl RuntimeHandle {
     ) -> Result<TimerRecord> {
         let created_at = Utc::now();
         let timer = TimerRecord {
-            id: Uuid::new_v4().to_string(),
+            id: crate::ids::timer_id(),
             agent_id: self.agent_id().await?,
             created_at,
             duration_ms,

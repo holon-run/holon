@@ -46,7 +46,6 @@ use serde_json::Value;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-use uuid::Uuid;
 
 #[cfg(test)]
 use crate::provider::{ConversationMessage, ProviderTurnRequest};

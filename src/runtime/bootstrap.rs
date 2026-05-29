@@ -27,7 +27,6 @@ use super::{
     scheduler_executor, workspace, InitialWorkspaceBinding, RuntimeAgent, RuntimeHandle,
     RuntimeInner,
 };
-use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub(super) struct ProviderReconfigurator {
@@ -159,7 +158,7 @@ impl RuntimeHandle {
         let initial_workspace_entry = match &initial_workspace {
             InitialWorkspaceBinding::Entry(entry) => Some(entry.clone()),
             InitialWorkspaceBinding::Anchor(anchor) => Some(crate::types::WorkspaceEntry::new(
-                format!("ws-{}", Uuid::new_v4().simple()),
+                crate::ids::workspace_id(),
                 anchor.clone(),
                 anchor
                     .file_name()
