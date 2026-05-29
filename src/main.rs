@@ -149,11 +149,6 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
             let response = client.control_prompt(&agent, text).await?;
             print_json(&serde_json::to_value(response)?)
         }
-        Commands::Status { agent } => {
-            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
-            let client = LocalClient::new(config)?;
-            print_json(&serde_json::to_value(client.agent_status(&agent).await?)?)
-        }
         Commands::Tail { limit, agent } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             let client = LocalClient::new(config)?;

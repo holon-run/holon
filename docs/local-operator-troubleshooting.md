@@ -4,7 +4,7 @@ This document defines the recommended local troubleshooting workflow for
 `Holon`.
 
 The goal is to give operators one repeatable path instead of guessing between
-`run`, `serve`, `daemon`, `status`, and `tui`.
+`run`, `serve`, `daemon`, `agent status`, and `tui`.
 
 ## First Principle
 
@@ -27,7 +27,7 @@ For a long-lived local runtime, inspect in this order:
 
 1. `holon daemon status`
 2. `holon daemon logs`
-3. `holon status`, `holon tail`, or `holon transcript`
+3. `holon agent status`, `holon tail`, or `holon transcript`
 4. `holon tui`
 5. `holon daemon restart` or a foreground `holon serve`
 
@@ -221,7 +221,7 @@ If the long-lived runtime seems unhealthy:
 
 If the runtime is healthy but work seems stuck:
 
-1. run `holon status`
+1. run `holon agent status`
 2. run `holon transcript --limit 50`
 3. open `holon tui`
 

@@ -92,7 +92,7 @@ Start the long-running local runtime:
 
 ```bash
 holon daemon start
-holon status
+holon agent status
 ```
 
 Open the local operator console:
@@ -180,8 +180,8 @@ holon daemon stop
 Inspect local state:
 
 ```bash
-holon status
 holon agent list
+holon agent status
 holon transcript --limit 50
 ```
 

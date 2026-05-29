@@ -42,7 +42,7 @@ Commands that need the local or remote control plane exit with code `1` when
 transport fails:
 
 ```bash
-HOLON_HTTP_ADDR=127.0.0.1:9 holon status
+HOLON_HTTP_ADDR=127.0.0.1:9 holon agent status
 echo $? # 1
 ```
 
