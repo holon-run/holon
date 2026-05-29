@@ -407,6 +407,11 @@ Probe error: {details}",
                     ));
                 }
             }
+            if wait_for_shutdown(config, STOP_TIMEOUT).await.is_err() && pid_is_alive(pid) {
+                return Err(anyhow!(
+                    "cannot stop daemon PID {pid}: process is still running after TERM and KILL; state files were left intact"
+                ));
+            }
         }
     }
 
@@ -866,7 +871,14 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
             Ok(Ok(status)) => return ProbeRuntime::Running(Box::new(status)),
             Ok(Err(err)) => {
                 return match unix_probe_stopped_socket_occupancy(err.root_cause()) {
-                    Some(occupied_socket) => ProbeRuntime::Stopped { occupied_socket },
+                    Some(occupied_socket) => {
+                        if !occupied_socket {
+                            if let Some(status) = metadata_status_if_pid_alive(config).await {
+                                return ProbeRuntime::Running(Box::new(status));
+                            }
+                        }
+                        ProbeRuntime::Stopped { occupied_socket }
+                    }
                     None => ProbeRuntime::Incompatible {
                         details: err.to_string(),
                     },
@@ -883,26 +895,8 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
     // Fallback: when the unix socket is missing but the PID file records a
     // live process, the daemon is still running (the socket may have been
     // removed externally — see https://github.com/holon-run/holon/issues/1448).
-    if let Ok(Some(metadata)) = load_daemon_metadata(config) {
-        if pid_is_alive(metadata.pid) {
-            // Try TCP as a secondary probe, but only trust a response that
-            // identifies the daemon recorded in metadata.
-            let client = match LocalClient::new(config.clone()) {
-                Ok(client) => client,
-                Err(_) => {
-                    return ProbeRuntime::Running(Box::new(status_from_metadata(metadata)));
-                }
-            };
-            if let Ok(status) = client.runtime_readiness().await {
-                if runtime_status_matches_metadata(&status, &metadata) {
-                    return ProbeRuntime::Running(Box::new(status));
-                }
-            }
-            // TCP readiness failed or reached a different runtime; report
-            // Running with metadata so callers keep the recorded daemon process
-            // as the lifecycle anchor.
-            return ProbeRuntime::Running(Box::new(status_from_metadata(metadata)));
-        }
+    if let Some(status) = metadata_status_if_pid_alive(config).await {
+        return ProbeRuntime::Running(Box::new(status));
     }
 
     let client = match LocalClient::new(config.clone()) {
@@ -919,6 +913,30 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
             occupied_socket: false,
         },
     }
+}
+
+async fn metadata_status_if_pid_alive(config: &AppConfig) -> Option<RuntimeStatusResponse> {
+    let Ok(Some(metadata)) = load_daemon_metadata(config) else {
+        return None;
+    };
+    if !pid_is_alive(metadata.pid) {
+        return None;
+    }
+    // Try TCP as a secondary probe, but only trust a response that identifies
+    // the daemon recorded in metadata.
+    let client = match LocalClient::new(config.clone()) {
+        Ok(client) => client,
+        Err(_) => return Some(status_from_metadata(metadata)),
+    };
+    if let Ok(status) = client.runtime_readiness().await {
+        if runtime_status_matches_metadata(&status, &metadata) {
+            return Some(status);
+        }
+    }
+    // TCP readiness failed or reached a different runtime; report Running with
+    // metadata so callers keep the recorded daemon process as the lifecycle
+    // anchor.
+    Some(status_from_metadata(metadata))
 }
 
 pub(crate) fn runtime_status_matches_metadata(
