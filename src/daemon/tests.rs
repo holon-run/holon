@@ -600,6 +600,63 @@ async fn daemon_stop_treats_missing_pid_process_as_stale_state() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn daemon_stop_uses_recorded_runtime_http_addr_when_socket_is_missing() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut config = test_config();
+    config.http_addr = "127.0.0.1:9".into();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(config.run_dir()).unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let metadata_http = listener.local_addr().unwrap().to_string();
+    let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = child.id();
+    let metadata = RuntimeServiceMetadata {
+        pid,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: metadata_http.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+    };
+    fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 2048];
+        let read = stream.read(&mut request).await.unwrap();
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert!(request.starts_with("POST /control/runtime/shutdown "));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let body = serde_json::json!({
+            "ok": true,
+            "pid": pid,
+            "home_dir": metadata.home_dir,
+            "shutdown_requested": true
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
+    });
+
+    let stopped = daemon_stop(&config).await.unwrap();
+    server.await.unwrap();
+
+    assert_eq!(stopped.action, crate::daemon::DaemonLifecycleAction::Stop);
+    assert_eq!(stopped.status.state, DaemonLifecycleState::Stopped);
+    assert!(!paths.metadata_path.exists());
+    assert!(!paths.pid_path.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn daemon_stop_surfaces_incompatible_status_probe_guidance() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
