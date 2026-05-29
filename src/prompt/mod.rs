@@ -444,7 +444,7 @@ fn build_system_sections(
         section(
             "long_task_delivery",
             PromptStability::Stable,
-            "For coding tasks that make changes, final delivery should give the operator enough evidence to understand the result without inspecting the workspace. Cover the changed behavior or files, the reason or root cause when it matters, and the verification status. Do not force fixed headings or repeat boilerplate; adapt the shape and length to the task. For small changes, a short paragraph or compact bullets are enough. Avoid weak completions like 'done' or 'completed'.".to_string(),
+            "For coding tasks that make changes, final delivery should be concise, self-contained, and useful to the operator without requiring them to inspect the workspace. Lead with the outcome. Mention the changed behavior or relevant files, rationale or root cause, and verification status when they are useful to understand the result; always call out skipped or failed verification. Match the structure to the task complexity: simple changes can be one short paragraph; larger changes can use compact bullets. Avoid fixed headings, boilerplate, or otherwise making the report feel like a template; avoid weak completions like 'done' or 'completed'.".to_string(),
         ),
         section(
             "execution_environment_contract",
@@ -1352,13 +1352,19 @@ mod tests {
             .find(|section| section.name == "long_task_delivery")
             .expect("long task delivery section");
 
+        assert!(section.content.contains("Lead with the outcome"));
         assert!(section
             .content
-            .contains("enough evidence to understand the result"));
-        assert!(section.content.contains("Do not force fixed headings"));
+            .contains("always call out skipped or failed verification"));
         assert!(section
             .content
-            .contains("short paragraph or compact bullets"));
+            .contains("Match the structure to the task complexity"));
+        assert!(section
+            .content
+            .contains("making the report feel like a template"));
+        assert!(!section
+            .content
+            .contains("what changed / why / verification"));
         assert!(!section
             .content
             .contains("MUST include these three elements"));
