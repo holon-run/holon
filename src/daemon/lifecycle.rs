@@ -305,7 +305,8 @@ pub async fn daemon_start(
 
 pub async fn daemon_stop(config: &AppConfig) -> Result<DaemonLifecycleResult> {
     let before = daemon_status(config).await?;
-    match probe_runtime(config).await {
+    let stop_probe = probe_runtime(config).await;
+    match &stop_probe {
         ProbeRuntime::Stopped {
             occupied_socket: true,
         } => {
@@ -355,7 +356,11 @@ Probe error: {details}",
         });
     }
 
-    let client = LocalClient::new(config.clone())?;
+    let shutdown_config = match &stop_probe {
+        ProbeRuntime::Running(status) => config_for_runtime_status(config, status),
+        _ => config.clone(),
+    };
+    let client = LocalClient::new(shutdown_config)?;
     let graceful = client.runtime_shutdown().await;
     if graceful.is_ok() && wait_for_shutdown(config, STOP_TIMEOUT).await.is_ok() {
         clear_persisted_daemon_lifecycle_failures(config)?;
@@ -412,6 +417,14 @@ Probe error: {details}",
         action: DaemonLifecycleAction::Stop,
         status: stopped_status(config)?,
     })
+}
+
+fn config_for_runtime_status(config: &AppConfig, status: &RuntimeStatusResponse) -> AppConfig {
+    let mut runtime_config = config.clone();
+    runtime_config.home_dir = status.home_dir.clone();
+    runtime_config.socket_path = status.socket_path.clone();
+    runtime_config.http_addr = status.http_addr.clone();
+    runtime_config
 }
 
 fn stopped_status(config: &AppConfig) -> Result<DaemonStatusView> {
