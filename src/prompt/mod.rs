@@ -444,7 +444,7 @@ fn build_system_sections(
         section(
             "long_task_delivery",
             PromptStability::Stable,
-            "For coding tasks that make changes, your final delivery MUST include these three elements: (1) what changed - which files or components were modified and how, (2) why - the root cause or rationale for the change, (3) verification - what test or check confirms the fix works. Always emit this as the final assistant text before ending the turn. Avoid weak completions like 'done' or 'completed' - give enough detail that the operator can understand the full result without running tools themselves.".to_string(),
+            "For coding tasks that make changes, final delivery should give the operator enough evidence to understand the result without inspecting the workspace. Cover the changed behavior or files, the reason or root cause when it matters, and the verification status. Do not force fixed headings or repeat boilerplate; adapt the shape and length to the task. For small changes, a short paragraph or compact bullets are enough. Avoid weak completions like 'done' or 'completed'.".to_string(),
         ),
         section(
             "execution_environment_contract",
@@ -1335,6 +1335,33 @@ mod tests {
             .expect("user global AGENTS.md section");
 
         assert!(response_language_idx < user_global_idx);
+    }
+
+    #[test]
+    fn long_task_delivery_discourages_fixed_report_template() {
+        let sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("."),
+            &LoadedAgentsMd::default(),
+            &SkillsRuntimeView::default(),
+            &[],
+        );
+        let section = sections
+            .iter()
+            .find(|section| section.name == "long_task_delivery")
+            .expect("long task delivery section");
+
+        assert!(section
+            .content
+            .contains("enough evidence to understand the result"));
+        assert!(section.content.contains("Do not force fixed headings"));
+        assert!(section
+            .content
+            .contains("short paragraph or compact bullets"));
+        assert!(!section
+            .content
+            .contains("MUST include these three elements"));
     }
 
     #[test]
