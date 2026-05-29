@@ -3366,6 +3366,61 @@ async fn creating_agent_trigger_is_idempotent_for_source_and_delivery_mode() {
 }
 
 #[tokio::test]
+async fn default_external_ingress_ignores_legacy_active_trigger_without_url() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let now = Utc::now();
+    let legacy_trigger_id = "legacy-missing-url-trigger".to_string();
+    runtime
+        .storage()
+        .append_external_trigger(&ExternalTriggerRecord {
+            external_trigger_id: legacy_trigger_id.clone(),
+            target_agent_id: "default".into(),
+            waiting_intent_id: None,
+            scope: ExternalTriggerScope::Agent,
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            trigger_url: None,
+            token_hash: "legacy-token-hash".into(),
+            status: ExternalTriggerStatus::Active,
+            created_at: now,
+            revoked_at: None,
+            last_delivered_at: None,
+            delivery_count: 0,
+        })
+        .unwrap();
+
+    let capability = runtime
+        .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+        .await
+        .unwrap();
+
+    assert_ne!(capability.external_trigger_id, legacy_trigger_id);
+    assert_eq!(capability.status, ExternalTriggerStatus::Active);
+    assert!(capability.trigger_url.contains("/callbacks/wake/"));
+    let descriptors = runtime.latest_external_triggers().await.unwrap();
+    assert!(descriptors.iter().any(|record| {
+        record.external_trigger_id == legacy_trigger_id
+            && record.status == ExternalTriggerStatus::Active
+            && record.trigger_url.is_none()
+    }));
+    assert!(descriptors.iter().any(|record| {
+        record.external_trigger_id == capability.external_trigger_id
+            && record.status == ExternalTriggerStatus::Active
+            && record.trigger_url.as_deref() == Some(capability.trigger_url.as_str())
+    }));
+}
+
+#[tokio::test]
 async fn picking_new_work_item_does_not_cancel_agent_trigger() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
