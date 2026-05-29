@@ -25,7 +25,6 @@ use tokio::time::{sleep, Duration};
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::compression::CompressionLayer;
 use tracing::{error, warn};
-use uuid::Uuid;
 
 #[cfg(unix)]
 use axum::body::Body;
@@ -3250,7 +3249,7 @@ fn require_non_empty(value: String, field: &str) -> Result<String, (StatusCode, 
 fn non_empty_or_generated(value: Option<String>, prefix: &str) -> String {
     value
         .and_then(non_empty_opt)
-        .unwrap_or_else(|| format!("{prefix}_{}", Uuid::new_v4().simple()))
+        .unwrap_or_else(|| crate::ids::runtime_id(prefix))
 }
 
 fn non_empty_opt(value: String) -> Option<String> {

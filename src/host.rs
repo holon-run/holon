@@ -27,6 +27,7 @@ use crate::{
     config::{AppConfig, RuntimeModelCatalog},
     context::ContextConfig,
     host_registry::RuntimeRegistry,
+    ids,
     provider::{build_provider_from_config, AgentProvider},
     runtime::{InitialWorkspaceBinding, RuntimeHandle},
     storage::AppStorage,
@@ -487,11 +488,8 @@ impl RuntimeHost {
         category: &str,
     ) -> Result<(String, RuntimeHandle, JoinHandle<()>)> {
         let agent_id = match category {
-            "run" => format!("{TEMP_RUN_AGENT_PREFIX}{}", uuid::Uuid::new_v4().simple()),
-            other => format!(
-                "{TEMP_AGENT_PREFIX}{other}_{}",
-                uuid::Uuid::new_v4().simple()
-            ),
+            "run" => ids::runtime_id(TEMP_RUN_AGENT_PREFIX.trim_end_matches('_')),
+            other => ids::runtime_id(&format!("{TEMP_AGENT_PREFIX}{other}")),
         };
         self.validate_agent_id(&agent_id)?;
         let (runtime, runtime_task) = self.spawn_runtime(&agent_id)?;
@@ -771,7 +769,7 @@ impl RuntimeHost {
         template: Option<&str>,
         catalog_agent_home: &Path,
     ) -> Result<AgentIdentityRecord> {
-        let child_agent_id = format!("{TEMP_CHILD_AGENT_PREFIX}{}", uuid::Uuid::new_v4().simple());
+        let child_agent_id = ids::runtime_id(TEMP_CHILD_AGENT_PREFIX.trim_end_matches('_'));
         self.validate_agent_id(&child_agent_id)?;
         if let Some(template) = template {
             initialize_agent_home_from_template_with_catalog(

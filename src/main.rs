@@ -1274,7 +1274,7 @@ mod tests {
                 .with_timezone(&chrono::Utc)
         };
         let event = |kind: &str, created_at, data| AuditEvent {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: holon::ids::audit_event_id(),
             event_seq: 0,
             created_at,
             kind: kind.into(),
