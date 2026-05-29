@@ -187,6 +187,8 @@ pub struct AppStorage {
     agent_path: PathBuf,
     append_mutex: Arc<Mutex<()>>,
     event_seq_counter: Arc<Mutex<u64>>,
+    message_seq_counter: Arc<Mutex<u64>>,
+    transcript_seq_counter: Arc<Mutex<u64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,19 +226,23 @@ impl AppStorage {
         }
 
         let events_path = ledger_dir.join("events.jsonl");
+        let messages_path = ledger_dir.join("messages.jsonl");
+        let transcript_path = ledger_dir.join("transcript.jsonl");
         let event_seq_counter = migrate_events_ledger(&events_path)?;
+        let message_seq_counter = max_jsonl_u64_field(&messages_path, "message_seq")?;
+        let transcript_seq_counter = max_jsonl_u64_field(&transcript_path, "transcript_seq")?;
 
         Ok(Self {
             events_path,
             briefs_path: ledger_dir.join("briefs.jsonl"),
-            messages_path: ledger_dir.join("messages.jsonl"),
+            messages_path,
             tasks_path: ledger_dir.join("tasks.jsonl"),
             work_items_path: ledger_dir.join("work_items.jsonl"),
             delivery_summaries_path: ledger_dir.join("delivery_summaries.jsonl"),
             work_item_delegations_path: ledger_dir.join("work_item_delegations.jsonl"),
             timers_path: ledger_dir.join("timers.jsonl"),
             tools_path: ledger_dir.join("tools.jsonl"),
-            transcript_path: ledger_dir.join("transcript.jsonl"),
+            transcript_path,
             queue_entries_path: ledger_dir.join("queue_entries.jsonl"),
             waiting_intents_path: ledger_dir.join("waiting_intents.jsonl"),
             wait_conditions_path: ledger_dir.join("wait_conditions.jsonl"),
@@ -252,6 +258,8 @@ impl AppStorage {
             agent_path: state_dir.join("agent.json"),
             append_mutex: Arc::new(Mutex::new(())),
             event_seq_counter: Arc::new(Mutex::new(event_seq_counter)),
+            message_seq_counter: Arc::new(Mutex::new(message_seq_counter)),
+            transcript_seq_counter: Arc::new(Mutex::new(transcript_seq_counter)),
             data_dir,
         })
     }
@@ -320,7 +328,19 @@ impl AppStorage {
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
-        self.append_jsonl(&self.messages_path, message)
+        let _guard = self
+            .append_mutex
+            .lock()
+            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+        let mut message = message.clone();
+        let mut counter = self
+            .message_seq_counter
+            .lock()
+            .map_err(|_| anyhow::anyhow!("message sequence counter mutex poisoned"))?;
+        *counter += 1;
+        message.message_seq = Some(*counter);
+        let bytes = jsonl_bytes(&message)?;
+        append_jsonl_bytes(&self.messages_path, &bytes)
     }
 
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
@@ -357,7 +377,19 @@ impl AppStorage {
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
-        self.append_jsonl(&self.transcript_path, entry)
+        let _guard = self
+            .append_mutex
+            .lock()
+            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+        let mut entry = entry.clone();
+        let mut counter = self
+            .transcript_seq_counter
+            .lock()
+            .map_err(|_| anyhow::anyhow!("transcript sequence counter mutex poisoned"))?;
+        *counter += 1;
+        entry.transcript_seq = Some(*counter);
+        let bytes = jsonl_bytes(&entry)?;
+        append_jsonl_bytes(&self.transcript_path, &bytes)
     }
 
     pub fn append_queue_entry(&self, record: &QueueEntryRecord) -> Result<()> {
@@ -1531,7 +1563,14 @@ impl AppStorage {
                 | crate::types::QueueEntryStatus::Dropped => None,
             })
             .collect::<Vec<_>>();
-        replay_messages.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+        replay_messages.sort_by(|left, right| {
+            left.created_at.cmp(&right.created_at).then_with(|| {
+                match (left.message_seq, right.message_seq) {
+                    (Some(left_seq), Some(right_seq)) => left_seq.cmp(&right_seq),
+                    _ => std::cmp::Ordering::Equal,
+                }
+            })
+        });
 
         let active_tasks = self.latest_active_task_records(usize::MAX)?;
         let active_timers = self
@@ -1647,6 +1686,22 @@ fn read_tail_event_seq(path: &Path) -> Result<Option<u64>> {
         return Ok(Some(0));
     };
     Ok(value.get("event_seq").and_then(Value::as_u64))
+}
+
+fn max_jsonl_u64_field(path: &Path, field: &str) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let mut max_value = None;
+    scan_jsonl_reverse::<Value, _>(path, |value| {
+        if let Some(sequence) = value.get(field).and_then(Value::as_u64) {
+            max_value = Some(sequence);
+            return false;
+        }
+        true
+    })?;
+    Ok(max_value.unwrap_or(0))
 }
 
 fn jsonl_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
@@ -2050,9 +2105,9 @@ mod tests {
 
     use crate::types::{
         AgentState, AgentStatus, AuthorityClass, CallbackDeliveryMode, EpisodeBoundaryReason,
-        Priority, QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec,
-        TaskStatus, TodoItem, TodoItemState, TranscriptEntry, TranscriptEntryKind,
-        WorkItemPlanStatus, WorkItemState,
+        MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord,
+        QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TodoItem,
+        TodoItemState, TranscriptEntry, TranscriptEntryKind, WorkItemPlanStatus, WorkItemState,
     };
 
     use super::*;
@@ -2093,6 +2148,103 @@ mod tests {
             .unwrap();
         let events = reopened.read_recent_events(10).unwrap();
         assert_eq!(events.last().map(|event| event.event_seq), Some(3));
+    }
+
+    #[test]
+    fn message_seq_counter_resumes_from_existing_ledger() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage
+            .append_message(&MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "first".into(),
+                },
+            ))
+            .unwrap();
+
+        let reopened = AppStorage::new(dir.path()).unwrap();
+        reopened
+            .append_message(&MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "second".into(),
+                },
+            ))
+            .unwrap();
+
+        let messages = reopened.read_recent_messages(10).unwrap();
+        assert_eq!(
+            messages.last().and_then(|message| message.message_seq),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn message_seq_counter_resumes_from_latest_tail_sequence() {
+        let dir = tempdir().unwrap();
+        let ledger_dir = dir.path().join(".holon/ledger");
+        std::fs::create_dir_all(&ledger_dir).unwrap();
+        let messages_path = ledger_dir.join("messages.jsonl");
+        let mut sequenced = serde_json::to_value(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "sequenced".into(),
+            },
+        ))
+        .unwrap();
+        sequenced
+            .as_object_mut()
+            .unwrap()
+            .insert("message_seq".to_string(), serde_json::json!(7));
+        let mut trailing_legacy = serde_json::to_value(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "legacy".into(),
+            },
+        ))
+        .unwrap();
+        trailing_legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("message_seq");
+        std::fs::write(&messages_path, format!("{sequenced}\n{trailing_legacy}\n")).unwrap();
+
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage
+            .append_message(&MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "next".into(),
+                },
+            ))
+            .unwrap();
+
+        let messages = storage.read_recent_messages(10).unwrap();
+        assert_eq!(
+            messages.last().and_then(|message| message.message_seq),
+            Some(8)
+        );
     }
 
     #[test]
@@ -2517,6 +2669,98 @@ mod tests {
         assert!(!dir.path().join("transcript.jsonl").exists());
         assert!(storage.indexes_dir().is_dir());
         assert!(storage.cache_dir().is_dir());
+    }
+
+    #[test]
+    fn append_message_assigns_monotonic_message_seq() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        for text in ["first", "second"] {
+            storage
+                .append_message(&MessageEnvelope::new(
+                    "default",
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator { actor_id: None },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text { text: text.into() },
+                ))
+                .unwrap();
+        }
+
+        let messages = storage.read_recent_messages(10).unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.message_seq)
+                .collect::<Vec<_>>(),
+            vec![Some(1), Some(2)]
+        );
+    }
+
+    #[test]
+    fn append_transcript_entry_assigns_monotonic_transcript_seq() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        for related in ["message-1", "message-2"] {
+            storage
+                .append_transcript_entry(&TranscriptEntry::new(
+                    "default",
+                    TranscriptEntryKind::IncomingMessage,
+                    None,
+                    Some(related.into()),
+                    serde_json::json!({ "text": related }),
+                ))
+                .unwrap();
+        }
+
+        let entries = storage.read_recent_transcript(10).unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.transcript_seq)
+                .collect::<Vec<_>>(),
+            vec![Some(1), Some(2)]
+        );
+    }
+
+    #[test]
+    fn missing_ledger_sequence_fields_are_backward_compatible() {
+        let mut legacy_message = serde_json::to_value(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "hello".into(),
+            },
+        ))
+        .unwrap();
+        legacy_message
+            .as_object_mut()
+            .unwrap()
+            .remove("message_seq");
+
+        let mut legacy_entry = serde_json::to_value(TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::IncomingMessage,
+            None,
+            Some("legacy-message".into()),
+            serde_json::json!({ "text": "hello" }),
+        ))
+        .unwrap();
+        legacy_entry
+            .as_object_mut()
+            .unwrap()
+            .remove("transcript_seq");
+
+        let message: MessageEnvelope = serde_json::from_value(legacy_message).unwrap();
+        let entry: TranscriptEntry = serde_json::from_value(legacy_entry).unwrap();
+        assert_eq!(message.message_seq, None);
+        assert_eq!(entry.transcript_seq, None);
     }
 
     #[test]
@@ -3403,6 +3647,126 @@ mod tests {
         assert_eq!(snapshot.replay_messages.len(), 2);
         assert_eq!(snapshot.replay_messages[0].id, queued.id);
         assert_eq!(snapshot.replay_messages[1].id, dequeued.id);
+    }
+
+    #[test]
+    fn recovery_snapshot_orders_message_replay_by_sequence_when_timestamps_tie() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let created_at = Utc::now();
+        let mut second = MessageEnvelope::new(
+            "default",
+            MessageKind::WebhookEvent,
+            MessageOrigin::Webhook {
+                source: "test".into(),
+                event_type: None,
+            },
+            AuthorityClass::IntegrationSignal,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "second".into(),
+            },
+        );
+        second.created_at = created_at;
+        let mut first = MessageEnvelope::new(
+            "default",
+            MessageKind::WebhookEvent,
+            MessageOrigin::Webhook {
+                source: "test".into(),
+                event_type: None,
+            },
+            AuthorityClass::IntegrationSignal,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "first".into(),
+            },
+        );
+        first.created_at = created_at;
+
+        storage.append_message(&first).unwrap();
+        storage.append_message(&second).unwrap();
+        for message in [&second, &first] {
+            storage
+                .append_queue_entry(&QueueEntryRecord {
+                    message_id: message.id.clone(),
+                    agent_id: "default".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: message.created_at,
+                    updated_at: Utc::now(),
+                })
+                .unwrap();
+        }
+
+        let snapshot = storage.recovery_snapshot().unwrap();
+        assert_eq!(
+            snapshot
+                .replay_messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![first.id.as_str(), second.id.as_str()]
+        );
+    }
+
+    #[test]
+    fn recovery_snapshot_orders_message_replay_by_timestamp_before_sequence() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let created_at = Utc::now();
+        let mut later = MessageEnvelope::new(
+            "default",
+            MessageKind::WebhookEvent,
+            MessageOrigin::Webhook {
+                source: "test".into(),
+                event_type: None,
+            },
+            AuthorityClass::IntegrationSignal,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "later".into(),
+            },
+        );
+        later.created_at = created_at + chrono::Duration::seconds(1);
+        let mut earlier = MessageEnvelope::new(
+            "default",
+            MessageKind::WebhookEvent,
+            MessageOrigin::Webhook {
+                source: "test".into(),
+                event_type: None,
+            },
+            AuthorityClass::IntegrationSignal,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "earlier".into(),
+            },
+        );
+        earlier.created_at = created_at;
+
+        storage.append_message(&later).unwrap();
+        storage.append_message(&earlier).unwrap();
+        for message in [&later, &earlier] {
+            storage
+                .append_queue_entry(&QueueEntryRecord {
+                    message_id: message.id.clone(),
+                    agent_id: "default".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: message.created_at,
+                    updated_at: Utc::now(),
+                })
+                .unwrap();
+        }
+
+        let snapshot = storage.recovery_snapshot().unwrap();
+        assert_eq!(
+            snapshot
+                .replay_messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![earlier.id.as_str(), later.id.as_str()]
+        );
     }
 
     #[test]
