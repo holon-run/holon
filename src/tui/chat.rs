@@ -125,9 +125,11 @@ pub(super) enum ConversationCell {
     },
     SystemNotice {
         created_at: DateTime<chrono::Utc>,
+        event_seq: u64,
         speaker: String,
         body: String,
         display_kind: ConversationDisplayKind,
+        group_id: Option<String>,
     },
 }
 
@@ -179,8 +181,12 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
                         rendered_to_conversation_cell(
                             &rendered,
                             timed.ts,
+                            timed.event_seq,
                             agent_speaker,
                             display_kind,
+                            timed.turn_index.map(|turn_index| {
+                                format!("agent:{agent_speaker}:turn:{turn_index}")
+                            }),
                         ),
                     );
                 }
@@ -206,6 +212,7 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     cells.sort_by(|left, right| {
         left.created_at()
             .cmp(&right.created_at())
+            .then_with(|| left.event_seq().cmp(&right.event_seq()))
             .then_with(|| chat_role_rank(left.role()).cmp(&chat_role_rank(right.role())))
             .then_with(|| left.sort_speaker().cmp(right.sort_speaker()))
             .then_with(|| left.sort_body().cmp(right.sort_body()))
@@ -284,6 +291,13 @@ impl ConversationCell {
         }
     }
 
+    fn event_seq(&self) -> u64 {
+        match self {
+            Self::SystemNotice { event_seq, .. } => *event_seq,
+            Self::UserMessage { .. } | Self::ActiveActivity { .. } => 0,
+        }
+    }
+
     fn display_kind(&self) -> ConversationDisplayKind {
         match self {
             Self::UserMessage { .. } => ConversationDisplayKind::Operator,
@@ -319,18 +333,16 @@ impl ConversationCell {
             (
                 Self::SystemNotice {
                     speaker: previous_speaker,
-                    display_kind: previous_kind,
+                    group_id: previous_group_id,
                     ..
                 },
                 Self::SystemNotice {
-                    speaker,
-                    display_kind,
-                    ..
+                    speaker, group_id, ..
                 },
             ) => {
-                *previous_kind == ConversationDisplayKind::Activity
-                    && *display_kind == ConversationDisplayKind::Activity
+                previous_group_id.is_some()
                     && previous_speaker == speaker
+                    && previous_group_id == group_id
             }
             _ => false,
         }
@@ -351,6 +363,7 @@ impl ConversationCell {
                 speaker,
                 body,
                 display_kind,
+                ..
             } => render_message_block_lines(
                 *created_at,
                 ChatBlockRole::Agent,
@@ -1264,8 +1277,10 @@ mod tests {
 pub(super) fn rendered_to_conversation_cell(
     cell: &crate::presentation::RenderedCell,
     ts: chrono::DateTime<chrono::Utc>,
+    event_seq: u64,
     agent_speaker: &str,
     display_kind: ConversationDisplayKind,
+    group_id: Option<String>,
 ) -> ConversationCell {
     if cell.is_live {
         ConversationCell::ActiveActivity {
@@ -1282,9 +1297,11 @@ pub(super) fn rendered_to_conversation_cell(
     } else {
         ConversationCell::SystemNotice {
             created_at: ts,
+            event_seq,
             speaker: agent_speaker.to_string(),
             body: cell.body.clone(),
             display_kind,
+            group_id,
         }
     }
 }

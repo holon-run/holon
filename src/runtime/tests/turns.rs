@@ -802,6 +802,7 @@ async fn context_length_exceeded_turn_fails_fast_without_runtime_error() {
         .find(|brief| brief.kind == BriefKind::Failure)
         .expect("failure brief should exist");
     assert!(failure.text.contains("context_length_exceeded"));
+    assert_eq!(failure.turn_index, Some(1));
 
     let events = runtime.storage().read_recent_events(20).unwrap();
     assert!(events

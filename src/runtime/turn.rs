@@ -41,6 +41,7 @@ use super::{
 
 pub(super) struct AgentLoopOutcome {
     pub(super) final_text: String,
+    pub(super) turn_index: u64,
     pub(super) should_sleep: bool,
     pub(super) sleep_duration_ms: Option<u64>,
     pub(super) allow_sleep_runnable_work_override: bool,
@@ -1379,15 +1380,17 @@ impl RuntimeHandle {
             }),
         ))?;
         let final_text = "Turn stopped because the provider rejected the request with context_length_exceeded. This usually means the configured model context window or prompt budget is too large for the current provider path.".to_string();
-        self.persist_turn_terminal_record(
-            TurnTerminalKind::Aborted,
-            Some(final_text.clone()),
-            duration_ms,
-            None,
-        )
-        .await?;
+        let terminal = self
+            .persist_turn_terminal_record(
+                TurnTerminalKind::Aborted,
+                Some(final_text.clone()),
+                duration_ms,
+                None,
+            )
+            .await?;
         Ok(Some(AgentLoopOutcome {
             final_text,
+            turn_index: terminal.turn_index,
             should_sleep: false,
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
@@ -1481,15 +1484,16 @@ impl RuntimeHandle {
             }),
         ))?;
         let final_text = operator_message.clone();
-        self.persist_turn_terminal_record(
-            terminal_kind,
-            last_assistant_message
-                .clone()
-                .or_else(|| Some(final_text.clone())),
-            duration_ms,
-            None,
-        )
-        .await?;
+        let terminal = self
+            .persist_turn_terminal_record(
+                terminal_kind,
+                last_assistant_message
+                    .clone()
+                    .or_else(|| Some(final_text.clone())),
+                duration_ms,
+                None,
+            )
+            .await?;
         let event_kind = if side_effect_boundary_crossed {
             "provider_failed_needs_recovery"
         } else {
@@ -1544,6 +1548,7 @@ impl RuntimeHandle {
         ))?;
         Ok(Some(AgentLoopOutcome {
             final_text,
+            turn_index: terminal.turn_index,
             should_sleep: false,
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
@@ -1876,7 +1881,7 @@ impl TurnExecution<'_> {
                     let final_text = format!(
                         "Stopped after reaching the maximum tool loop depth ({max_tool_rounds})."
                     );
-                    runtime
+                    let terminal = runtime
                         .persist_turn_terminal_record(
                             TurnTerminalKind::Aborted,
                             Some(final_text.clone()),
@@ -1886,6 +1891,7 @@ impl TurnExecution<'_> {
                         .await?;
                     return Ok(AgentLoopOutcome {
                         final_text,
+                        turn_index: terminal.turn_index,
                         should_sleep: false,
                         sleep_duration_ms: None,
                         allow_sleep_runnable_work_override: false,
@@ -2099,7 +2105,7 @@ impl TurnExecution<'_> {
                             diagnostics.effective_budget_estimated_tokens,
                             diagnostics.tool_overhead_estimated_tokens,
                         );
-                        runtime
+                        let terminal = runtime
                             .persist_turn_terminal_record(
                                 TurnTerminalKind::BaselineOverBudget,
                                 Some(final_text.clone()),
@@ -2109,6 +2115,7 @@ impl TurnExecution<'_> {
                             .await?;
                         return Ok(AgentLoopOutcome {
                             final_text,
+                            turn_index: terminal.turn_index,
                             should_sleep: false,
                             sleep_duration_ms: None,
                             allow_sleep_runnable_work_override: false,
@@ -2608,7 +2615,7 @@ impl TurnExecution<'_> {
 
             if tool_calls.is_empty() {
                 let final_text = last_assistant_message.clone().unwrap_or_default();
-                runtime
+                let terminal = runtime
                     .persist_turn_terminal_record(
                         TurnTerminalKind::Completed,
                         last_assistant_message.clone(),
@@ -2618,6 +2625,7 @@ impl TurnExecution<'_> {
                     .await?;
                 return Ok(AgentLoopOutcome {
                     final_text,
+                    turn_index: terminal.turn_index,
                     should_sleep: true,
                     sleep_duration_ms,
                     allow_sleep_runnable_work_override: false,
@@ -2940,7 +2948,7 @@ impl TurnExecution<'_> {
             if let Some(promotion) = completion_promotion {
                 if !has_operator_interjections {
                     let final_text = last_assistant_message.clone().unwrap_or_default();
-                    runtime
+                    let terminal = runtime
                         .persist_turn_terminal_record(
                             TurnTerminalKind::Completed,
                             last_assistant_message.clone(),
@@ -2950,6 +2958,7 @@ impl TurnExecution<'_> {
                         .await?;
                     return Ok(AgentLoopOutcome {
                         final_text,
+                        turn_index: terminal.turn_index,
                         should_sleep,
                         sleep_duration_ms,
                         allow_sleep_runnable_work_override: should_sleep,
@@ -2965,7 +2974,7 @@ impl TurnExecution<'_> {
 
             if only_sleep_tools && !has_operator_interjections {
                 let final_text = last_assistant_message.clone().unwrap_or_default();
-                runtime
+                let terminal = runtime
                     .persist_turn_terminal_record(
                         TurnTerminalKind::Completed,
                         last_assistant_message.clone(),
@@ -2975,6 +2984,7 @@ impl TurnExecution<'_> {
                     .await?;
                 return Ok(AgentLoopOutcome {
                     final_text,
+                    turn_index: terminal.turn_index,
                     should_sleep: true,
                     sleep_duration_ms: sleep_duration_ms.or(legacy_sleep_duration_ms),
                     allow_sleep_runnable_work_override: true,

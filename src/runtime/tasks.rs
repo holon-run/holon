@@ -2368,6 +2368,7 @@ impl RuntimeHandle {
             BriefRecord::new(agent_id.clone(), BriefKind::Result, report_text, None, None);
         brief.work_item_id = Some(record.id.clone());
         brief.workspace_id = record.workspace_id.clone();
+        brief.turn_index = source_turn_index;
         self.persist_brief(&brief).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_completion_report_promoted",

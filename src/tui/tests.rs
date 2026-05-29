@@ -685,6 +685,7 @@ fn build_chat_text_includes_structured_operator_messages() {
             agent_id: "default".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Result,
             created_at: Utc::now(),
             text: "I started a worktree task.".into(),
@@ -721,6 +722,7 @@ fn build_chat_text_renders_message_block_header_above_body() {
             agent_id: "default".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Result,
             created_at: Utc::now(),
             text: "First line\nSecond line".into(),
@@ -749,21 +751,27 @@ fn build_chat_text_groups_activity_by_kind_not_minute() {
     let items = vec![
         ConversationCell::SystemNotice {
             created_at: first_created_at,
+            event_seq: 1,
             speaker: "holon-pm".into(),
             body: "first activity".into(),
             display_kind: ConversationDisplayKind::Activity,
+            group_id: Some("agent:holon-pm:turn:1".into()),
         },
         ConversationCell::SystemNotice {
             created_at: second_created_at,
+            event_seq: 2,
             speaker: "holon-pm".into(),
             body: "second activity".into(),
             display_kind: ConversationDisplayKind::Activity,
+            group_id: Some("agent:holon-pm:turn:1".into()),
         },
         ConversationCell::SystemNotice {
             created_at: second_created_at,
+            event_seq: 3,
             speaker: "holon-pm".into(),
             body: "narrative line".into(),
             display_kind: ConversationDisplayKind::Narrative,
+            group_id: Some("agent:holon-pm:turn:2".into()),
         },
     ];
 
@@ -786,6 +794,103 @@ fn build_chat_text_groups_activity_by_kind_not_minute() {
     assert!(lines
         .iter()
         .any(|line| line.starts_with("  narrative line")));
+}
+
+#[test]
+fn build_chat_text_groups_agent_cells_by_turn_index() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.display_mode = OperatorDisplayMode::Verbose;
+    let ts = Utc::now();
+    let mut projection = TuiProjection::from_snapshot(sample_snapshot("holon-pm", "evt-0"));
+    for event in [
+        pipeline_event_envelope(
+            "evt-progress",
+            1,
+            "holon-pm",
+            "assistant_round_recorded",
+            json!({
+                "agent_id": "holon-pm",
+                "turn_index": 7,
+                "round": 1,
+                "text_preview": "I will inspect the PR.",
+                "has_text": true,
+                "has_tool_calls": false
+            }),
+        ),
+        pipeline_event_envelope(
+            "evt-tool",
+            2,
+            "holon-pm",
+            "tool_executed",
+            json!({
+                "agent_id": "holon-pm",
+                "turn_index": 7,
+                "tool_name": "ExecCommand",
+                "exec_command_cmd": "gh pr view 1497",
+                "duration_ms": 100,
+                "status": "success",
+                "summary": "gh pr view 1497"
+            }),
+        ),
+    ] {
+        projection.apply_event(
+            AgentStreamEvent {
+                id: event.id.clone(),
+                event: event.event_type.clone(),
+                data: StreamEventEnvelope { ts, ..event },
+            },
+            &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        );
+    }
+    let brief = BriefRecord {
+        id: "brief-1".into(),
+        agent_id: "holon-pm".into(),
+        workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+        work_item_id: None,
+        turn_index: Some(7),
+        kind: BriefKind::Result,
+        created_at: ts,
+        text: "PR is merged.".into(),
+        attachments: None,
+        related_message_id: None,
+        related_task_id: None,
+    };
+    let brief_event = StreamEventEnvelope {
+        id: "evt-brief".into(),
+        event_seq: 3,
+        ts,
+        agent_id: "holon-pm".into(),
+        event_type: "brief_created".into(),
+        provenance: None,
+        payload: serde_json::to_value(brief).unwrap(),
+    };
+    projection.apply_event(
+        AgentStreamEvent {
+            id: brief_event.id.clone(),
+            event: brief_event.event_type.clone(),
+            data: brief_event,
+        },
+        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.projection = Some(projection);
+
+    let lines: Vec<String> = build_chat_text(&collect_chat_items(&app))
+        .lines
+        .into_iter()
+        .map(|line| line.spans.into_iter().map(|span| span.content).collect())
+        .collect();
+    let header_count = lines
+        .iter()
+        .filter(|line| line.contains("• holon-pm "))
+        .count();
+    assert_eq!(header_count, 1);
+    assert!(lines.iter().any(|line| line.contains("I will inspect")));
+    assert!(lines.iter().any(|line| line.contains("gh pr view 1497")));
+    assert!(lines.iter().any(|line| line.contains("PR is merged.")));
 }
 
 #[test]
@@ -1570,6 +1675,7 @@ fn chat_text_renders_markdown_body() {
             agent_id: "default".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Result,
             created_at: Utc::now(),
             text: "**Done**\n- first\n- second".into(),
@@ -1603,6 +1709,7 @@ fn chat_text_renders_brief_events_from_projection() {
             agent_id: "default".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Result,
             created_at: Utc::now(),
             text: "### Title\n\nBody".into(),
@@ -1648,6 +1755,7 @@ fn chat_text_filters_operator_queue_ack_but_keeps_result_brief_events() {
             agent_id: "default".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Result,
             created_at: Utc::now(),
             text: "Real response".into(),
@@ -1680,6 +1788,7 @@ fn chat_text_summarizes_task_brief_output() {
             agent_id: "default".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Result,
             created_at: Utc::now(),
             text: "Task task-1 completed: line one\nline two\nline three".into(),
@@ -2233,6 +2342,7 @@ fn active_activity_timestamp_does_not_sort_before_tail_history() {
             agent_id: "default".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Result,
             created_at: ts + chrono::Duration::seconds(10),
             text: "Latest durable response".into(),
@@ -2417,6 +2527,7 @@ fn collect_chat_items_orders_equal_timestamps_deterministically() {
             agent_id: "default".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Result,
             created_at: ts,
             text: "same instant".into(),
@@ -3034,6 +3145,7 @@ fn chat_text_renders_full_long_brief_events() {
             agent_id: "default".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Result,
             created_at: Utc::now(),
             text: long_text,
@@ -3067,6 +3179,7 @@ fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
             agent_id: "default".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Result,
             created_at: first_created_at,
             text: "**Done**".into(),
@@ -3097,6 +3210,7 @@ fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
             agent_id: "default".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Failure,
             created_at: first_created_at,
             text: "**Failed**".into(),
@@ -3378,6 +3492,7 @@ fn apply_agent_list_clears_stale_projection_when_selected_agent_disappears() {
             agent_id: "beta".into(),
             workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
             work_item_id: None,
+            turn_index: None,
             kind: BriefKind::Result,
             created_at: Utc::now(),
             text: "stale brief".into(),

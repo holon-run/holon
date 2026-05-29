@@ -3555,6 +3555,8 @@ pub struct BriefRecord {
     pub workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_index: Option<u64>,
     pub kind: BriefKind,
     pub created_at: DateTime<Utc>,
     pub text: String,
@@ -3577,6 +3579,7 @@ impl BriefRecord {
             workspace_id: agent_home_workspace_id(&agent_id),
             agent_id,
             work_item_id: None,
+            turn_index: None,
             kind,
             created_at: Utc::now(),
             text: text.into(),
@@ -4446,6 +4449,7 @@ mod tests {
         brief.as_object_mut().unwrap().remove("workspace_id");
         let brief: BriefRecord = serde_json::from_value(brief).unwrap();
         assert_eq!(brief.workspace_id, AGENT_HOME_WORKSPACE_ID);
+        assert_eq!(brief.turn_index, None);
 
         let mut work_item =
             serde_json::to_value(WorkItemRecord::new("default", "ship", WorkItemState::Open))

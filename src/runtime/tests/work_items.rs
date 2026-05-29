@@ -1895,6 +1895,7 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         result_briefs[0].work_item_id.as_deref(),
         Some(work_item.id.as_str())
     );
+    assert_eq!(result_briefs[0].turn_index, Some(1));
     assert!(
         !briefs.iter().any(|brief| {
             brief.kind == BriefKind::Result
