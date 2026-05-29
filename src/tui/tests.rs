@@ -1,9 +1,9 @@
 use super::{
     app::TuiApp,
     chat::{
-        build_chat_text, chat_text, collect_chat_items, is_operator_origin_value,
-        paragraph_max_scroll, paragraph_max_scroll_unframed, ChatScrollState, ConversationCell,
-        ConversationDisplayKind,
+        build_chat_text, build_chat_text_for_width, chat_text, collect_chat_items,
+        is_operator_origin_value, paragraph_max_scroll, paragraph_max_scroll_unframed,
+        ChatScrollState, ConversationCell, ConversationDisplayKind,
     },
     composer::ComposerState,
     determine_alt_screen_mode_for_terminal,
@@ -756,6 +756,7 @@ fn build_chat_text_groups_activity_by_kind_not_minute() {
             body: "first activity".into(),
             display_kind: ConversationDisplayKind::Activity,
             group_id: Some("agent:holon-pm:turn:1".into()),
+            header_hint: None,
         },
         ConversationCell::SystemNotice {
             created_at: second_created_at,
@@ -764,6 +765,7 @@ fn build_chat_text_groups_activity_by_kind_not_minute() {
             body: "second activity".into(),
             display_kind: ConversationDisplayKind::Activity,
             group_id: Some("agent:holon-pm:turn:1".into()),
+            header_hint: None,
         },
         ConversationCell::SystemNotice {
             created_at: second_created_at,
@@ -772,6 +774,7 @@ fn build_chat_text_groups_activity_by_kind_not_minute() {
             body: "narrative line".into(),
             display_kind: ConversationDisplayKind::Narrative,
             group_id: Some("agent:holon-pm:turn:2".into()),
+            header_hint: None,
         },
     ];
 
@@ -806,10 +809,28 @@ fn build_chat_text_groups_agent_cells_by_turn_index() {
     app.display_mode = OperatorDisplayMode::Verbose;
     let ts = Utc::now();
     let mut projection = TuiProjection::from_snapshot(sample_snapshot("holon-pm", "evt-0"));
+    let resume_event = pipeline_event_envelope(
+        "evt-resume",
+        1,
+        "holon-pm",
+        "continuation_trigger_received",
+        json!({
+            "agent_id": "holon-pm",
+            "trigger_kind": "operator_input"
+        }),
+    );
+    projection.apply_event(
+        AgentStreamEvent {
+            id: resume_event.id.clone(),
+            event: resume_event.event_type.clone(),
+            data: StreamEventEnvelope { ts, ..resume_event },
+        },
+        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
     for event in [
         pipeline_event_envelope(
             "evt-progress",
-            1,
+            2,
             "holon-pm",
             "assistant_round_recorded",
             json!({
@@ -823,7 +844,7 @@ fn build_chat_text_groups_agent_cells_by_turn_index() {
         ),
         pipeline_event_envelope(
             "evt-tool",
-            2,
+            3,
             "holon-pm",
             "tool_executed",
             json!({
@@ -861,7 +882,7 @@ fn build_chat_text_groups_agent_cells_by_turn_index() {
     };
     let brief_event = StreamEventEnvelope {
         id: "evt-brief".into(),
-        event_seq: 3,
+        event_seq: 4,
         ts,
         agent_id: "holon-pm".into(),
         event_type: "brief_created".into(),
@@ -888,9 +909,44 @@ fn build_chat_text_groups_agent_cells_by_turn_index() {
         .filter(|line| line.contains("• holon-pm "))
         .count();
     assert_eq!(header_count, 1);
+    assert!(lines
+        .iter()
+        .any(|line| line.contains("• holon-pm ") && line.contains("operator input")));
+    assert!(!lines
+        .iter()
+        .any(|line| line.contains("Continuation triggered")));
     assert!(lines.iter().any(|line| line.contains("I will inspect")));
     assert!(lines.iter().any(|line| line.contains("gh pr view 1497")));
     assert!(lines.iter().any(|line| line.contains("PR is merged.")));
+}
+
+#[test]
+fn build_chat_text_wraps_body_lines_with_indent() {
+    let ts = Utc::now();
+    let items = vec![ConversationCell::SystemNotice {
+        created_at: ts,
+        event_seq: 1,
+        speaker: "holon-pm".into(),
+        body: "abcdefghij klmnopqrst uvwxyz".into(),
+        display_kind: ConversationDisplayKind::Activity,
+        group_id: Some("agent:holon-pm:turn:1".into()),
+        header_hint: None,
+    }];
+
+    let lines: Vec<String> = build_chat_text_for_width(&items, 18)
+        .lines
+        .into_iter()
+        .map(|line| line.spans.into_iter().map(|span| span.content).collect())
+        .collect();
+    assert!(lines.iter().any(|line| line.starts_with("    abc")));
+    assert!(
+        lines
+            .iter()
+            .skip(1)
+            .filter(|line| !line.trim().is_empty())
+            .all(|line| line.starts_with("    ")),
+        "wrapped body lines should keep activity indentation: {lines:?}"
+    );
 }
 
 #[test]

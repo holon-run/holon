@@ -2,6 +2,7 @@ use super::*;
 use crate::presentation::{PresentationItem, PresentationReducer, Renderable};
 use crate::tui::projection::{is_presentation_reducer_event, ProjectionEventRecord};
 use crossterm::event::KeyCode;
+use unicode_width::UnicodeWidthChar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ChatScrollState {
@@ -130,6 +131,7 @@ pub(super) enum ConversationCell {
         body: String,
         display_kind: ConversationDisplayKind,
         group_id: Option<String>,
+        header_hint: Option<String>,
     },
 }
 
@@ -168,10 +170,23 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         let mut reducer = PresentationReducer::new();
         let mut timed_items = reducer.reduce(events.as_slice());
         timed_items.extend(reducer.flush());
+        let mut pending_agent_header_hint: Option<String> = None;
 
         for timed in &timed_items {
             if timed.item.is_visible_at(level) {
+                if let Some(hint) = resume_header_hint(&timed.item) {
+                    pending_agent_header_hint = Some(hint);
+                    continue;
+                }
                 let display_kind = conversation_display_kind(&timed.item);
+                let group_id = timed
+                    .turn_index
+                    .map(|turn_index| format!("agent:{agent_speaker}:turn:{turn_index}"));
+                let header_hint = if group_id.is_some() {
+                    pending_agent_header_hint.take()
+                } else {
+                    None
+                };
                 for rendered in timed.item.render(level) {
                     push_projected_conversation_cell(
                         &mut cells,
@@ -184,9 +199,8 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
                             timed.event_seq,
                             agent_speaker,
                             display_kind,
-                            timed.turn_index.map(|turn_index| {
-                                format!("agent:{agent_speaker}:turn:{turn_index}")
-                            }),
+                            group_id.clone(),
+                            header_hint.clone(),
                         ),
                     );
                 }
@@ -269,11 +283,12 @@ fn push_projected_conversation_cell(
 
 fn projected_conversation_cell_key(source_key: &str, cell: &ConversationCell) -> String {
     format!(
-        "{}|{:?}|{:?}|{}|{}",
+        "{}|{:?}|{:?}|{}|{}|{}",
         source_key,
         cell.role(),
         cell.display_kind(),
         cell.sort_speaker(),
+        cell.header_hint().unwrap_or(""),
         normalized_operator_message_body_key(cell.sort_body())
     )
 }
@@ -328,6 +343,13 @@ impl ConversationCell {
         }
     }
 
+    fn header_hint(&self) -> Option<&str> {
+        match self {
+            Self::SystemNotice { header_hint, .. } => header_hint.as_deref(),
+            Self::UserMessage { .. } | Self::ActiveActivity { .. } => None,
+        }
+    }
+
     fn groups_with_previous(&self, previous: &Self) -> bool {
         match (previous, self) {
             (
@@ -348,6 +370,13 @@ impl ConversationCell {
         }
     }
 
+    fn needs_section_break_after(&self, next: &Self) -> bool {
+        next.groups_with_previous(self)
+            && self.display_kind() != next.display_kind()
+            && self.display_kind() != ConversationDisplayKind::Operator
+            && next.display_kind() != ConversationDisplayKind::Operator
+    }
+
     fn render_lines(&self, width: u16, include_header: bool) -> Vec<Line<'static>> {
         match self {
             Self::UserMessage {
@@ -363,6 +392,7 @@ impl ConversationCell {
                 speaker,
                 body,
                 display_kind,
+                header_hint,
                 ..
             } => render_message_block_lines(
                 *created_at,
@@ -370,6 +400,7 @@ impl ConversationCell {
                 speaker,
                 body,
                 *display_kind,
+                header_hint.as_deref(),
                 width,
                 false,
                 include_header,
@@ -410,7 +441,9 @@ pub(super) fn build_chat_text_for_width(items: &[ConversationCell], width: u16) 
             .extend(item.render_lines(width, !grouped_with_previous));
         if index + 1 < items.len() {
             let groups_with_next = items[index + 1].groups_with_previous(item);
-            if !groups_with_next {
+            if item.needs_section_break_after(&items[index + 1]) {
+                text.lines.push(Line::default());
+            } else if !groups_with_next {
                 text.lines.push(Line::default());
             }
         }
@@ -452,6 +485,7 @@ fn render_message_block_lines(
     speaker: &str,
     body: &str,
     display_kind: ConversationDisplayKind,
+    header_hint: Option<&str>,
     width: u16,
     spaced_markdown: bool,
     include_header: bool,
@@ -463,7 +497,12 @@ fn render_message_block_lines(
     };
     let body_lines = body.lines;
     let mut lines = if include_header {
-        vec![Line::from(chat_header_spans(created_at, role, speaker))]
+        vec![Line::from(chat_header_spans(
+            created_at,
+            role,
+            speaker,
+            header_hint,
+        ))]
     } else {
         Vec::new()
     };
@@ -474,12 +513,58 @@ fn render_message_block_lines(
             continue;
         }
 
-        let mut spans = Vec::with_capacity(line.spans.len() + 1);
-        spans.push(Span::raw(message_body_indent(display_kind)));
-        spans.extend(line.spans.clone());
-        lines.push(Line::from(spans).style(line.style));
+        lines.extend(wrap_body_line(
+            &line,
+            message_body_indent(display_kind),
+            width,
+        ));
     }
     lines
+}
+
+fn wrap_body_line(line: &Line<'static>, indent: &'static str, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width);
+    if width == usize::from(u16::MAX) || width == 0 {
+        let mut spans = Vec::with_capacity(line.spans.len() + 1);
+        spans.push(Span::raw(indent));
+        spans.extend(line.spans.clone());
+        return vec![Line::from(spans).style(line.style)];
+    }
+
+    let indent_width = display_width(indent);
+    let max_width = width.max(indent_width + 8);
+    let mut lines = Vec::new();
+    let mut spans = vec![Span::raw(indent)];
+    let mut current_width = indent_width;
+
+    for span in &line.spans {
+        let mut chunk = String::new();
+        for ch in span.content.chars() {
+            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if current_width + ch_width > max_width && current_width > indent_width {
+                if !chunk.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut chunk), span.style));
+                }
+                lines.push(Line::from(spans).style(line.style));
+                spans = vec![Span::raw(indent)];
+                current_width = indent_width;
+            }
+            chunk.push(ch);
+            current_width += ch_width;
+        }
+        if !chunk.is_empty() {
+            spans.push(Span::styled(chunk, span.style));
+        }
+    }
+
+    lines.push(Line::from(spans).style(line.style));
+    lines
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars()
+        .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
+        .sum()
 }
 
 fn message_body_indent(display_kind: ConversationDisplayKind) -> &'static str {
@@ -501,6 +586,7 @@ fn render_operator_message_lines(
         "operator",
         body,
         ConversationDisplayKind::Operator,
+        None,
         width,
         false,
         true,
@@ -578,6 +664,7 @@ fn chat_header_spans(
     created_at: DateTime<chrono::Utc>,
     role: ChatBlockRole,
     speaker: &str,
+    header_hint: Option<&str>,
 ) -> Vec<Span<'static>> {
     let (marker, marker_style) = match role {
         ChatBlockRole::Operator => ("> ", Style::default().add_modifier(Modifier::BOLD)),
@@ -589,7 +676,7 @@ fn chat_header_spans(
         ),
     };
 
-    vec![
+    let mut spans = vec![
         Span::styled(marker, marker_style),
         Span::styled(
             speaker.to_string(),
@@ -600,7 +687,15 @@ fn chat_header_spans(
             chat_timestamp(created_at),
             Style::default().add_modifier(Modifier::DIM),
         ),
-    ]
+    ];
+    if let Some(hint) = header_hint.filter(|hint| !hint.trim().is_empty()) {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            hint.trim().to_string(),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+    }
+    spans
 }
 
 fn chat_timestamp(created_at: DateTime<chrono::Utc>) -> String {
@@ -631,6 +726,34 @@ fn conversation_display_kind(item: &PresentationItem) -> ConversationDisplayKind
         | PresentationItem::ContinuationDetail { .. }
         | PresentationItem::GenericEvent { .. } => ConversationDisplayKind::Activity,
     }
+}
+
+fn resume_header_hint(item: &PresentationItem) -> Option<String> {
+    let PresentationItem::ResumeNotice { reason, .. } = item else {
+        return None;
+    };
+    let reason = reason.trim();
+    if let Some(trigger) = reason
+        .strip_prefix("Continuation triggered by ")
+        .and_then(|tail| tail.split(';').next())
+    {
+        return Some(match trigger.trim() {
+            "operator_input" => "operator input".to_string(),
+            "task_result" => "task result".to_string(),
+            "system_tick" => "system tick".to_string(),
+            "timer" => "timer".to_string(),
+            "external_trigger" => "external trigger".to_string(),
+            other if !other.is_empty() => other.replace('_', " "),
+            _ => "resumed".to_string(),
+        });
+    }
+    if reason.starts_with("Timer fired") {
+        return Some("timer".to_string());
+    }
+    if reason.starts_with("External event") {
+        return Some("external trigger".to_string());
+    }
+    Some("resumed".to_string())
 }
 
 fn active_activity_status_label(speaker: &str) -> Option<&'static str> {
@@ -1281,6 +1404,7 @@ pub(super) fn rendered_to_conversation_cell(
     agent_speaker: &str,
     display_kind: ConversationDisplayKind,
     group_id: Option<String>,
+    header_hint: Option<String>,
 ) -> ConversationCell {
     if cell.is_live {
         ConversationCell::ActiveActivity {
@@ -1302,6 +1426,7 @@ pub(super) fn rendered_to_conversation_cell(
             body: cell.body.clone(),
             display_kind,
             group_id,
+            header_hint,
         }
     }
 }
