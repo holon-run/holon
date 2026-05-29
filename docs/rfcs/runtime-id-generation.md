@@ -104,20 +104,20 @@ These IDs should use compact prefixed random IDs:
 Examples:
 
 ```text
-msg_3f8nq0za
-task_9x4k2p7q
-run_6kq1v2hd
-tool_b7m2x9cw
-ws_c7q2v9mk1p4a
-work_p4a8r1mz
-ep_z91xka7d
-wait_k8p3f0na
-timer_m2x7q4ac
+msg_3f8a0c7b92d14e6
+task_9a4c2e7b01f3d5c
+run_6c01f2e9a4b7d8f
+tool_b7a2c9e0d1f3456
+ws_c7a2e9b04f1d6c8
+work_4a8c1b9d03e7f2a
+ep_91a7c4d0e2f8b35
+wait_8b3f0c9a2d7e461
+timer_2c7a4e0f8b1d936
 ```
 
 The random part should be long enough for local runtime uniqueness, but not as
 verbose as a UUID. A first-pass target is about 60 bits of randomness encoded
-with a URL- and shell-friendly alphabet.
+with a lower-case, URL- and shell-friendly alphabet.
 
 ### Capability and secret IDs
 
@@ -211,11 +211,17 @@ A base32-style lower-case alphabet is a good default:
 This avoids visually confusing characters such as `i`, `l`, and `o`, while
 remaining easy to copy.
 
+The concrete encoding is less important than the shape and entropy target. A
+12-character payload over the alphabet above and a 15-character lower-case hex
+payload both provide about 60 bits of randomness. The first Rust implementation
+may use the 15-character lower-case hex shape produced by the central generator
+helper.
+
 Recommended first-pass lengths:
 
 | Class | Randomness | Example length |
 | --- | ---: | --- |
-| runtime object | about 60 bits | 12 base32 chars |
+| runtime object | about 60 bits | 12 base32 chars or 15 lower-case hex chars |
 | very short display-only handle | derived, not canonical | case by case |
 | capability / bearer token | at least 128 bits | 26+ base32 chars or equivalent |
 
@@ -331,7 +337,8 @@ non-disclosure behavior where possible.
 
 Holon runtime object IDs should be opaque, short, type-prefixed, and locally
 unique. The first implementation should use one canonical short ID shape with a
-`_` separator and a 12-character base32 random payload, and receipts should show
-that canonical ID directly. Capability IDs and external bearer tokens should be
-opaque, long, and unguessable. Stable user-facing slugs should stay names, not
-random IDs. Sequence/index design is intentionally out of scope for this RFC.
+`_` separator and an about-60-bit lower-case random payload, and receipts should
+show that canonical ID directly. Capability IDs and external bearer tokens
+should be opaque, long, and unguessable. Stable user-facing slugs should stay
+names, not random IDs. Sequence/index design is intentionally out of scope for
+this RFC.
