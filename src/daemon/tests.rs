@@ -1,6 +1,6 @@
 use super::lifecycle::{
-    effective_config_mismatch_summary, probe_runtime, should_retry_startup_stability_probe,
-    wait_for_startup_stability_with_probe, ProbeRuntime,
+    effective_config_mismatch_summary, probe_runtime, runtime_status_matches_metadata,
+    should_retry_startup_stability_probe, wait_for_startup_stability_with_probe, ProbeRuntime,
 };
 use super::state::{
     persist_last_runtime_failure, DAEMON_LOG_TAIL_LINE_CHAR_LIMIT, DAEMON_LOG_TAIL_READ_BYTE_LIMIT,
@@ -426,6 +426,38 @@ async fn probe_runtime_reports_running_when_socket_missing_but_pid_alive() {
         }
         other => panic!("expected Running, got {:?}", other),
     }
+}
+
+#[test]
+fn runtime_status_metadata_match_rejects_foreign_runtime() {
+    let config = test_config();
+    let metadata = RuntimeServiceMetadata {
+        pid: 1234,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        started_at: Utc::now(),
+        config_fingerprint: config_fingerprint(&config).unwrap(),
+    };
+    let matching_status = RuntimeStatusResponse {
+        ok: true,
+        healthy: true,
+        pid: metadata.pid,
+        home_dir: metadata.home_dir.clone(),
+        socket_path: metadata.socket_path.clone(),
+        http_addr: metadata.http_addr.clone(),
+        started_at: metadata.started_at,
+        config_fingerprint: metadata.config_fingerprint.clone(),
+        activity: None,
+        startup_surface: None,
+        runtime_surface: None,
+        last_failure: None,
+    };
+    assert!(runtime_status_matches_metadata(&matching_status, &metadata));
+
+    let mut foreign_status = matching_status;
+    foreign_status.home_dir = config.home_dir.join("foreign-home");
+    assert!(!runtime_status_matches_metadata(&foreign_status, &metadata));
 }
 
 #[cfg(unix)]

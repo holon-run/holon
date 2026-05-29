@@ -25,7 +25,7 @@ use super::{
     daemon_log_hint, daemon_paths, load_daemon_metadata, persist_daemon_lifecycle_failure,
     read_daemon_log_excerpt, runtime_activity_message, stale_files, DaemonLifecycleAction,
     DaemonLifecycleResult, DaemonLifecycleState, DaemonStatusView, RuntimeServiceHandle,
-    RuntimeStatusResponse,
+    RuntimeServiceMetadata, RuntimeStatusResponse,
 };
 
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -363,7 +363,7 @@ Probe error: {details}",
         return Ok(DaemonLifecycleResult {
             ok: true,
             action: DaemonLifecycleAction::Stop,
-            status: daemon_status(config).await?,
+            status: stopped_status(config)?,
         });
     }
 
@@ -379,7 +379,7 @@ Probe error: {details}",
                     return Ok(DaemonLifecycleResult {
                         ok: true,
                         action: DaemonLifecycleAction::Stop,
-                        status: daemon_status(config).await?,
+                        status: stopped_status(config)?,
                     });
                 }
             }
@@ -389,7 +389,7 @@ Probe error: {details}",
                 return Ok(DaemonLifecycleResult {
                     ok: true,
                     action: DaemonLifecycleAction::Stop,
-                    status: daemon_status(config).await?,
+                    status: stopped_status(config)?,
                 });
             }
             match send_signal(pid, 9, "-KILL")? {
@@ -410,7 +410,26 @@ Probe error: {details}",
     Ok(DaemonLifecycleResult {
         ok: true,
         action: DaemonLifecycleAction::Stop,
-        status: daemon_status(config).await?,
+        status: stopped_status(config)?,
+    })
+}
+
+fn stopped_status(config: &AppConfig) -> Result<DaemonStatusView> {
+    Ok(DaemonStatusView {
+        ok: true,
+        state: DaemonLifecycleState::Stopped,
+        healthy: false,
+        home_dir: config.home_dir.clone(),
+        socket_path: config.socket_path.clone(),
+        http_addr: config.http_addr.clone(),
+        pid: None,
+        control_connectivity: false,
+        runtime_config_fingerprint: None,
+        config_fingerprint_match: None,
+        activity: None,
+        last_failure: latest_known_runtime_failure(config)?,
+        stale_files: stale_files(config),
+        message: "runtime is not running".into(),
     })
 }
 
@@ -853,48 +872,23 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
     // removed externally — see https://github.com/holon-run/holon/issues/1448).
     if let Ok(Some(metadata)) = load_daemon_metadata(config) {
         if pid_is_alive(metadata.pid) {
-            // Try TCP as a secondary probe; if it connects we know the runtime
-            // is responsive.  If TCP also fails the daemon is alive but
-            // unreachable via both socket and TCP, so we still report Running
-            // with the metadata we have.
+            // Try TCP as a secondary probe, but only trust a response that
+            // identifies the daemon recorded in metadata.
             let client = match LocalClient::new(config.clone()) {
                 Ok(client) => client,
                 Err(_) => {
-                    return ProbeRuntime::Running(Box::new(RuntimeStatusResponse {
-                        ok: true,
-                        healthy: false,
-                        home_dir: metadata.home_dir.clone(),
-                        socket_path: metadata.socket_path.clone(),
-                        http_addr: metadata.http_addr.clone(),
-                        pid: metadata.pid,
-                        started_at: metadata.started_at,
-                        config_fingerprint: metadata.config_fingerprint.clone(),
-                        activity: None,
-                        startup_surface: None,
-                        runtime_surface: None,
-                        last_failure: None,
-                    }));
+                    return ProbeRuntime::Running(Box::new(status_from_metadata(metadata)));
                 }
             };
             if let Ok(status) = client.runtime_readiness().await {
-                return ProbeRuntime::Running(Box::new(status));
+                if runtime_status_matches_metadata(&status, &metadata) {
+                    return ProbeRuntime::Running(Box::new(status));
+                }
             }
-            // TCP readiness failed but the daemon PID is alive — report Running
-            // with metadata so callers treat the daemon as live (unreachable).
-            return ProbeRuntime::Running(Box::new(RuntimeStatusResponse {
-                ok: true,
-                healthy: false,
-                home_dir: metadata.home_dir.clone(),
-                socket_path: metadata.socket_path.clone(),
-                http_addr: metadata.http_addr.clone(),
-                pid: metadata.pid,
-                started_at: metadata.started_at,
-                config_fingerprint: metadata.config_fingerprint.clone(),
-                activity: None,
-                startup_surface: None,
-                runtime_surface: None,
-                last_failure: None,
-            }));
+            // TCP readiness failed or reached a different runtime; report
+            // Running with metadata so callers keep the recorded daemon process
+            // as the lifecycle anchor.
+            return ProbeRuntime::Running(Box::new(status_from_metadata(metadata)));
         }
     }
 
@@ -911,6 +905,33 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
         Err(_) => ProbeRuntime::Stopped {
             occupied_socket: false,
         },
+    }
+}
+
+pub(crate) fn runtime_status_matches_metadata(
+    status: &RuntimeStatusResponse,
+    metadata: &RuntimeServiceMetadata,
+) -> bool {
+    status.pid == metadata.pid
+        && status.home_dir == metadata.home_dir
+        && status.socket_path == metadata.socket_path
+        && status.config_fingerprint == metadata.config_fingerprint
+}
+
+fn status_from_metadata(metadata: RuntimeServiceMetadata) -> RuntimeStatusResponse {
+    RuntimeStatusResponse {
+        ok: true,
+        healthy: false,
+        home_dir: metadata.home_dir,
+        socket_path: metadata.socket_path,
+        http_addr: metadata.http_addr,
+        pid: metadata.pid,
+        started_at: metadata.started_at,
+        config_fingerprint: metadata.config_fingerprint,
+        activity: None,
+        startup_surface: None,
+        runtime_surface: None,
+        last_failure: None,
     }
 }
 
