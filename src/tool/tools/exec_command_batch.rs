@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use crate::{
     runtime::RuntimeHandle,
     tool::{
-        helpers::{command_preview, invalid_tool_input, parse_tool_args},
+        helpers::{command_preview, invalid_tool_input, parse_tool_args_with_recovery_hint},
         spec::ToolResultStatus,
         ToolError, ToolResult,
     },
@@ -23,14 +23,14 @@ use super::{serialize_success, BuiltinToolDefinition};
 pub(crate) const NAME: &str = "ExecCommandBatch";
 const MAX_ITEMS: usize = 12;
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExecCommandBatchArgs {
     pub(crate) items: Vec<ExecCommandBatchItemArgs>,
     pub(crate) stop_on_error: Option<bool>,
 }
 
-#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExecCommandBatchItemArgs {
     pub(crate) cmd: String,
@@ -57,7 +57,7 @@ pub(crate) async fn execute(
     authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<ToolResult> {
-    let args: ExecCommandBatchArgs = parse_tool_args(NAME, input)?;
+    let args = parse_batch_args(input)?;
     validate_batch_shape(&args)?;
 
     let stop_on_error = args.stop_on_error.unwrap_or(false);
@@ -123,6 +123,66 @@ pub(crate) async fn execute(
             )),
         },
     )
+}
+
+fn parse_batch_args(input: &Value) -> Result<ExecCommandBatchArgs> {
+    parse_tool_args_with_recovery_hint(NAME, input, || exec_command_batch_recovery_hint(input))
+}
+
+fn exec_command_batch_recovery_hint(input: &Value) -> String {
+    let Some(object) = input.as_object() else {
+        return format!("provide input for {NAME} as {{\"items\":[{{\"cmd\":\"...\"}}]}}");
+    };
+
+    let per_item_fields = [
+        "cmd",
+        "workdir",
+        "shell",
+        "login",
+        "yield_time_ms",
+        "max_output_tokens",
+    ];
+    let top_level_per_item_fields = per_item_fields
+        .iter()
+        .copied()
+        .filter(|field| object.contains_key(*field))
+        .collect::<Vec<_>>();
+
+    if object.contains_key("cmd") {
+        if top_level_per_item_fields.len() > 1 {
+            return format!(
+                "Top-level {} are not valid for {NAME}. If this is a single command, use ExecCommand: {{\"cmd\":\"...\"}}. For a batch, move per-command fields into items[]: {{\"items\":[{{\"cmd\":\"...\"}}]}}.",
+                top_level_per_item_fields.join("/")
+            );
+        }
+        return format!(
+            "{NAME} requires {{\"items\":[{{\"cmd\":\"...\"}}]}}. If you only need to run one command, use ExecCommand instead: {{\"cmd\":\"...\"}}. Use {NAME} only when running multiple sequential commands: {{\"items\":[{{\"cmd\":\"...\"}},{{\"cmd\":\"...\"}}]}}."
+        );
+    }
+
+    if !top_level_per_item_fields.is_empty() {
+        return format!(
+            "Top-level {} are not valid for {NAME}; they are per-item fields. If this is a single command, use ExecCommand. For a batch, move them into items[]: {{\"items\":[{{\"cmd\":\"...\"}}]}}.",
+            top_level_per_item_fields.join("/")
+        );
+    }
+
+    let item_has_interactive_field =
+        object
+            .get("items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.as_object().is_some_and(|item| {
+                        item.contains_key("tty") || item.contains_key("accepts_input")
+                    })
+                })
+            });
+    if item_has_interactive_field {
+        return "ExecCommandBatch items do not accept `tty` or `accepts_input`; use ExecCommand for interactive commands, or remove those fields from batch items.".to_string();
+    }
+
+    format!("provide input for {NAME} that matches the published tool schema")
 }
 
 fn validate_batch_shape(args: &ExecCommandBatchArgs) -> Result<()> {
@@ -307,38 +367,56 @@ fn render_exec_item(lines: &mut Vec<String>, result: Option<&ExecCommandResult>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool::ToolError;
 
     #[test]
-    fn rejects_unknown_fields_in_items() {
-        // tty is not a valid field on ExecCommandBatchItemArgs; serde deny_unknown_fields
-        // should reject it at parse time.
+    fn rejects_top_level_cmd_with_exec_command_hint() {
+        let input = serde_json::json!({
+            "cmd": "git status",
+            "max_output_tokens": 1000
+        });
+        let error = parse_batch_args(&input).unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        assert!(tool_error
+            .details
+            .as_ref()
+            .and_then(|value| value.get("parse_error"))
+            .and_then(|value| value.as_str())
+            .is_some_and(|message| message.contains("cmd")));
+        assert!(tool_error.recovery_hint.as_deref().is_some_and(|hint| {
+            hint.contains("ExecCommand")
+                && hint.contains("single command")
+                && hint.contains("items[]")
+                && hint.contains("{\"items\":[{\"cmd\":\"...\"}]}")
+        }));
+    }
+
+    #[test]
+    fn rejects_interactive_item_fields_with_exec_command_hint() {
         let input = serde_json::json!({
             "items": [{
-                "cmd": "echo hello",
+                "cmd": "python -i",
                 "tty": true
             }]
         });
-        let err = match serde_json::from_value::<ExecCommandBatchArgs>(input) {
-            Err(e) => e.to_string(),
-            Ok(_) => panic!("tty should cause deserialization failure"),
-        };
-        assert!(err.contains("tty"), "error should mention tty: {err}");
+        let error = parse_batch_args(&input).unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
 
-        // Same for accepts_input
-        let input = serde_json::json!({
-            "items": [{
-                "cmd": "echo hello",
-                "accepts_input": true
-            }]
-        });
-        let err = match serde_json::from_value::<ExecCommandBatchArgs>(input) {
-            Err(e) => e.to_string(),
-            Ok(_) => panic!("accepts_input should cause deserialization failure"),
-        };
-        assert!(
-            err.contains("accepts_input"),
-            "error should mention accepts_input: {err}"
-        );
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        assert!(tool_error
+            .details
+            .as_ref()
+            .and_then(|value| value.get("parse_error"))
+            .and_then(|value| value.as_str())
+            .is_some_and(|message| message.contains("tty")));
+        assert!(tool_error.recovery_hint.as_deref().is_some_and(|hint| {
+            hint.contains("tty")
+                && hint.contains("accepts_input")
+                && hint.contains("ExecCommand")
+                && hint.contains("interactive")
+        }));
     }
 
     #[test]
