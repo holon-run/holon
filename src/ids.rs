@@ -1,12 +1,15 @@
 use uuid::Uuid;
 
-const SHORT_RANDOM_HEX_LEN: usize = 15; // 60 bits
+const SHORT_RANDOM_HEX_LEN: usize = 15; // 15 random hex nibbles ~= 60 bits
+const UUID_VERSION_NIBBLE_INDEX: usize = 12;
 
 fn short_random_hex() -> String {
     Uuid::new_v4()
         .simple()
         .to_string()
         .chars()
+        .enumerate()
+        .filter_map(|(index, ch)| (index != UUID_VERSION_NIBBLE_INDEX).then_some(ch))
         .take(SHORT_RANDOM_HEX_LEN)
         .collect()
 }
