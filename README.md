@@ -1,20 +1,27 @@
 # Holon
 
-Holon lets AI agents keep working in your local workspace across prompts,
-terminal sessions, and external events.
+English|[中文](README.zh-CN.md)
 
-Most AI agent tools optimize for a conversation surface, a hosted assistant, or
-one active coding session. Holon focuses on the lifecycle around the work
-itself. It runs as a local, headless server-client runtime: clients can connect,
-submit work, disconnect, reconnect, inspect progress, and receive final briefs
-while the runtime keeps the work alive.
+Holon is a **local workbench for agents doing continuous work**.
 
-Each Holon agent owns one durable work session inside that runtime. Its queue,
-workspace context, WorkItems, sleep/wake state, execution history, and delivery
-path stay attached to the agent instead of being lost with a single client
-connection.
+Holon itself is not an agent. It provides a local working environment for
+multiple agents. Agents understand goals and drive execution; Holon treats
+"work" as the core unit, preserving state, organizing context, recording waits
+and wakes, so tasks that span sessions, commands, human confirmation, or
+external events can resume at the right time and eventually deliver results back
+to the operator.
 
-Holon is part of the Holon Run local-first AI infrastructure stack.
+## What does Holon provide?
+
+| Capability | What it means |
+|---|---|
+| **Continuous agent workspace** | Each agent has its own continuous working context in Holon, instead of restarting with every terminal, request, or client connection. |
+| **Work-first task model** | Holon organizes tasks, waits, execution progress, and final delivery as explicit Work, instead of leaving them scattered across conversations. |
+| **Event-driven wait and wake** | Agents can wait for task results, external events, or operator input, then return to the corresponding work when the condition is satisfied. |
+| **Explicit context and trust boundaries** | Holon distinguishes operator input, external events, tool results, and internal execution traces so information from different origins is not mixed together. |
+| **Local-first execution environment** | Holon is built for local repositories, shell, worktrees, and development toolchains, letting agents execute tasks in the real working environment. |
+
+> Keep agent work alive in your local workspace.
 
 ## Install
 
@@ -26,216 +33,188 @@ brew install holon
 holon --help
 ```
 
-Direct binaries are also available from the
-[latest GitHub Release](https://github.com/holon-run/holon/releases/latest) for
-Linux amd64, macOS amd64, and macOS arm64.
+You can also download prebuilt binaries for Linux amd64, macOS amd64, and macOS
+arm64 from [GitHub Releases](https://github.com/holon-run/holon/releases/latest).
 
-The command examples below assume `holon` is installed on `PATH`.
+The examples below assume `holon` is installed on `PATH`.
 
 ## Provider setup
 
-Holon needs a model provider before it can run agent turns. For the fastest
-local setup, export a provider key and choose a model:
+Holon needs a model provider before it can run agents. It mainly supports three
+setup paths:
+
+- **Local credential storage**: recommended for daily use. Manage API keys
+  through credential profiles, avoiding dependence on environment variables that
+  must be injected before the daemon starts.
+- **Built-in providers**: supports common providers such as Anthropic, OpenAI,
+  DeepSeek, OpenRouter, Qwen, GLM, Xiaomi, Kimi, and MiniMax.
+- **External login / custom providers**: `openai-codex/...` can reuse a local
+  `codex login` session and supports Codex subscriptions. You can also connect
+  custom providers with compatible protocols.
+
+The recommended local setup is to save the API key first, then point the
+provider at the corresponding credential profile:
 
 ```bash
-# Anthropic-compatible provider
-export ANTHROPIC_AUTH_TOKEN="your-api-key"
-holon config set model.default "anthropic/claude-sonnet-4-6"
+printf '%s' "$DEEPSEEK_API_KEY" \
+  | holon config credentials set --kind api_key --stdin deepseek
 
-# Or OpenAI Responses
-export OPENAI_API_KEY="your-api-key"
-holon config set model.default "openai/gpt-5.4"
+holon config providers set deepseek \
+  --credential-source credential_profile \
+  --credential-kind api_key \
+  --credential-profile deepseek
+
+holon config set model.default "deepseek/deepseek-v4-pro"
+
+# Or use a local Codex login session / Codex subscription
+holon config set model.default "openai-codex/gpt-5.5"
 ```
 
-You can inspect the configured provider state with:
+Inspect the configured state with:
 
 ```bash
 holon config doctor
 holon config models list
 ```
 
-For persistent credentials that avoid shell history and process arguments, use
-the credential store and point the provider at that credential profile:
+For more about providers, credential profiles, custom providers, and the model
+catalog, see:
 
-```bash
-printf '%s' "$ANTHROPIC_AUTH_TOKEN" \
-  | holon config credentials set --kind api_key --stdin anthropic
-
-holon config providers set anthropic \
-  --credential-source credential_profile \
-  --credential-kind api_key \
-  --credential-profile anthropic
-```
-
-Holon can also use OpenAI Codex subscription credentials from an existing local
-`codex login` session when an `openai-codex/...` model is selected.
+- [Configuration Reference](docs/website/reference/configuration.md)
+- [Supported Models](docs/website/reference/models.md)
 
 ## Quickstart
 
-Run a one-shot task in the current repository:
-
-```bash
-holon run \
-  "inspect this repository, find one failing or missing check, and report the smallest next fix" \
-  --json
-```
-
-Run against a specific workspace and working directory:
-
-```bash
-holon run "analyze this package" \
-  --workspace-root /path/to/repo \
-  --cwd /path/to/repo/src
-```
-
-Start the long-running local runtime:
+Start the long-running local runtime first:
 
 ```bash
 holon daemon start
-holon agent status
+holon daemon status
 ```
 
-Open the local operator console:
+Connect the TUI:
 
 ```bash
 holon tui
 ```
 
-Stop the daemon:
+Holon automatically provides a default main agent. There are two ways to create
+a new agent:
+
+- Tell the main agent in the TUI and let it create one for you.
+- Or create one through the CLI:
 
 ```bash
-holon daemon stop
+holon agent create builder --template holon-developer
+holon agent list
 ```
 
-## Feature list
+After that, select an agent in the TUI and start working. After the TUI
+disconnects, the agent continues running in the daemon.
 
-Holon is runtime infrastructure for agent work that must survive beyond one
-client session. The main capability surface is:
-
-- **Durable agent sessions**: agents keep their queue, workspace context,
-  execution history, and delivery state across client disconnects and later
-  reconnects.
-- **Runtime WorkItems**: long-running objectives carry a plan, progress
-  checklist, blockers, waiting state, and completion report inside the runtime
-  instead of living only in chat history.
-- **Event-driven continuation**: agents can sleep, wait for callbacks, timers,
-  webhooks, task results, or other external events, then wake and continue the
-  same work.
-- **Local workspace execution**: agents read files, edit code, run commands, and
-  verify changes in the repositories you explicitly attach.
-- **Worktree-isolated coding work**: coding subtasks and child agents can run in
-  managed git worktrees so longer or riskier work stays separate from the main
-  checkout.
-- **Supervised background tasks and delegation**: agents can delegate commands
-  or child agents as explicit tasks, inspect their status and output, and rejoin
-  results without losing the parent work context.
-- **Local behavior loading**: agents can use repository instructions, agent
-  templates, and local skills without being tied to one hosted assistant
-  product.
-- **Clear trust and delivery boundaries**: Holon preserves input origin and
-  trust metadata, separates internal execution traces from user-facing briefs,
-  and returns explicit final results.
+For more operations, see the [TUI command reference](docs/website/reference/cli.md#terminal-ui)
+and [Daemon management](docs/website/reference/cli.md#daemon-management).
 
 ## Core concepts
 
-Holon is organized around a few runtime primitives:
+Holon breaks agent work into a few explicit runtime objects:
 
-- `agent`: a long-lived runtime identity with local state
-- `WorkItem`: a durable objective with plan, progress, blockers, and completion
-  state
-- `queue`: all inputs become queued work
-- `origin`: each input carries source and trust metadata
-- `task`: an execution handle for commands, child agents, and other asynchronous
-  work while a WorkItem or turn is being advanced
-- `sleep` / `wake`: the runtime can wait and resume from explicit signals
-- `workspace`: local repositories are attached and projected explicitly
-- `brief`: user-facing output is distinct from internal reasoning and logs
+- **Agent** is a long-lived local identity with its own queue, state, history,
+  and working context.
+- **WorkItem** represents a continuously advanceable goal, including a plan,
+  progress, blockers, wait conditions, and a completion report.
+- **Task** represents supervised asynchronous execution, such as a command,
+  background task, or child agent.
+- **WaitFor / wake** lets an agent explicitly declare that it is waiting for a
+  task result, external event, or operator input, and resume when the condition
+  is satisfied.
+- **Workspace / worktree** lets agents execute in local repositories and isolate
+  coding tasks into managed worktrees.
+- **Origin / brief** preserves input origin and trust information while keeping
+  internal execution traces separate from operator-visible delivery.
 
-## Common commands
+Together, these concepts solve one problem: agent work should not depend on a
+single chat or terminal connection. It should be observable, resumable,
+waitable, delegable, and deliverable.
 
-Run local agent work:
-
-```bash
-holon run "fix the failing test" --json
-holon run "review this repository"
-```
-
-Start the runtime in the foreground:
-
-```bash
-holon serve
-holon serve --access lan --host 192.168.1.10 --port 7878 --token-file ~/.config/holon/remote.token
-```
-
-Manage the runtime as a daemon:
-
-```bash
-holon daemon start
-holon daemon status
-holon daemon logs
-holon daemon restart
-holon daemon stop
-```
-
-Inspect local state:
-
-```bash
-holon agent list
-holon agent status
-holon transcript --limit 50
-```
+For more detailed explanations, see [Concepts](docs/website/concepts/).
 
 ## Current release
 
-The current Rust-line release is
+The current recommended release is
 [`v0.15.0`](https://github.com/holon-run/holon/releases/tag/v0.15.0).
 
-Highlights:
+`v0.15.0` is the baseline release where the Holon Rust runtime enters public
+compatibility maintenance. Starting from this version, the project will maintain
+compatibility for the CLI, daemon/API semantics, and local persistent storage.
 
-- stable event and lifecycle APIs for daemon clients
-- stronger WorkItem, task, message, and transcript sequencing
-- expanded CLI coverage for runtime lifecycle inspection
-- clearer workspace, worktree, and execution-root behavior
-- updated runtime contracts for ID generation and ledger compatibility
-
-See the [v0.15.0 release notes](https://github.com/holon-run/holon/releases/tag/v0.15.0)
-for the full changelog and release assets.
+See the full changes in the
+[v0.15.0 Release Notes](https://github.com/holon-run/holon/releases/tag/v0.15.0).
 
 ## Status and compatibility
 
-Holon is under active development. The current line is the Rust runtime line,
-starting from `v0.13.0`.
+Holon is under active development. Starting from `v0.15.0`, the project treats
+the following surfaces as public contracts that need compatibility maintenance:
 
-The old Go implementation is available as `v0.12.0`, but new runtime work is
-happening on the Rust line.
+- **CLI**: common commands, arguments, and structured output should remain
+  migratable; breaking changes should be documented with release notes and
+  migration paths.
+- **Interfaces**: daemon client APIs, event semantics, and runtime object fields
+  should remain backward compatible or provide clear versioned evolution paths.
+- **Persistent storage**: local data such as agent state, ledgers, messages,
+  transcripts, WorkItems, and tasks should support upgrades and read
+  compatibility.
 
-Expect breaking changes while the CLI, daemon, and runtime contracts stabilize.
+The current project focus remains the Rust runtime: agent lifecycle, queues,
+WaitFor/wake, tasks, WorkItems, trust boundaries, local workspaces, and
+structured delivery.
 
 ## Project boundaries
 
-Holon focuses on runtime meaning: agent identity, work continuity, execution
+Holon focuses on runtime semantics: agent identity, work continuity, execution
 state, local workspace projection, and operator-visible results.
-
-Holon is not:
-
-- a chat UI
-- an all-in-one agent platform
-- a connector marketplace
-- a workflow automation GUI
-- a full VM or container sandbox product
 
 Adjacent Holon Run projects cover other layers:
 
-- AgentInbox: source hosting, activation, and delivery
-- UXC: unified capability and tool access
-- WebMCP Bridge: browser and web-app edge access
+- **[AgentInbox](https://github.com/holon-run/agentinbox)** — source hosting,
+  activation, and delivery
+- **[UXC](https://github.com/holon-run/uxc)** — unified capability and tool
+  access
+- **[WebMCP Bridge](https://github.com/holon-run/webmcp-bridge)** — browser and
+  web-app edge access
 
-When used together, AgentInbox should wake Holon; Holon should decide what the
-runtime event means.
+When used together, AgentInbox delivers external events to wake Holon; Holon
+decides what those events mean inside the runtime.
+
+## Documentation
+
+Holon's documentation is organized into three layers. See
+[documentation layers](docs/website/concepts/documentation-layers.md).
+
+**Using Holon:**
+
+- [Website docs](https://holon.run) — install, getting started, concepts,
+  guides, and current reference
+- [Security and execution boundaries](docs/website/concepts/security-and-execution-boundaries.md)
+
+**Integrating and operating Holon:**
+
+- [Local operator troubleshooting](docs/local-operator-troubleshooting.md)
+- [Release process](docs/release.md)
+
+**Contributing to the runtime:**
+
+- [Architecture overview](docs/architecture-overview.md) — start here
+- [RFCs](docs/rfcs/README.md) — specification and design contracts
+- [Implementation decisions](docs/implementation-decisions/README.md) — design
+  rationale
+
+## Community
+
+- [GitHub Discussions](https://github.com/holon-run/holon/discussions)
+- [GitHub Issues](https://github.com/holon-run/holon/issues)
 
 ## Build from source
-
-For contributors working from a source checkout:
 
 ```bash
 cargo install --path .
@@ -260,26 +239,6 @@ npm install
 npm test
 ```
 
-## Documentation
+## License
 
-Holon's documentation is organized into three layers. See
-[documentation layers](docs/website/concepts/documentation-layers.md) for the
-full map.
-
-**Using Holon:**
-
-- [Website docs](https://holon.run) — install, getting started, concepts,
-  guides, and current reference
-- [Security and execution boundaries](docs/website/concepts/security-and-execution-boundaries.md)
-
-**Integrating and operating Holon:**
-
-- [Local operator troubleshooting](docs/local-operator-troubleshooting.md)
-- [Release process](docs/release.md)
-
-**Contributing to the runtime:**
-
-- [Architecture overview](docs/architecture-overview.md) — start here
-- [RFCs](docs/rfcs/README.md) — canonical design contracts
-- [Implementation decisions](docs/implementation-decisions/README.md) — design
-  rationale
+This project is licensed under the [Apache-2.0](LICENSE) license.
