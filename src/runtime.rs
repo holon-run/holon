@@ -1148,6 +1148,18 @@ impl RuntimeHandle {
                 let failed_state = {
                     let mut guard = self.inner.agent.lock().await;
                     if !matches!(guard.state.status, AgentStatus::Stopped) {
+                        // Defense-in-depth: clear a stale pending_fallback_model when
+                        // the current error has no further fallback to delegate to.
+                        // This prevents the agent from becoming permanently stuck on
+                        // a fallback model that is unsupported or unavailable.
+                        if guard.state.pending_fallback_model.is_some() {
+                            let has_fallback = provider_attempt_timeline(&err)
+                                .and_then(|t| t.pending_fallback_model_ref.as_deref())
+                                .is_some();
+                            if !has_fallback {
+                                guard.state.pending_fallback_model = None;
+                            }
+                        }
                         scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
                     }
                     guard.current_run_abort = None;
