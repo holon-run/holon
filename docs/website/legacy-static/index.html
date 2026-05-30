@@ -4,9 +4,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Holon - Local-First Runtime for Long-Lived Agents</title>
+    <title>Holon - Local Workbench for Continuous Agent Work</title>
     <meta name="description"
-        content="Holon is a local-first, headless, event-driven runtime for long-lived agents that can wait, wake, delegate, and keep durable state.">
+        content="Holon is a local workbench for agents doing continuous work with explicit waits, wakes, state, and trust boundaries.">
     <link rel="stylesheet" href="styles.css">
     <link rel="icon" type="image/png" href="assets/logo.png">
     <!-- Google Fonts -->
@@ -66,13 +66,13 @@
                 <div class="hero-text">
                     <a href="https://github.com/holon-run/holon/releases" id="version-badge" class="badge">Latest
                         Release</a>
-                    <h1>Keep Agents.<br>Wake Them Later.<br>Make Work Durable.</h1>
-                    <p class="subhead">Holon is a local-first runtime for agents that should keep working across time,
-                        not just answer one prompt and disappear.</p>
-                    <p class="description">Headless by default. Event-driven. Explicit about state, trust, tools, and
-                        user-facing delivery.</p>
+                    <h1>Keep Work Alive.<br>Wait Explicitly.<br>Wake With Context.</h1>
+                    <p class="subhead">Holon is a local workbench for agents doing continuous work,
+                        not a throwaway chat session.</p>
+                    <p class="description">Agents drive execution; Holon preserves work, context, waits, wakes,
+                        and operator-facing delivery.</p>
                     <div class="cta-group">
-                        <a href="https://github.com/holon-run/holon" class="btn btn-primary">Get Started on GitHub</a>
+                        <a href="/getting-started/" class="btn btn-primary">Read the Docs</a>
                         <a href="#quickstart" class="btn btn-secondary">See Quickstart</a>
                     </div>
                 </div>
@@ -84,14 +84,14 @@
                             <span class="dot green"></span>
                         </div>
                         <div class="terminal-body">
-	                            <div class="code-line"><span class="prompt">$</span> holon run "watch this task"</div>
-	                            <div class="code-line dimmed">Loading durable agent state...</div>
-	                            <div class="code-line dimmed">Opening tools and workspace context...</div>
-	                            <div class="code-line info">Agent entered waiting state:</div>
-	                            <div class="code-line indent">timer, callback, or operator wake</div>
-	                            <div class="code-line dimmed">Recording transcript and task state...</div>
-	                            <div class="code-line success">✔ Ready to resume when work arrives</div>
-	                            <div class="code-line info">http://127.0.0.1:8787/agents/default/status</div>
+	                            <div class="code-line"><span class="prompt">$</span> holon daemon start</div>
+	                            <div class="code-line dimmed">Starting local runtime...</div>
+	                            <div class="code-line dimmed">Preserving agent state and queues...</div>
+	                            <div class="code-line info">Agent can WaitFor:</div>
+	                            <div class="code-line indent">task result, external event, or operator input</div>
+	                            <div class="code-line dimmed">Recording progress and delivery state...</div>
+	                            <div class="code-line success">✔ Ready to wake with context intact</div>
+	                            <div class="code-line info">$ holon tui</div>
 	                            <div class="code-line"><span class="prompt">$</span> _</div>
 	                        </div>
 	                    </div>
@@ -103,47 +103,51 @@
             <div class="container">
                 <div class="section-header center">
                     <h2>Quickstart</h2>
-                    <p>Build the current Rust runtime locally and try the CLI.</p>
+                    <p>Install Holon, configure a model, then start the local runtime.</p>
                 </div>
                 <div class="quickstart-tabs" role="tablist">
                     <button class="tab-button active" data-tab="local-cli" role="tab" aria-selected="true"
-                        aria-controls="local-cli">Local CLI</button>
+                        aria-controls="local-cli">Install</button>
                     <button class="tab-button" data-tab="daemon" role="tab" aria-selected="false"
-                        aria-controls="daemon">Daemon</button>
+                        aria-controls="daemon">Run</button>
                 </div>
                 <div class="tab-content active" id="local-cli" role="tabpanel">
                     <div class="code-block">
-                        <pre><code># Build from source
-git clone https://github.com/holon-run/holon.git
-cd holon
-cargo build
+                        <pre><code>brew tap holon-run/tap
+brew install holon
+holon --help
 
-# Run a one-shot prompt through the runtime
-cargo run -- run "Summarize the current workspace"
+# Recommended: save an API key in a local credential profile
+printf '%s' "$DEEPSEEK_API_KEY" \
+  | holon config credentials set --kind api_key --stdin deepseek
 
-# Inspect CLI surfaces
-cargo run -- --help
-cargo run -- agent --help</code></pre>
+holon config providers set deepseek \
+  --credential-source credential_profile \
+  --credential-kind api_key \
+  --credential-profile deepseek
+
+holon config set model.default "deepseek/deepseek-v4-pro"
+
+# Or use a local Codex login session / Codex subscription
+holon config set model.default "openai-codex/gpt-5.5"
+holon config doctor</code></pre>
                     </div>
                     <div class="quickstart-note">
-                        <strong>Status:</strong> The Rust runtime is now the main development line. Release packaging
-                        and old workflow automation will be rebuilt after this cutover.
+                        <strong>Provider setup:</strong> Holon supports built-in providers such as Anthropic, OpenAI, DeepSeek, OpenRouter, Qwen, GLM, Xiaomi, Kimi, and MiniMax.
                     </div>
                 </div>
                 <div class="tab-content" id="daemon" role="tabpanel">
                     <div class="code-block">
-                        <pre><code># Start the local HTTP runtime
-cargo run -- serve
+                        <pre><code>holon daemon start
+holon daemon status
+holon tui
 
-# In another shell, inspect status
-curl http://127.0.0.1:8787/runtime/status
-
-# List public agents
-curl http://127.0.0.1:8787/agents/list</code></pre>
+# Optional: create a specialized agent
+holon agent create builder --template holon-developer
+holon agent list</code></pre>
                     </div>
                     <div class="quickstart-note">
-                        <strong>Model:</strong> Holon keeps runtime state, events, tasks, transcripts, and agent
-                        control surfaces explicit so long-lived work remains inspectable.
+                        <strong>Model:</strong> The daemon keeps agent state alive after a TUI disconnects, so work can resume when the next wake arrives.
                     </div>
                 </div>
             </div>
@@ -175,7 +179,7 @@ curl http://127.0.0.1:8787/agents/list</code></pre>
                     <div class="feature-card">
                         <div class="icon-box">🔄</div>
                         <h3>Wait And Wake</h3>
-                        <p>Let agents sleep on timers, callbacks, tasks, or operator input and resume with context intact.</p>
+                        <p>Let agents WaitFor task results, external events, or operator input and resume with context intact.</p>
                     </div>
                     <div class="feature-card">
                         <div class="icon-box">🔌</div>
@@ -226,7 +230,7 @@ curl http://127.0.0.1:8787/agents/list</code></pre>
                         <div class="step-number">04</div>
                         <div class="step-content">
                             <h4>Wait</h4>
-                            <p>Sleep or delegate</p>
+                            <p>WaitFor or delegate</p>
                         </div>
                     </div>
                     <div class="arrow">→</div>
@@ -243,8 +247,8 @@ curl http://127.0.0.1:8787/agents/list</code></pre>
 
         <section class="cta-section">
             <div class="container center">
-                <h2>Build agents that can keep working.</h2>
-                <p class="tagline">Holon makes runtime state explicit.</p>
+                <h2>Keep agent work alive in your local workspace.</h2>
+                <p class="tagline">Holon makes work, waits, wakes, and delivery explicit.</p>
                 <div class="cta-group">
                     <a href="https://github.com/holon-run/holon" class="btn btn-primary btn-large">Get Started on
                         GitHub</a>
@@ -261,7 +265,7 @@ curl http://127.0.0.1:8787/agents/list</code></pre>
                     <span>Holon</span>
                 </div>
                 <div class="copyright">
-                    © 2025 Holon Project. Open Source.
+                    © 2026 Holon Project. Apache-2.0.
                 </div>
             </div>
         </div>

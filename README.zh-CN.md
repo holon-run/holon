@@ -1,12 +1,24 @@
 # Holon
 
-[English](README.md)|中文
+[English](README.md) | 中文
+
+[![Release](https://img.shields.io/github/v/release/holon-run/holon?sort=semver)](https://github.com/holon-run/holon/releases/latest)[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Holon 是 **为 Agent 提供持续工作环境的本地工作台**。
 
-Holon 本身不是 Agent，而是为多个 Agent 提供本地工作环境。Agent 负责理解目标并推进执行；
-Holon 把“工作”作为基本单位，负责保存状态、组织上下文、记录等待与唤醒，
-让跨会话、跨命令、跨人工确认或外部事件的任务能够在合适的时间恢复，并最终把结果交付给操作者。
+Holon 本身不是 Agent，而是为多个 Agent 提供本地工作环境。Agent 负责理解目标并推进执行；Holon 把“工作”作为基本单位，负责保存状态、组织上下文、记录等待与唤醒，让跨会话、跨命令、跨人工确认或外部事件的任务能够在合适的时间恢复，并最终把结果交付给操作者。
+
+## 目录
+
+- [Holon 提供什么？](#holon-提供什么)
+- [安装](#安装)
+- [Provider 配置](#provider-配置)
+- [快速开始](#快速开始)
+- [核心概念](#核心概念)
+- [状态与兼容性](#状态与兼容性)
+- [项目边界](#项目边界)
+- [文档](#文档)
+- [从源码构建](#从源码构建)
 
 ## Holon 提供什么？
 
@@ -77,6 +89,8 @@ holon config models list
 
 ## 快速开始
 
+### 1. 启动 daemon
+
 先启动本地常驻运行时：
 
 ```bash
@@ -84,11 +98,15 @@ holon daemon start
 holon daemon status
 ```
 
+### 2. 连接 TUI
+
 连接 TUI：
 
 ```bash
 holon tui
 ```
+
+### 3. 选择或创建 Agent
 
 Holon 会自动提供默认的 main Agent。创建新 Agent 有两种方式：
 

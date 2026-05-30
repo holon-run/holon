@@ -1,54 +1,35 @@
 ---
 title: Holon
-summary: A local-first runtime that gives agents a durable home, explicit work queues, and clear trust boundaries.
+summary: A local workbench for agents doing continuous work.
 order: 1
 ---
 
 # Holon
 
-**Holon gives every agent a durable home.**
+**Holon is a local workbench for agents doing continuous work.**
 
-Instead of starting each agent as a throwaway chat session, Holon runs agents
-inside a local-first, headless, event-driven runtime. Agents keep state across
-turns, manage queued work, supervise delegated tasks, and respect explicit trust
-boundaries — all on your machine.
+Holon itself is not an agent. It provides a local working environment for
+multiple agents. Agents understand goals and drive execution; Holon treats work
+as the core unit, preserving state, organizing context, recording waits and
+wakes, so tasks that span sessions, commands, human confirmation, or external
+events can resume at the right time and eventually deliver results back to the
+operator.
 
-## Who Holon is for
+## What Holon provides
 
-Holon is built for three kinds of users right now:
+| Capability | What it means |
+|---|---|
+| **Continuous agent workspace** | Each agent has its own continuous working context in Holon, instead of restarting with every terminal, request, or client connection. |
+| **Work-first task model** | Holon organizes tasks, waits, execution progress, and final delivery as explicit Work, instead of leaving them scattered across conversations. |
+| **Event-driven wait and wake** | Agents can wait for task results, external events, or operator input, then return to the corresponding work when the condition is satisfied. |
+| **Explicit context and trust boundaries** | Holon distinguishes operator input, external events, tool results, and internal execution traces so information from different origins is not mixed together. |
+| **Local-first execution environment** | Holon is built for local repositories, shell, worktrees, and development toolchains, letting agents execute tasks in the real working environment. |
 
-**Agent runtime builders** who want a durable execution foundation — not a
-prompt chain or a framework that conflates the model call with the agent's
-lifecycle.
-
-**Automation and integration developers** who need agents that run locally, wait
-for external events, resume work, and produce structured output without a
-browser tab open.
-
-**Contributors** evaluating whether Holon's runtime model matches their
-expectations for lifecycle, trust, and local-first design before investing
-deeper.
-
-## How Holon is different
-
-Most agent tools flatten everything into a chat message. Holon preserves
-structure:
-
-- **Local-first** — the runtime runs on your machine, not a cloud session.
-  Agents own durable homes, and you control persistence.
-- **Headless and long-lived** — agents sleep, wake, queue work, and continue
-  across turns without a UI needing to stay connected.
-- **Explicit lifecycle** — work items, tasks, queues, triggers, and child agents
-  are first-class runtime concepts, not hidden state in a prompt loop.
-- **Trust-aware provenance** — operator input, external events, and delegated
-  outputs each carry their origin and trust classification through the runtime
-  instead of being merged into one undifferentiated stream.
-
-Holon is designed for APIs, workers, CLIs, and integrations before UI shells.
-The agent home is a real directory; the work queue is explicit; the runtime
-contracts are visible.
+> Keep agent work alive in your local workspace.
 
 ## Try Holon
+
+Install the latest release with Homebrew:
 
 ```bash
 brew tap holon-run/tap
@@ -56,72 +37,108 @@ brew install holon
 holon --help
 ```
 
-This gets you from zero to a running Holon binary. To build from source or
-contribute, see [Getting started](/getting-started/). Next, follow the
-[getting started guide](/getting-started/) to create your first agent.
+Then configure a model provider, start the local daemon, and connect the TUI:
 
-> **Holon is early-stage software.** The runtime model is stabilizing, but CLI
-> shapes, config schemas, and provider surfaces may change. See the
-> [reference pages](/reference/) for the current surface and the repository
-> [RFC index](https://github.com/holon-run/holon/tree/main/docs/rfcs) for design direction.
+```bash
+# Recommended: save an API key in a local credential profile
+printf '%s' "$DEEPSEEK_API_KEY" \
+  | holon config credentials set --kind api_key --stdin deepseek
+
+holon config providers set deepseek \
+  --credential-source credential_profile \
+  --credential-kind api_key \
+  --credential-profile deepseek
+
+holon config set model.default "deepseek/deepseek-v4-pro"
+
+# Or use a local Codex login session / Codex subscription
+holon config set model.default "openai-codex/gpt-5.5"
+
+holon config doctor
+
+holon daemon start
+holon daemon status
+holon tui
+```
+
+Holon automatically provides a default main agent. You can also create a more
+specialized agent from a template:
+
+```bash
+holon agent create builder --template holon-developer
+holon agent list
+```
+
+Holon supports built-in providers such as Anthropic, OpenAI, DeepSeek,
+OpenRouter, Qwen, GLM, Xiaomi, Kimi, and MiniMax. For a fuller setup path, see
+[Getting started](/getting-started/), the
+[configuration reference](/reference/configuration), and
+[supported models](/reference/models).
+
+## Core concepts
+
+Holon breaks agent work into a few explicit runtime objects:
+
+- **Agent** is a long-lived local identity with its own queue, state, history,
+  and working context.
+- **WorkItem** represents a continuously advanceable goal, including a plan,
+  progress, blockers, wait conditions, and a completion report.
+- **Task** represents supervised asynchronous execution, such as a command,
+  background task, or child agent.
+- **WaitFor / wake** lets an agent explicitly declare that it is waiting for a
+  task result, external event, or operator input, and resume when the condition
+  is satisfied.
+- **Workspace / worktree** lets agents execute in local repositories and isolate
+  coding tasks into managed worktrees.
+- **Origin / brief** preserves input origin and trust information while keeping
+  internal execution traces separate from operator-visible delivery.
+
+Together, these concepts solve one problem: agent work should not depend on a
+single chat or terminal connection. It should be observable, resumable,
+waitable, delegable, and deliverable.
+
+## Status and compatibility
+
+The current recommended release is
+[`v0.15.0`](https://github.com/holon-run/holon/releases/tag/v0.15.0).
+
+`v0.15.0` is the baseline release where the Holon Rust runtime enters public
+compatibility maintenance. Starting from this version, the project maintains
+compatibility expectations for the CLI, daemon/API semantics, and local
+persistent storage.
+
+Holon is still under active development. The current focus remains the Rust
+runtime: agent lifecycle, queues, WaitFor/wake, tasks, WorkItems, trust
+boundaries, local workspaces, and structured delivery.
+
+## Project boundaries
+
+Holon focuses on runtime semantics: agent identity, work continuity, execution
+state, local workspace projection, and operator-visible results.
+
+Adjacent Holon Run projects cover other layers:
+
+- **[AgentInbox](https://github.com/holon-run/agentinbox)** — source hosting,
+  activation, and delivery
+- **[UXC](https://github.com/holon-run/uxc)** — unified capability and tool
+  access
+- **[WebMCP Bridge](https://github.com/holon-run/webmcp-bridge)** — browser and
+  web-app edge access
+
+When used together, AgentInbox delivers external events to wake Holon; Holon
+decides what those events mean inside the runtime.
 
 ## Which docs should I read?
 
 - **I want to install and run Holon** → [Getting started](/getting-started/)
 - **I want to understand the concepts** → [Concepts](/concepts/), especially
   [runtime model](/concepts/runtime-model) and
-  [documentation layers](/concepts/documentation-layers)
+  [security and execution boundaries](/concepts/security-and-execution-boundaries)
 - **I want to find a command or config key** → [Reference](/reference/)
 - **I want to integrate Holon** → [Integration guide](/guides/integration)
 - **I want to contribute to the runtime** →
   [Architecture overview](https://github.com/holon-run/holon/blob/main/docs/architecture-overview.md)
   and [RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs)
-
-## Documentation map
-
-- [Getting started](/getting-started/) — your first Holon agent run, from
-  install to first interaction.
-- [Concepts](/concepts/) — the mental model: agents, work items, tasks, queues,
-- **[Security and execution boundaries](/concepts/security-and-execution-boundaries)** — what Holon guards and what you must guard.
-  and trust boundaries.
-- [Guides](/guides/) — task-oriented workflows for operating, integrating, and
-  extending Holon.
-- [Reference](/reference/) — current CLI, configuration, and control-plane
-  surface documentation.
-  experimental.
-- [Specs](/spec/) — current implementation-facing runtime contracts for
-  maintainers and contributors.
-
-## For contributors
-
-Holon's internal design material lives in the [repository `docs/`
-directory](https://github.com/holon-run/holon/tree/main/docs): RFCs define
-runtime contracts, [spec pages](/spec/) extract current verified contracts,
-implementation decisions record architecture rationale, and archived notes
-preserve historical context. These are maintainer-facing documents; you do not
-need to read them to use Holon, but they are the canonical source when you
-need to understand or change runtime behavior.
-
-## About this site
-
-This website is built from source Markdown with mdorigin. Every page is
-available as both rendered HTML and raw Markdown, and `Accept: text/markdown`
-requests return machine-readable content. See the
-[documentation workflow guide](/guides/documentation-workflow) for build and
-preview details.
-
-## Markdown-native access
-
-mdorigin keeps the site useful for both humans and agents:
-
-- Browser routes render HTML.
-- Explicit `.md` routes return the source Markdown.
-- `Accept: text/markdown` requests can retrieve Markdown content directly.
-- Build commands can generate search data and Cloudflare Worker assets.
-
-Build commands are covered in the [documentation workflow
-guide](/guides/documentation-workflow). The production `siteUrl` is
-`https://holon.run`.
 
 <!-- INDEX:START -->
 

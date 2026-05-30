@@ -1,6 +1,6 @@
 {
   "siteTitle": "Holon",
-  "siteDescription": "Headless runtime for long-lived agents that wait, wake, delegate, and preserve durable context.",
+  "siteDescription": "A local workbench for agents doing continuous work with explicit waits, wakes, state, and trust boundaries.",
   "siteUrl": "https://holon.run",
   "favicon": "/assets/logo.png",
   "socialImage": "/assets/logo.png",
