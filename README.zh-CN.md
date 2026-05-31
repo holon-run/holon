@@ -141,13 +141,13 @@ Holon 把 Agent 工作拆成几个明确的运行时对象：
 ## 当前版本
 
 当前推荐版本为
-[`v0.15.0`](https://github.com/holon-run/holon/releases/tag/v0.15.0)。
+[`v0.15.1`](https://github.com/holon-run/holon/releases/tag/v0.15.1)。
 
 `v0.15.0` 是 Holon Rust runtime 进入公开兼容性维护阶段的基线版本。
 从该版本开始，项目会开始维护 CLI、daemon/API 语义和本地持久化存储的兼容性。
 
 完整变更请查看
-[v0.15.0 Release Notes](https://github.com/holon-run/holon/releases/tag/v0.15.0)。
+[v0.15.1 Release Notes](https://github.com/holon-run/holon/releases/tag/v0.15.1)。
 
 ## 状态与兼容性
 
