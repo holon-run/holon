@@ -2357,6 +2357,9 @@ fn resolve_provider_registry(
     credential_store: &CredentialStoreFile,
 ) -> Result<ProviderRegistry> {
     let mut registry = built_in_provider_registry_with_settings(settings_env)?;
+    for provider in registry.values_mut() {
+        provider.credential = None;
+    }
     for (id, provider_config) in &stored_config.providers {
         let built_in = registry.remove(id);
         let runtime = materialize_provider_config(
@@ -4239,6 +4242,10 @@ mod tests {
         save_persisted_config_at(
             &persisted_config_path(dir.path()),
             &HolonConfigFile {
+                model: ModelConfigFile {
+                    default: Some("openai-codex/gpt-5.4".into()),
+                    ..ModelConfigFile::default()
+                },
                 providers: BTreeMap::from([(
                     ProviderId::openai_codex(),
                     ProviderConfigFile {

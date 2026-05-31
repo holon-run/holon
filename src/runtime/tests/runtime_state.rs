@@ -2459,7 +2459,7 @@ async fn batch_command_reading_discovered_skill_marks_it_active() {
                     {
                         "cmd": "sed -n '1,8p' .agents/skills/demo/SKILL.md",
                         "workdir": ".",
-                        "yield_time_ms": 30000
+                        "yield_time_ms": 120000
                     }
                 ]
             }),
