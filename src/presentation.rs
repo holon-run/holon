@@ -12,7 +12,10 @@ use serde_json::Value;
 
 use crate::operator_event::OperatorEventCategory;
 use crate::tui::projection::ProjectionEventRecord;
-use crate::types::{BriefKind, BriefRecord, MessageBody, MessageEnvelope, MessageOrigin};
+use crate::types::{
+    BriefKind, BriefRecord, MessageBody, MessageEnvelope, MessageOrigin, WaitingIntentRecord,
+    WaitingIntentScope, WorkItemRecord,
+};
 
 // ── Supporting types ───────────────────────────────────────────────────────
 
@@ -86,24 +89,40 @@ impl TaskTransition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkItemTransition {
     Created,
+    Updated,
     Completed,
     Picked,
+    FocusReleased,
     EnqueueRequested,
+    Waiting,
+    WaitResolved,
+    WaitCancelled,
+    ReminderInjected,
+    ReminderSkipped,
     DelegationCreated,
     DelegationCompleted,
     TurnEndCommitted,
+    TurnEndSkipped,
 }
 
 impl WorkItemTransition {
     pub fn label(&self) -> &'static str {
         match self {
             WorkItemTransition::Created => "created",
+            WorkItemTransition::Updated => "updated",
             WorkItemTransition::Completed => "completed",
             WorkItemTransition::Picked => "picked",
+            WorkItemTransition::FocusReleased => "focus released",
             WorkItemTransition::EnqueueRequested => "enqueued",
+            WorkItemTransition::Waiting => "waiting",
+            WorkItemTransition::WaitResolved => "wait resolved",
+            WorkItemTransition::WaitCancelled => "wait cancelled",
+            WorkItemTransition::ReminderInjected => "reminder injected",
+            WorkItemTransition::ReminderSkipped => "reminder skipped",
             WorkItemTransition::DelegationCreated => "delegated",
             WorkItemTransition::DelegationCompleted => "delegation completed",
             WorkItemTransition::TurnEndCommitted => "turn-end committed",
+            WorkItemTransition::TurnEndSkipped => "turn-end skipped",
         }
     }
 }
@@ -327,6 +346,7 @@ pub enum PresentationItem {
     WorkItemBookkeeping {
         item_id: String,
         transition: WorkItemTransition,
+        summary: String,
     },
     WorkspaceChange {
         path: String,
@@ -361,11 +381,11 @@ impl PresentationItem {
             PresentationItem::PatchFailure { .. } => 4,
             PresentationItem::ToolAction { .. } => 4,
             PresentationItem::PlanShown { .. } => 4,
+            PresentationItem::WorkItemBookkeeping { .. } => 4,
 
             PresentationItem::ProviderRound { .. } => 5,
             PresentationItem::InternalTransition { .. } => 5,
             PresentationItem::TaskLifecycle { .. } => 5,
-            PresentationItem::WorkItemBookkeeping { .. } => 5,
             PresentationItem::WorkspaceChange { .. } => 5,
             PresentationItem::ContinuationDetail { .. } => 5,
             PresentationItem::GenericEvent { .. } => 5,
@@ -660,10 +680,16 @@ impl Renderable for PresentationItem {
             PresentationItem::WorkItemBookkeeping {
                 item_id,
                 transition,
+                summary,
             } => {
+                let detail = if summary.trim().is_empty() {
+                    item_id.clone()
+                } else {
+                    summary.clone()
+                };
                 vec![RenderedCell::new(
                     "System",
-                    format!("work-item {} {}", item_id, transition.label()),
+                    format!("work item {}: {}", transition.label(), detail),
                 )]
             }
 
@@ -846,6 +872,29 @@ impl PresentationReducer {
                     }
                 }
 
+                "waiting_intent_created" => {
+                    if let Some(item) = work_item_waiting_notice_item(event, events) {
+                        items.push(TimedItem::from_event(item, event));
+                    } else {
+                        items.push(TimedItem::from_event(
+                            self.event_to_presentation(event),
+                            event,
+                        ));
+                    }
+                }
+
+                "work_item_waiting_intents_cancelled" => {
+                    let (item_id, summary) = work_item_bookkeeping_parts(event, events);
+                    items.push(TimedItem::from_event(
+                        PresentationItem::WorkItemBookkeeping {
+                            item_id,
+                            transition: WorkItemTransition::WaitCancelled,
+                            summary,
+                        },
+                        event,
+                    ));
+                }
+
                 "task_result_received"
                 | "task_child_spawned"
                 | "supervised_child_task_recovery_failed"
@@ -909,34 +958,51 @@ impl PresentationReducer {
                 }
 
                 "work_item_written" => {
-                    let item_id = event
-                        .payload
-                        .get("work_item_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
                     let action = event
                         .payload
                         .get("action")
                         .and_then(|v| v.as_str())
                         .unwrap_or("updated");
-                    let summary = event.summary.clone();
                     if action == "created" || action == "completed" {
                         items.push(TimedItem::from_event(
                             PresentationItem::WorkItemCard {
-                                action: action.to_string(),
-                                summary,
+                                action: work_item_card_action(action).to_string(),
+                                summary: work_item_lifecycle_summary(event),
                             },
                             event,
                         ));
                     } else {
+                        let (item_id, summary) = work_item_bookkeeping_parts(event, events);
                         items.push(TimedItem::from_event(
                             PresentationItem::WorkItemBookkeeping {
-                                item_id: item_id.to_string(),
-                                transition: WorkItemTransition::Created,
+                                item_id,
+                                transition: work_item_written_transition(action),
+                                summary,
                             },
                             event,
                         ));
                     }
+                }
+
+                "work_item_picked"
+                | "work_item_focus_released"
+                | "work_item_enqueue_requested"
+                | "work_item_turn_end_committed"
+                | "work_item_turn_end_commit_skipped"
+                | "work_item_stale_reminder_injected"
+                | "work_item_stale_reminder_skipped"
+                | "work_item_delegation_created"
+                | "work_item_delegation_completed"
+                | "missing_current_work_item_before_wait" => {
+                    let (item_id, summary) = work_item_bookkeeping_parts(event, events);
+                    items.push(TimedItem::from_event(
+                        PresentationItem::WorkItemBookkeeping {
+                            item_id,
+                            transition: work_item_event_transition(&event.kind),
+                            summary,
+                        },
+                        event,
+                    ));
                 }
 
                 "workspace_attached" | "workspace_entered" | "workspace_exited"
@@ -1099,6 +1165,149 @@ fn event_dedupe_key(event: &ProjectionEventRecord) -> String {
         return format!("event-id:{}", event.id);
     }
     format!("event-seq:{}:{}", event.event_seq, event.kind)
+}
+
+fn work_item_record(event: &ProjectionEventRecord) -> Option<WorkItemRecord> {
+    event
+        .payload
+        .get("record")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+fn work_item_id_from_event(event: &ProjectionEventRecord) -> Option<String> {
+    work_item_record(event).map(|record| record.id).or_else(|| {
+        event
+            .payload
+            .get("work_item_id")
+            .or_else(|| event.payload.get("current_work_item_id"))
+            .or_else(|| event.payload.get("id"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+    })
+}
+
+fn work_item_objective_from_events(
+    work_item_id: &str,
+    events: &[ProjectionEventRecord],
+) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .filter(|event| event.kind == "work_item_written")
+        .filter_map(work_item_record)
+        .find(|record| record.id == work_item_id)
+        .map(|record| record.objective)
+}
+
+fn work_item_lifecycle_summary(event: &ProjectionEventRecord) -> String {
+    if let Some(record) = work_item_record(event) {
+        if event.payload.get("action").and_then(Value::as_str) == Some("completed") {
+            return record
+                .result_summary
+                .filter(|summary| !summary.trim().is_empty())
+                .unwrap_or(record.objective);
+        }
+        return record.objective;
+    }
+    event.summary.clone()
+}
+
+fn work_item_card_action(action: &str) -> &'static str {
+    match action {
+        "created" => "tracking started",
+        "completed" => "completed",
+        _ => "updated",
+    }
+}
+
+fn work_item_bookkeeping_parts(
+    event: &ProjectionEventRecord,
+    events: &[ProjectionEventRecord],
+) -> (String, String) {
+    let item_id = work_item_id_from_event(event).unwrap_or_else(|| "?".into());
+    let summary = if let Some(record) = work_item_record(event) {
+        record.objective
+    } else if item_id != "?" {
+        work_item_objective_from_events(&item_id, events).unwrap_or_else(|| event.summary.clone())
+    } else {
+        event.summary.clone()
+    };
+    (item_id, summary)
+}
+
+fn work_item_written_transition(action: &str) -> WorkItemTransition {
+    match action {
+        "wait_for_blocked" => WorkItemTransition::Waiting,
+        "wait_for_task_resolved" => WorkItemTransition::WaitResolved,
+        "completed" => WorkItemTransition::Completed,
+        "created" => WorkItemTransition::Created,
+        _ => WorkItemTransition::Updated,
+    }
+}
+
+fn work_item_event_transition(kind: &str) -> WorkItemTransition {
+    match kind {
+        "work_item_picked" => WorkItemTransition::Picked,
+        "work_item_focus_released" => WorkItemTransition::FocusReleased,
+        "work_item_enqueue_requested" => WorkItemTransition::EnqueueRequested,
+        "work_item_turn_end_committed" => WorkItemTransition::TurnEndCommitted,
+        "work_item_turn_end_commit_skipped" => WorkItemTransition::TurnEndSkipped,
+        "work_item_stale_reminder_injected" => WorkItemTransition::ReminderInjected,
+        "work_item_stale_reminder_skipped" => WorkItemTransition::ReminderSkipped,
+        "work_item_delegation_created" => WorkItemTransition::DelegationCreated,
+        "work_item_delegation_completed" => WorkItemTransition::DelegationCompleted,
+        "missing_current_work_item_before_wait" => WorkItemTransition::Waiting,
+        _ => WorkItemTransition::Updated,
+    }
+}
+
+fn work_item_waiting_notice_item(
+    event: &ProjectionEventRecord,
+    events: &[ProjectionEventRecord],
+) -> Option<PresentationItem> {
+    let waiting: WaitingIntentRecord = serde_json::from_value(event.payload.clone()).ok()?;
+    if waiting.scope != WaitingIntentScope::WorkItem {
+        return None;
+    }
+    let work_item_id = waiting.work_item_id.as_deref()?;
+    let objective = work_item_objective_from_events(work_item_id, events)
+        .unwrap_or_else(|| work_item_id.into());
+    let reason = work_item_waiting_reason(&waiting);
+    Some(PresentationItem::WorkItemCard {
+        action: "waiting".into(),
+        summary: format!("{objective}: {reason}"),
+    })
+}
+
+fn work_item_waiting_reason(waiting: &WaitingIntentRecord) -> String {
+    let description = waiting.description.trim();
+    let detail = waiting
+        .resource
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| (!description.is_empty()).then_some(description));
+    let source = waiting.source.trim();
+    if source.eq_ignore_ascii_case("task_result") || source.eq_ignore_ascii_case("task") {
+        detail
+            .map(|detail| format!("waiting for task result {detail}"))
+            .unwrap_or_else(|| "waiting for task result".into())
+    } else if source.eq_ignore_ascii_case("operator_input")
+        || source.eq_ignore_ascii_case("operator")
+    {
+        detail
+            .map(|detail| format!("waiting for operator input: {detail}"))
+            .unwrap_or_else(|| "waiting for operator input".into())
+    } else if source.eq_ignore_ascii_case("external") {
+        detail
+            .map(|detail| format!("waiting for external wake {detail}"))
+            .unwrap_or_else(|| "waiting for external wake".into())
+    } else {
+        detail
+            .map(|detail| format!("waiting: {detail}"))
+            .unwrap_or_else(|| "waiting".into())
+    }
 }
 
 fn command_presentation_key(event: &ProjectionEventRecord, cmd_preview: &str) -> Option<String> {
@@ -2364,6 +2573,193 @@ mod tests {
             }
             other => panic!("expected PatchFailure, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn reducer_renders_work_item_lifecycle_cards_with_objectives() {
+        let created = make_event(
+            "work_item_written",
+            "work item created",
+            json!({
+                "action": "created",
+                "record": {
+                    "id": "wi-1",
+                    "agent_id": "default",
+                    "workspace_id": "agent_home",
+                    "objective": "ship lifecycle display",
+                    "state": "open",
+                    "plan_status": "draft",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z"
+                }
+            }),
+        );
+        let completed = make_event(
+            "work_item_written",
+            "work item completed",
+            json!({
+                "action": "completed",
+                "record": {
+                    "id": "wi-1",
+                    "agent_id": "default",
+                    "workspace_id": "agent_home",
+                    "objective": "ship lifecycle display",
+                    "state": "completed",
+                    "plan_status": "ready",
+                    "result_summary": "merged PR",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:01Z"
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[created, completed]);
+
+        assert_eq!(items.len(), 2);
+        match &items[0].item {
+            PresentationItem::WorkItemCard { action, summary } => {
+                assert_eq!(action, "tracking started");
+                assert_eq!(summary, "ship lifecycle display");
+                assert_eq!(items[0].item.min_display_level(), 3);
+                assert!(!items[0].item.render(3)[0]
+                    .body
+                    .contains("work_item_written"));
+            }
+            other => panic!("expected WorkItemCard, got {:?}", other),
+        }
+        match &items[1].item {
+            PresentationItem::WorkItemCard { action, summary } => {
+                assert_eq!(action, "completed");
+                assert_eq!(summary, "merged PR");
+                assert_eq!(items[1].item.min_display_level(), 3);
+            }
+            other => panic!("expected WorkItemCard, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_renders_work_item_bookkeeping_at_verbose_level() {
+        let updated = make_event(
+            "work_item_written",
+            "work item updated",
+            json!({
+                "action": "updated",
+                "record": {
+                    "id": "wi-1",
+                    "agent_id": "default",
+                    "workspace_id": "agent_home",
+                    "objective": "ship lifecycle display",
+                    "state": "open",
+                    "plan_status": "draft",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:01Z"
+                }
+            }),
+        );
+        let picked = make_event(
+            "work_item_picked",
+            "work item picked",
+            json!({
+                "current_work_item_id": "wi-1",
+                "current_readiness": "runnable"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[updated, picked]);
+
+        assert_eq!(items.len(), 2);
+        for item in items {
+            match &item.item {
+                PresentationItem::WorkItemBookkeeping { summary, .. } => {
+                    assert_eq!(item.item.min_display_level(), 4);
+                    assert!(summary.contains("ship lifecycle display"));
+                    assert!(item.item.render(3).is_empty());
+                    assert!(!item.item.render(4)[0].body.contains("work_item_"));
+                }
+                other => panic!("expected WorkItemBookkeeping, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn reducer_promotes_work_item_waiting_intent_to_waiting_card() {
+        let created = make_event(
+            "work_item_written",
+            "work item created",
+            json!({
+                "action": "created",
+                "record": {
+                    "id": "wi-1",
+                    "agent_id": "default",
+                    "workspace_id": "agent_home",
+                    "objective": "wait for CI",
+                    "state": "open",
+                    "plan_status": "draft",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z"
+                }
+            }),
+        );
+        let waiting = make_event(
+            "waiting_intent_created",
+            "waiting intent created",
+            json!({
+                "id": "wait-1",
+                "agent_id": "default",
+                "scope": "work_item",
+                "work_item_id": "wi-1",
+                "description": "PR checks",
+                "source": "external",
+                "resource": "github:holon-run/holon#1518",
+                "delivery_mode": "wake_hint",
+                "status": "active",
+                "external_trigger_id": "ext-1",
+                "created_at": "2026-01-01T00:00:00Z",
+                "cancelled_at": null,
+                "last_triggered_at": null,
+                "trigger_count": 0,
+                "correlation_id": null,
+                "causation_id": null
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[created, waiting]);
+
+        assert_eq!(items.len(), 2);
+        match &items[1].item {
+            PresentationItem::WorkItemCard { action, summary } => {
+                assert_eq!(action, "waiting");
+                assert!(summary.contains("wait for CI"));
+                assert!(summary.contains("github:holon-run/holon#1518"));
+                assert_eq!(items[1].item.min_display_level(), 3);
+            }
+            other => panic!("expected WorkItemCard, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_keeps_bare_waiting_intent_cancelled_generic() {
+        let cancelled = make_event(
+            "waiting_intent_cancelled",
+            "waiting intent cancelled",
+            json!({
+                "waiting_intent_id": "wait-agent",
+                "external_trigger_id": "ext-agent"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[cancelled]);
+
+        assert_eq!(items.len(), 1);
+        assert!(matches!(
+            items[0].item,
+            PresentationItem::WaitingNotice { .. }
+        ));
+        assert!(!items[0].item.render(4)[0].body.contains("work item"));
     }
 
     #[test]

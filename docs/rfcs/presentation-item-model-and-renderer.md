@@ -207,6 +207,15 @@ pub enum PresentationItem {
         summary: String,
     },
 
+    /// Work item bookkeeping (picked, enqueued, stale reminder, etc.).
+    /// These are verbose lifecycle/activity rows, distinct from info-level
+    /// lifecycle cards.
+    WorkItemBookkeeping {
+        item_id: String,
+        transition: WorkItemTransition,
+        summary: String,
+    },
+
     // ── Level 5+ (debug): curated internals ──
 
     /// Provider round telemetry.
@@ -228,12 +237,6 @@ pub enum PresentationItem {
     TaskLifecycle {
         task_id: String,
         transition: TaskTransition,
-    },
-
-    /// Work item bookkeeping (picked, enqueued, stale reminder, etc.).
-    WorkItemBookkeeping {
-        item_id: String,
-        action: String,
     },
 
     /// Workspace or worktree change.
