@@ -52,6 +52,21 @@ pub struct PromptCacheIdentity {
     pub compression_epoch: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptCacheScopeDiagnostics {
+    pub cacheable_system_sections: usize,
+    pub cacheable_context_sections: usize,
+    pub turn_scoped_system_sections: usize,
+    pub turn_scoped_context_sections: usize,
+    pub cacheable_system_chars: usize,
+    pub cacheable_context_chars: usize,
+    pub turn_scoped_system_chars: usize,
+    pub turn_scoped_context_chars: usize,
+    pub cacheable_system_fingerprint: String,
+    pub cacheable_context_fingerprint: String,
+    pub turn_scoped_fingerprint: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct EffectivePrompt {
     pub agent_home: PathBuf,
@@ -66,8 +81,13 @@ pub struct EffectivePrompt {
 }
 
 impl EffectivePrompt {
+    pub fn cache_scope_diagnostics(&self) -> PromptCacheScopeDiagnostics {
+        prompt_cache_scope_diagnostics(&self.system_sections, &self.context_sections)
+    }
+
     pub fn render_dump(&self) -> String {
         let mut output = Vec::new();
+        let cache_diagnostics = self.cache_scope_diagnostics();
 
         output.push("## Prompt Topology".to_string());
         output.push("".to_string());
@@ -119,6 +139,36 @@ impl EffectivePrompt {
         output.push(format!(
             "Compression epoch: {}",
             self.cache_identity.compression_epoch
+        ));
+        output.push(format!(
+            "Cacheable sections: system={}, context={}",
+            cache_diagnostics.cacheable_system_sections,
+            cache_diagnostics.cacheable_context_sections
+        ));
+        output.push(format!(
+            "Turn-scoped sections: system={}, context={}",
+            cache_diagnostics.turn_scoped_system_sections,
+            cache_diagnostics.turn_scoped_context_sections
+        ));
+        output.push(format!(
+            "Cacheable chars: system={}, context={}",
+            cache_diagnostics.cacheable_system_chars, cache_diagnostics.cacheable_context_chars
+        ));
+        output.push(format!(
+            "Turn-scoped chars: system={}, context={}",
+            cache_diagnostics.turn_scoped_system_chars, cache_diagnostics.turn_scoped_context_chars
+        ));
+        output.push(format!(
+            "Cacheable system fingerprint: {}",
+            cache_diagnostics.cacheable_system_fingerprint
+        ));
+        output.push(format!(
+            "Cacheable context fingerprint: {}",
+            cache_diagnostics.cacheable_context_fingerprint
+        ));
+        output.push(format!(
+            "Turn-scoped fingerprint: {}",
+            cache_diagnostics.turn_scoped_fingerprint
         ));
         output.extend(execution_policy_summary_lines(&self.execution));
         output.push(format!(
@@ -329,6 +379,60 @@ fn prompt_context_fingerprint(
     });
     let canonical =
         serde_json::to_vec(&payload).expect("prompt cache fingerprint should serialize");
+    format!("{:x}", Sha256::digest(canonical))
+}
+
+fn prompt_cache_scope_diagnostics(
+    system_sections: &[PromptSection],
+    context_sections: &[PromptSection],
+) -> PromptCacheScopeDiagnostics {
+    let cacheable_system_sections = system_sections
+        .iter()
+        .filter(|section| section.stability != PromptStability::TurnScoped)
+        .collect::<Vec<_>>();
+    let cacheable_context_sections = context_sections
+        .iter()
+        .filter(|section| section.stability != PromptStability::TurnScoped)
+        .collect::<Vec<_>>();
+    let turn_scoped_system_sections = system_sections
+        .iter()
+        .filter(|section| section.stability == PromptStability::TurnScoped)
+        .collect::<Vec<_>>();
+    let turn_scoped_context_sections = context_sections
+        .iter()
+        .filter(|section| section.stability == PromptStability::TurnScoped)
+        .collect::<Vec<_>>();
+
+    PromptCacheScopeDiagnostics {
+        cacheable_system_sections: cacheable_system_sections.len(),
+        cacheable_context_sections: cacheable_context_sections.len(),
+        turn_scoped_system_sections: turn_scoped_system_sections.len(),
+        turn_scoped_context_sections: turn_scoped_context_sections.len(),
+        cacheable_system_chars: section_chars(&cacheable_system_sections),
+        cacheable_context_chars: section_chars(&cacheable_context_sections),
+        turn_scoped_system_chars: section_chars(&turn_scoped_system_sections),
+        turn_scoped_context_chars: section_chars(&turn_scoped_context_sections),
+        cacheable_system_fingerprint: section_fingerprint(&cacheable_system_sections),
+        cacheable_context_fingerprint: section_fingerprint(&cacheable_context_sections),
+        turn_scoped_fingerprint: section_fingerprint(
+            &turn_scoped_system_sections
+                .into_iter()
+                .chain(turn_scoped_context_sections)
+                .collect::<Vec<_>>(),
+        ),
+    }
+}
+
+fn section_chars(sections: &[&PromptSection]) -> usize {
+    sections
+        .iter()
+        .map(|section| section.content.chars().count())
+        .sum()
+}
+
+fn section_fingerprint(sections: &[&PromptSection]) -> String {
+    let canonical =
+        serde_json::to_vec(sections).expect("prompt section diagnostics should serialize");
     format!("{:x}", Sha256::digest(canonical))
 }
 
@@ -835,6 +939,125 @@ mod tests {
         assert_eq!(
             prompt_cache_key(&session.id, &first_scope),
             prompt_cache_key(&session.id, &second_scope)
+        );
+    }
+
+    #[test]
+    fn prompt_cache_scope_diagnostics_document_stable_and_turn_scoped_boundary() {
+        let session = AgentState::new("default");
+        let execution = sample_execution_snapshot();
+        let tools = vec![ToolSpec {
+            name: "ExecCommand".into(),
+            description: "Run a command".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            freeform_grammar: None,
+        }];
+        let first_system_sections = vec![
+            section("identity", PromptStability::Stable, "stable system".into()),
+            section(
+                "event_turn",
+                PromptStability::TurnScoped,
+                "first event metadata".into(),
+            ),
+        ];
+        let first_context_sections = vec![
+            section(
+                "working_memory",
+                PromptStability::AgentScoped,
+                "durable work summary".into(),
+            ),
+            section(
+                "current_input",
+                PromptStability::TurnScoped,
+                "first operator prompt".into(),
+            ),
+        ];
+        let second_system_sections = vec![
+            section("identity", PromptStability::Stable, "stable system".into()),
+            section(
+                "event_turn",
+                PromptStability::TurnScoped,
+                "second event metadata".into(),
+            ),
+        ];
+        let second_context_sections = vec![
+            section(
+                "working_memory",
+                PromptStability::AgentScoped,
+                "durable work summary".into(),
+            ),
+            section(
+                "current_input",
+                PromptStability::TurnScoped,
+                "second operator prompt".into(),
+            ),
+        ];
+
+        let first_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &execution,
+            &first_system_sections,
+            &first_context_sections,
+            &tools,
+        );
+        let second_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &execution,
+            &second_system_sections,
+            &second_context_sections,
+            &tools,
+        );
+        let first_diagnostics =
+            prompt_cache_scope_diagnostics(&first_system_sections, &first_context_sections);
+        let second_diagnostics =
+            prompt_cache_scope_diagnostics(&second_system_sections, &second_context_sections);
+
+        assert_eq!(first_scope, second_scope);
+        assert_eq!(
+            prompt_cache_key(&session.id, &first_scope),
+            prompt_cache_key(&session.id, &second_scope)
+        );
+        assert_eq!(first_diagnostics.cacheable_system_sections, 1);
+        assert_eq!(first_diagnostics.cacheable_context_sections, 1);
+        assert_eq!(first_diagnostics.turn_scoped_system_sections, 1);
+        assert_eq!(first_diagnostics.turn_scoped_context_sections, 1);
+        assert_eq!(
+            first_diagnostics.cacheable_system_fingerprint,
+            second_diagnostics.cacheable_system_fingerprint
+        );
+        assert_eq!(
+            first_diagnostics.cacheable_context_fingerprint,
+            second_diagnostics.cacheable_context_fingerprint
+        );
+        assert_ne!(
+            first_diagnostics.turn_scoped_fingerprint,
+            second_diagnostics.turn_scoped_fingerprint
+        );
+
+        let changed_system_sections = vec![
+            section(
+                "identity",
+                PromptStability::Stable,
+                "changed stable system".into(),
+            ),
+            section(
+                "event_turn",
+                PromptStability::TurnScoped,
+                "second event metadata".into(),
+            ),
+        ];
+        let changed_scope = prompt_cache_scope_fingerprint(
+            &session,
+            &execution,
+            &changed_system_sections,
+            &second_context_sections,
+            &tools,
+        );
+
+        assert_ne!(second_scope, changed_scope);
+        assert_ne!(
+            prompt_cache_key(&session.id, &second_scope),
+            prompt_cache_key(&session.id, &changed_scope)
         );
     }
 
