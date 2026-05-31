@@ -248,6 +248,11 @@ Current work item:
 ## context_contract
 {CONTEXT_CONTRACT}
 
+## continuation_anchor
+Continuation anchor:
+Latest trusted operator input: current_input.
+Current input relation: current_input is the latest trusted operator input.
+
 ## current_input
 Current input:
 - [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt]
@@ -324,6 +329,10 @@ Agent id: default
 ## context_contract
 {CONTEXT_CONTRACT}
 
+## continuation_anchor
+Continuation anchor:
+Current input relation: current_input is a runtime system-tick continuation, not a trusted operator request.
+
 ## continuation_context
 Continuation context:
  - Trigger kind: system_tick
@@ -394,6 +403,10 @@ Agent id: default
 ## context_contract
 {CONTEXT_CONTRACT}
 
+## continuation_anchor
+Continuation anchor:
+Current input relation: current_input is an external-event continuation, not a trusted operator request.
+
 ## current_input
 Current input:
 - [callback][http_callback_enqueue][external_trigger_capability][integration_signal][CallbackEvent]
@@ -450,6 +463,10 @@ Agent id: default
 
 ## context_contract
 {CONTEXT_CONTRACT}
+
+## continuation_anchor
+Continuation anchor:
+Current input relation: current_input is a task-result continuation, not a trusted operator request.
 
 ## continuation_context
 Continuation context:
@@ -585,6 +602,11 @@ Blocked work items:
 ## context_contract
 {CONTEXT_CONTRACT}
 
+## continuation_anchor
+Continuation anchor:
+Latest trusted operator input: current_input.
+Current input relation: current_input is the latest trusted operator input.
+
 ## current_input
 Current input:
 - [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt]
@@ -671,6 +693,11 @@ Current work item:
 
 ## context_contract
 {CONTEXT_CONTRACT}
+
+## continuation_anchor
+Continuation anchor:
+Latest trusted operator input: current_input.
+Current input relation: current_input is the latest trusted operator input.
 
 ## current_input
 Current input:
@@ -800,6 +827,10 @@ Current work item:
 ## context_contract
 {CONTEXT_CONTRACT}
 
+## continuation_anchor
+Continuation anchor:
+Current input relation: current_input is an external-event continuation, not a trusted operator request.
+
 ## current_input
 Current input:
 - [callback][http_callback_enqueue][external_trigger_capability][integration_signal][CallbackEvent]
@@ -918,6 +949,10 @@ Current work item:
 
 ## context_contract
 {CONTEXT_CONTRACT}
+
+## continuation_anchor
+Continuation anchor:
+Current input relation: current_input is a runtime system-tick continuation, not a trusted operator request.
 
 ## continuation_context
 Continuation context:
@@ -1065,6 +1100,11 @@ Current work item:
 
 ## context_contract
 {CONTEXT_CONTRACT}
+
+## continuation_anchor
+Continuation anchor:
+Latest trusted operator input: current_input.
+Current input relation: current_input is the latest trusted operator input.
 
 ## current_input
 Current input:
@@ -1214,6 +1254,10 @@ Current work item:
 
 ## context_contract
 {CONTEXT_CONTRACT}
+
+## continuation_anchor
+Continuation anchor:
+Current input relation: current_input is a task-result continuation, not a trusted operator request.
 
 ## continuation_context
 Continuation context:

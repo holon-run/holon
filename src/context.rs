@@ -1210,7 +1210,9 @@ fn render_continuation_anchor(
 
     let mut lines = vec!["Continuation anchor:".to_string()];
     if let Some(operator) = latest_operator {
-        if current_work_item.is_some() {
+        if same_message_identity(current_message, operator) {
+            lines.push("Latest trusted operator input: current_input.".to_string());
+        } else if current_work_item.is_some() {
             lines.push(format!(
                 "Latest trusted operator input: {}.",
                 operator
@@ -1218,8 +1220,6 @@ fn render_continuation_anchor(
                     .map(|seq| format!("message_seq {seq}"))
                     .unwrap_or_else(|| operator.id.clone())
             ));
-        } else if same_message_identity(current_message, operator) {
-            lines.push("Latest trusted operator input: current_input.".to_string());
         } else {
             let prefix = "Latest trusted operator input:\n";
             let reserved = estimate_text_tokens("Continuation anchor:\nCurrent input relation:");
