@@ -131,7 +131,7 @@ fn resolved_model_availability_entry(
     } else if !provider_configured {
         Some("provider_not_configured".to_string())
     } else if provider
-        .map(|provider| credential_missing_should_be_static_reason(provider.auth.source))
+        .map(credential_missing_should_be_static_reason)
         .unwrap_or(false)
         && !credential_configured
     {
@@ -161,9 +161,14 @@ fn provider_static_credential_configured(provider: &crate::config::ProviderRunti
     provider.has_configured_credential() || matches!(provider.auth.source, CredentialSource::None)
 }
 
-fn credential_missing_should_be_static_reason(source: CredentialSource) -> bool {
+fn credential_missing_should_be_static_reason(
+    provider: &crate::config::ProviderRuntimeConfig,
+) -> bool {
+    if provider.id.is_openai_codex() && provider.auth.source == CredentialSource::AuthProfile {
+        return false;
+    }
     matches!(
-        source,
+        provider.auth.source,
         CredentialSource::Env | CredentialSource::AuthProfile
     )
 }

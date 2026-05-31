@@ -4981,7 +4981,7 @@ mod tests {
     }
 
     #[test]
-    fn app_config_ignores_bad_credential_store_permissions_until_profile_auth_is_used() {
+    fn app_config_rejects_bad_credential_store_permissions_when_store_exists() {
         let dir = tempdir().unwrap();
         save_persisted_config_at(
             &persisted_config_path(dir.path()),
@@ -5002,6 +5002,12 @@ mod tests {
             fs::set_permissions(&store_path, fs::Permissions::from_mode(0o644)).unwrap();
         }
 
+        #[cfg(unix)]
+        {
+            let err = AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap_err();
+            assert!(err.to_string().contains("chmod 600"));
+        }
+        #[cfg(not(unix))]
         AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap();
 
         let mut config = load_persisted_config_at(&persisted_config_path(dir.path())).unwrap();
