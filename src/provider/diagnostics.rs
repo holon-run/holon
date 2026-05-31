@@ -6,7 +6,7 @@ use crate::{
     auth::load_codex_cli_credential,
     config::{AppConfig, CredentialSource, ModelRef, RuntimeModelCatalog},
     context::ContextConfig,
-    onboarding::onboarding_report,
+    onboarding::{onboarding_report, search_diagnostics},
     types::ResolvedModelAvailability,
 };
 
@@ -57,6 +57,7 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
         "runtime_max_output_tokens": config.runtime_max_output_tokens,
         "retry_policy": provider_retry_policy_json(),
         "onboarding": onboarding_report(config),
+        "search": search_diagnostics(config),
         "model_availability": model_availability,
         "providers": providers,
     })
@@ -406,6 +407,7 @@ mod tests {
 
         assert_eq!(doctor["onboarding"]["schema_version"].as_u64(), Some(1));
         assert_eq!(doctor["onboarding"]["status"].as_str(), Some("configured"));
+        assert_eq!(doctor["search"]["status"].as_str(), Some("configured"));
         assert!(doctor["onboarding"]["sections"]
             .as_array()
             .expect("onboarding sections")

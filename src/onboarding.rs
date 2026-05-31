@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::config::{AppConfig, CredentialSource};
+use crate::{
+    config::{AppConfig, CredentialSource},
+    web::{WebProviderAuthClass, WebProviderSupportStatus},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OnboardingReport {
@@ -45,6 +48,53 @@ pub struct OnboardingAction {
     pub command: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchDiagnostics {
+    pub status: OnboardingStatus,
+    pub summary: String,
+    pub enabled: bool,
+    pub builtin_provider_enabled: bool,
+    pub provider: String,
+    pub providers: Vec<String>,
+    pub mode: String,
+    pub max_results: usize,
+    pub managed_providers: Vec<SearchManagedProviderDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin_provider: Option<SearchBuiltinProviderDiagnostic>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<OnboardingAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchManagedProviderDiagnostic {
+    pub id: String,
+    pub kind: String,
+    pub configured: bool,
+    pub available: bool,
+    pub status: String,
+    pub auth: String,
+    pub credential_configured: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchBuiltinProviderDiagnostic {
+    pub provider: String,
+    pub configured: bool,
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_model_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advertised_tool_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 pub fn onboarding_report(config: &AppConfig) -> OnboardingReport {
     let sections = vec![
         home_section(config),
@@ -64,6 +114,94 @@ pub fn onboarding_report(config: &AppConfig) -> OnboardingReport {
         status,
         sections,
         next_actions,
+    }
+}
+
+pub fn search_diagnostics(config: &AppConfig) -> SearchDiagnostics {
+    let search = &config.web_config.search;
+    let providers = configured_search_providers(config);
+    let managed_providers = providers
+        .iter()
+        .map(|provider| managed_search_provider_diagnostic(config, provider))
+        .collect::<Vec<_>>();
+    let builtin_provider = search
+        .builtin_provider_enabled
+        .then(|| builtin_search_provider_diagnostic(config));
+
+    if !search.enabled {
+        return SearchDiagnostics {
+            status: OnboardingStatus::Skipped,
+            summary: "Search tools are disabled.".into(),
+            enabled: false,
+            builtin_provider_enabled: search.builtin_provider_enabled,
+            provider: search.provider.clone(),
+            providers,
+            mode: search.mode.as_str().into(),
+            max_results: search.max_results,
+            managed_providers,
+            builtin_provider,
+            actions: Vec::new(),
+        };
+    }
+
+    let has_available_managed_provider =
+        managed_providers.iter().any(|provider| provider.available);
+    let has_available_builtin_provider = builtin_provider
+        .as_ref()
+        .map(|provider| provider.available)
+        .unwrap_or(false);
+    let has_configured_path = has_available_managed_provider || has_available_builtin_provider;
+    let has_unavailable_path = managed_providers
+        .iter()
+        .any(|provider| provider.configured && !provider.available)
+        || builtin_provider
+            .as_ref()
+            .map(|provider| provider.configured && !provider.available)
+            .unwrap_or(false);
+    let status = if has_configured_path {
+        OnboardingStatus::Configured
+    } else if has_unavailable_path {
+        OnboardingStatus::Unavailable
+    } else {
+        OnboardingStatus::Missing
+    };
+    let actions = if status == OnboardingStatus::Configured {
+        Vec::new()
+    } else {
+        vec![OnboardingAction {
+            id: "configure_search_provider".into(),
+            title: "Configure a search provider or enable a provider-declared built-in search capability.".into(),
+            command: Some(vec![
+                "holon".into(),
+                "config".into(),
+                "set".into(),
+                "web.search.provider".into(),
+                "duck_duck_go".into(),
+            ]),
+        }]
+    };
+
+    let summary = match status {
+        OnboardingStatus::Configured => "Search tools have at least one available provider path.",
+        OnboardingStatus::Unavailable => {
+            "Search tools are enabled, but the configured provider path is unavailable."
+        }
+        OnboardingStatus::Missing => "Search tools are enabled but no provider path is configured.",
+        _ => "Search tools require attention.",
+    };
+
+    SearchDiagnostics {
+        status,
+        summary: summary.into(),
+        enabled: true,
+        builtin_provider_enabled: search.builtin_provider_enabled,
+        provider: search.provider.clone(),
+        providers,
+        mode: search.mode.as_str().into(),
+        max_results: search.max_results,
+        managed_providers,
+        builtin_provider,
+        actions,
     }
 }
 
@@ -165,73 +303,146 @@ fn model_provider_section(config: &AppConfig) -> OnboardingSection {
 }
 
 fn search_section(config: &AppConfig) -> OnboardingSection {
-    let search = &config.web_config.search;
-    let mut configured_providers = search.providers.clone();
-    if !search.provider.trim().is_empty() && search.provider != "auto" {
-        configured_providers.push(search.provider.clone());
-    }
-    configured_providers.sort();
-    configured_providers.dedup();
-
-    if !search.enabled {
-        return section(
-            "search",
-            "Search tools",
-            OnboardingStatus::Skipped,
-            "Search tools are disabled.",
-            [
-                ("enabled", json!(false)),
-                ("provider", json!(search.provider)),
-                ("mode", json!(search.mode.as_str())),
-            ],
-            [],
-        );
-    }
-
-    let configured = search.builtin_provider_enabled || !configured_providers.is_empty();
-    let status = if configured {
-        OnboardingStatus::Configured
-    } else {
-        OnboardingStatus::Missing
-    };
-    let actions = if configured {
-        Vec::new()
-    } else {
-        vec![OnboardingAction {
-            id: "configure_search_provider".into(),
-            title: "Configure a search provider or enable the built-in provider.".into(),
-            command: Some(vec![
-                "holon".into(),
-                "config".into(),
-                "set".into(),
-                "web.search.provider".into(),
-                "duck_duck_go".into(),
-            ]),
-        }]
-    };
+    let diagnostics = search_diagnostics(config);
 
     section(
         "search",
         "Search tools",
-        status,
-        if configured {
-            "Search tools have at least one configured provider path."
-        } else {
-            "Search tools are enabled but no provider path is configured."
-        },
+        diagnostics.status,
+        &diagnostics.summary,
         [
-            ("enabled", json!(true)),
+            ("enabled", json!(diagnostics.enabled)),
             (
                 "builtin_provider_enabled",
-                json!(search.builtin_provider_enabled),
+                json!(diagnostics.builtin_provider_enabled),
             ),
-            ("provider", json!(search.provider)),
-            ("providers", json!(configured_providers)),
-            ("mode", json!(search.mode.as_str())),
-            ("max_results", json!(search.max_results)),
+            ("provider", json!(diagnostics.provider)),
+            ("providers", json!(diagnostics.providers)),
+            ("mode", json!(diagnostics.mode)),
+            ("max_results", json!(diagnostics.max_results)),
+            ("managed_providers", json!(diagnostics.managed_providers)),
+            ("builtin_provider", json!(diagnostics.builtin_provider)),
         ],
-        actions,
+        diagnostics.actions,
     )
+}
+
+fn configured_search_providers(config: &AppConfig) -> Vec<String> {
+    let search = &config.web_config.search;
+    let mut providers = search.providers.clone();
+    if !search.provider.trim().is_empty() && search.provider != "auto" {
+        providers.push(search.provider.clone());
+    }
+    providers.sort();
+    providers.dedup();
+    providers
+}
+
+fn managed_search_provider_diagnostic(
+    config: &AppConfig,
+    provider_id: &str,
+) -> SearchManagedProviderDiagnostic {
+    if provider_id == "duck_duck_go" {
+        let capabilities = crate::web::WebProviderKind::DuckDuckGo.capabilities();
+        return SearchManagedProviderDiagnostic {
+            id: provider_id.into(),
+            kind: crate::web::WebProviderKind::DuckDuckGo.as_str().into(),
+            configured: true,
+            available: true,
+            status: web_provider_support_status(capabilities.status).into(),
+            auth: web_provider_auth(capabilities.auth).into(),
+            credential_configured: true,
+            reason: None,
+        };
+    }
+
+    let Some(provider) = config.web_config.providers.get(provider_id) else {
+        return SearchManagedProviderDiagnostic {
+            id: provider_id.into(),
+            kind: "unknown".into(),
+            configured: false,
+            available: false,
+            status: "unknown_provider".into(),
+            auth: "unknown".into(),
+            credential_configured: false,
+            reason: Some("configured search provider id is not defined in web.providers".into()),
+        };
+    };
+    let capabilities = provider.kind.capabilities();
+    let credential_configured =
+        capabilities.auth != WebProviderAuthClass::ApiKey || !provider.api_key.trim().is_empty();
+    let supported = capabilities.status == WebProviderSupportStatus::Supported;
+    let available = supported && credential_configured;
+    let reason = if !supported {
+        Some(format!(
+            "provider kind {} is {}",
+            provider.kind.as_str(),
+            web_provider_support_status(capabilities.status)
+        ))
+    } else if !credential_configured {
+        Some("provider requires an API key credential profile".into())
+    } else {
+        None
+    };
+
+    SearchManagedProviderDiagnostic {
+        id: provider_id.into(),
+        kind: provider.kind.as_str().into(),
+        configured: true,
+        available,
+        status: web_provider_support_status(capabilities.status).into(),
+        auth: web_provider_auth(capabilities.auth).into(),
+        credential_configured,
+        reason,
+    }
+}
+
+fn builtin_search_provider_diagnostic(config: &AppConfig) -> SearchBuiltinProviderDiagnostic {
+    let provider_id = config.default_model.provider.as_str().to_string();
+    let provider = config.providers.get(&config.default_model.provider);
+    let capability = provider.and_then(|provider| provider.builtin_web_search.as_ref());
+    let Some(capability) = capability else {
+        return SearchBuiltinProviderDiagnostic {
+            provider: provider_id,
+            configured: false,
+            available: false,
+            provider_model_ref: None,
+            transport: provider.map(|provider| provider.transport.as_str().into()),
+            advertised_tool_type: None,
+            backend_kind: None,
+            reason: Some("default model provider does not declare built-in web search".into()),
+        };
+    };
+
+    SearchBuiltinProviderDiagnostic {
+        provider: provider_id.clone(),
+        configured: capability.enabled,
+        available: capability.enabled,
+        provider_model_ref: Some(config.default_model.as_string()),
+        transport: provider.map(|provider| provider.transport.as_str().into()),
+        advertised_tool_type: Some(capability.advertised_tool_type.clone()),
+        backend_kind: Some(capability.backend_kind.clone()),
+        reason: (!capability.enabled).then(|| {
+            format!("provider {provider_id} declares built-in web search but it is disabled")
+        }),
+    }
+}
+
+fn web_provider_support_status(status: WebProviderSupportStatus) -> &'static str {
+    match status {
+        WebProviderSupportStatus::Supported => "supported",
+        WebProviderSupportStatus::Unsupported => "unsupported",
+        WebProviderSupportStatus::NativeOnly => "native_only",
+    }
+}
+
+fn web_provider_auth(auth: WebProviderAuthClass) -> &'static str {
+    match auth {
+        WebProviderAuthClass::None => "none",
+        WebProviderAuthClass::ApiKey => "api_key",
+        WebProviderAuthClass::NativeProvider => "native_provider",
+        WebProviderAuthClass::SelfHosted => "self_hosted",
+    }
 }
 
 fn credentials_section(config: &AppConfig) -> OnboardingSection {
@@ -318,7 +529,8 @@ mod tests {
 
     use crate::{
         config::{provider_registry_for_tests, AppConfig, ControlAuthMode, ModelRef},
-        onboarding::{onboarding_report, OnboardingStatus},
+        onboarding::{onboarding_report, search_diagnostics, OnboardingStatus},
+        web::{WebProviderConfig, WebProviderKind, WebProviderLimitsConfig, WebSearchMode},
     };
 
     fn test_config(openai_key: Option<&str>) -> AppConfig {
@@ -384,5 +596,84 @@ mod tests {
         assert_eq!(report.status, OnboardingStatus::Missing);
         assert_eq!(model.status, OnboardingStatus::Missing);
         assert_eq!(report.next_actions.len(), 1);
+    }
+
+    #[test]
+    fn search_diagnostics_reports_default_builtin_provider_without_secrets() {
+        let config = test_config(Some("openai-key"));
+        let diagnostics = search_diagnostics(&config);
+        let json = serde_json::to_string(&diagnostics).unwrap();
+
+        assert_eq!(diagnostics.status, OnboardingStatus::Configured);
+        assert_eq!(
+            diagnostics
+                .builtin_provider
+                .as_ref()
+                .and_then(|provider| provider.advertised_tool_type.as_deref()),
+            Some("web_search_preview")
+        );
+        assert!(!json.contains("openai-key"));
+    }
+
+    #[test]
+    fn search_diagnostics_reports_missing_provider_path() {
+        let mut config = test_config(Some("openai-key"));
+        config.web_config.search.builtin_provider_enabled = false;
+
+        let diagnostics = search_diagnostics(&config);
+
+        assert_eq!(diagnostics.status, OnboardingStatus::Missing);
+        assert_eq!(diagnostics.actions.len(), 1);
+    }
+
+    #[test]
+    fn search_diagnostics_reports_managed_provider_credential_state() {
+        let mut config = test_config(Some("openai-key"));
+        config.web_config.search.builtin_provider_enabled = false;
+        config.web_config.search.provider = "brave_search".into();
+        config.web_config.providers.insert(
+            "brave_search".into(),
+            WebProviderConfig {
+                kind: WebProviderKind::Brave,
+                base_url: None,
+                api_key: String::new(),
+                command: None,
+                output: None,
+                limits: WebProviderLimitsConfig::default(),
+            },
+        );
+
+        let diagnostics = search_diagnostics(&config);
+        let provider = diagnostics.managed_providers.first().unwrap();
+
+        assert_eq!(diagnostics.status, OnboardingStatus::Unavailable);
+        assert_eq!(provider.id, "brave_search");
+        assert_eq!(provider.auth, "api_key");
+        assert!(!provider.credential_configured);
+        assert!(!provider.available);
+    }
+
+    #[test]
+    fn onboarding_report_reuses_search_diagnostics_section() {
+        let mut config = test_config(Some("openai-key"));
+        config.web_config.search.enabled = true;
+        config.web_config.search.builtin_provider_enabled = false;
+        config.web_config.search.provider = "duck_duck_go".into();
+        config.web_config.search.mode = WebSearchMode::Single;
+
+        let report = onboarding_report(&config);
+        let search = report
+            .sections
+            .iter()
+            .find(|section| section.id == "search")
+            .expect("search section");
+
+        assert_eq!(search.status, OnboardingStatus::Configured);
+        assert_eq!(search.details["provider"], "duck_duck_go");
+        assert_eq!(search.details["mode"], "single");
+        assert_eq!(
+            search.details["managed_providers"][0]["kind"],
+            "duck_duck_go"
+        );
     }
 }
