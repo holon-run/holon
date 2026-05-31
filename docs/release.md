@@ -53,3 +53,6 @@ Before pushing the tag, verify:
   `HOMEBREW_TAP_TOKEN` is not configured
 - the README quickstart uses installed `holon ...` commands rather than
   `cargo run -- ...` commands
+- when provider, context projection, compaction, or prompt-cache behavior
+  changed, the ignored live LLM baseline in
+  `docs/testing/live-llm-baseline.md` has been run manually
