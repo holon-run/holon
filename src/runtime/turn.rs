@@ -1979,6 +1979,13 @@ impl TurnExecution<'_> {
                         {
                             return Ok(outcome);
                         }
+                        {
+                            let mut guard = runtime.inner.agent.lock().await;
+                            if guard.state.pending_fallback_model.is_some() {
+                                guard.state.pending_fallback_model = None;
+                                runtime.inner.storage.write_agent(&guard.state)?;
+                            }
+                        }
                         runtime
                             .persist_turn_terminal_record(
                                 TurnTerminalKind::Aborted,
@@ -2227,6 +2234,13 @@ impl TurnExecution<'_> {
                             .await?
                         {
                             return Ok(outcome);
+                        }
+                        {
+                            let mut guard = runtime.inner.agent.lock().await;
+                            if guard.state.pending_fallback_model.is_some() {
+                                guard.state.pending_fallback_model = None;
+                                runtime.inner.storage.write_agent(&guard.state)?;
+                            }
                         }
                         runtime
                             .persist_turn_terminal_record(
