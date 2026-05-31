@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use holon::{
-    config::{AppConfig, ProviderId, ProviderTransportKind},
+    config::{AppConfig, ModelRef, ProviderId, ProviderTransportKind},
     prompt::PromptStability,
     provider::{
         build_provider_from_model_chain, AgentProvider, AnthropicProvider, ConversationMessage,
@@ -19,6 +19,14 @@ fn live_baseline_model_limit() -> usize {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(1)
+}
+
+fn live_baseline_models(config: &AppConfig) -> Vec<ModelRef> {
+    config
+        .provider_chain()
+        .into_iter()
+        .take(live_baseline_model_limit())
+        .collect()
 }
 
 fn live_anthropic_model() -> String {
@@ -93,11 +101,7 @@ fn anthropic_cache_frame() -> ProviderPromptFrame {
 #[ignore = "requires configured live provider credentials and network access"]
 async fn live_llm_baseline_configured_chain_smoke() -> Result<()> {
     let config = live_config()?;
-    let model_chain = config
-        .provider_chain()
-        .into_iter()
-        .take(live_baseline_model_limit())
-        .collect::<Vec<_>>();
+    let model_chain = live_baseline_models(&config);
     assert!(
         !model_chain.is_empty(),
         "live baseline needs at least one configured provider model"
@@ -106,29 +110,36 @@ async fn live_llm_baseline_configured_chain_smoke() -> Result<()> {
         .iter()
         .map(|model| model.as_string())
         .collect::<Vec<_>>();
-    let provider = build_provider_from_model_chain(&config, &model_chain)
-        .with_context(|| format!("failed to build live baseline provider chain: {model_refs:?}"))?;
+    for model_ref in &model_chain {
+        let single_model_ref = model_ref.as_string();
+        let provider = build_provider_from_model_chain(&config, std::slice::from_ref(model_ref))
+            .with_context(|| {
+                format!("failed to build live baseline provider for {single_model_ref}")
+            })?;
 
-    let output = provider
-        .complete_turn(ProviderTurnRequest::plain(
-            "Reply with exactly LIVE_BASELINE_OK.",
-            vec![ConversationMessage::UserText(
-                "Return the requested token now.".into(),
-            )],
-            vec![],
-        ))
-        .await
-        .with_context(|| format!("live baseline smoke request failed for {model_refs:?}"))?;
-    let text = response_text(&output.blocks);
-    assert!(
-        text.contains("LIVE_BASELINE_OK"),
-        "live baseline smoke did not return requested sentinel token; refs={model_refs:?} text={text:?} blocks={:?}",
-        output.blocks
-    );
-    println!(
-        "live_llm_baseline_smoke refs={model_refs:?} input_tokens={} output_tokens={} text={text:?}",
-        output.input_tokens, output.output_tokens
-    );
+        let output = provider
+            .complete_turn(ProviderTurnRequest::plain(
+                "Reply with exactly LIVE_BASELINE_OK.",
+                vec![ConversationMessage::UserText(
+                    "Return the requested token now.".into(),
+                )],
+                vec![],
+            ))
+            .await
+            .with_context(|| {
+                format!("live baseline smoke request failed for {single_model_ref}")
+            })?;
+        let text = response_text(&output.blocks);
+        assert!(
+            text.contains("LIVE_BASELINE_OK"),
+            "live baseline smoke did not return requested sentinel token; ref={single_model_ref} selected_refs={model_refs:?} text={text:?} blocks={:?}",
+            output.blocks
+        );
+        println!(
+            "live_llm_baseline_smoke ref={single_model_ref} selected_refs={model_refs:?} input_tokens={} output_tokens={} text={text:?}",
+            output.input_tokens, output.output_tokens
+        );
+    }
     Ok(())
 }
 
@@ -136,11 +147,7 @@ async fn live_llm_baseline_configured_chain_smoke() -> Result<()> {
 #[ignore = "requires configured live provider credentials and network access"]
 async fn live_llm_baseline_tool_roundtrip() -> Result<()> {
     let config = live_config()?;
-    let model_chain = config
-        .provider_chain()
-        .into_iter()
-        .take(live_baseline_model_limit())
-        .collect::<Vec<_>>();
+    let model_chain = live_baseline_models(&config);
     assert!(
         !model_chain.is_empty(),
         "live baseline needs at least one configured provider model"
@@ -149,35 +156,40 @@ async fn live_llm_baseline_tool_roundtrip() -> Result<()> {
         .iter()
         .map(|model| model.as_string())
         .collect::<Vec<_>>();
-    let provider = build_provider_from_model_chain(&config, &model_chain)
-        .with_context(|| format!("failed to build live baseline provider chain: {model_refs:?}"))?;
+    for model_ref in &model_chain {
+        let single_model_ref = model_ref.as_string();
+        let provider = build_provider_from_model_chain(&config, std::slice::from_ref(model_ref))
+            .with_context(|| {
+                format!("failed to build live baseline provider for {single_model_ref}")
+            })?;
 
-    let output = provider
-        .complete_turn(ProviderTurnRequest::plain(
-            "When the user asks for a baseline probe, call the RecordBaselineProbe tool exactly once.",
-            vec![ConversationMessage::UserText(
-                "Run the baseline probe with result LIVE_TOOL_OK. Do not answer in prose."
-                    .into(),
-            )],
-            vec![baseline_tool_spec()],
-        ))
-        .await
-        .with_context(|| format!("live baseline tool request failed for {model_refs:?}"))?;
-    let tool_use = output.blocks.iter().find_map(|block| match block {
-        ModelBlock::ToolUse { name, input, .. } if name == "RecordBaselineProbe" => Some(input),
-        _ => None,
-    });
-    let tool_use = tool_use.with_context(|| {
-        format!(
-            "live baseline expected RecordBaselineProbe tool call for {model_refs:?}; blocks={:?}",
-            output.blocks
-        )
-    })?;
-    assert_eq!(tool_use["result"], serde_json::json!("LIVE_TOOL_OK"));
-    println!(
-        "live_llm_baseline_tool refs={model_refs:?} input_tokens={} output_tokens={} tool_input={tool_use}",
-        output.input_tokens, output.output_tokens
-    );
+        let output = provider
+            .complete_turn(ProviderTurnRequest::plain(
+                "When the user asks for a baseline probe, call the RecordBaselineProbe tool exactly once.",
+                vec![ConversationMessage::UserText(
+                    "Run the baseline probe with result LIVE_TOOL_OK. Do not answer in prose."
+                        .into(),
+                )],
+                vec![baseline_tool_spec()],
+            ))
+            .await
+            .with_context(|| format!("live baseline tool request failed for {single_model_ref}"))?;
+        let tool_use = output.blocks.iter().find_map(|block| match block {
+            ModelBlock::ToolUse { name, input, .. } if name == "RecordBaselineProbe" => Some(input),
+            _ => None,
+        });
+        let tool_use = tool_use.with_context(|| {
+            format!(
+                "live baseline expected RecordBaselineProbe tool call for {single_model_ref}; selected_refs={model_refs:?} blocks={:?}",
+                output.blocks
+            )
+        })?;
+        assert_eq!(tool_use["result"], serde_json::json!("LIVE_TOOL_OK"));
+        println!(
+            "live_llm_baseline_tool ref={single_model_ref} selected_refs={model_refs:?} input_tokens={} output_tokens={} tool_input={tool_use}",
+            output.input_tokens, output.output_tokens
+        );
+    }
     Ok(())
 }
 
