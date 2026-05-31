@@ -261,8 +261,8 @@ shown, hidden, merged, attached, or left to trace inspection.
 | Tool-only assistant rounds | `assistant_round_recorded` with only tool calls | `verbose`, but normally merged into the related tool item |
 | Provider telemetry | `provider_round_completed` | `debug` |
 | Command and tool lifecycle | `process_execution_requested`, `tool_executed`, `tool_execution_failed`, `truncated_mutation_tool_call_rejected` | `verbose`; failures may promote to `info` when operator-relevant |
-| User-relevant work item changes | `work_item_written`, `work_item_picked`, `work_item_enqueue_requested`, `missing_current_work_item_before_wait` when they change visible posture, complete work, or explain a failure/wait | `verbose`; completions/failures/operator waits may promote to `info` |
-| Routine work item bookkeeping | `work_item_turn_end_committed`, `work_item_turn_end_commit_skipped`, stale-reminder and wait-intent cleanup events, routine `work_item_written` writes | `debug` or `trace_only` |
+| User-relevant work item changes | `work_item_written`, `work_item_picked`, `work_item_enqueue_requested`, `missing_current_work_item_before_wait` when they change visible posture, complete work, or explain a failure/wait | `verbose`; created/completed lifecycle cards, failures, and operator waits may promote to `info` |
+| Routine work item bookkeeping | `work_item_turn_end_committed`, `work_item_turn_end_commit_skipped`, stale-reminder and wait-intent cleanup events, routine `work_item_written` writes | `verbose` as visually distinct bookkeeping rows; raw payload details remain `debug`/trace |
 | Delegated work and tasks | `work_item_delegation_created`, `work_item_delegation_completed`, `task_created`, `task_status_updated`, `task_result_received`, `task_child_spawned`, `task_input_delivered` | `verbose`; final child results/failures may promote to `info` |
 | Task supervision diagnostics | `task_create_requested`, `supervised_child_task_monitor_reattached`, `supervised_child_task_recovery_failed`, `command_task_runner_failed`, `command_task_running_persisted`, `command_task_result_enqueue_failed` | `debug`; failures may promote to `info` |
 | Waits that define visible posture | `waiting_intent_created`, `waiting_intent_cancelled` when the wait is operator-visible | `verbose`; waits requiring operator input are `info` |
@@ -491,9 +491,12 @@ Events:
 
 Policy:
 
-- `info`: show completed work items and work-item-related failures only
-- `verbose`: show only user-relevant deltas such as completion, explicit waits,
-  or meaningful plan/status changes; hide routine bookkeeping
+- `info`: show WorkItem tracking started, completed work items,
+  WorkItem-scoped waits, and WorkItem-related failures. Operator-input waits
+  are action-required; external/task waits are result-level posture changes.
+- `verbose`: show WorkItem lifecycle/activity and visually distinct
+  bookkeeping rows, including routine writes, picks, focus release, turn-end
+  commits/skips, stale reminders, and wait cleanup
 - `debug`: show state, ids, objective, result summary, and todo deltas
 - `trace`: raw payload
 

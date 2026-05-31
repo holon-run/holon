@@ -180,10 +180,13 @@ pub fn is_operator_event_in_display_mode(
     match display_mode {
         OperatorDisplayMode::Info => is_info_event(kind, payload, &presentation),
         OperatorDisplayMode::Verbose => {
-            is_info_event(kind, payload, &presentation) || is_verbose_event(kind, payload)
+            is_info_event(kind, payload, &presentation)
+                || presentation.visibility.display_level() <= display_mode.display_level()
+                || is_verbose_event(kind, payload)
         }
         OperatorDisplayMode::Debug => {
             is_info_event(kind, payload, &presentation)
+                || presentation.visibility.display_level() <= display_mode.display_level()
                 || is_verbose_event(kind, payload)
                 || is_debug_event(kind, payload)
         }
@@ -366,7 +369,21 @@ fn event_visibility(
         ("operator_notification_requested", _) => OperatorVisibility::ActionRequired,
         ("brief_created", _) => brief_visibility(payload, context),
         ("work_item_written", _) if work_item_completed(payload) => OperatorVisibility::WorkDone,
-        ("work_item_written", _) => OperatorVisibility::Trace,
+        ("work_item_written", _) if work_item_created(payload) => OperatorVisibility::TurnResult,
+        ("waiting_intent_created", _) if waiting_intent_requires_operator(payload) => {
+            OperatorVisibility::ActionRequired
+        }
+        ("waiting_intent_created", _) if waiting_intent_is_work_item_scoped(payload) => {
+            OperatorVisibility::TurnResult
+        }
+        (_, OperatorEventCategory::WorkItem) => OperatorVisibility::Progress,
+        (
+            "waiting_intent_created"
+            | "waiting_intent_cancelled"
+            | "stale_waiting_intents_cancelled"
+            | "timer_fire_failed",
+            OperatorEventCategory::Waiting,
+        ) => OperatorVisibility::Progress,
         ("runtime_error", _) => OperatorVisibility::TurnResult,
         ("deferred_to_fallback" | "provider_failed_needs_recovery", _) => {
             OperatorVisibility::TurnResult
@@ -417,6 +434,27 @@ fn work_item_completed(payload: &Value) -> bool {
         .cloned()
         .and_then(decode_value::<crate::types::WorkItemRecord>)
         .is_some_and(|record| record.state == WorkItemState::Completed)
+        || payload.get("action").and_then(Value::as_str) == Some("completed")
+}
+
+fn work_item_created(payload: &Value) -> bool {
+    payload.get("action").and_then(Value::as_str) == Some("created")
+}
+
+fn waiting_intent_requires_operator(payload: &Value) -> bool {
+    decode_value::<WaitingIntentRecord>(payload.clone()).is_some_and(|waiting| {
+        waiting_intent_record_is_work_item_scoped(&waiting)
+            && waiting.source.eq_ignore_ascii_case("operator_input")
+    })
+}
+
+fn waiting_intent_is_work_item_scoped(payload: &Value) -> bool {
+    decode_value::<WaitingIntentRecord>(payload.clone())
+        .is_some_and(|waiting| waiting_intent_record_is_work_item_scoped(&waiting))
+}
+
+fn waiting_intent_record_is_work_item_scoped(waiting: &WaitingIntentRecord) -> bool {
+    waiting.scope == crate::types::WaitingIntentScope::WorkItem && waiting.work_item_id.is_some()
 }
 
 fn turn_terminal_completed(payload: &Value) -> bool {
@@ -468,11 +506,20 @@ fn is_verbose_event(kind: &str, payload: &Value) -> bool {
         | "command_task_runner_failed"
         | "command_task_result_enqueue_failed" => true,
         "task_status_updated" => task_status_is_terminal(payload),
-        "work_item_written" => work_item_completed(payload),
-        "work_item_delegation_completed"
+        "work_item_written"
+        | "work_item_picked"
+        | "work_item_focus_released"
+        | "work_item_enqueue_requested"
+        | "work_item_turn_end_committed"
+        | "work_item_turn_end_commit_skipped"
+        | "work_item_delegation_created"
+        | "work_item_delegation_completed"
         | "work_item_waiting_intents_cancelled"
         | "missing_current_work_item_before_wait"
+        | "work_item_stale_reminder_injected"
+        | "work_item_stale_reminder_skipped"
         | "waiting_intent_created"
+        | "waiting_intent_cancelled"
         | "stale_waiting_intents_cancelled"
         | "timer_fire_failed"
         | "workspace_attached"
@@ -514,14 +561,6 @@ fn is_debug_event(kind: &str, payload: &Value) -> bool {
         | "task_input_delivered"
         | "task_create_requested"
         | "supervised_child_task_monitor_reattached"
-        | "work_item_picked"
-        | "work_item_enqueue_requested"
-        | "work_item_turn_end_committed"
-        | "work_item_turn_end_commit_skipped"
-        | "work_item_stale_reminder_injected"
-        | "work_item_stale_reminder_skipped"
-        | "work_item_delegation_created"
-        | "waiting_intent_cancelled"
         | "callback_delivered"
         | "timer_create_requested"
         | "timer_created"
@@ -2295,6 +2334,136 @@ mod tests {
             presentation.summary,
             "External event received from github for pull/42; resuming agent"
         );
+    }
+
+    #[test]
+    fn work_item_lifecycle_display_policy_is_level_driven() {
+        let context = OperatorPresentationContext::default();
+        let created = json!({
+            "action": "created",
+            "record": {
+                "id": "wi-1",
+                "agent_id": "default",
+                "workspace_id": "agent_home",
+                "objective": "ship lifecycle display",
+                "state": "open",
+                "plan_status": "draft",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z"
+            }
+        });
+        let created_presentation =
+            present_operator_event("work_item_written", &created, "fallback", &context);
+        assert_eq!(
+            created_presentation.visibility,
+            OperatorVisibility::TurnResult
+        );
+        assert_eq!(
+            created_presentation.body.as_deref(),
+            Some("ship lifecycle display")
+        );
+        assert!(super::is_operator_event_in_display_mode(
+            "work_item_written",
+            &created,
+            "fallback",
+            &context,
+            OperatorDisplayMode::Info
+        ));
+
+        let updated = json!({
+            "action": "updated",
+            "record": {
+                "id": "wi-1",
+                "agent_id": "default",
+                "workspace_id": "agent_home",
+                "objective": "ship lifecycle display",
+                "state": "open",
+                "plan_status": "draft",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:01Z"
+            }
+        });
+        let updated_presentation =
+            present_operator_event("work_item_written", &updated, "fallback", &context);
+        assert_eq!(
+            updated_presentation.visibility,
+            OperatorVisibility::Progress
+        );
+        assert!(!super::is_operator_event_in_display_mode(
+            "work_item_written",
+            &updated,
+            "fallback",
+            &context,
+            OperatorDisplayMode::Info
+        ));
+        assert!(super::is_operator_event_in_display_mode(
+            "work_item_written",
+            &updated,
+            "fallback",
+            &context,
+            OperatorDisplayMode::Verbose
+        ));
+
+        let completed = json!({
+            "action": "completed",
+            "record": {
+                "id": "wi-1",
+                "agent_id": "default",
+                "workspace_id": "agent_home",
+                "objective": "ship lifecycle display",
+                "state": "completed",
+                "plan_status": "ready",
+                "result_summary": "merged PR",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:02Z"
+            }
+        });
+        let completed_presentation =
+            present_operator_event("work_item_written", &completed, "fallback", &context);
+        assert_eq!(
+            completed_presentation.visibility,
+            OperatorVisibility::WorkDone
+        );
+        assert_eq!(completed_presentation.summary, "Work completed: merged PR");
+        assert!(super::is_operator_event_in_display_mode(
+            "work_item_written",
+            &completed,
+            "fallback",
+            &context,
+            OperatorDisplayMode::Info
+        ));
+
+        let waiting = json!({
+            "id": "wait-1",
+            "agent_id": "default",
+            "scope": "work_item",
+            "work_item_id": "wi-1",
+            "description": "PR checks",
+            "source": "external",
+            "resource": "github:holon-run/holon#1518",
+            "delivery_mode": "wake_hint",
+            "status": "active",
+            "external_trigger_id": "ext-1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "cancelled_at": null,
+            "last_triggered_at": null,
+            "trigger_count": 0,
+            "correlation_id": null,
+            "causation_id": null
+        });
+        let waiting_presentation =
+            present_operator_event("waiting_intent_created", &waiting, "fallback", &context);
+        assert_eq!(
+            waiting_presentation.visibility,
+            OperatorVisibility::TurnResult
+        );
+        assert!(super::is_operator_event_in_display_mode(
+            "waiting_intent_created",
+            &waiting,
+            "fallback",
+            &context,
+            OperatorDisplayMode::Info
+        ));
     }
 
     #[test]
