@@ -82,6 +82,7 @@ holon config set model.default "openai-codex/gpt-5.5"
 Inspect the configured state with:
 
 ```bash
+holon onboard
 holon config doctor
 holon config models list
 ```

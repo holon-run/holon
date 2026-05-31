@@ -220,3 +220,40 @@ fn config_credentials_json_contract_is_stable_and_redacted() {
     let empty_list = run_json(&home, &["config", "credentials", "list"]);
     assert_eq!(empty_list, json!([]));
 }
+
+#[test]
+fn onboard_json_contract_is_secret_safe_and_actionable() {
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let _set = run_json(
+        &home,
+        &[
+            "config",
+            "credentials",
+            "set",
+            "demo",
+            "--kind",
+            "api_key",
+            "--material",
+            "super-secret",
+        ],
+    );
+
+    let value = run_json(&home, &["onboard", "--json"]);
+    assert_eq!(value["schema_version"], json!(1));
+    assert!(
+        value["sections"].as_array().is_some_and(|sections| {
+            sections
+                .iter()
+                .any(|section| section["id"] == "model_provider")
+        }),
+        "onboard report should include model provider diagnostics: {value}"
+    );
+    assert!(
+        value["next_actions"].as_array().is_some(),
+        "onboard report should include actionable next-step array: {value}"
+    );
+    assert!(
+        !value.to_string().contains("super-secret"),
+        "onboard JSON must not expose credential material"
+    );
+}

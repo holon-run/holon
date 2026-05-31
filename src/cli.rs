@@ -36,6 +36,11 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    #[command(about = "Inspect initial setup and print secret-safe onboarding guidance")]
+    Onboard {
+        #[arg(long)]
+        json: bool,
+    },
     Serve {
         #[command(flatten)]
         options: ServeOptions,

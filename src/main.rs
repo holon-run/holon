@@ -29,6 +29,7 @@ use holon::{
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
     http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
+    onboarding::{onboarding_report, OnboardingReport, OnboardingStatus},
     provider::{provider_doctor, resolved_model_availability},
     run_once::{run_once, RunOnceRequest},
     solve::{run_solve, SolveRequest},
@@ -124,6 +125,16 @@ async fn main() -> Result<()> {
 }
 
 async fn run_runtime_command(command: Commands) -> Result<()> {
+    if let Commands::Onboard { json } = command {
+        let config = AppConfig::load_for_config_inspection()?;
+        let report = onboarding_report(&config);
+        if json {
+            return print_json(&serde_json::to_value(report)?);
+        }
+        print_onboarding_report(&report);
+        return Ok(());
+    }
+
     if let Commands::Tui {
         no_alt_screen,
         connect: Some(connect),
@@ -225,7 +236,56 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::Run { .. } => unreachable!("run command is handled separately"),
         Commands::Solve { .. } => unreachable!("solve command is handled separately"),
         Commands::Debug { command } => handle_debug_command(config, command).await,
+        Commands::Onboard { .. } => unreachable!("onboard command is handled before runtime load"),
         Commands::Config { .. } => unreachable!("config commands are handled separately"),
+    }
+}
+
+fn print_onboarding_report(report: &OnboardingReport) {
+    println!("Holon onboarding");
+    println!("Status: {}", onboarding_status_label(report.status));
+    println!();
+
+    for section in &report.sections {
+        println!(
+            "- {} [{}]: {}",
+            section.title,
+            onboarding_status_label(section.status),
+            section.summary
+        );
+        for action in &section.actions {
+            println!("  next: {}", action.title);
+            if let Some(command) = &action.command {
+                println!("       {}", command.join(" "));
+            }
+        }
+    }
+
+    if report.next_actions.is_empty() {
+        println!();
+        println!("Setup looks ready. Try `holon daemon start` or `holon run \"hello\"`.");
+    } else {
+        println!();
+        println!("Recommended next steps:");
+        for action in &report.next_actions {
+            println!("- {}", action.title);
+            if let Some(command) = &action.command {
+                println!("  {}", command.join(" "));
+            }
+        }
+        println!();
+        println!("Run `holon onboard --json` for the full secret-safe diagnostic report.");
+    }
+}
+
+fn onboarding_status_label(status: OnboardingStatus) -> &'static str {
+    match status {
+        OnboardingStatus::Configured => "configured",
+        OnboardingStatus::Missing => "missing",
+        OnboardingStatus::Unavailable => "unavailable",
+        OnboardingStatus::Restricted => "restricted",
+        OnboardingStatus::Skipped => "skipped",
+        OnboardingStatus::Failed => "failed",
     }
 }
 
