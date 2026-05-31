@@ -121,8 +121,8 @@ async fn live_llm_baseline_configured_chain_smoke() -> Result<()> {
         .with_context(|| format!("live baseline smoke request failed for {model_refs:?}"))?;
     let text = response_text(&output.blocks);
     assert!(
-        text.contains("LIVE_BASELINE_OK") || !output.blocks.is_empty(),
-        "live baseline smoke produced no useful response; refs={model_refs:?} blocks={:?}",
+        text.contains("LIVE_BASELINE_OK"),
+        "live baseline smoke did not return requested sentinel token; refs={model_refs:?} text={text:?} blocks={:?}",
         output.blocks
     );
     println!(
