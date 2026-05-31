@@ -2357,12 +2357,6 @@ fn resolve_provider_registry(
     credential_store: &CredentialStoreFile,
 ) -> Result<ProviderRegistry> {
     let mut registry = built_in_provider_registry_with_settings(settings_env)?;
-    for provider in registry.values_mut() {
-        if provider.credential.is_none() {
-            provider.credential =
-                resolve_provider_credential(&provider.auth, settings_env, credential_store)?;
-        }
-    }
     for (id, provider_config) in &stored_config.providers {
         let built_in = registry.remove(id);
         let runtime = materialize_provider_config(
@@ -2373,6 +2367,12 @@ fn resolve_provider_registry(
             built_in,
         )?;
         registry.insert(id.clone(), runtime);
+    }
+    for provider in registry.values_mut() {
+        if provider.credential.is_none() {
+            provider.credential =
+                resolve_provider_credential(&provider.auth, settings_env, credential_store)?;
+        }
     }
     Ok(registry)
 }
@@ -4230,6 +4230,49 @@ mod tests {
             credential["tokens"]["access_token"],
             Value::String("token".into())
         );
+    }
+
+    #[test]
+    fn app_config_applies_provider_overrides_before_materializing_openai_codex_profile() {
+        let dir = tempdir().unwrap();
+        let _agent_guard = EnvVarGuard::unset("HOLON_AGENT_ID");
+        save_persisted_config_at(
+            &persisted_config_path(dir.path()),
+            &HolonConfigFile {
+                providers: BTreeMap::from([(
+                    ProviderId::openai_codex(),
+                    ProviderConfigFile {
+                        transport: ProviderTransportKind::OpenAiCodexResponses,
+                        base_url: "https://chatgpt.com/backend-api/codex".into(),
+                        auth: ProviderAuthConfig {
+                            source: CredentialSource::ExternalCli,
+                            kind: CredentialKind::SessionToken,
+                            env: None,
+                            profile: None,
+                            external: Some("codex_cli".into()),
+                        },
+                        reasoning_effort: None,
+                        builtin_web_search: None,
+                    },
+                )]),
+                ..HolonConfigFile::default()
+            },
+        )
+        .unwrap();
+        set_credential_profile_at(
+            &credential_store_path(dir.path()),
+            OPENAI_CODEX_CREDENTIAL_PROFILE,
+            CredentialKind::ApiKey,
+            "wrong-kind-token".into(),
+        )
+        .unwrap();
+
+        let config = AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap();
+        let openai_codex = config.providers.get(&ProviderId::openai_codex()).unwrap();
+
+        assert_eq!(openai_codex.auth.source, CredentialSource::ExternalCli);
+        assert_eq!(openai_codex.auth.kind, CredentialKind::SessionToken);
+        assert_eq!(openai_codex.credential, None);
     }
 
     #[test]

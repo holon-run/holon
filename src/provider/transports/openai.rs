@@ -660,13 +660,13 @@ impl AgentProvider for OpenAiCodexProvider {
                     &model_ref,
                     vec![
                         format!(
-                            "Codex CLI access token is expired: credential from {} expired at {}",
+                            "OpenAI Codex OAuth access token is expired: credential source {} expired at {}",
                             credential.source,
                             expires_at.to_rfc3339()
                         ),
-                        "Run `holon config credentials set --kind oauth --stdin openai-codex` to configure Holon-managed OAuth, or run `codex login` to refresh external CLI credentials.".into(),
+                        "Run `holon config credentials set --kind oauth --stdin openai-codex` to configure or refresh Holon-managed OAuth, or run `codex login` if using external CLI credentials.".into(),
                     ],
-                    "OpenAI Codex authentication failed: Codex CLI access token is expired or the Holon-managed openai-codex OAuth access token is expired. Configure a Holon-managed openai-codex credential profile or run `codex login` to refresh Codex CLI credentials.",
+                    "OpenAI Codex authentication failed: OAuth access token is expired. Configure or refresh the Holon-managed openai-codex credential profile, or run `codex login` if using Codex CLI credentials.",
                 ));
             }
         }
