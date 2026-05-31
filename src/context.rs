@@ -10,12 +10,12 @@ use crate::{
     tool::helpers::truncate_text,
     types::{
         AdmissionContext, AgentState, AuthorityClass, BriefRecord, CallbackDeliveryMode,
-        ContextEpisodeRecord, ContinuationClass, ContinuationResolution, ExternalTriggerRecord,
-        ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TodoItemState,
-        ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, WaitingIntentRecord,
-        WaitingIntentScope, WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta,
-        WorkingMemorySnapshot,
+        ContextEpisodeRecord, ContinuationClass, ContinuationResolution, ContinuationTriggerKind,
+        ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus, MessageBody,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView,
+        TodoItemState, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind,
+        WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WorkItemRecord,
+        WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
 
@@ -64,6 +64,7 @@ pub fn build_context(
 ) -> Result<BuiltContext> {
     let messages =
         storage.read_messages_from(agent.compacted_message_count, config.recent_messages)?;
+    let continuation_anchor_messages = storage.read_all_messages()?;
     let briefs = storage.read_recent_briefs(config.recent_briefs)?;
     let tools = storage.read_recent_tool_executions(config.recent_messages)?;
     let transcript = storage.read_recent_transcript(config.recent_messages)?;
@@ -309,6 +310,19 @@ pub fn build_context(
                 .to_string(),
         ),
     );
+
+    if let Some(anchor) = render_continuation_anchor(
+        &continuation_anchor_messages,
+        current_message,
+        current_work_item,
+        remaining_budget,
+    ) {
+        push_budgeted_section(
+            &mut sections,
+            &mut remaining_budget,
+            turn_section("continuation_anchor", anchor),
+        );
+    }
 
     if let Some(content) = render_recent_messages_with_budget(&messages, remaining_budget) {
         push_budgeted_section(
@@ -1181,6 +1195,132 @@ fn render_current_input_body_with_budget(
         budget.max(64),
         Some("\n[truncated current input body]"),
     )
+}
+
+fn render_continuation_anchor(
+    messages: &[MessageEnvelope],
+    current_message: &MessageEnvelope,
+    current_work_item: Option<&WorkItemRecord>,
+    budget: usize,
+) -> Option<String> {
+    let latest_operator = latest_trusted_operator_input(messages, current_message);
+    let relation = current_input_relation(current_message, latest_operator);
+    if latest_operator.is_none() && relation.is_none() {
+        return None;
+    }
+
+    let mut lines = vec!["Continuation anchor:".to_string()];
+    if let Some(operator) = latest_operator {
+        if same_message_identity(current_message, operator) {
+            lines.push("Latest trusted operator input: current_input.".to_string());
+        } else if current_work_item.is_some() {
+            lines.push(format!(
+                "Latest trusted operator input: {}.",
+                operator
+                    .message_seq
+                    .map(|seq| format!("message_seq {seq}"))
+                    .unwrap_or_else(|| operator.id.clone())
+            ));
+        } else {
+            let prefix = "Latest trusted operator input:\n";
+            let reserved = estimate_text_tokens("Continuation anchor:\nCurrent input relation:");
+            let body_budget = budget.saturating_sub(reserved).max(32);
+            lines.push(truncate_section_content(
+                prefix,
+                &render_message_body_for_anchor(&operator.body),
+                body_budget,
+                Some("\n[truncated trusted operator input]"),
+            ));
+        }
+    }
+
+    if let Some(relation) = relation {
+        lines.push(format!("Current input relation: {relation}"));
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn latest_trusted_operator_input<'a>(
+    messages: &'a [MessageEnvelope],
+    current_message: &'a MessageEnvelope,
+) -> Option<&'a MessageEnvelope> {
+    std::iter::once(current_message)
+        .chain(messages.iter().rev())
+        .find(|message| is_trusted_operator_input(message))
+}
+
+fn is_trusted_operator_input(message: &MessageEnvelope) -> bool {
+    message.authority_class == AuthorityClass::OperatorInstruction
+        && matches!(message.origin, MessageOrigin::Operator { .. })
+}
+
+fn current_input_relation(
+    current_message: &MessageEnvelope,
+    latest_operator: Option<&MessageEnvelope>,
+) -> Option<String> {
+    if is_trusted_operator_input(current_message) {
+        return Some(
+            if latest_operator
+                .is_some_and(|operator| same_message_identity(current_message, operator))
+            {
+                "current_input is the latest trusted operator input.".to_string()
+            } else {
+                "current_input is a trusted operator override newer than previous state."
+                    .to_string()
+            },
+        );
+    }
+
+    if latest_operator.is_some() {
+        Some(format!(
+            "current_input is {}, not a new operator request. Continue the latest trusted operator input above unless the current WorkItem projection is more specific.",
+            runtime_continuation_label(current_message)
+        ))
+    } else {
+        Some(format!(
+            "current_input is {}, not a trusted operator request.",
+            runtime_continuation_label(current_message)
+        ))
+    }
+}
+
+fn runtime_continuation_label(message: &MessageEnvelope) -> &'static str {
+    match message.trigger_kind {
+        Some(ContinuationTriggerKind::TaskResult) => "a task-result continuation",
+        Some(ContinuationTriggerKind::ExternalEvent) => "an external-event continuation",
+        Some(ContinuationTriggerKind::TimerFire) => "a timer continuation",
+        Some(ContinuationTriggerKind::InternalFollowup) => "an internal-followup continuation",
+        Some(ContinuationTriggerKind::SystemTick) => "a runtime system-tick continuation",
+        Some(ContinuationTriggerKind::OperatorInput) => "operator-triggered input",
+        None => match message.kind {
+            MessageKind::TaskResult | MessageKind::TaskStatus => "a task-result continuation",
+            MessageKind::CallbackEvent | MessageKind::WebhookEvent | MessageKind::ChannelEvent => {
+                "an external-event continuation"
+            }
+            MessageKind::TimerTick => "a timer continuation",
+            MessageKind::InternalFollowup => "an internal-followup continuation",
+            MessageKind::SystemTick => "a runtime system-tick continuation",
+            _ => "runtime-originated input",
+        },
+    }
+}
+
+fn render_message_body_for_anchor(body: &MessageBody) -> String {
+    match body {
+        MessageBody::Text { text } => text.clone(),
+        MessageBody::Json { value } => {
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        }
+        MessageBody::Brief { text, .. } => text.clone(),
+    }
+}
+
+fn same_message_identity(left: &MessageEnvelope, right: &MessageEnvelope) -> bool {
+    left.id == right.id
+        || (left.message_seq.is_some()
+            && right.message_seq.is_some()
+            && left.message_seq == right.message_seq)
 }
 
 fn continuation_context(
@@ -3622,6 +3762,248 @@ mod tests {
         assert!(activation.content.contains("continue_active"));
         assert!(activation.content.contains("work_123"));
         assert!(activation.content.contains("fix stale pid handling"));
+    }
+
+    #[test]
+    fn build_context_anchors_latest_operator_input_for_runtime_continuation_without_work_item() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        let operator_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "请实现 continuation anchor，并保持中文回复。".to_string(),
+            },
+        );
+        storage.append_message(&operator_message).unwrap();
+
+        let mut system_tick = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "recovery".to_string(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "runtime recovery after provider fallback".to_string(),
+            },
+        );
+        system_tick.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
+
+        let session = AgentState::new("default");
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &system_tick,
+            Some(&ContinuationResolution {
+                trigger_kind: ContinuationTriggerKind::SystemTick,
+                class: ContinuationClass::LocalContinuation,
+                model_reentry: true,
+                prior_closure_outcome: crate::types::ClosureOutcome::Continuable,
+                prior_waiting_reason: None,
+                matched_waiting_reason: false,
+                evidence: vec![],
+            }),
+            &ContextConfig {
+                recent_messages: 4,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 4,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let anchor = built
+            .sections
+            .iter()
+            .find(|section| section.name == "continuation_anchor")
+            .expect("continuation_anchor section should be present");
+        assert!(anchor
+            .content
+            .contains("请实现 continuation anchor，并保持中文回复。"));
+        assert!(anchor.content.contains("runtime system-tick continuation"));
+        assert!(anchor.content.contains("not a new operator request"));
+    }
+
+    #[test]
+    fn build_context_anchor_uses_operator_input_beyond_recent_window() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        let operator_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Preserve this trimmed operator intent.".to_string(),
+            },
+        );
+        storage.append_message(&operator_message).unwrap();
+
+        for idx in 0..6 {
+            let runtime_message = MessageEnvelope::new(
+                "default",
+                MessageKind::TaskStatus,
+                MessageOrigin::System {
+                    subsystem: "task".to_string(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: format!("runtime status {idx}"),
+                },
+            );
+            storage.append_message(&runtime_message).unwrap();
+        }
+
+        let mut recovery = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "recovery".to_string(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "runtime recovery after context trimming".to_string(),
+            },
+        );
+        recovery.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
+
+        let mut session = AgentState::new("default");
+        session.compacted_message_count = 4;
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &recovery,
+            None,
+            &ContextConfig {
+                recent_messages: 2,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 2,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let anchor = built
+            .sections
+            .iter()
+            .find(|section| section.name == "continuation_anchor")
+            .expect("continuation_anchor section should be present");
+        assert!(anchor
+            .content
+            .contains("Preserve this trimmed operator intent."));
+
+        let recent_messages = built
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_messages")
+            .expect("recent_messages section should be present");
+        assert!(!recent_messages
+            .content
+            .contains("Preserve this trimmed operator intent."));
+    }
+
+    #[test]
+    fn build_context_work_item_anchor_does_not_duplicate_work_item_projection() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        let operator_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue the durable work item instead of starting over.".to_string(),
+            },
+        );
+        storage.append_message(&operator_message).unwrap();
+
+        let active = crate::types::WorkItemRecord::new(
+            "default",
+            "Implement continuation anchor runtime behavior",
+            crate::types::WorkItemState::Open,
+        );
+        storage.append_work_item(&active).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(active.id.clone());
+        storage.write_agent(&agent).unwrap();
+
+        let mut system_tick = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".to_string(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue current work item".to_string(),
+            },
+        );
+        system_tick.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
+
+        let built = build_context(
+            &storage,
+            &agent,
+            &execution_snapshot_for(&agent),
+            &crate::types::SkillsRuntimeView::default(),
+            &system_tick,
+            Some(&ContinuationResolution {
+                trigger_kind: ContinuationTriggerKind::SystemTick,
+                class: ContinuationClass::LocalContinuation,
+                model_reentry: true,
+                prior_closure_outcome: crate::types::ClosureOutcome::Completed,
+                prior_waiting_reason: None,
+                matched_waiting_reason: false,
+                evidence: vec![],
+            }),
+            &ContextConfig {
+                recent_messages: 4,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 4,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let current_work_item = built
+            .sections
+            .iter()
+            .find(|section| section.name == "current_work_item")
+            .expect("current_work_item projection should be present");
+        assert!(current_work_item
+            .content
+            .contains("Implement continuation anchor runtime behavior"));
+
+        let anchor = built
+            .sections
+            .iter()
+            .find(|section| section.name == "continuation_anchor")
+            .expect("continuation_anchor section should be present");
+        assert!(anchor.content.contains("Latest trusted operator input:"));
+        assert!(anchor.content.contains("runtime system-tick continuation"));
+        assert!(!anchor
+            .content
+            .contains("Implement continuation anchor runtime behavior"));
+        assert!(!anchor.content.contains("Current WorkItem"));
     }
 
     #[test]
