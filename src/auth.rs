@@ -54,6 +54,15 @@ pub fn load_codex_cli_credential(codex_home: &Path) -> Result<CodexCliCredential
     ))
 }
 
+pub fn load_codex_oauth_profile_credential(
+    material: &str,
+    profile: &str,
+) -> Result<CodexCliCredential> {
+    let auth: AuthDotJson = serde_json::from_str(material)
+        .with_context(|| format!("failed to parse Holon credential profile {profile}"))?;
+    auth_to_credential(auth, &format!("credential_profile:{profile}"))
+}
+
 pub fn codex_cli_auth_file_exists(codex_home: &Path) -> bool {
     auth_file_path(&canonical_or_original(codex_home)).is_file()
 }
