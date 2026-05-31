@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 
 use crate::{
-    auth::load_codex_cli_credential,
+    auth::{load_codex_cli_credential, load_codex_oauth_profile_credential},
     config::{AppConfig, CredentialSource, ModelRef, RuntimeModelCatalog},
     context::ContextConfig,
     onboarding::{onboarding_report, search_diagnostics},
@@ -131,7 +131,7 @@ fn resolved_model_availability_entry(
     } else if !provider_configured {
         Some("provider_not_configured".to_string())
     } else if provider
-        .map(|provider| credential_missing_should_be_static_reason(provider.auth.source))
+        .map(credential_missing_should_be_static_reason)
         .unwrap_or(false)
         && !credential_configured
     {
@@ -161,9 +161,14 @@ fn provider_static_credential_configured(provider: &crate::config::ProviderRunti
     provider.has_configured_credential() || matches!(provider.auth.source, CredentialSource::None)
 }
 
-fn credential_missing_should_be_static_reason(source: CredentialSource) -> bool {
+fn credential_missing_should_be_static_reason(
+    provider: &crate::config::ProviderRuntimeConfig,
+) -> bool {
+    if provider.id.is_openai_codex() && provider.auth.source == CredentialSource::AuthProfile {
+        return false;
+    }
     matches!(
-        source,
+        provider.auth.source,
         CredentialSource::Env | CredentialSource::AuthProfile
     )
 }
@@ -204,13 +209,29 @@ fn provider_availability(config: &AppConfig, model_ref: &ModelRef) -> Value {
     };
 
     if let Some(provider) = config.providers.get(&model_ref.provider) {
-        if provider.auth.source != CredentialSource::ExternalCli {
+        if provider.auth.source != CredentialSource::ExternalCli
+            && !(provider.id.is_openai_codex()
+                && provider.auth.source == CredentialSource::AuthProfile)
+        {
             return availability;
         }
-        let Some(codex_home) = provider.codex_home.as_ref() else {
-            return availability;
-        };
-        let credential_result = load_codex_cli_credential(codex_home);
+        let credential_result = provider
+            .credential
+            .as_deref()
+            .filter(|material| !material.trim().is_empty())
+            .map(|material| {
+                load_codex_oauth_profile_credential(
+                    material,
+                    provider.auth.profile.as_deref().unwrap_or("openai-codex"),
+                )
+            })
+            .unwrap_or_else(|| {
+                provider
+                    .codex_home
+                    .as_ref()
+                    .map(|codex_home| load_codex_cli_credential(codex_home))
+                    .unwrap_or_else(|| Err(anyhow::anyhow!("missing codex_home")))
+            });
         if let Ok(credential) = credential_result.as_ref() {
             availability["credential"] = json!({
                 "source": credential.source,

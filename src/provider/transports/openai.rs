@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    auth::load_codex_cli_credential,
+    auth::{load_codex_cli_credential, load_codex_oauth_profile_credential, CodexCliCredential},
     config::{
         AppConfig, CredentialKind, CredentialSource, ModelRef, ProviderBuiltinWebSearchConfig,
         ProviderId, ProviderRuntimeConfig,
@@ -59,6 +59,8 @@ pub struct OpenAiCodexProvider {
     client: Client,
     provider_id: String,
     base_url: String,
+    credential_profile: Option<String>,
+    credential_material: Option<String>,
     codex_home: std::path::PathBuf,
     originator: String,
     model: String,
@@ -342,11 +344,13 @@ impl OpenAiCodexProvider {
             .codex_home
             .clone()
             .ok_or_else(|| anyhow::anyhow!("missing codex_home for OpenAI Codex provider"))?;
-        load_codex_cli_credential(&codex_home)?;
+        resolve_openai_codex_credential(provider_config, &codex_home)?;
         Ok(Self {
             client,
             provider_id: provider_config.id.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
+            credential_profile: provider_config.auth.profile.clone(),
+            credential_material: provider_config.credential.clone(),
             codex_home,
             originator: provider_config
                 .originator
@@ -361,6 +365,40 @@ impl OpenAiCodexProvider {
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
         })
     }
+
+    fn resolve_credential(&self) -> Result<CodexCliCredential> {
+        self.credential_material
+            .as_deref()
+            .filter(|material| !material.trim().is_empty())
+            .map(|material| {
+                load_codex_oauth_profile_credential(
+                    material,
+                    self.credential_profile.as_deref().unwrap_or("openai-codex"),
+                )
+            })
+            .unwrap_or_else(|| load_codex_cli_credential(&self.codex_home))
+    }
+}
+
+fn resolve_openai_codex_credential(
+    provider_config: &ProviderRuntimeConfig,
+    codex_home: &Path,
+) -> Result<CodexCliCredential> {
+    provider_config
+        .credential
+        .as_deref()
+        .filter(|material| !material.trim().is_empty())
+        .map(|material| {
+            load_codex_oauth_profile_credential(
+                material,
+                provider_config
+                    .auth
+                    .profile
+                    .as_deref()
+                    .unwrap_or("openai-codex"),
+            )
+        })
+        .unwrap_or_else(|| load_codex_cli_credential(codex_home))
 }
 
 fn openai_compaction_policy_from_config(
@@ -603,16 +641,16 @@ impl AgentProvider for OpenAiProvider {
 impl AgentProvider for OpenAiCodexProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let model_ref = format!("{}/{}", self.provider_id, self.model);
-        let credential = load_codex_cli_credential(&self.codex_home).map_err(|error| {
+        let credential = self.resolve_credential().map_err(|error| {
             openai_codex_auth_error(
                 "credential_resolution",
                 &model_ref,
                 vec![
                     error.to_string(),
-                    "OpenAI Codex uses Codex CLI authentication; run `codex login`, then retry."
+                    "OpenAI Codex uses a Holon-managed openai-codex credential profile; run `holon config credentials set --kind oauth --stdin openai-codex` or `codex login`, then retry."
                         .into(),
                 ],
-                "OpenAI Codex authentication failed: Codex CLI credentials are unavailable. Run `codex login`, then retry.",
+                "OpenAI Codex authentication failed: no Holon openai-codex credential profile or usable Codex CLI credentials are available.",
             )
         })?;
         if let Some(expires_at) = credential.expires_at {
@@ -622,13 +660,13 @@ impl AgentProvider for OpenAiCodexProvider {
                     &model_ref,
                     vec![
                         format!(
-                            "Codex CLI credential from {} expired at {}",
+                            "OpenAI Codex OAuth access token is expired: credential source {} expired at {}",
                             credential.source,
                             expires_at.to_rfc3339()
                         ),
-                        "Run `codex login`, then retry.".into(),
+                        "Run `holon config credentials set --kind oauth --stdin openai-codex` to configure or refresh Holon-managed OAuth, or run `codex login` if using external CLI credentials.".into(),
                     ],
-                    "OpenAI Codex authentication failed: the Codex CLI access token is expired. Run `codex login`, then retry.",
+                    "OpenAI Codex authentication failed: OAuth access token is expired. Configure or refresh the Holon-managed openai-codex credential profile, or run `codex login` if using Codex CLI credentials.",
                 ));
             }
         }
@@ -744,7 +782,7 @@ impl AgentProvider for OpenAiCodexProvider {
         &self,
         request: ProviderNativeWebSearchRequest,
     ) -> Result<()> {
-        let credential = load_codex_cli_credential(&self.codex_home)?;
+        let credential = self.resolve_credential()?;
         let probe_request = builtin_web_search_probe_turn_request(request);
         let body = build_openai_responses_request(
             &self.model,
@@ -4403,16 +4441,56 @@ mod tests {
         build_openai_responses_request, chat_completions_url, incremental_diagnostics,
         latest_openai_compaction_index, openai_compaction_trigger_for_request_plan,
         openai_compaction_trigger_for_window, openai_provider_window_compaction_candidate,
-        plan_openai_responses_request, OpenAiCompactionPolicy, OpenAiContinuationState,
-        OpenAiProviderWindow, OpenAiRequestPlan, OpenAiRequestShape,
+        plan_openai_responses_request, resolve_openai_codex_credential, OpenAiCompactionPolicy,
+        OpenAiContinuationState, OpenAiProviderWindow, OpenAiRequestPlan, OpenAiRequestShape,
         OpenAiResponsesTransportContract, ToolSchemaContract,
+    };
+    use crate::config::{
+        CredentialKind, CredentialSource, ProviderAuthConfig, ProviderId, ProviderRuntimeConfig,
+        ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
     };
     use crate::provider::{
         ConversationMessage, ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
         ProviderTurnRequest,
     };
+    use base64::Engine;
     use serde_json::json;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+
+    fn encode_segment(value: serde_json::Value) -> String {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string())
+    }
+
+    fn make_token(payload: serde_json::Value) -> String {
+        format!(
+            "{}.{}.{}",
+            encode_segment(json!({"alg": "none"})),
+            encode_segment(payload),
+            encode_segment(json!("sig"))
+        )
+    }
+
+    fn test_openai_codex_config(credential: Option<String>) -> ProviderRuntimeConfig {
+        ProviderRuntimeConfig {
+            id: ProviderId::openai_codex(),
+            transport: ProviderTransportKind::OpenAiCodexResponses,
+            base_url: "https://chatgpt.com/backend-api/codex".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::AuthProfile,
+                kind: CredentialKind::OAuth,
+                env: None,
+                profile: Some(OPENAI_CODEX_CREDENTIAL_PROFILE.into()),
+                external: Some("codex_cli".into()),
+            },
+            credential,
+            codex_home: Some(PathBuf::from("/tmp/codex-home")),
+            originator: Some("codex_cli_rs".into()),
+            reasoning_effort: Some("low".into()),
+            context_management: Default::default(),
+            builtin_web_search: None,
+        }
+    }
 
     #[test]
     fn chat_completions_url_accepts_openai_compatible_base_urls() {
@@ -4439,6 +4517,34 @@ mod tests {
         assert_eq!(
             chat_completions_url("https://proxy.example/chat/completions"),
             "https://proxy.example/chat/completions"
+        );
+    }
+
+    #[test]
+    fn openai_codex_resolves_holon_oauth_profile_before_cli_files() {
+        let credential_material = json!({
+            "tokens": {
+                "access_token": make_token(json!({
+                    "exp": 1_900_000_000,
+                    "chatgpt_account_id": "acct_profile"
+                })),
+                "refresh_token": "refresh",
+                "account_id": "acct_profile"
+            }
+        })
+        .to_string();
+        let provider_config = test_openai_codex_config(Some(credential_material));
+
+        let credential = resolve_openai_codex_credential(
+            &provider_config,
+            provider_config.codex_home.as_ref().unwrap(),
+        )
+        .expect("Holon profile credential should resolve");
+
+        assert_eq!(credential.account_id, "acct_profile");
+        assert_eq!(
+            credential.source,
+            format!("credential_profile:{OPENAI_CODEX_CREDENTIAL_PROFILE}")
         );
     }
 

@@ -132,6 +132,8 @@ pub const DEFAULT_LOCAL_AGENT_ID: &str = "main";
 
 pub type ProviderRegistry = BTreeMap<ProviderId, ProviderRuntimeConfig>;
 
+pub const OPENAI_CODEX_CREDENTIAL_PROFILE: &str = "openai-codex";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderRuntimeConfig {
     pub id: ProviderId,
@@ -547,11 +549,13 @@ impl AppConfig {
         });
         let config_file_path = persisted_config_path(&home_dir);
         let stored_config = load_persisted_config_at(&config_file_path)?;
-        let credential_store = if config_uses_credential_profiles(&stored_config) {
-            load_credential_store_at(&credential_store_path(&home_dir))?
-        } else {
-            CredentialStoreFile::default()
-        };
+        let credential_store_path = credential_store_path(&home_dir);
+        let credential_store =
+            if config_uses_credential_profiles(&stored_config) || credential_store_path.exists() {
+                load_credential_store_at(&credential_store_path)?
+            } else {
+                CredentialStoreFile::default()
+            };
         let http_addr = env::var("HOLON_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:7878".into());
         let callback_base_url =
             env::var("HOLON_CALLBACK_BASE_URL").unwrap_or_else(|_| format!("http://{http_addr}"));
@@ -2353,6 +2357,9 @@ fn resolve_provider_registry(
     credential_store: &CredentialStoreFile,
 ) -> Result<ProviderRegistry> {
     let mut registry = built_in_provider_registry_with_settings(settings_env)?;
+    for provider in registry.values_mut() {
+        provider.credential = None;
+    }
     for (id, provider_config) in &stored_config.providers {
         let built_in = registry.remove(id);
         let runtime = materialize_provider_config(
@@ -2363,6 +2370,12 @@ fn resolve_provider_registry(
             built_in,
         )?;
         registry.insert(id.clone(), runtime);
+    }
+    for provider in registry.values_mut() {
+        if provider.credential.is_none() {
+            provider.credential =
+                resolve_provider_credential(&provider.auth, settings_env, credential_store)?;
+        }
     }
     Ok(registry)
 }
@@ -2386,10 +2399,10 @@ fn built_in_provider_registry_with_settings(
             base_url: env::var("HOLON_OPENAI_CODEX_BASE_URL")
                 .unwrap_or_else(|_| "https://chatgpt.com/backend-api/codex".to_string()),
             auth: ProviderAuthConfig {
-                source: CredentialSource::ExternalCli,
-                kind: CredentialKind::SessionToken,
+                source: CredentialSource::AuthProfile,
+                kind: CredentialKind::OAuth,
                 env: None,
-                profile: None,
+                profile: Some(OPENAI_CODEX_CREDENTIAL_PROFILE.into()),
                 external: Some("codex_cli".into()),
             },
             credential: None,
@@ -3196,10 +3209,10 @@ pub fn provider_registry_for_tests(
             transport: ProviderTransportKind::OpenAiCodexResponses,
             base_url: "https://chatgpt.com/backend-api/codex".into(),
             auth: ProviderAuthConfig {
-                source: CredentialSource::ExternalCli,
-                kind: CredentialKind::SessionToken,
+                source: CredentialSource::AuthProfile,
+                kind: CredentialKind::OAuth,
                 env: None,
-                profile: None,
+                profile: Some(OPENAI_CODEX_CREDENTIAL_PROFILE.into()),
                 external: Some("codex_cli".into()),
             },
             credential: None,
@@ -3371,8 +3384,19 @@ fn authenticated_model_candidates(
 
 fn provider_has_usable_auth(provider: &ProviderRuntimeConfig) -> bool {
     match provider.auth.source {
-        CredentialSource::Env | CredentialSource::AuthProfile => {
+        CredentialSource::Env => provider.has_configured_credential(),
+        CredentialSource::AuthProfile => {
             provider.has_configured_credential()
+                || (provider.id.is_openai_codex()
+                    && provider.auth.profile.as_deref() == Some(OPENAI_CODEX_CREDENTIAL_PROFILE)
+                    && provider
+                        .codex_home
+                        .as_deref()
+                        .map(|home| {
+                            codex_cli_auth_file_exists(home)
+                                && load_codex_cli_credential(home).is_ok()
+                        })
+                        .unwrap_or(false))
         }
         CredentialSource::ExternalCli => {
             provider.auth.external.as_deref() == Some("codex_cli")
@@ -3953,7 +3977,7 @@ mod tests {
         CredentialKind, CredentialSource, CredentialStoreFile, HolonConfigFile, ModelConfigFile,
         ModelRef, ProviderAuthConfig, ProviderBuiltinWebSearchConfig, ProviderConfigFile,
         ProviderId, ProviderRegistry, ProviderRuntimeConfig, ProviderTransportKind,
-        RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID,
+        RuntimeModelCatalog, DEFAULT_LOCAL_AGENT_ID, OPENAI_CODEX_CREDENTIAL_PROFILE,
     };
 
     struct EnvVarSnapshot {
@@ -4149,6 +4173,113 @@ mod tests {
 
         let value = get_config_value("ANTHROPIC_BASE_URL", None, &settings);
         assert_eq!(value.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn built_in_openai_codex_defaults_to_holon_oauth_profile() {
+        let settings_env = HashMap::new();
+        let registry = built_in_provider_registry_with_settings(&settings_env).unwrap();
+        let openai_codex = registry.get(&ProviderId::openai_codex()).unwrap();
+
+        assert_eq!(openai_codex.auth.source, CredentialSource::AuthProfile);
+        assert_eq!(openai_codex.auth.kind, CredentialKind::OAuth);
+        assert_eq!(
+            openai_codex.auth.profile.as_deref(),
+            Some(OPENAI_CODEX_CREDENTIAL_PROFILE)
+        );
+        assert_eq!(openai_codex.auth.external.as_deref(), Some("codex_cli"));
+        assert!(openai_codex.credential.is_none());
+    }
+
+    #[test]
+    fn app_config_load_materializes_openai_codex_profile_from_existing_store() {
+        let dir = tempdir().unwrap();
+        let _agent_guard = EnvVarGuard::unset("HOLON_AGENT_ID");
+        save_persisted_config_at(
+            &persisted_config_path(dir.path()),
+            &HolonConfigFile {
+                model: ModelConfigFile {
+                    default: Some("openai-codex/gpt-5.4".into()),
+                    ..ModelConfigFile::default()
+                },
+                ..HolonConfigFile::default()
+            },
+        )
+        .unwrap();
+        set_credential_profile_at(
+            &credential_store_path(dir.path()),
+            OPENAI_CODEX_CREDENTIAL_PROFILE,
+            CredentialKind::OAuth,
+            "{\"tokens\":{\"access_token\":\"token\",\"refresh_token\":\"refresh\",\"account_id\":\"acct\"}}"
+                .into(),
+        )
+        .unwrap();
+
+        let config = AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap();
+        let openai_codex = config.providers.get(&ProviderId::openai_codex()).unwrap();
+
+        assert_eq!(
+            openai_codex.auth.profile.as_deref(),
+            Some(OPENAI_CODEX_CREDENTIAL_PROFILE)
+        );
+        let credential: Value = serde_json::from_str(
+            openai_codex
+                .credential
+                .as_deref()
+                .expect("openai-codex credential material should be loaded"),
+        )
+        .unwrap();
+        assert_eq!(
+            credential["tokens"]["access_token"],
+            Value::String("token".into())
+        );
+    }
+
+    #[test]
+    fn app_config_applies_provider_overrides_before_materializing_openai_codex_profile() {
+        let dir = tempdir().unwrap();
+        let _agent_guard = EnvVarGuard::unset("HOLON_AGENT_ID");
+        save_persisted_config_at(
+            &persisted_config_path(dir.path()),
+            &HolonConfigFile {
+                model: ModelConfigFile {
+                    default: Some("openai-codex/gpt-5.4".into()),
+                    ..ModelConfigFile::default()
+                },
+                providers: BTreeMap::from([(
+                    ProviderId::openai_codex(),
+                    ProviderConfigFile {
+                        transport: ProviderTransportKind::OpenAiCodexResponses,
+                        base_url: "https://chatgpt.com/backend-api/codex".into(),
+                        auth: ProviderAuthConfig {
+                            source: CredentialSource::ExternalCli,
+                            kind: CredentialKind::SessionToken,
+                            env: None,
+                            profile: None,
+                            external: Some("codex_cli".into()),
+                        },
+                        reasoning_effort: None,
+                        builtin_web_search: None,
+                    },
+                )]),
+                ..HolonConfigFile::default()
+            },
+        )
+        .unwrap();
+        set_credential_profile_at(
+            &credential_store_path(dir.path()),
+            OPENAI_CODEX_CREDENTIAL_PROFILE,
+            CredentialKind::ApiKey,
+            "wrong-kind-token".into(),
+        )
+        .unwrap();
+
+        let config = AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap();
+        let openai_codex = config.providers.get(&ProviderId::openai_codex()).unwrap();
+
+        assert_eq!(openai_codex.auth.source, CredentialSource::ExternalCli);
+        assert_eq!(openai_codex.auth.kind, CredentialKind::SessionToken);
+        assert_eq!(openai_codex.credential, None);
     }
 
     #[test]
@@ -4900,7 +5031,7 @@ mod tests {
     }
 
     #[test]
-    fn app_config_ignores_bad_credential_store_permissions_until_profile_auth_is_used() {
+    fn app_config_rejects_bad_credential_store_permissions_when_store_exists() {
         let dir = tempdir().unwrap();
         save_persisted_config_at(
             &persisted_config_path(dir.path()),
@@ -4921,6 +5052,12 @@ mod tests {
             fs::set_permissions(&store_path, fs::Permissions::from_mode(0o644)).unwrap();
         }
 
+        #[cfg(unix)]
+        {
+            let err = AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap_err();
+            assert!(err.to_string().contains("chmod 600"));
+        }
+        #[cfg(not(unix))]
         AppConfig::load_with_home(Some(dir.path().to_path_buf())).unwrap();
 
         let mut config = load_persisted_config_at(&persisted_config_path(dir.path())).unwrap();

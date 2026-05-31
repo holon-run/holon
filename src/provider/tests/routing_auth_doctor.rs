@@ -133,9 +133,7 @@ async fn openai_codex_expired_cli_token_fails_fast_with_login_hint() {
         .await
         .expect_err("expired Codex CLI token should fail before send");
 
-    assert!(error
-        .to_string()
-        .contains("Codex CLI access token is expired"));
+    assert!(error.to_string().contains("OAuth access token is expired"));
     assert!(error.to_string().contains("codex login"));
     let timeline = provider_attempt_timeline(&error).expect("missing attempt timeline");
     assert_eq!(timeline.attempts.len(), 1);
