@@ -149,6 +149,7 @@ holon daemon stop
 ```bash
 holon config list                # All current config
 holon config schema              # All keys with types and defaults
+holon onboard                    # Secret-safe setup guidance and next steps
 holon config doctor              # Full health check
 holon config providers list      # All registered providers
 holon config models list         # Available models with status

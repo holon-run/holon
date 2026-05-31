@@ -754,6 +754,23 @@
     "aliases": []
   },
   {
+    "path": "onboard",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "prompt",
     "positionals": [
       {
