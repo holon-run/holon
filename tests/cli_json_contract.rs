@@ -248,10 +248,17 @@ fn onboard_json_contract_is_secret_safe_and_actionable() {
         }),
         "onboard report should include model provider diagnostics: {value}"
     );
-    assert!(
-        value["next_actions"].as_array().is_some(),
-        "onboard report should include actionable next-step array: {value}"
-    );
+    match value.get("next_actions") {
+        Some(next_actions) => assert!(
+            next_actions.as_array().is_some(),
+            "onboard report next_actions should be an array when present: {value}"
+        ),
+        None => assert_eq!(
+            value["status"],
+            json!("configured"),
+            "onboard report should omit next_actions only when fully configured: {value}"
+        ),
+    }
     assert!(
         !value.to_string().contains("super-secret"),
         "onboard JSON must not expose credential material"

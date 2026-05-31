@@ -125,10 +125,10 @@ async fn main() -> Result<()> {
 }
 
 async fn run_runtime_command(command: Commands) -> Result<()> {
-    if let Commands::Onboard { json } = command {
+    if let Commands::Onboard { json } = &command {
         let config = AppConfig::load_for_config_inspection()?;
         let report = onboarding_report(&config);
-        if json {
+        if *json {
             return print_json(&serde_json::to_value(report)?);
         }
         print_onboarding_report(&report);
@@ -141,13 +141,18 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         token,
         token_file,
         token_profile,
-    } = command
+    } = &command
     {
         let config = AppConfig::load_for_config_inspection()?;
-        let token = resolve_remote_token(&config, token, token_file, token_profile)?;
-        let client = LocalClient::remote(config.clone(), connect, token)?;
+        let token = resolve_remote_token(
+            &config,
+            token.clone(),
+            token_file.clone(),
+            token_profile.clone(),
+        )?;
+        let client = LocalClient::remote(config.clone(), connect.clone(), token)?;
         client.handshake().await?;
-        return run_tui(config, no_alt_screen, Some(client)).await;
+        return run_tui(config, *no_alt_screen, Some(client)).await;
     }
 
     let config = AppConfig::load()?;
