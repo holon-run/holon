@@ -6,6 +6,7 @@ use crate::{
     auth::load_codex_cli_credential,
     config::{AppConfig, CredentialSource, ModelRef, RuntimeModelCatalog},
     context::ContextConfig,
+    onboarding::onboarding_report,
     types::ResolvedModelAvailability,
 };
 
@@ -55,6 +56,7 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
         "disable_provider_fallback": config.provider_fallback_disabled(),
         "runtime_max_output_tokens": config.runtime_max_output_tokens,
         "retry_policy": provider_retry_policy_json(),
+        "onboarding": onboarding_report(config),
         "model_availability": model_availability,
         "providers": providers,
     })
@@ -395,5 +397,19 @@ mod tests {
             .iter()
             .any(|entry| entry["model"].as_str() == Some("openai/gpt-5.4")
                 && entry["available"].as_bool() == Some(true)));
+    }
+
+    #[test]
+    fn provider_doctor_includes_onboarding_report_contract() {
+        let fixture = test_config(Some("openai-key"));
+        let doctor = provider_doctor(&fixture.config);
+
+        assert_eq!(doctor["onboarding"]["schema_version"].as_u64(), Some(1));
+        assert_eq!(doctor["onboarding"]["status"].as_str(), Some("configured"));
+        assert!(doctor["onboarding"]["sections"]
+            .as_array()
+            .expect("onboarding sections")
+            .iter()
+            .any(|section| section["id"].as_str() == Some("model_provider")));
     }
 }
