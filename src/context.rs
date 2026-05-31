@@ -64,6 +64,7 @@ pub fn build_context(
 ) -> Result<BuiltContext> {
     let messages =
         storage.read_messages_from(agent.compacted_message_count, config.recent_messages)?;
+    let continuation_anchor_messages = storage.read_all_messages()?;
     let briefs = storage.read_recent_briefs(config.recent_briefs)?;
     let tools = storage.read_recent_tool_executions(config.recent_messages)?;
     let transcript = storage.read_recent_transcript(config.recent_messages)?;
@@ -311,7 +312,7 @@ pub fn build_context(
     );
 
     if let Some(anchor) = render_continuation_anchor(
-        &messages,
+        &continuation_anchor_messages,
         current_message,
         current_work_item,
         remaining_budget,
@@ -3830,6 +3831,91 @@ mod tests {
             .contains("请实现 continuation anchor，并保持中文回复。"));
         assert!(anchor.content.contains("runtime system-tick continuation"));
         assert!(anchor.content.contains("not a new operator request"));
+    }
+
+    #[test]
+    fn build_context_anchor_uses_operator_input_beyond_recent_window() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        let operator_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Preserve this trimmed operator intent.".to_string(),
+            },
+        );
+        storage.append_message(&operator_message).unwrap();
+
+        for idx in 0..6 {
+            let runtime_message = MessageEnvelope::new(
+                "default",
+                MessageKind::TaskStatus,
+                MessageOrigin::System {
+                    subsystem: "task".to_string(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: format!("runtime status {idx}"),
+                },
+            );
+            storage.append_message(&runtime_message).unwrap();
+        }
+
+        let mut recovery = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "recovery".to_string(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "runtime recovery after context trimming".to_string(),
+            },
+        );
+        recovery.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
+
+        let mut session = AgentState::new("default");
+        session.compacted_message_count = 4;
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &recovery,
+            None,
+            &ContextConfig {
+                recent_messages: 2,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 2,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let anchor = built
+            .sections
+            .iter()
+            .find(|section| section.name == "continuation_anchor")
+            .expect("continuation_anchor section should be present");
+        assert!(anchor
+            .content
+            .contains("Preserve this trimmed operator intent."));
+
+        let recent_messages = built
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_messages")
+            .expect("recent_messages section should be present");
+        assert!(!recent_messages
+            .content
+            .contains("Preserve this trimmed operator intent."));
     }
 
     #[test]
