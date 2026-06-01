@@ -52,6 +52,39 @@ impl ComposerState {
         }
     }
 
+    pub(super) fn move_up(&mut self) {
+        let line_start = self.current_line_start();
+        if line_start == 0 {
+            return;
+        }
+
+        let previous_line_end = line_start - 1;
+        let previous_line_start = self.text[..previous_line_end]
+            .rfind('\n')
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        self.cursor = self.line_index_at_column(
+            previous_line_start,
+            previous_line_end,
+            self.current_line_column(),
+        );
+    }
+
+    pub(super) fn move_down(&mut self) {
+        let line_end = self.current_line_end();
+        if line_end == self.text.len() {
+            return;
+        }
+
+        let next_line_start = line_end + 1;
+        let next_line_end = self.text[next_line_start..]
+            .find('\n')
+            .map(|index| next_line_start + index)
+            .unwrap_or(self.text.len());
+        self.cursor =
+            self.line_index_at_column(next_line_start, next_line_end, self.current_line_column());
+    }
+
     pub(super) fn move_home(&mut self) {
         self.cursor = self.current_line_start();
     }
@@ -151,6 +184,23 @@ impl ComposerState {
             .map(|index| self.cursor + index)
             .unwrap_or(self.text.len())
     }
+
+    fn current_line_column(&self) -> usize {
+        self.text[self.current_line_start()..self.cursor]
+            .chars()
+            .count()
+    }
+
+    fn line_index_at_column(&self, line_start: usize, line_end: usize, column: usize) -> usize {
+        let mut index = line_start;
+        for (count, (offset, ch)) in self.text[line_start..line_end].char_indices().enumerate() {
+            if count == column {
+                return line_start + offset;
+            }
+            index = line_start + offset + ch.len_utf8();
+        }
+        index
+    }
 }
 
 impl From<&str> for ComposerState {
@@ -217,6 +267,51 @@ mod tests {
         assert_eq!(composer.cursor(), "first\n".len());
         composer.move_end();
         assert_eq!(composer.cursor(), "first\nsecond".len());
+    }
+
+    #[test]
+    fn up_and_down_move_between_lines_at_matching_columns() {
+        let mut composer = ComposerState::from("alpha\nbeta\ncharlie");
+        composer.move_to_start();
+        for _ in 0..8 {
+            composer.move_right();
+        }
+
+        composer.move_up();
+        assert_eq!(composer.cursor(), 2);
+        composer.move_down();
+        assert_eq!(composer.cursor(), "alpha\nbe".len());
+        composer.move_down();
+        assert_eq!(composer.cursor(), "alpha\nbeta\nch".len());
+    }
+
+    #[test]
+    fn up_and_down_clamp_to_shorter_lines_and_noop_at_edges() {
+        let mut composer = ComposerState::from("long\nx\nwide");
+        composer.move_to_start();
+        for _ in 0..3 {
+            composer.move_right();
+        }
+        composer.move_up();
+        assert_eq!(composer.cursor(), 3);
+
+        composer.move_down();
+        assert_eq!(composer.cursor(), "long\nx".len());
+        composer.move_down();
+        assert_eq!(composer.cursor(), "long\nx\nw".len());
+        composer.move_down();
+        assert_eq!(composer.cursor(), "long\nx\nw".len());
+    }
+
+    #[test]
+    fn up_and_down_respect_utf8_columns() {
+        let mut composer = ComposerState::from("你好\n世界");
+        composer.move_to_start();
+        composer.move_right();
+        composer.move_down();
+        assert_eq!(composer.cursor(), "你好\n世".len());
+        composer.move_up();
+        assert_eq!(composer.cursor(), "你".len());
     }
 }
 
