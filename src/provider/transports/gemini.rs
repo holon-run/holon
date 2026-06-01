@@ -225,46 +225,7 @@ impl AgentProvider for GeminiProvider {
         }
         let parsed: GenerateContentResponse = serde_json::from_str(&response_body)
             .map_err(|error| invalid_response_error("invalid Gemini JSON", error))?;
-        let candidate = parsed
-            .candidates
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("Gemini response contained no candidates"))?;
-        let blocks = candidate
-            .content
-            .map(|content| gemini_parts_to_model_blocks(content.parts))
-            .unwrap_or_default();
-        if blocks.is_empty() {
-            return Err(anyhow!(
-                "Gemini response contained no supported content blocks"
-            ));
-        }
-        let usage = parsed.usage_metadata;
-        Ok(ProviderTurnResponse {
-            blocks,
-            stop_reason: candidate.finish_reason,
-            input_tokens: usage
-                .as_ref()
-                .and_then(|usage| usage.prompt_token_count)
-                .unwrap_or(0),
-            output_tokens: usage
-                .as_ref()
-                .and_then(|usage| usage.candidates_token_count)
-                .unwrap_or(0),
-            cache_usage: Some(ProviderCacheUsage {
-                read_input_tokens: 0,
-                creation_input_tokens: 0,
-            }),
-            request_diagnostics: Some(ProviderRequestDiagnostics {
-                request_lowering_mode: "gemini_generate_content".to_string(),
-                anthropic_cache: None,
-                anthropic_context_management: None,
-                openai_request_controls: None,
-                incremental_continuation: None,
-                openai_remote_compaction: None,
-                native_web_search: None,
-            }),
-        })
+        gemini_response_to_provider_turn_response(parsed)
     }
 
     #[cfg(test)]
@@ -373,16 +334,19 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
         ConversationMessage::UserToolResults(results) => {
             let parts = results
                 .iter()
-                .map(|result| GeminiPart {
-                    text: None,
-                    function_call: None,
-                    function_response: Some(GeminiFunctionResponse {
-                        name: result.tool_use_id.clone(),
-                        response: json!({
-                            "content": result.content,
-                            "is_error": result.is_error,
+                .map(|result| {
+                    let response_name = gemini_function_response_name(&result.tool_use_id);
+                    GeminiPart {
+                        text: None,
+                        function_call: None,
+                        function_response: Some(GeminiFunctionResponse {
+                            name: response_name,
+                            response: json!({
+                                "content": result.content,
+                                "is_error": result.is_error,
+                            }),
                         }),
-                    }),
+                    }
                 })
                 .collect::<Vec<_>>();
             (!parts.is_empty()).then(|| GeminiContent {
@@ -391,6 +355,46 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
             })
         }
     }
+}
+
+fn gemini_response_to_provider_turn_response(
+    parsed: GenerateContentResponse,
+) -> Result<ProviderTurnResponse> {
+    let candidate = parsed
+        .candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("Gemini response contained no candidates"))?;
+    let blocks = candidate
+        .content
+        .map(|content| gemini_parts_to_model_blocks(content.parts))
+        .unwrap_or_default();
+    let usage = parsed.usage_metadata;
+    Ok(ProviderTurnResponse {
+        blocks,
+        stop_reason: candidate.finish_reason,
+        input_tokens: usage
+            .as_ref()
+            .and_then(|usage| usage.prompt_token_count)
+            .unwrap_or(0),
+        output_tokens: usage
+            .as_ref()
+            .and_then(|usage| usage.candidates_token_count)
+            .unwrap_or(0),
+        cache_usage: Some(ProviderCacheUsage {
+            read_input_tokens: 0,
+            creation_input_tokens: 0,
+        }),
+        request_diagnostics: Some(ProviderRequestDiagnostics {
+            request_lowering_mode: "gemini_generate_content".to_string(),
+            anthropic_cache: None,
+            anthropic_context_management: None,
+            openai_request_controls: None,
+            incremental_continuation: None,
+            openai_remote_compaction: None,
+            native_web_search: None,
+        }),
+    })
 }
 
 fn build_gemini_tools(request: &ProviderTurnRequest) -> Vec<Value> {
@@ -408,18 +412,102 @@ fn build_gemini_tools(request: &ProviderTurnRequest) -> Vec<Value> {
     })]
 }
 
+const GEMINI_TOOL_USE_ID_SEPARATOR: &str = "__holon_gemini_call_";
+
 fn gemini_parts_to_model_blocks(parts: Vec<GeminiPart>) -> Vec<ModelBlock> {
     parts
         .into_iter()
-        .filter_map(|part| {
+        .enumerate()
+        .filter_map(|(index, part)| {
             if let Some(text) = part.text {
                 return Some(ModelBlock::Text { text });
             }
             part.function_call.map(|call| ModelBlock::ToolUse {
-                id: call.name.clone(),
+                id: gemini_tool_use_id(&call.name, index),
                 name: call.name,
                 input: call.args,
             })
         })
         .collect()
+}
+
+fn gemini_tool_use_id(name: &str, index: usize) -> String {
+    format!("{name}{GEMINI_TOOL_USE_ID_SEPARATOR}{index}")
+}
+
+fn gemini_function_response_name(tool_use_id: &str) -> String {
+    tool_use_id
+        .rsplit_once(GEMINI_TOOL_USE_ID_SEPARATOR)
+        .map(|(name, _)| name)
+        .unwrap_or(tool_use_id)
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gemini_response_preserves_empty_blocks_with_finish_reason_and_usage() {
+        let response = gemini_response_to_provider_turn_response(GenerateContentResponse {
+            candidates: vec![GeminiCandidate {
+                content: Some(GeminiContent {
+                    role: "model".to_string(),
+                    parts: Vec::new(),
+                }),
+                finish_reason: Some("MAX_TOKENS".to_string()),
+            }],
+            usage_metadata: Some(GeminiUsageMetadata {
+                prompt_token_count: Some(11),
+                candidates_token_count: Some(7),
+            }),
+        })
+        .expect("empty Gemini content should still be a valid response");
+
+        assert!(response.blocks.is_empty());
+        assert_eq!(response.stop_reason.as_deref(), Some("MAX_TOKENS"));
+        assert_eq!(response.input_tokens, 11);
+        assert_eq!(response.output_tokens, 7);
+    }
+
+    #[test]
+    fn gemini_tool_use_ids_are_unique_and_responses_restore_function_name() {
+        let blocks = gemini_parts_to_model_blocks(vec![
+            GeminiPart {
+                text: None,
+                function_call: Some(GeminiFunctionCall {
+                    name: "ProbeTool".to_string(),
+                    args: json!({"first": true}),
+                }),
+                function_response: None,
+            },
+            GeminiPart {
+                text: None,
+                function_call: Some(GeminiFunctionCall {
+                    name: "ProbeTool".to_string(),
+                    args: json!({"second": true}),
+                }),
+                function_response: None,
+            },
+        ]);
+
+        let first_id = match &blocks[0] {
+            ModelBlock::ToolUse { id, name, .. } => {
+                assert_eq!(name, "ProbeTool");
+                id.clone()
+            }
+            other => panic!("expected first tool use, got {other:?}"),
+        };
+        let second_id = match &blocks[1] {
+            ModelBlock::ToolUse { id, name, .. } => {
+                assert_eq!(name, "ProbeTool");
+                id.clone()
+            }
+            other => panic!("expected second tool use, got {other:?}"),
+        };
+
+        assert_ne!(first_id, second_id);
+        assert_eq!(gemini_function_response_name(&first_id), "ProbeTool");
+        assert_eq!(gemini_function_response_name(&second_id), "ProbeTool");
+    }
 }
