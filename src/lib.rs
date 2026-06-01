@@ -18,6 +18,7 @@ pub mod ingress;
 pub mod memory;
 pub mod model_catalog;
 pub mod onboarding;
+pub mod onboarding_tui;
 pub mod openapi;
 pub mod operator_event;
 pub mod policy;

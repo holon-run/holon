@@ -29,10 +29,8 @@ use holon::{
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
     http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
-    onboarding::{
-        credential_repair_plan, onboarding_report, OnboardingCredentialRepair, OnboardingReport,
-        OnboardingStatus,
-    },
+    onboarding::onboarding_report,
+    onboarding_tui::run_onboarding_tui,
     provider::{provider_doctor, resolved_model_availability},
     run_once::{run_once, RunOnceRequest},
     solve::{run_solve, SolveRequest},
@@ -134,7 +132,16 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         if *json || !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             return print_json(&serde_json::to_value(report)?);
         }
-        return run_interactive_onboarding(config, report);
+        let summary = run_onboarding_tui(config)?;
+        println!("Holon onboarding configured.");
+        println!("- provider: {}", summary.provider);
+        println!("- credential profile: {}", summary.credential_profile);
+        println!("- default model: {}", summary.default_model);
+        println!("- search: {}", summary.search);
+        if summary.credential_written {
+            println!("Credential material was stored locally and was not printed.");
+        }
+        return Ok(());
     }
 
     if let Commands::Tui {
@@ -245,181 +252,6 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         Commands::Debug { command } => handle_debug_command(config, command).await,
         Commands::Onboard { .. } => unreachable!("onboard command is handled before runtime load"),
         Commands::Config { .. } => unreachable!("config commands are handled separately"),
-    }
-}
-
-fn print_onboarding_report(report: &OnboardingReport) {
-    println!("Holon onboarding");
-    println!("Status: {}", onboarding_status_label(report.status));
-    println!();
-
-    for section in &report.sections {
-        println!(
-            "- {} [{}]: {}",
-            section.title,
-            onboarding_status_label(section.status),
-            section.summary
-        );
-        for action in &section.actions {
-            println!("  next: {}", action.title);
-            if let Some(command) = &action.command {
-                println!("       {}", command.join(" "));
-            }
-        }
-    }
-
-    if report.next_actions.is_empty() {
-        println!();
-        println!("Setup looks ready. Try `holon daemon start` or `holon run \"hello\"`.");
-    } else {
-        println!();
-        println!("Recommended next steps:");
-        for action in &report.next_actions {
-            println!("- {}", action.title);
-            if let Some(command) = &action.command {
-                println!("  {}", command.join(" "));
-            }
-        }
-        println!();
-        println!("Run `holon onboard --json` for the full secret-safe diagnostic report.");
-    }
-}
-
-fn run_interactive_onboarding(config: AppConfig, report: OnboardingReport) -> Result<()> {
-    print_onboarding_report(&report);
-    println!();
-    println!("Interactive setup");
-
-    let Some(plan) = credential_repair_plan(&config) else {
-        println!("No repair actions are needed.");
-        return Ok(());
-    };
-
-    println!("- {}", plan.summary);
-    println!("  provider: {}", plan.provider);
-    println!("  credential profile: {}", plan.credential_profile);
-    if !plan.provider_configured {
-        println!(
-            "Provider {} is not configured. Configure it first with `holon config providers set {}`.",
-            plan.provider, plan.provider
-        );
-        return Ok(());
-    }
-    if plan.requires_confirmation
-        && !confirm(
-            "This will update the existing provider auth configuration. Continue?",
-            false,
-        )?
-    {
-        println!("No changes written.");
-        return Ok(());
-    }
-    if !confirm("Configure this credential now?", true)? {
-        println!("No changes written.");
-        return Ok(());
-    }
-
-    let prompt = format!(
-        "Enter {} credential for profile {}: ",
-        plan.credential_kind, plan.credential_profile
-    );
-    let mut material = rpassword::prompt_password(prompt)
-        .context("failed to read credential material without echo")?;
-    trim_trailing_newlines(&mut material);
-    if material.trim().is_empty() {
-        anyhow::bail!("credential material must not be empty");
-    }
-
-    apply_onboarding_credential_repair(&config, &plan, material)?;
-    println!(
-        "Configured provider {} with credential profile {}.",
-        plan.provider, plan.credential_profile
-    );
-    println!("Credential material was stored locally and was not printed.");
-    Ok(())
-}
-
-fn apply_onboarding_credential_repair(
-    config: &AppConfig,
-    plan: &OnboardingCredentialRepair,
-    material: String,
-) -> Result<()> {
-    let provider_id = ProviderId::parse(&plan.provider)?;
-    let credential_kind = CredentialKind::parse(&plan.credential_kind)?;
-
-    let mut persisted = load_persisted_config_at(&config.config_file_path)?;
-    let mut provider_config =
-        if let Some(provider_config) = persisted.providers.remove(&provider_id) {
-            provider_config
-        } else {
-            let provider = config.providers.get(&provider_id).with_context(|| {
-                format!(
-                "provider {} is not configured; configure it with `holon config providers set {}`",
-                provider_id.as_str(),
-                provider_id.as_str()
-            )
-            })?;
-            ProviderConfigFile {
-                transport: provider.transport,
-                base_url: provider.base_url.clone(),
-                auth: provider.auth.clone(),
-                reasoning_effort: provider.reasoning_effort.clone(),
-                builtin_web_search: provider.builtin_web_search.clone(),
-            }
-        };
-    let credential_external = config
-        .providers
-        .get(&provider_id)
-        .and_then(|provider| provider.auth.external.clone());
-    provider_config.auth = ProviderAuthConfig {
-        source: CredentialSource::AuthProfile,
-        kind: credential_kind,
-        env: None,
-        profile: Some(plan.credential_profile.clone()),
-        external: credential_external,
-    };
-    validate_provider_config(&provider_id, &provider_config)?;
-
-    set_credential_profile_at(
-        &credential_store_path(&config.home_dir),
-        &plan.credential_profile,
-        credential_kind,
-        material,
-    )?;
-    persisted.providers.insert(provider_id, provider_config);
-    save_persisted_config_at(&config.config_file_path, &persisted)?;
-    Ok(())
-}
-
-fn confirm(prompt: &str, default: bool) -> Result<bool> {
-    let suffix = if default { "[Y/n]" } else { "[y/N]" };
-    print!("{prompt} {suffix} ");
-    std::io::stdout()
-        .flush()
-        .context("failed to flush confirmation prompt")?;
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .context("failed to read confirmation")?;
-    let answer = answer.trim().to_ascii_lowercase();
-    if answer.is_empty() {
-        return Ok(default);
-    }
-    match answer.as_str() {
-        "y" | "yes" => Ok(true),
-        "n" | "no" => Ok(false),
-        _ => Err(anyhow!("expected yes or no")),
-    }
-}
-
-fn onboarding_status_label(status: OnboardingStatus) -> &'static str {
-    match status {
-        OnboardingStatus::Configured => "configured",
-        OnboardingStatus::Missing => "missing",
-        OnboardingStatus::Unavailable => "unavailable",
-        OnboardingStatus::Restricted => "restricted",
-        OnboardingStatus::Skipped => "skipped",
-        OnboardingStatus::Failed => "failed",
     }
 }
 

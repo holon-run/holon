@@ -1,12 +1,21 @@
 use std::collections::BTreeMap;
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    config::{AppConfig, CredentialKind, CredentialSource, ProviderId},
+    config::{
+        built_in_provider_default_config, credential_store_path, load_persisted_config_at,
+        save_persisted_config_at, set_credential_profile_at, validate_provider_config, AppConfig,
+        CredentialKind, CredentialSource, ModelRef, ProviderAuthConfig, ProviderConfigFile,
+        ProviderId, ProviderRuntimeConfig,
+    },
+    model_catalog::BuiltInModelCatalog,
     web::{WebProviderAuthClass, WebProviderSupportStatus},
 };
+
+const DUCKDUCKGO_SEARCH_PROVIDER_ID: &str = "duckduckgo";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OnboardingReport {
@@ -97,6 +106,285 @@ pub struct OnboardingCredentialRepair {
     pub credential_configured: bool,
     pub requires_confirmation: bool,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnboardingWizardDraft {
+    pub provider: ProviderId,
+    pub credential_profile: String,
+    pub credential_kind: CredentialKind,
+    pub default_model: ModelRef,
+    pub search: OnboardingSearchSelection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnboardingSearchSelection {
+    Disabled,
+    BuiltInProvider,
+    DuckDuckGo,
+}
+
+impl OnboardingSearchSelection {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Disabled => "Disable WebSearch",
+            Self::BuiltInProvider => "Use model provider built-in search",
+            Self::DuckDuckGo => "Use DuckDuckGo managed search",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnboardingProviderChoice {
+    pub id: ProviderId,
+    pub title: String,
+    pub detail: String,
+    pub credential_kind: CredentialKind,
+    pub credential_profile: String,
+    pub credential_configured: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnboardingModelChoice {
+    pub model: ModelRef,
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnboardingSearchChoice {
+    pub selection: OnboardingSearchSelection,
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnboardingApplySummary {
+    pub provider: String,
+    pub credential_profile: String,
+    pub credential_kind: String,
+    pub default_model: String,
+    pub search: String,
+    pub credential_written: bool,
+}
+
+pub fn onboarding_provider_choices(config: &AppConfig) -> Vec<OnboardingProviderChoice> {
+    [
+        ProviderId::openai_codex(),
+        ProviderId::openai(),
+        ProviderId::anthropic(),
+        ProviderId::gemini(),
+    ]
+    .into_iter()
+    .filter_map(|id| {
+        config.providers.get(&id).map(|provider| {
+            let title = match id.as_str() {
+                ProviderId::OPENAI_CODEX => "OpenAI Codex".to_string(),
+                ProviderId::OPENAI => "OpenAI".to_string(),
+                ProviderId::ANTHROPIC => "Anthropic".to_string(),
+                ProviderId::GEMINI => "Gemini".to_string(),
+                other => other.to_string(),
+            };
+            let auth = match provider.auth.kind {
+                CredentialKind::OAuth => "OAuth login/profile",
+                CredentialKind::ApiKey => "API key",
+                CredentialKind::None => "no credential",
+                _ => provider.auth.kind.as_str(),
+            };
+            OnboardingProviderChoice {
+                id: id.clone(),
+                title,
+                detail: format!("{} · {}", provider.transport.as_str(), auth),
+                credential_kind: provider.auth.kind,
+                credential_profile: provider
+                    .auth
+                    .profile
+                    .clone()
+                    .unwrap_or_else(|| id.as_str().to_string()),
+                credential_configured: provider.has_configured_credential()
+                    || provider.auth.source == CredentialSource::None,
+            }
+        })
+    })
+    .collect()
+}
+
+pub fn onboarding_model_choices(
+    config: &AppConfig,
+    provider: &ProviderId,
+) -> Vec<OnboardingModelChoice> {
+    let mut models = RuntimeModelCatalogShim::choices(config, provider);
+    if models.is_empty() {
+        models.push(OnboardingModelChoice {
+            model: ModelRef::new(provider.clone(), "unknown"),
+            title: format!("{}/unknown", provider.as_str()),
+            detail: "custom provider model placeholder".into(),
+        });
+    }
+    models
+}
+
+struct RuntimeModelCatalogShim;
+
+impl RuntimeModelCatalogShim {
+    fn choices(config: &AppConfig, provider: &ProviderId) -> Vec<OnboardingModelChoice> {
+        let preferred = BuiltInModelCatalog::default().preferred_model_for_provider(provider);
+        let mut entries = crate::config::RuntimeModelCatalog::from_config(config)
+            .available_models()
+            .into_iter()
+            .filter(|entry| &entry.model_ref.provider == provider)
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| {
+            let left_preferred = preferred.as_ref() == Some(&left.model_ref);
+            let right_preferred = preferred.as_ref() == Some(&right.model_ref);
+            right_preferred
+                .cmp(&left_preferred)
+                .then_with(|| left.display_name.cmp(&right.display_name))
+                .then_with(|| left.model_ref.as_string().cmp(&right.model_ref.as_string()))
+        });
+        entries
+            .into_iter()
+            .map(|entry| {
+                let preferred_suffix = if preferred.as_ref() == Some(&entry.model_ref) {
+                    " · recommended"
+                } else {
+                    ""
+                };
+                OnboardingModelChoice {
+                    title: format!("{}{}", entry.display_name, preferred_suffix),
+                    detail: entry.model_ref.as_string(),
+                    model: entry.model_ref,
+                }
+            })
+            .collect()
+    }
+}
+
+pub fn onboarding_search_choices(config: &AppConfig) -> Vec<OnboardingSearchChoice> {
+    let builtin_detail = if config
+        .providers
+        .get(&config.default_model.provider)
+        .and_then(|provider| provider.builtin_web_search.as_ref())
+        .is_some()
+    {
+        "provider-declared native search when supported by the selected model"
+    } else {
+        "enable provider-declared search for providers that support it"
+    };
+    vec![
+        OnboardingSearchChoice {
+            selection: OnboardingSearchSelection::BuiltInProvider,
+            title: OnboardingSearchSelection::BuiltInProvider.label().into(),
+            detail: builtin_detail.into(),
+        },
+        OnboardingSearchChoice {
+            selection: OnboardingSearchSelection::DuckDuckGo,
+            title: OnboardingSearchSelection::DuckDuckGo.label().into(),
+            detail: "free managed provider; no API key required".into(),
+        },
+        OnboardingSearchChoice {
+            selection: OnboardingSearchSelection::Disabled,
+            title: OnboardingSearchSelection::Disabled.label().into(),
+            detail: "keep WebSearch off; WebFetch can still fetch explicit URLs".into(),
+        },
+    ]
+}
+
+pub fn apply_onboarding_wizard_draft(
+    config: &AppConfig,
+    draft: &OnboardingWizardDraft,
+    credential_material: Option<String>,
+) -> Result<OnboardingApplySummary> {
+    let mut persisted = load_persisted_config_at(&config.config_file_path)?;
+    let mut provider_config = persisted
+        .providers
+        .remove(&draft.provider)
+        .or_else(|| {
+            config
+                .providers
+                .get(&draft.provider)
+                .map(provider_config_file_from_runtime)
+        })
+        .or_else(|| {
+            built_in_provider_default_config(&draft.provider)
+                .ok()
+                .flatten()
+        })
+        .with_context(|| {
+            format!(
+                "provider {} is not configured and has no built-in default",
+                draft.provider.as_str()
+            )
+        })?;
+    let credential_written = credential_material
+        .map(|mut material| {
+            trim_trailing_newlines(&mut material);
+            provider_config.auth = ProviderAuthConfig {
+                source: CredentialSource::AuthProfile,
+                kind: draft.credential_kind,
+                env: None,
+                profile: Some(draft.credential_profile.clone()),
+                external: provider_config.auth.external.clone(),
+            };
+            set_credential_profile_at(
+                &credential_store_path(&config.home_dir),
+                &draft.credential_profile,
+                draft.credential_kind,
+                material,
+            )
+            .map(|_| true)
+        })
+        .transpose()?
+        .unwrap_or(false);
+    validate_provider_config(&draft.provider, &provider_config)?;
+
+    persisted.model.default = Some(draft.default_model.as_string());
+    persisted
+        .providers
+        .insert(draft.provider.clone(), provider_config);
+    match draft.search {
+        OnboardingSearchSelection::Disabled => {
+            persisted.web.search.enabled = Some(false);
+        }
+        OnboardingSearchSelection::BuiltInProvider => {
+            persisted.web.search.enabled = Some(true);
+            persisted.web.search.builtin_provider.enabled = Some(true);
+            persisted.web.search.provider = Some("auto".into());
+            persisted.web.search.providers.clear();
+        }
+        OnboardingSearchSelection::DuckDuckGo => {
+            persisted.web.search.enabled = Some(true);
+            persisted.web.search.builtin_provider.enabled = Some(false);
+            persisted.web.search.provider = Some(DUCKDUCKGO_SEARCH_PROVIDER_ID.into());
+            persisted.web.search.providers = vec![DUCKDUCKGO_SEARCH_PROVIDER_ID.into()];
+        }
+    }
+    save_persisted_config_at(&config.config_file_path, &persisted)?;
+
+    Ok(OnboardingApplySummary {
+        provider: draft.provider.as_str().into(),
+        credential_profile: draft.credential_profile.clone(),
+        credential_kind: draft.credential_kind.as_str().into(),
+        default_model: draft.default_model.as_string(),
+        search: draft.search.label().into(),
+        credential_written,
+    })
+}
+
+fn provider_config_file_from_runtime(provider: &ProviderRuntimeConfig) -> ProviderConfigFile {
+    ProviderConfigFile {
+        transport: provider.transport,
+        base_url: provider.base_url.clone(),
+        auth: provider.auth.clone(),
+        reasoning_effort: provider.reasoning_effort.clone(),
+        builtin_web_search: provider.builtin_web_search.clone(),
+    }
+}
+
+fn trim_trailing_newlines(value: &mut String) {
+    while value.ends_with('\n') || value.ends_with('\r') {
+        value.pop();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -227,7 +515,7 @@ pub fn search_diagnostics(config: &AppConfig) -> SearchDiagnostics {
                 "config".into(),
                 "set".into(),
                 "web.search.provider".into(),
-                "duck_duck_go".into(),
+                DUCKDUCKGO_SEARCH_PROVIDER_ID.into(),
             ]),
         }]
     };
@@ -393,7 +681,7 @@ fn managed_search_provider_diagnostic(
     config: &AppConfig,
     provider_id: &str,
 ) -> SearchManagedProviderDiagnostic {
-    if provider_id == "duck_duck_go" {
+    if provider_id == DUCKDUCKGO_SEARCH_PROVIDER_ID {
         let capabilities = crate::web::WebProviderKind::DuckDuckGo.capabilities();
         return SearchManagedProviderDiagnostic {
             id: provider_id.into(),
@@ -580,12 +868,15 @@ mod tests {
 
     use crate::{
         config::{
+            credential_store_path, load_credential_store_at, load_persisted_config_at,
             provider_registry_for_tests, AppConfig, ControlAuthMode, CredentialKind,
             CredentialSource, ModelRef, ProviderAuthConfig, ProviderConfigFile, ProviderId,
             ProviderTransportKind,
         },
         onboarding::{
-            credential_repair_plan, onboarding_report, search_diagnostics, OnboardingStatus,
+            apply_onboarding_wizard_draft, credential_repair_plan, onboarding_model_choices,
+            onboarding_provider_choices, onboarding_report, search_diagnostics,
+            OnboardingSearchSelection, OnboardingStatus, OnboardingWizardDraft,
         },
         web::{WebProviderConfig, WebProviderKind, WebProviderLimitsConfig, WebSearchMode},
     };
@@ -735,6 +1026,103 @@ mod tests {
     }
 
     #[test]
+    fn onboarding_wizard_choices_include_provider_auth_and_models() {
+        let config = test_config(None);
+
+        let providers = onboarding_provider_choices(&config);
+        let openai = providers
+            .iter()
+            .find(|provider| provider.id == ProviderId::openai())
+            .expect("openai provider choice");
+        let codex = providers
+            .iter()
+            .find(|provider| provider.id == ProviderId::openai_codex())
+            .expect("openai-codex provider choice");
+
+        assert_eq!(openai.credential_kind, CredentialKind::ApiKey);
+        assert_eq!(openai.credential_profile, "openai");
+        assert_eq!(codex.credential_kind, CredentialKind::OAuth);
+        assert_eq!(codex.credential_profile, "openai-codex");
+
+        let models = onboarding_model_choices(&config, &ProviderId::openai());
+        assert!(models
+            .iter()
+            .any(|choice| choice.model.as_string() == "openai/gpt-5.4"));
+    }
+
+    #[test]
+    fn onboarding_wizard_apply_writes_config_without_printing_secret() {
+        let config = test_config(None);
+        let draft = OnboardingWizardDraft {
+            provider: ProviderId::openai(),
+            credential_profile: "openai".into(),
+            credential_kind: CredentialKind::ApiKey,
+            default_model: ModelRef::parse("openai/gpt-5.4").unwrap(),
+            search: OnboardingSearchSelection::DuckDuckGo,
+        };
+
+        let summary =
+            apply_onboarding_wizard_draft(&config, &draft, Some("test-secret\n".into())).unwrap();
+        let persisted = load_persisted_config_at(&config.config_file_path).unwrap();
+        let store = load_credential_store_at(&credential_store_path(&config.home_dir)).unwrap();
+
+        assert_eq!(summary.provider, "openai");
+        assert_eq!(summary.default_model, "openai/gpt-5.4");
+        assert_eq!(summary.search, "Use DuckDuckGo managed search");
+        assert!(summary.credential_written);
+        assert!(!format!("{summary:?}").contains("test-secret"));
+
+        assert_eq!(persisted.model.default.as_deref(), Some("openai/gpt-5.4"));
+        assert_eq!(persisted.web.search.enabled, Some(true));
+        assert_eq!(persisted.web.search.builtin_provider.enabled, Some(false));
+        assert_eq!(persisted.web.search.provider.as_deref(), Some("duckduckgo"));
+        assert_eq!(persisted.web.search.providers, vec!["duckduckgo"]);
+        assert_eq!(
+            persisted
+                .providers
+                .get(&ProviderId::openai())
+                .and_then(|provider| provider.auth.profile.as_deref()),
+            Some("openai")
+        );
+        assert_eq!(
+            store.profiles.get("openai").map(|profile| profile.kind),
+            Some(CredentialKind::ApiKey)
+        );
+        assert_eq!(
+            store
+                .profiles
+                .get("openai")
+                .map(|profile| profile.material.as_str()),
+            Some("test-secret")
+        );
+    }
+
+    #[test]
+    fn onboarding_wizard_apply_preserves_existing_auth_without_new_secret() {
+        let config = test_config(Some("openai-key"));
+        let draft = OnboardingWizardDraft {
+            provider: ProviderId::openai(),
+            credential_profile: "openai".into(),
+            credential_kind: CredentialKind::ApiKey,
+            default_model: ModelRef::parse("openai/gpt-5.4").unwrap(),
+            search: OnboardingSearchSelection::BuiltInProvider,
+        };
+
+        let summary = apply_onboarding_wizard_draft(&config, &draft, None).unwrap();
+        let persisted = load_persisted_config_at(&config.config_file_path).unwrap();
+        let openai = persisted.providers.get(&ProviderId::openai()).unwrap();
+        let store = load_credential_store_at(&credential_store_path(&config.home_dir)).unwrap();
+
+        assert!(!summary.credential_written);
+        assert_eq!(openai.auth.source, CredentialSource::Env);
+        assert_eq!(openai.auth.env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(openai.auth.profile, None);
+        assert!(store.profiles.is_empty());
+        assert_eq!(persisted.web.search.provider.as_deref(), Some("auto"));
+        assert!(persisted.web.search.providers.is_empty());
+    }
+
+    #[test]
     fn search_diagnostics_reports_default_builtin_provider_without_secrets() {
         let config = test_config(Some("openai-key"));
         let diagnostics = search_diagnostics(&config);
@@ -794,7 +1182,7 @@ mod tests {
         let mut config = test_config(Some("openai-key"));
         config.web_config.search.enabled = true;
         config.web_config.search.builtin_provider_enabled = false;
-        config.web_config.search.provider = "duck_duck_go".into();
+        config.web_config.search.provider = "duckduckgo".into();
         config.web_config.search.mode = WebSearchMode::Single;
 
         let report = onboarding_report(&config);
@@ -805,7 +1193,7 @@ mod tests {
             .expect("search section");
 
         assert_eq!(search.status, OnboardingStatus::Configured);
-        assert_eq!(search.details["provider"], "duck_duck_go");
+        assert_eq!(search.details["provider"], "duckduckgo");
         assert_eq!(search.details["mode"], "single");
         assert_eq!(
             search.details["managed_providers"][0]["kind"],
