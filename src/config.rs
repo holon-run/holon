@@ -4045,6 +4045,12 @@ mod tests {
         _lock: MutexGuard<'static, ()>,
     }
 
+    const VERCEL_AI_GATEWAY_ENV_KEYS: &[&str] = &[
+        "VERCEL_OIDC_TOKEN",
+        "AI_GATEWAY_API_KEY",
+        "VERCEL_AI_GATEWAY_API_KEY",
+    ];
+
     impl EnvVarGuard {
         fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
             let mut guard = Self::new();
@@ -5143,6 +5149,7 @@ mod tests {
 
     #[test]
     fn built_in_provider_registry_includes_compatible_provider_defaults() {
+        let _env = EnvVarGuard::unset_many(VERCEL_AI_GATEWAY_ENV_KEYS);
         let mut settings_env = HashMap::new();
         settings_env.insert("OPENROUTER_API_KEY".to_string(), "settings-key".to_string());
         settings_env.insert(
@@ -5467,6 +5474,7 @@ mod tests {
 
     #[test]
     fn vercel_ai_gateway_falls_back_to_api_key_auth() {
+        let _env = EnvVarGuard::unset_many(VERCEL_AI_GATEWAY_ENV_KEYS);
         let mut settings_env = HashMap::new();
         settings_env.insert("AI_GATEWAY_API_KEY".to_string(), "api-key".to_string());
 
