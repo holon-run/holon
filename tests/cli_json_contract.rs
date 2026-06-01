@@ -264,3 +264,16 @@ fn onboard_json_contract_is_secret_safe_and_actionable() {
         "onboard JSON must not expose credential material"
     );
 }
+
+#[test]
+fn onboard_defaults_to_scriptable_json_when_not_a_tty() {
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+
+    let value = run_json(&home, &["onboard"]);
+
+    assert_eq!(value["schema_version"], json!(1));
+    assert!(
+        value["sections"].as_array().is_some(),
+        "non-TTY onboard output should remain scriptable JSON: {value}"
+    );
+}

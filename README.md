@@ -61,7 +61,17 @@ setup paths:
   `codex login` session and supports Codex subscriptions. You can also connect
   custom providers with compatible protocols.
 
-The recommended local setup is to save the API key first, then point the
+For an interactive first run or repair flow, use:
+
+```bash
+holon onboard
+```
+
+In a TTY this guides you through the default provider credential setup without
+echoing the credential material. In scripts, use `holon onboard --json` for the
+secret-safe diagnostic report.
+
+The equivalent manual setup is to save the API key first, then point the
 provider at the corresponding credential profile:
 
 ```bash

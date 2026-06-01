@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    config::{AppConfig, CredentialSource},
+    config::{AppConfig, CredentialSource, ProviderId},
     web::{WebProviderAuthClass, WebProviderSupportStatus},
 };
 
@@ -15,6 +15,39 @@ pub struct OnboardingReport {
     pub sections: Vec<OnboardingSection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next_actions: Vec<OnboardingAction>,
+}
+
+pub fn credential_repair_plan(config: &AppConfig) -> Option<OnboardingCredentialRepair> {
+    let provider_id = &config.default_model.provider;
+    let provider = config.providers.get(provider_id);
+    let provider_configured = provider.is_some();
+    let credential_configured = provider
+        .map(|provider| {
+            provider.has_configured_credential() || provider.auth.source == CredentialSource::None
+        })
+        .unwrap_or(false);
+
+    if credential_configured {
+        return None;
+    }
+
+    Some(OnboardingCredentialRepair {
+        provider: provider_id.as_str().to_string(),
+        credential_profile: default_credential_profile(provider_id),
+        credential_kind: "api_key".into(),
+        provider_configured,
+        credential_configured,
+        requires_confirmation: provider_configured,
+        summary: if provider_configured {
+            "Update the default model provider to use a stored credential profile.".into()
+        } else {
+            "Configure the default model provider with a stored credential profile.".into()
+        },
+    })
+}
+
+fn default_credential_profile(provider_id: &ProviderId) -> String {
+    provider_id.as_str().to_string()
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,6 +79,17 @@ pub struct OnboardingAction {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OnboardingCredentialRepair {
+    pub provider: String,
+    pub credential_profile: String,
+    pub credential_kind: String,
+    pub provider_configured: bool,
+    pub credential_configured: bool,
+    pub requires_confirmation: bool,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -529,7 +573,9 @@ mod tests {
 
     use crate::{
         config::{provider_registry_for_tests, AppConfig, ControlAuthMode, ModelRef},
-        onboarding::{onboarding_report, search_diagnostics, OnboardingStatus},
+        onboarding::{
+            credential_repair_plan, onboarding_report, search_diagnostics, OnboardingStatus,
+        },
         web::{WebProviderConfig, WebProviderKind, WebProviderLimitsConfig, WebSearchMode},
     };
 
@@ -596,6 +642,27 @@ mod tests {
         assert_eq!(report.status, OnboardingStatus::Missing);
         assert_eq!(model.status, OnboardingStatus::Missing);
         assert_eq!(report.next_actions.len(), 1);
+    }
+
+    #[test]
+    fn credential_repair_plan_targets_default_provider_without_secret_material() {
+        let config = test_config(None);
+        let plan = credential_repair_plan(&config).expect("repair plan");
+        let json = serde_json::to_string(&plan).unwrap();
+
+        assert_eq!(plan.provider, "openai");
+        assert_eq!(plan.credential_profile, "openai");
+        assert_eq!(plan.credential_kind, "api_key");
+        assert!(plan.provider_configured);
+        assert!(plan.requires_confirmation);
+        assert!(!json.contains("openai-key"));
+    }
+
+    #[test]
+    fn credential_repair_plan_is_absent_when_default_provider_has_credential() {
+        let config = test_config(Some("openai-key"));
+
+        assert_eq!(credential_repair_plan(&config), None);
     }
 
     #[test]

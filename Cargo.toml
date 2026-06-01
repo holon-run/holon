@@ -23,6 +23,7 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service", "
 libc = "0.2"
 ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 reqwest = { version = "0.12", features = ["gzip", "json", "rustls-tls"], default-features = false }
+rpassword = "7.3"
 rusqlite = { version = "0.31", features = ["bundled"] }
 pulldown-cmark = "0.13"
 portable-pty = "0.9"

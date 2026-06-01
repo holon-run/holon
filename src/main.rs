@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs,
-    io::Write,
+    io::{IsTerminal, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -29,7 +29,10 @@ use holon::{
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
     http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
-    onboarding::{onboarding_report, OnboardingReport, OnboardingStatus},
+    onboarding::{
+        credential_repair_plan, onboarding_report, OnboardingCredentialRepair, OnboardingReport,
+        OnboardingStatus,
+    },
     provider::{provider_doctor, resolved_model_availability},
     run_once::{run_once, RunOnceRequest},
     solve::{run_solve, SolveRequest},
@@ -128,11 +131,10 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
     if let Commands::Onboard { json } = &command {
         let config = AppConfig::load_for_config_inspection()?;
         let report = onboarding_report(&config);
-        if *json {
+        if *json || !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             return print_json(&serde_json::to_value(report)?);
         }
-        print_onboarding_report(&report);
-        return Ok(());
+        return run_interactive_onboarding(config, report);
     }
 
     if let Commands::Tui {
@@ -280,6 +282,115 @@ fn print_onboarding_report(report: &OnboardingReport) {
         }
         println!();
         println!("Run `holon onboard --json` for the full secret-safe diagnostic report.");
+    }
+}
+
+fn run_interactive_onboarding(config: AppConfig, report: OnboardingReport) -> Result<()> {
+    print_onboarding_report(&report);
+    println!();
+    println!("Interactive setup");
+
+    let Some(plan) = credential_repair_plan(&config) else {
+        println!("No repair actions are needed.");
+        return Ok(());
+    };
+
+    println!("- {}", plan.summary);
+    println!("  provider: {}", plan.provider);
+    println!("  credential profile: {}", plan.credential_profile);
+    if plan.requires_confirmation
+        && !confirm(
+            "This will update the existing provider auth configuration. Continue?",
+            false,
+        )?
+    {
+        println!("No changes written.");
+        return Ok(());
+    }
+    if !confirm("Configure this credential now?", true)? {
+        println!("No changes written.");
+        return Ok(());
+    }
+
+    let prompt = format!(
+        "Enter {} credential for profile {}: ",
+        plan.credential_kind, plan.credential_profile
+    );
+    let mut material = rpassword::prompt_password(prompt)
+        .context("failed to read credential material without echo")?;
+    trim_trailing_newlines(&mut material);
+    if material.trim().is_empty() {
+        anyhow::bail!("credential material must not be empty");
+    }
+
+    apply_onboarding_credential_repair(&config, &plan, material)?;
+    println!(
+        "Configured provider {} with credential profile {}.",
+        plan.provider, plan.credential_profile
+    );
+    println!("Credential material was stored locally and was not printed.");
+    Ok(())
+}
+
+fn apply_onboarding_credential_repair(
+    config: &AppConfig,
+    plan: &OnboardingCredentialRepair,
+    material: String,
+) -> Result<()> {
+    let provider_id = ProviderId::parse(&plan.provider)?;
+    let credential_kind = CredentialKind::parse(&plan.credential_kind)?;
+
+    let mut persisted = load_persisted_config_at(&config.config_file_path)?;
+    let mut provider_config = if let Some(provider_config) =
+        persisted.providers.remove(&provider_id)
+    {
+        provider_config
+    } else {
+        built_in_provider_default_config(&provider_id)?.with_context(|| {
+            format!(
+                "provider {} has no built-in defaults; configure it with `holon config providers set`",
+                provider_id.as_str()
+            )
+        })?
+    };
+    provider_config.auth = ProviderAuthConfig {
+        source: CredentialSource::AuthProfile,
+        kind: credential_kind,
+        env: None,
+        profile: Some(plan.credential_profile.clone()),
+        external: None,
+    };
+    validate_provider_config(&provider_id, &provider_config)?;
+
+    set_credential_profile_at(
+        &credential_store_path(&config.home_dir),
+        &plan.credential_profile,
+        credential_kind,
+        material,
+    )?;
+    persisted.providers.insert(provider_id, provider_config);
+    save_persisted_config_at(&config.config_file_path, &persisted)?;
+    Ok(())
+}
+
+fn confirm(prompt: &str, default: bool) -> Result<bool> {
+    let suffix = if default { "[Y/n]" } else { "[y/N]" };
+    print!("{prompt} {suffix} ");
+    std::io::stdout()
+        .flush()
+        .context("failed to flush confirmation prompt")?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .context("failed to read confirmation")?;
+    let answer = answer.trim().to_ascii_lowercase();
+    if answer.is_empty() {
+        return Ok(default);
+    }
+    match answer.as_str() {
+        "y" | "yes" => Ok(true),
+        "n" | "no" => Ok(false),
+        _ => Err(anyhow!("expected yes or no")),
     }
 }
 

@@ -36,7 +36,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    #[command(about = "Inspect initial setup and print secret-safe onboarding guidance")]
+    #[command(about = "Interactively set up Holon or print secret-safe onboarding diagnostics")]
     Onboard {
         #[arg(long)]
         json: bool,
