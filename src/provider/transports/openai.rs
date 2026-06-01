@@ -460,22 +460,9 @@ impl CredentialStoreRefreshLock {
                     path.display()
                 )
             })?;
-            return Self::try_acquire(path).map_err(|error| {
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    anyhow::anyhow!(
-                        "OpenAI Codex OAuth refresh is already in progress for this credential store; retry shortly"
-                    )
-                } else {
-                    anyhow::Error::new(error).context(format!(
-                        "failed to create credential refresh lock {}",
-                        path.display()
-                    ))
-                }
-            });
+            return Self::try_acquire(path).map_err(|error| Self::acquire_error(path, error));
         }
-        Err(anyhow::anyhow!(
-            "OpenAI Codex OAuth refresh is already in progress for this credential store; retry shortly"
-        ))
+        Self::try_acquire(path).map_err(|error| Self::acquire_error(path, error))
     }
 
     fn try_acquire(path: &Path) -> std::io::Result<Self> {
@@ -489,6 +476,19 @@ impl CredentialStoreRefreshLock {
         options.open(path).map(|_| Self {
             path: path.to_path_buf(),
         })
+    }
+
+    fn acquire_error(path: &Path, error: std::io::Error) -> anyhow::Error {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            anyhow::anyhow!(
+                "OpenAI Codex OAuth refresh is already in progress for this credential store; retry shortly"
+            )
+        } else {
+            anyhow::Error::new(error).context(format!(
+                "failed to create credential refresh lock {}",
+                path.display()
+            ))
+        }
     }
 
     fn is_stale(path: &Path) -> Result<bool> {
