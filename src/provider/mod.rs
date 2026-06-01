@@ -20,7 +20,8 @@ pub use diagnostics::{provider_doctor, resolved_model_availability};
 pub use http_trace::ProviderHttpTraceDiagnostics;
 pub(crate) use retry::sanitize_transport_url;
 pub use transports::{
-    AnthropicProvider, OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiProvider,
+    AnthropicProvider, GeminiProvider, OpenAiChatCompletionsProvider, OpenAiCodexProvider,
+    OpenAiProvider,
 };
 
 #[derive(Debug, Clone)]

@@ -833,6 +833,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "percent-encoding",
  "portable-pty",
  "proptest",
  "pulldown-cmark",
