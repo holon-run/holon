@@ -2770,13 +2770,7 @@ fn built_in_provider_registry_with_settings(
         &["MINIMAX_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
-        &mut registry,
-        "vercel-ai-gateway",
-        "https://ai-gateway.vercel.sh",
-        &["AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_API_KEY"],
-        settings_env,
-    )?;
+    insert_vercel_ai_gateway_provider(&mut registry, settings_env)?;
     Ok(registry)
 }
 
@@ -2829,6 +2823,67 @@ fn insert_anthropic_compatible_provider(
         resolve_anthropic_compatible_context_management_config()?,
         builtin_web_search,
     )
+}
+
+fn insert_vercel_ai_gateway_provider(
+    registry: &mut ProviderRegistry,
+    settings_env: &HashMap<String, String>,
+) -> Result<()> {
+    let context_management = resolve_anthropic_compatible_context_management_config()?;
+    let oidc_credential = resolve_first_env_value(&["VERCEL_OIDC_TOKEN"], settings_env);
+    let api_key_credential = resolve_first_env_value(
+        &["AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_API_KEY"],
+        settings_env,
+    );
+    let (kind, env_name, credential) = if let Some(credential) = oidc_credential {
+        (
+            CredentialKind::BearerToken,
+            credential
+                .env_name
+                .clone()
+                .unwrap_or_else(|| "VERCEL_OIDC_TOKEN".to_string()),
+            Some(credential.value),
+        )
+    } else if let Some(credential) = api_key_credential {
+        (
+            CredentialKind::ApiKey,
+            credential
+                .env_name
+                .clone()
+                .unwrap_or_else(|| "AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY".to_string()),
+            Some(credential.value),
+        )
+    } else {
+        (
+            CredentialKind::BearerToken,
+            "VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY".to_string(),
+            None,
+        )
+    };
+    let id = ProviderId::parse("vercel-ai-gateway")?;
+    registry.insert(
+        id.clone(),
+        ProviderRuntimeConfig {
+            id,
+            transport: ProviderTransportKind::AnthropicMessages,
+            base_url: get_config_value("HOLON_VERCEL_AI_GATEWAY_BASE_URL", None, settings_env)
+                .unwrap_or_else(|| "https://ai-gateway.vercel.sh".to_string()),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind,
+                env: Some(env_name),
+                profile: None,
+                external: None,
+            },
+            credential,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management,
+            builtin_web_search: None,
+        },
+    );
+    Ok(())
 }
 
 fn insert_builtin_http_provider(
@@ -3990,6 +4045,12 @@ mod tests {
         _lock: MutexGuard<'static, ()>,
     }
 
+    const VERCEL_AI_GATEWAY_ENV_KEYS: &[&str] = &[
+        "VERCEL_OIDC_TOKEN",
+        "AI_GATEWAY_API_KEY",
+        "VERCEL_AI_GATEWAY_API_KEY",
+    ];
+
     impl EnvVarGuard {
         fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
             let mut guard = Self::new();
@@ -5088,6 +5149,7 @@ mod tests {
 
     #[test]
     fn built_in_provider_registry_includes_compatible_provider_defaults() {
+        let _env = EnvVarGuard::unset_many(VERCEL_AI_GATEWAY_ENV_KEYS);
         let mut settings_env = HashMap::new();
         settings_env.insert("OPENROUTER_API_KEY".to_string(), "settings-key".to_string());
         settings_env.insert(
@@ -5345,6 +5407,16 @@ mod tests {
         assert_eq!(vllm.auth.source, CredentialSource::None);
         assert_eq!(vllm.credential, None);
 
+        let vercel_ai_gateway = providers
+            .get(&ProviderId::parse("vercel-ai-gateway").unwrap())
+            .unwrap();
+        assert_eq!(
+            vercel_ai_gateway.auth.env.as_deref(),
+            Some("VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY")
+        );
+        assert_eq!(vercel_ai_gateway.auth.kind, CredentialKind::BearerToken);
+        assert_eq!(vercel_ai_gateway.credential, None);
+
         for provider in [
             "deepseek",
             "deepseek-anthropic",
@@ -5374,6 +5446,50 @@ mod tests {
                 "{provider} should not auto-inject Claude-specific betas"
             );
         }
+    }
+
+    #[test]
+    fn vercel_ai_gateway_prefers_oidc_bearer_token_over_api_key() {
+        let mut settings_env = HashMap::new();
+        settings_env.insert("VERCEL_OIDC_TOKEN".to_string(), "oidc-token".to_string());
+        settings_env.insert("AI_GATEWAY_API_KEY".to_string(), "api-key".to_string());
+
+        let providers = super::built_in_provider_registry_with_settings(&settings_env).unwrap();
+        let vercel_ai_gateway = providers
+            .get(&ProviderId::parse("vercel-ai-gateway").unwrap())
+            .unwrap();
+
+        assert_eq!(
+            vercel_ai_gateway.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(vercel_ai_gateway.auth.source, CredentialSource::Env);
+        assert_eq!(vercel_ai_gateway.auth.kind, CredentialKind::BearerToken);
+        assert_eq!(
+            vercel_ai_gateway.auth.env.as_deref(),
+            Some("VERCEL_OIDC_TOKEN")
+        );
+        assert_eq!(vercel_ai_gateway.credential.as_deref(), Some("oidc-token"));
+    }
+
+    #[test]
+    fn vercel_ai_gateway_falls_back_to_api_key_auth() {
+        let _env = EnvVarGuard::unset_many(VERCEL_AI_GATEWAY_ENV_KEYS);
+        let mut settings_env = HashMap::new();
+        settings_env.insert("AI_GATEWAY_API_KEY".to_string(), "api-key".to_string());
+
+        let providers = super::built_in_provider_registry_with_settings(&settings_env).unwrap();
+        let vercel_ai_gateway = providers
+            .get(&ProviderId::parse("vercel-ai-gateway").unwrap())
+            .unwrap();
+
+        assert_eq!(vercel_ai_gateway.auth.source, CredentialSource::Env);
+        assert_eq!(vercel_ai_gateway.auth.kind, CredentialKind::ApiKey);
+        assert_eq!(
+            vercel_ai_gateway.auth.env.as_deref(),
+            Some("AI_GATEWAY_API_KEY")
+        );
+        assert_eq!(vercel_ai_gateway.credential.as_deref(), Some("api-key"));
     }
 
     #[test]

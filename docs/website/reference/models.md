@@ -51,7 +51,7 @@ running Holon.
 | `tencent-tokenhub` | OpenAI Chat Completions | `https://tokenhub.tencentmaas.com/v1` | `TOKENHUB_API_KEY` |
 | `together` | OpenAI Chat Completions | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` |
 | `venice` | OpenAI Chat Completions | `https://api.venice.ai/api/v1` | `VENICE_API_KEY` |
-| `vercel-ai-gateway` | Anthropic Messages | `https://ai-gateway.vercel.sh` | `AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY` |
+| `vercel-ai-gateway` | Anthropic Messages | `https://ai-gateway.vercel.sh` | `VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY or VERCEL_AI_GATEWAY_API_KEY` |
 | `vllm` | OpenAI Chat Completions | `http://127.0.0.1:8000/v1` | `—` |
 | `volcengine` | OpenAI Chat Completions | `https://ark.cn-beijing.volces.com/api/v3` | `VOLCENGINE_API_KEY or ARK_API_KEY` |
 | `volcengine-coding` | OpenAI Chat Completions | `https://ark.cn-beijing.volces.com/api/coding/v3` | `VOLCENGINE_CODING_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
