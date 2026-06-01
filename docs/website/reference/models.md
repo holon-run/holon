@@ -6,7 +6,7 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **47 providers** and **236 models**.
+Holon includes built-in configuration for **48 providers** and **240 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -30,6 +30,7 @@ running Holon.
 | `deepseek-anthropic` | Anthropic Messages | `https://api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` |
 | `deepseek-openai` | OpenAI Chat Completions | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
 | `fireworks` | OpenAI Chat Completions | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
+| `gemini` | Gemini Generate Content | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
 | `huggingface` | OpenAI Chat Completions | `https://router.huggingface.co/v1` | `HUGGINGFACE_API_KEY or HF_TOKEN` |
 | `kilocode` | OpenAI Chat Completions | `https://api.kilo.ai/api/gateway` | `KILOCODE_API_KEY` |
 | `litellm` | OpenAI Chat Completions | `http://localhost:4000` | `LITELLM_API_KEY` |
@@ -143,6 +144,10 @@ and capabilities.
 | `deepseek-openai` | `deepseek-v4-pro` | `deepseek-openai/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/kimi-k2p6` | `fireworks/accounts/fireworks/models/kimi-k2p6` | 262144 | 262144 | — | ✅ |
 | `fireworks` | `accounts/fireworks/routers/kimi-k2p5-turbo` | `fireworks/accounts/fireworks/routers/kimi-k2p5-turbo` | 256000 | 256000 | — | ✅ |
+| `gemini` | `gemini-2.5-flash` | `gemini/gemini-2.5-flash` | 1000000 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-2.5-pro` | `gemini/gemini-2.5-pro` | 1000000 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-3-flash` | `gemini/gemini-3-flash` | 1000000 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-3-pro` | `gemini/gemini-3-pro` | 1000000 | 65536 | ✅ | ✅ |
 | `huggingface` | `moonshotai/Kimi-K2-Instruct` | `huggingface/moonshotai/Kimi-K2-Instruct` | 262144 | 32768 | — | — |
 | `kilocode` | `kilo/auto` | `kilocode/kilo/auto` | 1000000 | 128000 | ✅ | ✅ |
 | `litellm` | `claude-opus-4-6` | `litellm/claude-opus-4-6` | 200000 | 128000 | ✅ | ✅ |

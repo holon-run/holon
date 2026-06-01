@@ -61,6 +61,32 @@ fn build_candidate_routes_codex_model_refs() {
 }
 
 #[test]
+fn build_candidate_routes_gemini_model_refs() {
+    let mut fixture = test_config("gemini/gemini-3-pro", &[], None, None, false);
+    let gemini = fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::gemini())
+        .unwrap();
+    gemini.credential = Some("gemini-key".into());
+
+    let config = &fixture.config;
+    let model_ref = ModelRef::parse("gemini/gemini-3-pro").unwrap();
+    let candidate = build_candidate(config, &model_ref).unwrap();
+    assert_eq!(candidate.model_ref, "gemini/gemini-3-pro");
+
+    let provider_config = config.providers.get(&ProviderId::gemini()).unwrap();
+    let provider = GeminiProvider::from_runtime_config(
+        provider_config,
+        "gemini-3-pro",
+        config.runtime_max_output_tokens,
+        &config.home_dir,
+    )
+    .unwrap();
+    let _typed: Arc<dyn super::super::AgentProvider> = Arc::new(provider);
+}
+
+#[test]
 fn build_candidate_reports_missing_auth_for_each_provider() {
     let openai = test_config("openai/gpt-5.4", &[], None, None, false);
     let openai_err = build_candidate(&openai.config, &ModelRef::parse("openai/gpt-5.4").unwrap())
@@ -89,6 +115,87 @@ fn build_candidate_reports_missing_auth_for_each_provider() {
     assert!(codex_err
         .to_string()
         .contains("no Codex CLI credentials found"));
+
+    let gemini = test_config("gemini/gemini-3-pro", &[], None, None, false);
+    let gemini_err = build_candidate(
+        &gemini.config,
+        &ModelRef::parse("gemini/gemini-3-pro").unwrap(),
+    )
+    .err()
+    .expect("missing GEMINI_API_KEY should fail gemini candidate");
+    assert!(gemini_err.to_string().contains("missing GEMINI_API_KEY"));
+}
+
+#[tokio::test]
+async fn gemini_generate_content_request_uses_api_key_header_and_parses_text() {
+    #[derive(Clone)]
+    struct CaptureState {
+        request: Arc<std::sync::Mutex<Option<Value>>>,
+        api_key: Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    async fn handler(
+        State(state): State<CaptureState>,
+        headers: axum::http::HeaderMap,
+        Json(body): Json<Value>,
+    ) -> impl IntoResponse {
+        *state.request.lock().unwrap() = Some(body);
+        *state.api_key.lock().unwrap() = headers
+            .get("x-goog-api-key")
+            .and_then(|value| value.to_str().ok())
+            .map(ToString::to_string);
+        Json(json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{ "text": "hello from gemini" }]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 7,
+                "candidatesTokenCount": 3
+            }
+        }))
+    }
+
+    let state = CaptureState {
+        request: Arc::new(std::sync::Mutex::new(None)),
+        api_key: Arc::new(std::sync::Mutex::new(None)),
+    };
+    let base_url =
+        spawn_test_server(Router::new().fallback(post(handler).with_state(state.clone()))).await;
+
+    let mut fixture = test_config("gemini/gemini-3-pro", &[], None, None, false);
+    let gemini = fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::gemini())
+        .unwrap();
+    gemini.base_url = base_url;
+    gemini.credential = Some("gemini-key".into());
+
+    let provider = build_provider_from_config(&fixture.config).unwrap();
+    let response = provider
+        .complete_turn(provider_turn_request())
+        .await
+        .expect("gemini response should parse");
+
+    assert!(matches!(
+        response.blocks.as_slice(),
+        [ModelBlock::Text { text }] if text == "hello from gemini"
+    ));
+    assert_eq!(response.stop_reason.as_deref(), Some("STOP"));
+    assert_eq!(response.input_tokens, 7);
+    assert_eq!(response.output_tokens, 3);
+    assert_eq!(state.api_key.lock().unwrap().as_deref(), Some("gemini-key"));
+    let request = state.request.lock().unwrap().clone().unwrap();
+    assert!(request["systemInstruction"]["parts"][0]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("You are a coding agent"));
+    assert_eq!(request["contents"][0]["role"], "user");
+    assert_eq!(request["contents"][0]["parts"][0]["text"], "hello");
 }
 
 #[test]

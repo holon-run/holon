@@ -11,7 +11,8 @@ use crate::{
 
 use super::{
     transports::{
-        OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiCompactionPolicy, OpenAiProvider,
+        GeminiProvider, OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiCompactionPolicy,
+        OpenAiProvider,
     },
     AgentProvider, AnthropicProvider,
 };
@@ -106,6 +107,14 @@ pub(crate) fn build_candidate(
         }
         ProviderTransportKind::OpenAiChatCompletions => {
             Arc::new(OpenAiChatCompletionsProvider::from_runtime_config(
+                provider_config,
+                &model_ref.model,
+                config.runtime_max_output_tokens,
+                &config.home_dir,
+            )?)
+        }
+        ProviderTransportKind::GeminiGenerateContent => {
+            Arc::new(GeminiProvider::from_runtime_config(
                 provider_config,
                 &model_ref.model,
                 config.runtime_max_output_tokens,

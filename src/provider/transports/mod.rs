@@ -1,4 +1,5 @@
 mod anthropic;
+mod gemini;
 mod openai;
 
 use anyhow::{Context, Result};
@@ -8,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::{env, time::Duration};
 
 pub use anthropic::AnthropicProvider;
+pub use gemini::GeminiProvider;
 pub(crate) use openai::OpenAiCompactionPolicy;
 #[cfg(test)]
 pub(crate) use openai::OpenAiResponsesTransportContract;

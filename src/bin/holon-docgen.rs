@@ -29,6 +29,7 @@ use holon::config::ProviderTransportKind;
 fn transport_display(transport: &ProviderTransportKind) -> String {
     match transport {
         ProviderTransportKind::AnthropicMessages => "Anthropic Messages".to_string(),
+        ProviderTransportKind::GeminiGenerateContent => "Gemini Generate Content".to_string(),
         ProviderTransportKind::OpenAiResponses => "OpenAI Responses".to_string(),
         ProviderTransportKind::OpenAiChatCompletions => "OpenAI Chat Completions".to_string(),
         ProviderTransportKind::OpenAiCodexResponses => "OpenAI Codex".to_string(),

@@ -15,9 +15,9 @@ use super::{
     build_provider_from_config, emitted_tool_json_schema, parse_openai_response,
     provider_attempt_timeline, provider_doctor, provider_max_attempts,
     validate_emitted_tool_schema, AgentProvider, AnthropicProvider, ConversationMessage,
-    ModelBlock, OpenAiCodexProvider, OpenAiProvider, PromptContentBlock, ProviderAttemptOutcome,
-    ProviderPromptCache, ProviderPromptCapability, ProviderPromptFrame, ProviderTurnRequest,
-    ToolResultBlock, ToolSchemaContract,
+    GeminiProvider, ModelBlock, OpenAiCodexProvider, OpenAiProvider, PromptContentBlock,
+    ProviderAttemptOutcome, ProviderPromptCache, ProviderPromptCapability, ProviderPromptFrame,
+    ProviderTurnRequest, ToolResultBlock, ToolSchemaContract,
 };
 
 mod anthropic_messages;

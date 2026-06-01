@@ -65,6 +65,7 @@ pub enum ProviderTransportKind {
     #[serde(rename = "openai_chat_completions")]
     OpenAiChatCompletions,
     AnthropicMessages,
+    GeminiGenerateContent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -74,6 +75,7 @@ impl ProviderId {
     pub const OPENAI_CODEX: &'static str = "openai-codex";
     pub const OPENAI: &'static str = "openai";
     pub const ANTHROPIC: &'static str = "anthropic";
+    pub const GEMINI: &'static str = "gemini";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -941,8 +943,9 @@ impl ProviderTransportKind {
             "openai_responses" => Ok(Self::OpenAiResponses),
             "openai_chat_completions" => Ok(Self::OpenAiChatCompletions),
             "anthropic_messages" => Ok(Self::AnthropicMessages),
+            "gemini_generate_content" => Ok(Self::GeminiGenerateContent),
             other => Err(anyhow!(
-                "invalid provider transport {other}; expected openai_codex_responses|openai_responses|openai_chat_completions|anthropic_messages"
+                "invalid provider transport {other}; expected openai_codex_responses|openai_responses|openai_chat_completions|anthropic_messages|gemini_generate_content"
             )),
         }
     }
@@ -953,6 +956,7 @@ impl ProviderTransportKind {
             Self::OpenAiResponses => "openai_responses",
             Self::OpenAiChatCompletions => "openai_chat_completions",
             Self::AnthropicMessages => "anthropic_messages",
+            Self::GeminiGenerateContent => "gemini_generate_content",
         }
     }
 }
@@ -1011,6 +1015,10 @@ impl ProviderId {
         Self(Self::ANTHROPIC.to_string())
     }
 
+    pub fn gemini() -> Self {
+        Self(Self::GEMINI.to_string())
+    }
+
     pub fn is_openai_codex(&self) -> bool {
         self.as_str() == Self::OPENAI_CODEX
     }
@@ -1021,6 +1029,10 @@ impl ProviderId {
 
     pub fn is_anthropic(&self) -> bool {
         self.as_str() == Self::ANTHROPIC
+    }
+
+    pub fn is_gemini(&self) -> bool {
+        self.as_str() == Self::GEMINI
     }
 }
 
@@ -2465,6 +2477,29 @@ fn built_in_provider_registry_with_settings(
             builtin_web_search: Some(anthropic_builtin_web_search_config()),
         },
     );
+    let gemini = ProviderId::gemini();
+    registry.insert(
+        gemini.clone(),
+        ProviderRuntimeConfig {
+            id: gemini,
+            transport: ProviderTransportKind::GeminiGenerateContent,
+            base_url: get_config_value("HOLON_GEMINI_BASE_URL", None, settings_env)
+                .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string()),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("GEMINI_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            credential: get_config_value("GEMINI_API_KEY", None, settings_env),
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        },
+    );
     insert_openai_compatible_provider(
         &mut registry,
         "arcee",
@@ -3144,6 +3179,16 @@ fn validate_provider_builtin_web_search(
                 ))
             }
         }
+        (ProviderTransportKind::GeminiGenerateContent, ProviderNativeWebSearchKind::Gemini) => {
+            if search.advertised_tool_type == "google_search" {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "providers.{}.builtin_web_search.advertised_tool_type must be google_search for Gemini native search",
+                    provider_id.as_str()
+                ))
+            }
+        }
         _ => Err(anyhow!(
             "providers.{}.builtin_web_search kind {:?} is incompatible with transport {:?}",
             provider_id.as_str(),
@@ -3322,6 +3367,28 @@ pub fn provider_registry_for_tests(
             builtin_web_search: Some(anthropic_builtin_web_search_config()),
         },
     );
+    let gemini = ProviderId::gemini();
+    registry.insert(
+        gemini.clone(),
+        ProviderRuntimeConfig {
+            id: gemini,
+            transport: ProviderTransportKind::GeminiGenerateContent,
+            base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("GEMINI_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        },
+    );
     registry
 }
 
@@ -3472,6 +3539,7 @@ fn provider_auth_priority(provider: &ProviderId) -> usize {
         ProviderId::OPENAI_CODEX => 0,
         ProviderId::OPENAI => 1,
         ProviderId::ANTHROPIC => 2,
+        ProviderId::GEMINI => 3,
         _ => 100,
     }
 }
@@ -5166,6 +5234,11 @@ mod tests {
         settings_env.insert("BIGMODEL_API_KEY".to_string(), "bigmodel-key".to_string());
         settings_env.insert("DASHSCOPE_API_KEY".to_string(), "dashscope-key".to_string());
         settings_env.insert("NEARAI_API_KEY".to_string(), "nearai-key".to_string());
+        settings_env.insert("GEMINI_API_KEY".to_string(), "gemini-key".to_string());
+        settings_env.insert(
+            "HOLON_GEMINI_BASE_URL".to_string(),
+            "https://gemini.example/v1beta".to_string(),
+        );
 
         let providers = super::built_in_provider_registry_with_settings(&settings_env).unwrap();
 
@@ -5179,6 +5252,15 @@ mod tests {
         assert_eq!(openrouter.base_url, "https://openrouter.example/api/v3");
         assert_eq!(openrouter.auth.env.as_deref(), Some("OPENROUTER_API_KEY"));
         assert_eq!(openrouter.credential.as_deref(), Some("settings-key"));
+
+        let gemini = providers.get(&ProviderId::gemini()).unwrap();
+        assert_eq!(
+            gemini.transport,
+            ProviderTransportKind::GeminiGenerateContent
+        );
+        assert_eq!(gemini.base_url, "https://gemini.example/v1beta");
+        assert_eq!(gemini.auth.env.as_deref(), Some("GEMINI_API_KEY"));
+        assert_eq!(gemini.credential.as_deref(), Some("gemini-key"));
 
         let qwen = providers.get(&ProviderId::parse("qwen").unwrap()).unwrap();
         assert_eq!(qwen.auth.env.as_deref(), Some("DASHSCOPE_API_KEY"));
