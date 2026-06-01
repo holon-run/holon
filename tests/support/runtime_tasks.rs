@@ -678,6 +678,63 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
     Ok(())
 }
 
+pub async fn exec_command_batch_top_level_defaults_apply_to_items() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+    let long_stdout = "top_level_default_".repeat(80);
+
+    let (result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &ToolCall {
+                id: "tool-exec-batch-defaults".into(),
+                name: "ExecCommandBatch".into(),
+                input: json!({
+                    "workdir": ".",
+                    "login": false,
+                    "yield_time_ms": 60_000,
+                    "max_output_tokens": 20,
+                    "items": [
+                        {
+                            "cmd": format!("printf '{}'", long_stdout)
+                        },
+                        {
+                            "cmd": format!("printf '{}'", long_stdout),
+                            "max_output_tokens": 200
+                        }
+                    ]
+                }),
+            },
+        )
+        .await?;
+
+    let value = parse_tool_result_payload(&result)?;
+    assert_eq!(value["item_count"], 2);
+    assert_eq!(value["completed_count"], 2);
+    assert_eq!(
+        value["items"][0]["result"]["command_diagnostics"]["effective_max_output_tokens"],
+        20
+    );
+    assert!(value["items"][0]["result"]["stdout_preview"]
+        .as_str()
+        .expect("stdout preview")
+        .contains("[output truncated"));
+    assert_eq!(
+        value["items"][1]["result"]["command_diagnostics"]["effective_max_output_tokens"],
+        200
+    );
+    assert!(value["items"][1]["result"]["stdout_preview"]
+        .as_str()
+        .expect("stdout preview")
+        .contains("top_level_default_"));
+    Ok(())
+}
+
 pub async fn exec_command_batch_stop_on_error_skips_later_items() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
