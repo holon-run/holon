@@ -97,7 +97,7 @@ pub async fn refresh_codex_oauth_profile_material(
     client: &reqwest::Client,
     material: &str,
     profile: &str,
-) -> Result<RefreshedCodexOAuthProfile, CodexOAuthRefreshFailure> {
+) -> std::result::Result<RefreshedCodexOAuthProfile, CodexOAuthRefreshFailure> {
     let mut auth: AuthDotJson =
         serde_json::from_str(material).map_err(|error| CodexOAuthRefreshFailure {
             kind: CodexOAuthRefreshFailureKind::Other,
@@ -123,9 +123,14 @@ pub async fn refresh_codex_oauth_profile_material(
     if let Some(id_token) = refreshed.id_token {
         tokens.id_token = Some(Value::String(id_token));
     }
-    if let Some(access_token) = refreshed.access_token {
-        tokens.access_token = access_token;
-    }
+    tokens.access_token = refreshed
+        .access_token
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(|| CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::Other,
+            message: "OpenAI Codex OAuth refresh response did not include an access token"
+                .to_string(),
+        })?;
     if let Some(refresh_token) = refreshed.refresh_token {
         tokens.refresh_token = refresh_token;
     }
@@ -171,7 +176,7 @@ const CODEX_REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_
 async fn request_codex_oauth_refresh(
     client: &reqwest::Client,
     refresh_token: String,
-) -> Result<RefreshResponse, CodexOAuthRefreshFailure> {
+) -> std::result::Result<RefreshResponse, CodexOAuthRefreshFailure> {
     let endpoint = std::env::var(CODEX_REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR)
         .unwrap_or_else(|_| CODEX_REFRESH_TOKEN_URL.to_string());
     let response = client

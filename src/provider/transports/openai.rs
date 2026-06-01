@@ -441,19 +441,76 @@ struct CredentialStoreRefreshLock {
 
 impl CredentialStoreRefreshLock {
     fn acquire(path: &Path) -> Result<Self> {
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
+        match Self::try_acquire(path) {
+            Ok(lock) => return Ok(lock),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to create credential refresh lock {}",
+                        path.display()
+                    )
+                });
+            }
+        }
+        if Self::is_stale(path)? {
+            std::fs::remove_file(path).with_context(|| {
+                format!(
+                    "failed to remove stale credential refresh lock {}",
+                    path.display()
+                )
+            })?;
+            return Self::try_acquire(path).map_err(|error| Self::acquire_error(path, error));
+        }
+        Self::try_acquire(path).map_err(|error| Self::acquire_error(path, error))
+    }
+
+    fn try_acquire(path: &Path) -> std::io::Result<Self> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
         {
-            Ok(_) => Ok(Self {
-                path: path.to_path_buf(),
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(anyhow::anyhow!(
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(path).map(|_| Self {
+            path: path.to_path_buf(),
+        })
+    }
+
+    fn acquire_error(path: &Path, error: std::io::Error) -> anyhow::Error {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            anyhow::anyhow!(
                 "OpenAI Codex OAuth refresh is already in progress for this credential store; retry shortly"
-            )),
-            Err(error) => Err(error)
-                .with_context(|| format!("failed to create credential refresh lock {}", path.display())),
+            )
+        } else {
+            anyhow::Error::new(error).context(format!(
+                "failed to create credential refresh lock {}",
+                path.display()
+            ))
+        }
+    }
+
+    fn is_stale(path: &Path) -> Result<bool> {
+        const STALE_LOCK_AFTER: Duration = Duration::from_secs(10 * 60);
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .open(path)
+            .and_then(|file| file.metadata())
+        {
+            Ok(metadata) => Ok(metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .map(|elapsed| elapsed >= STALE_LOCK_AFTER)
+                .unwrap_or(false)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "failed to inspect credential refresh lock {}",
+                    path.display()
+                )
+            }),
         }
     }
 }
@@ -4540,9 +4597,10 @@ mod tests {
         build_openai_responses_request, chat_completions_url, incremental_diagnostics,
         latest_openai_compaction_index, openai_compaction_trigger_for_request_plan,
         openai_compaction_trigger_for_window, openai_provider_window_compaction_candidate,
-        plan_openai_responses_request, resolve_openai_codex_credential, OpenAiCodexProvider,
-        OpenAiCompactionPolicy, OpenAiContinuationState, OpenAiProviderWindow, OpenAiRequestPlan,
-        OpenAiRequestShape, OpenAiResponsesTransportContract, ToolSchemaContract,
+        plan_openai_responses_request, resolve_openai_codex_credential, CredentialStoreRefreshLock,
+        OpenAiCodexProvider, OpenAiCompactionPolicy, OpenAiContinuationState, OpenAiProviderWindow,
+        OpenAiRequestPlan, OpenAiRequestShape, OpenAiResponsesTransportContract,
+        ToolSchemaContract,
     };
     use crate::config::{
         load_credential_store_at, save_credential_store_at, CredentialKind, CredentialProfileFile,
@@ -4560,6 +4618,8 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+
+    static CODEX_REFRESH_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvVarGuard {
         key: &'static str,
@@ -4694,6 +4754,7 @@ mod tests {
         let handle = tokio::spawn(async move {
             axum::serve(listener, server).await.unwrap();
         });
+        let _env_lock = CODEX_REFRESH_ENV_LOCK.lock().unwrap();
         let _env = EnvVarGuard::set(
             "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
             format!("http://{addr}/oauth/token"),
@@ -4741,6 +4802,95 @@ mod tests {
         assert!(material.contains("rotated-refresh"));
         assert!(!material.contains("old-refresh"));
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn openai_codex_refresh_fails_without_access_token() {
+        let server = axum::Router::new().route(
+            "/oauth/token",
+            axum::routing::post(|| async {
+                axum::Json(json!({
+                    "refresh_token": "rotated-refresh"
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, server).await.unwrap();
+        });
+        let _env_lock = CODEX_REFRESH_ENV_LOCK.lock().unwrap();
+        let _env = EnvVarGuard::set(
+            "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+            format!("http://{addr}/oauth/token"),
+        );
+
+        let home = tempfile::tempdir().unwrap();
+        let credential_store_path = home.path().join("credentials.json");
+        let expiring_material = json!({
+            "tokens": {
+                "access_token": make_token(json!({
+                    "exp": Utc::now().timestamp() + 30,
+                    "chatgpt_account_id": "acct_profile"
+                })),
+                "refresh_token": "old-refresh",
+                "account_id": "acct_profile"
+            }
+        })
+        .to_string();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            OPENAI_CODEX_CREDENTIAL_PROFILE.to_string(),
+            CredentialProfileFile {
+                kind: CredentialKind::OAuth,
+                material: expiring_material.clone(),
+            },
+        );
+        save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles })
+            .unwrap();
+
+        let mut provider_config = test_openai_codex_config(Some(expiring_material));
+        provider_config.credential_store_path = Some(credential_store_path.clone());
+        let provider = OpenAiCodexProvider::from_runtime_config(
+            &provider_config,
+            "gpt-codex-test",
+            1024,
+            home.path(),
+        )
+        .unwrap();
+
+        let error = provider
+            .resolve_fresh_credential()
+            .await
+            .expect_err("refresh without an access token should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("refresh response did not include an access token"),
+            "{error}"
+        );
+        let store = load_credential_store_at(&credential_store_path).unwrap();
+        let material = &store.profiles[OPENAI_CODEX_CREDENTIAL_PROFILE].material;
+        assert!(material.contains("old-refresh"));
+        assert!(!material.contains("rotated-refresh"));
+        handle.abort();
+    }
+
+    #[test]
+    fn openai_codex_refresh_lock_uses_owner_only_permissions() {
+        let home = tempfile::tempdir().unwrap();
+        let lock_path = home.path().join("credentials.json.lock");
+        let lock = CredentialStoreRefreshLock::acquire(&lock_path).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&lock_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        drop(lock);
+        assert!(!lock_path.exists());
     }
 
     #[test]
