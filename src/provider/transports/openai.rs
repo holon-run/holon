@@ -12,9 +12,13 @@ use std::{
 };
 
 use crate::{
-    auth::{load_codex_cli_credential, load_codex_oauth_profile_credential, CodexCliCredential},
+    auth::{
+        load_codex_cli_credential, load_codex_oauth_profile_credential,
+        refresh_codex_oauth_profile_material, CodexCliCredential, CodexOAuthRefreshFailure,
+    },
     config::{
-        AppConfig, CredentialKind, CredentialSource, ModelRef, ProviderBuiltinWebSearchConfig,
+        load_credential_store_at, save_credential_store_at, AppConfig, CredentialKind,
+        CredentialProfileFile, CredentialSource, ModelRef, ProviderBuiltinWebSearchConfig,
         ProviderId, ProviderRuntimeConfig,
     },
     context::ContextConfig,
@@ -61,6 +65,7 @@ pub struct OpenAiCodexProvider {
     base_url: String,
     credential_profile: Option<String>,
     credential_material: Option<String>,
+    credential_store_path: Option<PathBuf>,
     codex_home: std::path::PathBuf,
     originator: String,
     model: String,
@@ -351,6 +356,7 @@ impl OpenAiCodexProvider {
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             credential_profile: provider_config.auth.profile.clone(),
             credential_material: provider_config.credential.clone(),
+            credential_store_path: provider_config.credential_store_path.clone(),
             codex_home,
             originator: provider_config
                 .originator
@@ -378,6 +384,99 @@ impl OpenAiCodexProvider {
             })
             .unwrap_or_else(|| load_codex_cli_credential(&self.codex_home))
     }
+
+    async fn resolve_fresh_credential(&self) -> Result<CodexCliCredential> {
+        let credential = self.resolve_credential()?;
+        if !credential.source.starts_with("credential_profile:") {
+            return Ok(credential);
+        }
+        if !credential_needs_refresh(&credential) {
+            return Ok(credential);
+        }
+        self.refresh_holon_oauth_profile().await
+    }
+
+    async fn refresh_holon_oauth_profile(&self) -> Result<CodexCliCredential> {
+        let profile = self.credential_profile.as_deref().unwrap_or("openai-codex");
+        let store_path = self.credential_store_path.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "OpenAI Codex Holon-managed OAuth profile {profile} cannot refresh because the credential store path is unavailable"
+            )
+        })?;
+        let lock_path = store_path.with_extension("json.lock");
+        let _lock = CredentialStoreRefreshLock::acquire(&lock_path)?;
+        let mut store = load_credential_store_at(store_path)?;
+        let entry = store.profiles.get(profile).cloned().ok_or_else(|| {
+            anyhow::anyhow!("Holon credential profile {profile} disappeared before refresh")
+        })?;
+        if entry.kind != CredentialKind::OAuth {
+            anyhow::bail!(
+                "Holon credential profile {profile} has kind {}, but OpenAI Codex refresh requires oauth",
+                entry.kind.as_str()
+            );
+        }
+        let current = load_codex_oauth_profile_credential(&entry.material, profile)?;
+        if !credential_needs_refresh(&current) {
+            return Ok(current);
+        }
+        let refreshed =
+            refresh_codex_oauth_profile_material(&self.client, &entry.material, profile)
+                .await
+                .map_err(|failure| codex_refresh_error(profile, failure))?;
+        store.profiles.insert(
+            profile.to_string(),
+            CredentialProfileFile {
+                kind: CredentialKind::OAuth,
+                material: refreshed.material,
+            },
+        );
+        save_credential_store_at(store_path, &store)?;
+        Ok(refreshed.credential)
+    }
+}
+
+struct CredentialStoreRefreshLock {
+    path: PathBuf,
+}
+
+impl CredentialStoreRefreshLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(_) => Ok(Self {
+                path: path.to_path_buf(),
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(anyhow::anyhow!(
+                "OpenAI Codex OAuth refresh is already in progress for this credential store; retry shortly"
+            )),
+            Err(error) => Err(error)
+                .with_context(|| format!("failed to create credential refresh lock {}", path.display())),
+        }
+    }
+}
+
+impl Drop for CredentialStoreRefreshLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn credential_needs_refresh(credential: &CodexCliCredential) -> bool {
+    credential
+        .expires_at
+        .map(|expires_at| expires_at <= Utc::now() + chrono::Duration::minutes(5))
+        .unwrap_or(false)
+}
+
+fn codex_refresh_error(profile: &str, failure: CodexOAuthRefreshFailure) -> anyhow::Error {
+    anyhow::anyhow!(
+        "OpenAI Codex OAuth refresh failed for Holon credential profile {profile}: {} ({})",
+        failure.message,
+        failure.kind.as_str()
+    )
 }
 
 fn resolve_openai_codex_credential(
@@ -641,13 +740,13 @@ impl AgentProvider for OpenAiProvider {
 impl AgentProvider for OpenAiCodexProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let model_ref = format!("{}/{}", self.provider_id, self.model);
-        let credential = self.resolve_credential().map_err(|error| {
+        let credential = self.resolve_fresh_credential().await.map_err(|error| {
             openai_codex_auth_error(
                 "credential_resolution",
                 &model_ref,
                 vec![
                     error.to_string(),
-                    "OpenAI Codex uses a Holon-managed openai-codex credential profile; run `holon config credentials set --kind oauth --stdin openai-codex` or `codex login`, then retry."
+                    "OpenAI Codex uses a Holon-managed openai-codex credential profile; refresh token failures require re-running Holon-managed openai-codex login or re-importing credentials. External Codex CLI credentials are not silently refreshed or overwritten."
                         .into(),
                 ],
                 "OpenAI Codex authentication failed: no Holon openai-codex credential profile or usable Codex CLI credentials are available.",
@@ -782,7 +881,7 @@ impl AgentProvider for OpenAiCodexProvider {
         &self,
         request: ProviderNativeWebSearchRequest,
     ) -> Result<()> {
-        let credential = self.resolve_credential()?;
+        let credential = self.resolve_fresh_credential().await?;
         let probe_request = builtin_web_search_probe_turn_request(request);
         let body = build_openai_responses_request(
             &self.model,
@@ -4441,22 +4540,49 @@ mod tests {
         build_openai_responses_request, chat_completions_url, incremental_diagnostics,
         latest_openai_compaction_index, openai_compaction_trigger_for_request_plan,
         openai_compaction_trigger_for_window, openai_provider_window_compaction_candidate,
-        plan_openai_responses_request, resolve_openai_codex_credential, OpenAiCompactionPolicy,
-        OpenAiContinuationState, OpenAiProviderWindow, OpenAiRequestPlan, OpenAiRequestShape,
-        OpenAiResponsesTransportContract, ToolSchemaContract,
+        plan_openai_responses_request, resolve_openai_codex_credential, OpenAiCodexProvider,
+        OpenAiCompactionPolicy, OpenAiContinuationState, OpenAiProviderWindow, OpenAiRequestPlan,
+        OpenAiRequestShape, OpenAiResponsesTransportContract, ToolSchemaContract,
     };
     use crate::config::{
-        CredentialKind, CredentialSource, ProviderAuthConfig, ProviderId, ProviderRuntimeConfig,
-        ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
+        load_credential_store_at, save_credential_store_at, CredentialKind, CredentialProfileFile,
+        CredentialSource, CredentialStoreFile, ProviderAuthConfig, ProviderId,
+        ProviderRuntimeConfig, ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
     };
     use crate::provider::{
         ConversationMessage, ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
         ProviderTurnRequest,
     };
     use base64::Engine;
+    use chrono::Utc;
     use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::ffi::{OsStr, OsString};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.as_ref() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     fn encode_segment(value: serde_json::Value) -> String {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string())
@@ -4484,6 +4610,7 @@ mod tests {
                 external: Some("codex_cli".into()),
             },
             credential,
+            credential_store_path: None,
             codex_home: Some(PathBuf::from("/tmp/codex-home")),
             originator: Some("codex_cli_rs".into()),
             reasoning_effort: Some("low".into()),
@@ -4546,6 +4673,74 @@ mod tests {
             credential.source,
             format!("credential_profile:{OPENAI_CODEX_CREDENTIAL_PROFILE}")
         );
+    }
+
+    #[tokio::test]
+    async fn openai_codex_refreshes_and_persists_holon_oauth_profile() {
+        let server = axum::Router::new().route(
+            "/oauth/token",
+            axum::routing::post(|| async {
+                axum::Json(json!({
+                    "access_token": make_token(json!({
+                        "exp": 1_900_000_000,
+                        "chatgpt_account_id": "acct_profile"
+                    })),
+                    "refresh_token": "rotated-refresh"
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, server).await.unwrap();
+        });
+        let _env = EnvVarGuard::set(
+            "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+            format!("http://{addr}/oauth/token"),
+        );
+
+        let home = tempfile::tempdir().unwrap();
+        let credential_store_path = home.path().join("credentials.json");
+        let expiring_material = json!({
+            "tokens": {
+                "access_token": make_token(json!({
+                    "exp": Utc::now().timestamp() + 30,
+                    "chatgpt_account_id": "acct_profile"
+                })),
+                "refresh_token": "old-refresh",
+                "account_id": "acct_profile"
+            }
+        })
+        .to_string();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            OPENAI_CODEX_CREDENTIAL_PROFILE.to_string(),
+            CredentialProfileFile {
+                kind: CredentialKind::OAuth,
+                material: expiring_material.clone(),
+            },
+        );
+        save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles })
+            .unwrap();
+
+        let mut provider_config = test_openai_codex_config(Some(expiring_material));
+        provider_config.credential_store_path = Some(credential_store_path.clone());
+        let provider = OpenAiCodexProvider::from_runtime_config(
+            &provider_config,
+            "gpt-codex-test",
+            1024,
+            home.path(),
+        )
+        .unwrap();
+
+        let credential = provider.resolve_fresh_credential().await.unwrap();
+        assert_eq!(credential.account_id, "acct_profile");
+
+        let store = load_credential_store_at(&credential_store_path).unwrap();
+        let material = &store.profiles[OPENAI_CODEX_CREDENTIAL_PROFILE].material;
+        assert!(material.contains("rotated-refresh"));
+        assert!(!material.contains("old-refresh"));
+        handle.abort();
     }
 
     #[test]
