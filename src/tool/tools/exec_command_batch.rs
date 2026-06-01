@@ -22,12 +22,18 @@ use super::{serialize_success, BuiltinToolDefinition};
 
 pub(crate) const NAME: &str = "ExecCommandBatch";
 const MAX_ITEMS: usize = 12;
+const DEFAULT_BATCH_YIELD_TIME_MS: u64 = 30_000;
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExecCommandBatchArgs {
     pub(crate) items: Vec<ExecCommandBatchItemArgs>,
     pub(crate) stop_on_error: Option<bool>,
+    pub(crate) workdir: Option<String>,
+    pub(crate) shell: Option<String>,
+    pub(crate) login: Option<bool>,
+    pub(crate) yield_time_ms: Option<u64>,
+    pub(crate) max_output_tokens: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -46,7 +52,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::LocalEnvironment,
         spec: crate::tool::spec::typed_spec::<ExecCommandBatchArgs>(
             NAME,
-            "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Per-item yield_time_ms defaults to 10_000 ms when omitted; set it only when intentionally changing that item's foreground wait window. Do not use non-command tools inside the batch.",
+            "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Top-level workdir, shell, login, yield_time_ms, and max_output_tokens act as defaults for items that omit those fields. Per-item yield_time_ms defaults to 30_000 ms when no item or top-level value is provided; set it only when intentionally changing that item's foreground wait window. Do not use non-command tools inside the batch.",
         )?,
     })
 }
@@ -60,12 +66,30 @@ pub(crate) async fn execute(
     let args = parse_batch_args(input)?;
     validate_batch_shape(&args)?;
 
-    let stop_on_error = args.stop_on_error.unwrap_or(false);
-    let mut results = Vec::with_capacity(args.items.len());
+    let ExecCommandBatchArgs {
+        items,
+        stop_on_error,
+        workdir,
+        shell,
+        login,
+        yield_time_ms,
+        max_output_tokens,
+    } = args;
+
+    let defaults = ExecCommandBatchDefaults {
+        workdir,
+        shell,
+        login,
+        yield_time_ms,
+        max_output_tokens,
+    };
+    let stop_on_error = stop_on_error.unwrap_or(false);
+    let mut results = Vec::with_capacity(items.len());
     let mut stop_requested = false;
 
-    for (offset, item) in args.items.into_iter().enumerate() {
+    for (offset, item) in items.into_iter().enumerate() {
         let index = offset + 1;
+        let item = apply_batch_defaults(item, &defaults);
         if stop_requested {
             results.push(ExecCommandBatchItemResult {
                 index,
@@ -134,14 +158,7 @@ fn exec_command_batch_recovery_hint(input: &Value) -> String {
         return format!("provide input for {NAME} as {{\"items\":[{{\"cmd\":\"...\"}}]}}");
     };
 
-    let per_item_fields = [
-        "cmd",
-        "workdir",
-        "shell",
-        "login",
-        "yield_time_ms",
-        "max_output_tokens",
-    ];
+    let per_item_fields = ["cmd"];
     let top_level_per_item_fields = per_item_fields
         .iter()
         .copied()
@@ -213,6 +230,36 @@ fn validate_batch_shape(args: &ExecCommandBatchArgs) -> Result<()> {
     Ok(())
 }
 
+struct ExecCommandBatchDefaults {
+    workdir: Option<String>,
+    shell: Option<String>,
+    login: Option<bool>,
+    yield_time_ms: Option<u64>,
+    max_output_tokens: Option<u64>,
+}
+
+fn apply_batch_defaults(
+    mut item: ExecCommandBatchItemArgs,
+    defaults: &ExecCommandBatchDefaults,
+) -> ExecCommandBatchItemArgs {
+    if item.workdir.is_none() {
+        item.workdir.clone_from(&defaults.workdir);
+    }
+    if item.shell.is_none() {
+        item.shell.clone_from(&defaults.shell);
+    }
+    if item.login.is_none() {
+        item.login = defaults.login;
+    }
+    if item.yield_time_ms.is_none() {
+        item.yield_time_ms = defaults.yield_time_ms;
+    }
+    if item.max_output_tokens.is_none() {
+        item.max_output_tokens = defaults.max_output_tokens;
+    }
+    item
+}
+
 async fn execute_batch_item(
     runtime: &RuntimeHandle,
     authority_class: &AuthorityClass,
@@ -227,7 +274,7 @@ async fn execute_batch_item(
         shell: item.shell,
         login: item.login.unwrap_or(true),
         tty: false,
-        yield_time_ms: item.yield_time_ms.unwrap_or(10_000),
+        yield_time_ms: item.yield_time_ms.unwrap_or(DEFAULT_BATCH_YIELD_TIME_MS),
         max_output_tokens: item.max_output_tokens,
         accepts_input: false,
         terminal_reentry: false,
@@ -385,12 +432,75 @@ mod tests {
             .and_then(|value| value.get("parse_error"))
             .and_then(|value| value.as_str())
             .is_some_and(|message| message.contains("cmd")));
-        assert!(tool_error.recovery_hint.as_deref().is_some_and(|hint| {
-            hint.contains("ExecCommand")
-                && hint.contains("single command")
-                && hint.contains("items[]")
-                && hint.contains("{\"items\":[{\"cmd\":\"...\"}]}")
-        }));
+        assert!(tool_error
+            .recovery_hint
+            .as_deref()
+            .is_some_and(|hint| { hint.contains("ExecCommand") && hint.contains("one command") }));
+    }
+
+    #[test]
+    fn top_level_defaults_apply_to_items_without_overriding_explicit_values() {
+        let defaults = ExecCommandBatchDefaults {
+            workdir: Some("src".into()),
+            shell: Some("/bin/sh".into()),
+            login: Some(false),
+            yield_time_ms: Some(60_000),
+            max_output_tokens: Some(2_000),
+        };
+        let item = apply_batch_defaults(
+            ExecCommandBatchItemArgs {
+                cmd: "pwd".into(),
+                workdir: None,
+                shell: None,
+                login: None,
+                yield_time_ms: None,
+                max_output_tokens: None,
+            },
+            &defaults,
+        );
+
+        assert_eq!(item.workdir.as_deref(), Some("src"));
+        assert_eq!(item.shell.as_deref(), Some("/bin/sh"));
+        assert_eq!(item.login, Some(false));
+        assert_eq!(item.yield_time_ms, Some(60_000));
+        assert_eq!(item.max_output_tokens, Some(2_000));
+
+        let item = apply_batch_defaults(
+            ExecCommandBatchItemArgs {
+                cmd: "pwd".into(),
+                workdir: Some("tests".into()),
+                shell: Some("/bin/bash".into()),
+                login: Some(true),
+                yield_time_ms: Some(1_000),
+                max_output_tokens: Some(100),
+            },
+            &defaults,
+        );
+
+        assert_eq!(item.workdir.as_deref(), Some("tests"));
+        assert_eq!(item.shell.as_deref(), Some("/bin/bash"));
+        assert_eq!(item.login, Some(true));
+        assert_eq!(item.yield_time_ms, Some(1_000));
+        assert_eq!(item.max_output_tokens, Some(100));
+    }
+
+    #[test]
+    fn parses_supported_top_level_defaults() {
+        let input = serde_json::json!({
+            "items": [{
+                "cmd": "git status"
+            }],
+            "workdir": ".",
+            "login": false,
+            "yield_time_ms": 60_000,
+            "max_output_tokens": 2_000
+        });
+        let args = parse_batch_args(&input).expect("top-level defaults should parse");
+
+        assert_eq!(args.workdir.as_deref(), Some("."));
+        assert_eq!(args.login, Some(false));
+        assert_eq!(args.yield_time_ms, Some(60_000));
+        assert_eq!(args.max_output_tokens, Some(2_000));
     }
 
     #[test]

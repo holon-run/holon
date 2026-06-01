@@ -388,7 +388,7 @@ impl RuntimeHandle {
                         "workdir": resolved.workdir.clone(),
                         "yield_time_ms": resolved.spec.yield_time_ms,
                     }))
-                    .with_recovery_hint("increase `yield_time_ms`, narrow the command, or call ExecCommand directly when background task promotion is needed")
+                    .with_recovery_hint("increase the item or top-level `yield_time_ms`, narrow the command, or call ExecCommand directly when background task promotion is needed; ExecCommandBatch does not promote timed-out items")
                     .with_retryable(false)
                     .into());
                 }

@@ -891,7 +891,7 @@
       "stability": "stable"
     },
     {
-      "description": "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Per-item yield_time_ms defaults to 10_000 ms when omitted; set it only when intentionally changing that item's foreground wait window. Do not use non-command tools inside the batch.",
+      "description": "Run a bounded sequential batch of ExecCommand-like startup requests and return one grouped receipt. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Top-level workdir, shell, login, yield_time_ms, and max_output_tokens act as defaults for items that omit those fields. Per-item yield_time_ms defaults to 30_000 ms when no item or top-level value is provided; set it only when intentionally changing that item's foreground wait window. Do not use non-command tools inside the batch.",
       "family": "local_environment",
       "freeform_grammar": null,
       "input_schema": {
@@ -946,9 +946,43 @@
             },
             "type": "array"
           },
+          "login": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "max_output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "shell": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "stop_on_error": {
             "type": [
               "boolean",
+              "null"
+            ]
+          },
+          "workdir": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "yield_time_ms": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
               "null"
             ]
           }
