@@ -5,6 +5,7 @@ use crate::types::{
     WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WaitConditionSummary,
     WaitingIntentScope, WaitingReason, WakeSource, WorkItemRecord, WorkItemState,
 };
+use chrono::{DateTime, Utc};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
@@ -27,6 +28,10 @@ pub(crate) struct WaitForRegistration {
     pub(crate) scope: WaitForScope,
     pub(crate) condition: WaitConditionRecord,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recheck_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recheck_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) work_item: Option<WorkItemRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) cancelled_wait_condition_ids: Vec<String>,
@@ -40,6 +45,7 @@ impl RuntimeHandle {
         wake: WaitForWakeKind,
         resource: Option<String>,
         reason: String,
+        recheck_after_ms: Option<u64>,
     ) -> Result<WaitForRegistration> {
         let runtime_agent_id = self.agent_id().await?;
         if agent_id != runtime_agent_id {
@@ -48,6 +54,7 @@ impl RuntimeHandle {
 
         let now = Utc::now();
         let (kind, subject_ref, wake_sources) = wait_condition_parts(wake, resource.clone())?;
+        let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
         let mut work_item = None;
         let mut cancelled_wait_condition_ids = Vec::new();
         if let Some(work_item_id) = work_item_id.as_deref() {
@@ -66,7 +73,7 @@ impl RuntimeHandle {
                 )
                 .await?;
             let updated = self
-                .write_wait_for_work_item_blocker(existing, &reason)
+                .write_wait_for_work_item_blocker(existing, &reason, recheck_at)
                 .await?;
             self.release_current_work_item_if_matches(agent_id, &updated, "work_item_waiting")
                 .await?;
@@ -87,6 +94,12 @@ impl RuntimeHandle {
                 "created_by": "WaitFor",
                 "wake": wake,
                 "resource": resource,
+                "recheck_after_ms": recheck_after_ms,
+                "recheck_at": recheck_at,
+                "recovery": recheck_at.map(|_| serde_json::json!({
+                    "kind": "recoverable",
+                    "recheck_source": "WaitFor",
+                })),
                 "clear_blocker_on_task_result": wake == WaitForWakeKind::TaskResult,
             })),
             created_at: now,
@@ -119,6 +132,8 @@ impl RuntimeHandle {
                 WaitForScope::Agent
             },
             condition,
+            recheck_after_ms,
+            recheck_at,
             work_item,
             cancelled_wait_condition_ids,
         })
@@ -209,9 +224,10 @@ impl RuntimeHandle {
         &self,
         existing: WorkItemRecord,
         reason: &str,
+        recheck_at: Option<DateTime<Utc>>,
     ) -> Result<WorkItemRecord> {
         if existing.blocked_by.as_deref() == Some(reason)
-            && existing.recheck_at.is_none()
+            && existing.recheck_at == recheck_at
             && existing.recheck_consumed_at.is_none()
         {
             return Ok(existing);
@@ -219,7 +235,7 @@ impl RuntimeHandle {
         let mut record = WorkItemRecord {
             revision: existing.revision + 1,
             blocked_by: Some(reason.to_string()),
-            recheck_at: None,
+            recheck_at,
             recheck_consumed_at: None,
             updated_at: Utc::now(),
             ..existing
@@ -894,7 +910,7 @@ fn wait_condition_parts(
         }
         WaitForWakeKind::External => Ok((
             WaitConditionKind::External,
-            Some(wait_resource_required(wake, resource)?),
+            optional_wait_resource(resource),
             vec![WakeSource::ExternalIngress {
                 external_trigger_id: None,
             }],
@@ -902,11 +918,23 @@ fn wait_condition_parts(
     }
 }
 
-fn wait_resource_required(wake: WaitForWakeKind, resource: Option<String>) -> Result<String> {
+fn optional_wait_resource(resource: Option<String>) -> Option<String> {
     resource
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn wait_resource_required(wake: WaitForWakeKind, resource: Option<String>) -> Result<String> {
+    optional_wait_resource(resource)
         .ok_or_else(|| anyhow!("wait_for {:?} requires non-empty resource", wake))
+}
+
+fn recheck_at_from(now: DateTime<Utc>, recheck_after_ms: u64) -> DateTime<Utc> {
+    let recheck_after_ms = i64::try_from(recheck_after_ms).unwrap_or(i64::MAX);
+    let recheck_after =
+        chrono::Duration::try_milliseconds(recheck_after_ms).unwrap_or(chrono::Duration::MAX);
+    now.checked_add_signed(recheck_after)
+        .unwrap_or(DateTime::<Utc>::MAX_UTC)
 }
 
 fn reconciliation_signal_for_condition(
