@@ -1154,9 +1154,12 @@ impl TuiApp {
                 self.maybe_begin_load_older_events();
             }
             TuiKeyAction::HistoryPrevious | TuiKeyAction::HistoryNext => {
-                self.chat_scroll
-                    .scroll_with_key(key.code, self.chat_max_scroll);
-                self.maybe_begin_load_older_events();
+                let action = match key.code {
+                    KeyCode::Up => TuiKeyAction::Composer(ComposerAction::MoveUp),
+                    KeyCode::Down => TuiKeyAction::Composer(ComposerAction::MoveDown),
+                    _ => TuiKeyAction::Ignore,
+                };
+                apply_composer_key_action(action, &mut self.composer);
             }
             action => {
                 let before = self.composer.as_str().to_string();
@@ -1474,6 +1477,8 @@ fn apply_composer_key_action(
         TuiKeyAction::Composer(ComposerAction::Delete) => composer.delete(),
         TuiKeyAction::Composer(ComposerAction::MoveLeft) => composer.move_left(),
         TuiKeyAction::Composer(ComposerAction::MoveRight) => composer.move_right(),
+        TuiKeyAction::Composer(ComposerAction::MoveUp) => composer.move_up(),
+        TuiKeyAction::Composer(ComposerAction::MoveDown) => composer.move_down(),
         TuiKeyAction::Composer(ComposerAction::MoveHome) => composer.move_home(),
         TuiKeyAction::Composer(ComposerAction::MoveEnd) => composer.move_end(),
         TuiKeyAction::Composer(ComposerAction::InsertTab) => composer.insert_char('\t'),

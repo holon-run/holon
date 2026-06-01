@@ -1189,6 +1189,94 @@ async fn enter_submits_instead_of_inserting_new_line() {
 }
 
 #[tokio::test]
+async fn empty_composer_up_and_down_navigate_input_history() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.input_history = vec!["first".into(), "second".into()];
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "second");
+    assert_eq!(app.history_index, Some(1));
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.composer.is_empty());
+    assert_eq!(app.history_index, None);
+}
+
+#[tokio::test]
+async fn non_empty_single_line_composer_up_down_do_not_scroll_chat() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.chat_max_scroll = 12;
+    app.composer = ComposerState::from("draft");
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.composer.as_str(), "draft");
+    assert_eq!(app.composer.cursor(), "draft".len());
+    assert!(app.chat_scroll.is_following_tail());
+}
+
+#[tokio::test]
+async fn multiline_composer_up_down_move_cursor_between_lines() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer = ComposerState::from("alpha\nbeta\ncharlie");
+    app.chat_max_scroll = 12;
+    app.composer.move_to_start();
+    for _ in 0..8 {
+        app.composer.move_right();
+    }
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.cursor(), 2);
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.cursor(), "alpha\nbe".len());
+    assert!(app.chat_scroll.is_following_tail());
+}
+
+#[tokio::test]
+async fn page_keys_still_scroll_chat_when_composer_has_content() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.chat_max_scroll = 12;
+    app.composer = ComposerState::from("draft");
+
+    app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.chat_scroll.effective_scroll(12), 2);
+    assert!(!app.chat_scroll.is_following_tail());
+}
+
+#[tokio::test]
 async fn agent_overlay_stays_open_while_navigating() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(

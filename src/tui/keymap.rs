@@ -64,6 +64,8 @@ pub(super) enum ComposerAction {
     Delete,
     MoveLeft,
     MoveRight,
+    MoveUp,
+    MoveDown,
     MoveHome,
     MoveEnd,
     InsertTab,
@@ -118,7 +120,7 @@ pub(super) const DEFAULT_BINDING_HINTS: &[DefaultBindingHint] = &[
     },
     DefaultBindingHint {
         context: KeyContext::Main,
-        action: "scroll chat when composer has content",
+        action: "move cursor when composer has content",
         keys: "Up/Down",
     },
     DefaultBindingHint {
@@ -244,6 +246,8 @@ fn resolve_composer_key(key: KeyEvent) -> TuiKeyAction {
         KeyCode::Delete => TuiKeyAction::Composer(ComposerAction::Delete),
         KeyCode::Left => TuiKeyAction::Composer(ComposerAction::MoveLeft),
         KeyCode::Right => TuiKeyAction::Composer(ComposerAction::MoveRight),
+        KeyCode::Up => TuiKeyAction::Composer(ComposerAction::MoveUp),
+        KeyCode::Down => TuiKeyAction::Composer(ComposerAction::MoveDown),
         KeyCode::Home => TuiKeyAction::Composer(ComposerAction::MoveHome),
         KeyCode::End => TuiKeyAction::Composer(ComposerAction::MoveEnd),
         KeyCode::Tab => TuiKeyAction::Composer(ComposerAction::InsertTab),
@@ -379,6 +383,14 @@ mod tests {
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)
             ),
             TuiKeyAction::Composer(ComposerAction::InsertNewline)
+        );
+        assert_eq!(
+            resolve_key(KeyContext::Composer, key(KeyCode::Up)),
+            TuiKeyAction::Composer(ComposerAction::MoveUp)
+        );
+        assert_eq!(
+            resolve_key(KeyContext::Composer, key(KeyCode::Down)),
+            TuiKeyAction::Composer(ComposerAction::MoveDown)
         );
     }
 

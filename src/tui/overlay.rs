@@ -447,6 +447,7 @@ fn draw_help_overlay(frame: &mut Frame<'_>, scroll: u16) {
         "  Down browse newer input history",
         "",
         "Editing Shortcuts (work when composer has content)",
+        "  Up/Down move cursor between composer lines",
         "  Ctrl+A move cursor to start",
         "  Ctrl+E move cursor to end",
         "  Ctrl+B move cursor left",
