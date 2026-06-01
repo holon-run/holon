@@ -587,6 +587,7 @@ async fn wait_for_task_result_marks_work_item_waiting_and_allows_sleep() {
             WaitForWakeKind::TaskResult,
             Some("task-1".into()),
             "waiting for task-1".into(),
+            None,
         )
         .await
         .unwrap();
@@ -642,6 +643,7 @@ async fn register_wait_for_validates_required_runtime_resources() {
             WaitForWakeKind::TaskResult,
             None,
             "waiting for task".into(),
+            None,
         )
         .await
         .unwrap_err();
@@ -656,12 +658,18 @@ async fn register_wait_for_validates_required_runtime_resources() {
             WaitForWakeKind::External,
             Some(" ".into()),
             "waiting for external state".into(),
+            None,
         )
         .await
-        .unwrap_err();
-    assert!(external_empty
-        .to_string()
-        .contains("requires non-empty resource"));
+        .unwrap();
+    assert_eq!(external_empty.condition.kind, WaitConditionKind::External);
+    assert_eq!(external_empty.condition.subject_ref, None);
+    assert_eq!(
+        external_empty.condition.wake_sources,
+        vec![WakeSource::ExternalIngress {
+            external_trigger_id: None
+        }]
+    );
 
     let operator_wait = runtime
         .register_wait_for(
@@ -670,11 +678,67 @@ async fn register_wait_for_validates_required_runtime_resources() {
             WaitForWakeKind::OperatorInput,
             None,
             "waiting for operator".into(),
+            None,
         )
         .await
         .unwrap();
     assert_eq!(operator_wait.condition.kind, WaitConditionKind::Operator);
     assert_eq!(operator_wait.condition.subject_ref, None);
+}
+
+#[tokio::test]
+async fn register_wait_for_external_recheck_sets_recoverable_work_item_deadline() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("wait for external".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+
+    let before = Utc::now();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::External,
+            None,
+            "waiting for any external event".into(),
+            Some(60_000),
+        )
+        .await
+        .unwrap();
+    let after = Utc::now();
+
+    let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+    let recheck_at = latest
+        .recheck_at
+        .expect("work item wait should store fallback recheck");
+    assert_eq!(
+        latest.blocked_by.as_deref(),
+        Some("waiting for any external event")
+    );
+    assert_eq!(registration.recheck_after_ms, Some(60_000));
+    assert_eq!(registration.recheck_at, Some(recheck_at));
+    assert!(recheck_at >= before + chrono::Duration::milliseconds(60_000));
+    assert!(recheck_at <= after + chrono::Duration::milliseconds(60_000));
+    assert_eq!(registration.condition.subject_ref, None);
+    assert_eq!(
+        registration.condition.external_recoverability(),
+        Some(crate::types::ExternalWaitRecoverability::Recoverable)
+    );
 }
 
 #[tokio::test]
@@ -705,6 +769,7 @@ async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocke
             WaitForWakeKind::TaskResult,
             Some("task-1".into()),
             "waiting for task-1".into(),
+            None,
         )
         .await
         .unwrap();

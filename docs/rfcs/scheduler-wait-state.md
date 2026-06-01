@@ -228,6 +228,7 @@ WaitFor {
   reason: String
   wake: operator_input | task_result | external
   resource: Option<String>
+  recheck_after_ms: Option<u64>
 }
 ```
 
@@ -235,23 +236,34 @@ Rules:
 
 - `reason` is required and must be non-empty.
 - `wake=task_result` requires `resource=<task_id>`.
-- `wake=external` requires `resource=<stable external object>`, such as a URL
-  or `github:holon-run/holon#1435`.
+- `wake=external` may include `resource=<stable external object>`, such as a
+  URL or `github:holon-run/holon#1435`; omitting `resource` means any external
+  ingress can wake the wait.
 - `wake=operator_input` may omit `resource`.
+- `recheck_after_ms` is optional. When present, it records a fallback recheck
+  deadline at `now + recheck_after_ms`; when omitted, the wait has no fallback
+  recheck deadline.
 - if a current open WorkItem exists, the wait is WorkItem-scoped;
 - if no current open WorkItem exists, the wait is agent-scoped;
 - to wait on another WorkItem, the agent must pick it first.
 
 WorkItem-scoped `WaitFor` replaces active waits on that WorkItem, writes
-`blocked_by=reason` for display, clears legacy recheck fields, and releases the
-current focus so scheduler projection no longer treats the item as runnable.
+`blocked_by=reason` for display, writes `recheck_at` only when
+`recheck_after_ms` is present, clears `recheck_at` otherwise, clears
+`recheck_consumed_at`, and releases the current focus so scheduler projection no
+longer treats the item as runnable.
+
+Agent-scoped `WaitFor` has no WorkItem record to mutate. When
+`recheck_after_ms` is present, the wait condition continuation records both the
+relative delay and absolute `recheck_at` so scheduler diagnostics can classify
+the external wait as recoverable.
 
 Mapping:
 
 | `wake` | `WaitCondition.kind` | `subject_ref` | `wake_sources` |
 |--------|----------------------|---------------|----------------|
 | `task_result` | `Task` | `resource` | `TaskResult { task_id: resource }` |
-| `external` | `External` | `resource` | `ExternalIngress { external_trigger_id: None }` |
+| `external` | `External` | `resource` when present | `ExternalIngress { external_trigger_id: None }` |
 | `operator_input` | `Operator` | `resource` when present | `OperatorInput` |
 
 Terminal task results resolve matching task wait conditions and clear the
@@ -274,9 +286,11 @@ WorkItem {
 ```
 
 `UpdateWorkItem` previously supported a small `recheck_after` input when the
-agent set or refreshed `blocked_by`. That path is now superseded by `WaitFor`
-for new waits. Historical fields remain in storage and read models for older
-records.
+agent set or refreshed `blocked_by`. That public entry point is removed:
+`UpdateWorkItem` updates WorkItem content and plan state only, while `WaitFor`
+is the authoritative entry point for wait state and fallback rechecks.
+Historical `recheck_at` and `recheck_consumed_at` fields remain in storage and
+read models for older records and for `WaitFor`-managed fallback rechecks.
 
 Rules:
 

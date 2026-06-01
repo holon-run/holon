@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,6 +36,8 @@ pub(crate) struct WaitForArgs {
     pub(crate) wake: WaitForWakeArg,
     #[serde(default)]
     pub(crate) resource: Option<String>,
+    #[serde(default)]
+    pub(crate) recheck_after_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -46,6 +49,10 @@ pub(crate) struct WaitForResult {
     pub(crate) resource: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recheck_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recheck_at: Option<DateTime<Utc>>,
     pub(crate) wait_condition: WaitConditionSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) work_item: Option<WorkItemView>,
@@ -58,7 +65,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<WaitForArgs>(
             NAME,
-            "Record an explicit wait condition and yield the current turn. Use wake=task_result with resource=<task_id> when waiting for a background task, wake=external with resource=<external object such as a URL or github:owner/repo#id> when waiting for outside state, or wake=operator_input when waiting for the operator. If there is a current open work item, WaitFor attaches to it and marks it waiting; otherwise it records an agent-level wait.",
+            "Record an explicit wait condition and yield the current turn. Use wake=task_result with resource=<task_id> when waiting for a background task, wake=external with optional resource=<external object such as a URL or github:owner/repo#id> when waiting for outside state, or wake=operator_input when waiting for the operator. Optional recheck_after_ms records a fallback recheck deadline. If there is a current open work item, WaitFor attaches to it and marks it waiting; otherwise it records an agent-level wait.",
         )?,
     })
 }
@@ -71,10 +78,7 @@ pub(crate) async fn execute(
 ) -> Result<ToolResult> {
     let args = parse_wait_for_args(input)?;
     let reason = validate_non_empty(args.reason, NAME, "reason")?;
-    let resource = args
-        .resource
-        .map(|value| validate_non_empty(value, NAME, "resource"))
-        .transpose()?;
+    let resource = optional_resource(args.resource);
     validate_resource_for_wake(args.wake, resource.as_deref())?;
 
     let context = query_context(runtime).await?;
@@ -86,6 +90,7 @@ pub(crate) async fn execute(
             args.wake.into(),
             resource.clone(),
             reason.clone(),
+            args.recheck_after_ms,
         )
         .await?;
     let updated_context = query_context(runtime).await?;
@@ -101,6 +106,8 @@ pub(crate) async fn execute(
         wake: args.wake,
         resource,
         work_item_id,
+        recheck_after_ms: registration.recheck_after_ms,
+        recheck_at: registration.recheck_at,
         wait_condition: WaitConditionSummary::from(registration.condition),
         work_item,
         cancelled_wait_condition_ids: registration.cancelled_wait_condition_ids,
@@ -121,20 +128,27 @@ fn parse_wait_for_args(input: &Value) -> Result<WaitForArgs> {
     parse_tool_args(NAME, input)
 }
 
+fn optional_resource(resource: Option<String>) -> Option<String> {
+    resource
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn validate_resource_for_wake(wake: WaitForWakeArg, resource: Option<&str>) -> Result<()> {
     match wake {
-        WaitForWakeArg::TaskResult | WaitForWakeArg::External if resource.is_none() => Err(
-            invalid_tool_input(
-                NAME,
-                format!("WaitFor wake `{}` requires non-empty `resource`", wake.as_str()),
-                json!({
-                    "field": "resource",
-                    "wake": wake,
-                    "validation_error": "required",
-                }),
-                "provide `resource` for task_result and external waits; use the task id for task_result and a stable external resource identifier for external waits",
+        WaitForWakeArg::TaskResult if resource.is_none() => Err(invalid_tool_input(
+            NAME,
+            format!(
+                "WaitFor wake `{}` requires non-empty `resource`",
+                wake.as_str()
             ),
-        ),
+            json!({
+                "field": "resource",
+                "wake": wake,
+                "validation_error": "required",
+            }),
+            "provide `resource` for task_result waits; use the task id as the resource",
+        )),
         _ => Ok(()),
     }
 }
@@ -186,23 +200,43 @@ mod tests {
 
     #[test]
     fn wait_for_requires_resource_for_task_and_external_waits() {
-        for wake in [WaitForWakeArg::TaskResult, WaitForWakeArg::External] {
-            let error = validate_resource_for_wake(wake, None).unwrap_err();
-            let tool_error = ToolError::from_anyhow(&error);
-            assert_eq!(tool_error.kind, "invalid_tool_input");
-            assert_eq!(
-                tool_error
-                    .details
-                    .as_ref()
-                    .and_then(|value| value.get("field"))
-                    .and_then(|value| value.as_str()),
-                Some("resource")
-            );
-        }
+        let error = validate_resource_for_wake(WaitForWakeArg::TaskResult, None).unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        assert_eq!(
+            tool_error
+                .details
+                .as_ref()
+                .and_then(|value| value.get("field"))
+                .and_then(|value| value.as_str()),
+            Some("resource")
+        );
     }
 
     #[test]
-    fn wait_for_allows_operator_input_without_resource() {
+    fn wait_for_allows_operator_and_external_without_resource() {
         validate_resource_for_wake(WaitForWakeArg::OperatorInput, None).unwrap();
+        validate_resource_for_wake(WaitForWakeArg::External, None).unwrap();
+    }
+
+    #[test]
+    fn wait_for_treats_empty_resource_as_absent() {
+        assert_eq!(optional_resource(Some("  ".into())), None);
+        assert_eq!(
+            optional_resource(Some("  github:repo#1  ".into())),
+            Some("github:repo#1".into())
+        );
+    }
+
+    #[test]
+    fn wait_for_parses_recheck_after_ms() {
+        let args = parse_wait_for_args(&json!({
+            "reason": "wait",
+            "wake": "external",
+            "recheck_after_ms": 300000,
+        }))
+        .unwrap();
+
+        assert_eq!(args.recheck_after_ms, Some(300000));
     }
 }
