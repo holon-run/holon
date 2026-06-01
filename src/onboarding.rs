@@ -8,11 +8,14 @@ use crate::{
     config::{
         built_in_provider_default_config, credential_store_path, load_persisted_config_at,
         save_persisted_config_at, set_credential_profile_at, validate_provider_config, AppConfig,
-        CredentialKind, CredentialSource, ModelRef, ProviderAuthConfig, ProviderId,
+        CredentialKind, CredentialSource, ModelRef, ProviderAuthConfig, ProviderConfigFile,
+        ProviderId, ProviderRuntimeConfig,
     },
     model_catalog::BuiltInModelCatalog,
     web::{WebProviderAuthClass, WebProviderSupportStatus},
 };
+
+const DUCKDUCKGO_SEARCH_PROVIDER_ID: &str = "duckduckgo";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OnboardingReport {
@@ -297,6 +300,12 @@ pub fn apply_onboarding_wizard_draft(
         .providers
         .remove(&draft.provider)
         .or_else(|| {
+            config
+                .providers
+                .get(&draft.provider)
+                .map(provider_config_file_from_runtime)
+        })
+        .or_else(|| {
             built_in_provider_default_config(&draft.provider)
                 .ok()
                 .flatten()
@@ -307,18 +316,16 @@ pub fn apply_onboarding_wizard_draft(
                 draft.provider.as_str()
             )
         })?;
-    provider_config.auth = ProviderAuthConfig {
-        source: CredentialSource::AuthProfile,
-        kind: draft.credential_kind,
-        env: None,
-        profile: Some(draft.credential_profile.clone()),
-        external: provider_config.auth.external.clone(),
-    };
-    validate_provider_config(&draft.provider, &provider_config)?;
-
     let credential_written = credential_material
         .map(|mut material| {
             trim_trailing_newlines(&mut material);
+            provider_config.auth = ProviderAuthConfig {
+                source: CredentialSource::AuthProfile,
+                kind: draft.credential_kind,
+                env: None,
+                profile: Some(draft.credential_profile.clone()),
+                external: provider_config.auth.external.clone(),
+            };
             set_credential_profile_at(
                 &credential_store_path(&config.home_dir),
                 &draft.credential_profile,
@@ -329,6 +336,7 @@ pub fn apply_onboarding_wizard_draft(
         })
         .transpose()?
         .unwrap_or(false);
+    validate_provider_config(&draft.provider, &provider_config)?;
 
     persisted.model.default = Some(draft.default_model.as_string());
     persisted
@@ -342,12 +350,13 @@ pub fn apply_onboarding_wizard_draft(
             persisted.web.search.enabled = Some(true);
             persisted.web.search.builtin_provider.enabled = Some(true);
             persisted.web.search.provider = Some("auto".into());
+            persisted.web.search.providers.clear();
         }
         OnboardingSearchSelection::DuckDuckGo => {
             persisted.web.search.enabled = Some(true);
             persisted.web.search.builtin_provider.enabled = Some(false);
-            persisted.web.search.provider = Some("duck_duck_go".into());
-            persisted.web.search.providers = vec!["duck_duck_go".into()];
+            persisted.web.search.provider = Some(DUCKDUCKGO_SEARCH_PROVIDER_ID.into());
+            persisted.web.search.providers = vec![DUCKDUCKGO_SEARCH_PROVIDER_ID.into()];
         }
     }
     save_persisted_config_at(&config.config_file_path, &persisted)?;
@@ -360,6 +369,16 @@ pub fn apply_onboarding_wizard_draft(
         search: draft.search.label().into(),
         credential_written,
     })
+}
+
+fn provider_config_file_from_runtime(provider: &ProviderRuntimeConfig) -> ProviderConfigFile {
+    ProviderConfigFile {
+        transport: provider.transport,
+        base_url: provider.base_url.clone(),
+        auth: provider.auth.clone(),
+        reasoning_effort: provider.reasoning_effort.clone(),
+        builtin_web_search: provider.builtin_web_search.clone(),
+    }
 }
 
 fn trim_trailing_newlines(value: &mut String) {
@@ -496,7 +515,7 @@ pub fn search_diagnostics(config: &AppConfig) -> SearchDiagnostics {
                 "config".into(),
                 "set".into(),
                 "web.search.provider".into(),
-                "duck_duck_go".into(),
+                DUCKDUCKGO_SEARCH_PROVIDER_ID.into(),
             ]),
         }]
     };
@@ -662,7 +681,7 @@ fn managed_search_provider_diagnostic(
     config: &AppConfig,
     provider_id: &str,
 ) -> SearchManagedProviderDiagnostic {
-    if provider_id == "duck_duck_go" {
+    if provider_id == DUCKDUCKGO_SEARCH_PROVIDER_ID {
         let capabilities = crate::web::WebProviderKind::DuckDuckGo.capabilities();
         return SearchManagedProviderDiagnostic {
             id: provider_id.into(),
@@ -1056,11 +1075,8 @@ mod tests {
         assert_eq!(persisted.model.default.as_deref(), Some("openai/gpt-5.4"));
         assert_eq!(persisted.web.search.enabled, Some(true));
         assert_eq!(persisted.web.search.builtin_provider.enabled, Some(false));
-        assert_eq!(
-            persisted.web.search.provider.as_deref(),
-            Some("duck_duck_go")
-        );
-        assert_eq!(persisted.web.search.providers, vec!["duck_duck_go"]);
+        assert_eq!(persisted.web.search.provider.as_deref(), Some("duckduckgo"));
+        assert_eq!(persisted.web.search.providers, vec!["duckduckgo"]);
         assert_eq!(
             persisted
                 .providers
@@ -1079,6 +1095,31 @@ mod tests {
                 .map(|profile| profile.material.as_str()),
             Some("test-secret")
         );
+    }
+
+    #[test]
+    fn onboarding_wizard_apply_preserves_existing_auth_without_new_secret() {
+        let config = test_config(Some("openai-key"));
+        let draft = OnboardingWizardDraft {
+            provider: ProviderId::openai(),
+            credential_profile: "openai".into(),
+            credential_kind: CredentialKind::ApiKey,
+            default_model: ModelRef::parse("openai/gpt-5.4").unwrap(),
+            search: OnboardingSearchSelection::BuiltInProvider,
+        };
+
+        let summary = apply_onboarding_wizard_draft(&config, &draft, None).unwrap();
+        let persisted = load_persisted_config_at(&config.config_file_path).unwrap();
+        let openai = persisted.providers.get(&ProviderId::openai()).unwrap();
+        let store = load_credential_store_at(&credential_store_path(&config.home_dir)).unwrap();
+
+        assert!(!summary.credential_written);
+        assert_eq!(openai.auth.source, CredentialSource::Env);
+        assert_eq!(openai.auth.env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(openai.auth.profile, None);
+        assert!(store.profiles.is_empty());
+        assert_eq!(persisted.web.search.provider.as_deref(), Some("auto"));
+        assert!(persisted.web.search.providers.is_empty());
     }
 
     #[test]
@@ -1141,7 +1182,7 @@ mod tests {
         let mut config = test_config(Some("openai-key"));
         config.web_config.search.enabled = true;
         config.web_config.search.builtin_provider_enabled = false;
-        config.web_config.search.provider = "duck_duck_go".into();
+        config.web_config.search.provider = "duckduckgo".into();
         config.web_config.search.mode = WebSearchMode::Single;
 
         let report = onboarding_report(&config);
@@ -1152,7 +1193,7 @@ mod tests {
             .expect("search section");
 
         assert_eq!(search.status, OnboardingStatus::Configured);
-        assert_eq!(search.details["provider"], "duck_duck_go");
+        assert_eq!(search.details["provider"], "duckduckgo");
         assert_eq!(search.details["mode"], "single");
         assert_eq!(
             search.details["managed_providers"][0]["kind"],

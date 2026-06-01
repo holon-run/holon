@@ -30,6 +30,7 @@ use crate::{
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const DUCKDUCKGO_SEARCH_PROVIDER_ID: &str = "duckduckgo";
 
 pub fn run_onboarding_tui(config: AppConfig) -> Result<OnboardingApplySummary> {
     let mut app = OnboardingTuiApp::new(&config);
@@ -122,7 +123,7 @@ impl OnboardingTuiApp {
         let search_choices = onboarding_search_choices(config);
         let selected_search = if !config.web_config.search.enabled {
             OnboardingSearchSelection::Disabled
-        } else if config.web_config.search.provider == "duck_duck_go" {
+        } else if config.web_config.search.provider == DUCKDUCKGO_SEARCH_PROVIDER_ID {
             OnboardingSearchSelection::DuckDuckGo
         } else {
             OnboardingSearchSelection::BuiltInProvider
@@ -199,6 +200,14 @@ impl OnboardingTuiApp {
                     .get(self.provider_index)
                     .cloned()
                     .context("no model provider choices are available")?;
+                if self
+                    .selected_provider
+                    .as_ref()
+                    .is_some_and(|selected| selected.id != provider.id)
+                {
+                    self.credential_input.clear();
+                    self.credential_material = None;
+                }
                 self.models = self
                     .models_by_provider
                     .get(&provider.id)
