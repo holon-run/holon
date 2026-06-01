@@ -143,6 +143,7 @@ pub struct ProviderRuntimeConfig {
     pub base_url: String,
     pub auth: ProviderAuthConfig,
     pub credential: Option<String>,
+    pub credential_store_path: Option<PathBuf>,
     pub codex_home: Option<PathBuf>,
     pub originator: Option<String>,
     pub reasoning_effort: Option<String>,
@@ -645,8 +646,13 @@ impl AppConfig {
         let validated_model_overrides = resolve_model_catalog(&stored_config)?;
         let validated_unknown_model_fallback =
             validate_optional_model_runtime_override(stored_config.model.unknown_fallback.clone())?;
-        let providers =
+        let mut providers =
             resolve_provider_registry(&stored_config, &settings_env, &credential_store)?;
+        for provider in providers.values_mut() {
+            if provider.auth.source == CredentialSource::AuthProfile {
+                provider.credential_store_path = Some(credential_store_path.clone());
+            }
+        }
         let explicit_default = resolve_default_model(&stored_config)?;
         let explicit_fallbacks = resolve_fallback_models(&stored_config)?;
         let (default_model, fallback_models) = match resolve_model_selection_for_load_mode(
@@ -2418,6 +2424,7 @@ fn built_in_provider_registry_with_settings(
                 external: Some("codex_cli".into()),
             },
             credential: None,
+            credential_store_path: None,
             codex_home: Some(
                 env::var("CODEX_HOME")
                     .map(PathBuf::from)
@@ -2447,6 +2454,7 @@ fn built_in_provider_registry_with_settings(
                 external: None,
             },
             credential: env::var("OPENAI_API_KEY").ok(),
+            credential_store_path: None,
             codex_home: None,
             originator: None,
             reasoning_effort: None,
@@ -2470,6 +2478,7 @@ fn built_in_provider_registry_with_settings(
                 external: None,
             },
             credential: get_config_value("ANTHROPIC_AUTH_TOKEN", None, settings_env),
+            credential_store_path: None,
             codex_home: None,
             originator: None,
             reasoning_effort: None,
@@ -2493,6 +2502,7 @@ fn built_in_provider_registry_with_settings(
                 external: None,
             },
             credential: get_config_value("GEMINI_API_KEY", None, settings_env),
+            credential_store_path: None,
             codex_home: None,
             originator: None,
             reasoning_effort: None,
@@ -2911,6 +2921,7 @@ fn insert_vercel_ai_gateway_provider(
                 external: None,
             },
             credential,
+            credential_store_path: None,
             codex_home: None,
             originator: None,
             reasoning_effort: None,
@@ -2983,6 +2994,7 @@ fn insert_builtin_http_provider_with_context_management(
                 })
                 .unwrap_or_default(),
             credential: credential.map(|resolution| resolution.value),
+            credential_store_path: None,
             codex_home: None,
             originator: None,
             reasoning_effort: None,
@@ -3093,6 +3105,7 @@ fn materialize_provider_config(
         base_url: provider_config.base_url.clone(),
         auth: provider_config.auth.clone(),
         credential: None,
+        credential_store_path: None,
         codex_home: None,
         originator: None,
         reasoning_effort: None,
@@ -3316,6 +3329,7 @@ pub fn provider_registry_for_tests(
                 external: Some("codex_cli".into()),
             },
             credential: None,
+            credential_store_path: None,
             codex_home: Some(codex_home),
             originator: Some("codex_cli_rs".into()),
             reasoning_effort: Some("low".into()),
@@ -3338,6 +3352,7 @@ pub fn provider_registry_for_tests(
                 external: None,
             },
             credential: openai_key.map(ToString::to_string),
+            credential_store_path: None,
             codex_home: None,
             originator: None,
             reasoning_effort: None,
@@ -3360,6 +3375,7 @@ pub fn provider_registry_for_tests(
                 external: None,
             },
             credential: anthropic_token.map(ToString::to_string),
+            credential_store_path: None,
             codex_home: None,
             originator: None,
             reasoning_effort: None,
@@ -3382,6 +3398,7 @@ pub fn provider_registry_for_tests(
                 external: None,
             },
             credential: None,
+            credential_store_path: None,
             codex_home: None,
             originator: None,
             reasoning_effort: None,
@@ -5809,6 +5826,7 @@ mod tests {
                     external: None,
                 },
                 credential: Some("custom-key".into()),
+                credential_store_path: None,
                 codex_home: None,
                 originator: None,
                 reasoning_effort: None,
