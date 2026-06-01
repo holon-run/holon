@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    config::{AppConfig, CredentialSource, ProviderId},
+    config::{AppConfig, CredentialKind, CredentialSource, ProviderId},
     web::{WebProviderAuthClass, WebProviderSupportStatus},
 };
 
@@ -21,6 +21,7 @@ pub fn credential_repair_plan(config: &AppConfig) -> Option<OnboardingCredential
     let provider_id = &config.default_model.provider;
     let provider = config.providers.get(provider_id);
     let provider_configured = provider.is_some();
+    let persisted_provider_configured = config.stored_config.providers.contains_key(provider_id);
     let credential_configured = provider
         .map(|provider| {
             provider.has_configured_credential() || provider.auth.source == CredentialSource::None
@@ -33,12 +34,18 @@ pub fn credential_repair_plan(config: &AppConfig) -> Option<OnboardingCredential
 
     Some(OnboardingCredentialRepair {
         provider: provider_id.as_str().to_string(),
-        credential_profile: default_credential_profile(provider_id),
-        credential_kind: "api_key".into(),
+        credential_profile: provider
+            .and_then(|provider| provider.auth.profile.clone())
+            .unwrap_or_else(|| default_credential_profile(provider_id)),
+        credential_kind: provider
+            .map(|provider| provider.auth.kind)
+            .unwrap_or(CredentialKind::ApiKey)
+            .as_str()
+            .into(),
         provider_configured,
         credential_configured,
-        requires_confirmation: provider_configured,
-        summary: if provider_configured {
+        requires_confirmation: persisted_provider_configured,
+        summary: if persisted_provider_configured {
             "Update the default model provider to use a stored credential profile.".into()
         } else {
             "Configure the default model provider with a stored credential profile.".into()
@@ -572,7 +579,11 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{
-        config::{provider_registry_for_tests, AppConfig, ControlAuthMode, ModelRef},
+        config::{
+            provider_registry_for_tests, AppConfig, ControlAuthMode, CredentialKind,
+            CredentialSource, ModelRef, ProviderAuthConfig, ProviderConfigFile, ProviderId,
+            ProviderTransportKind,
+        },
         onboarding::{
             credential_repair_plan, onboarding_report, search_diagnostics, OnboardingStatus,
         },
@@ -654,8 +665,66 @@ mod tests {
         assert_eq!(plan.credential_profile, "openai");
         assert_eq!(plan.credential_kind, "api_key");
         assert!(plan.provider_configured);
-        assert!(plan.requires_confirmation);
+        assert!(!plan.requires_confirmation);
         assert!(!json.contains("openai-key"));
+    }
+
+    #[test]
+    fn credential_repair_plan_requires_confirmation_for_persisted_provider_config() {
+        let mut config = test_config(None);
+        config.stored_config.providers.insert(
+            ProviderId::openai(),
+            ProviderConfigFile {
+                transport: ProviderTransportKind::OpenAiResponses,
+                base_url: "https://api.openai.com/v1".into(),
+                auth: ProviderAuthConfig {
+                    source: CredentialSource::Env,
+                    kind: CredentialKind::ApiKey,
+                    env: Some("OPENAI_API_KEY".into()),
+                    profile: None,
+                    external: None,
+                },
+                reasoning_effort: None,
+                builtin_web_search: None,
+            },
+        );
+
+        let plan = credential_repair_plan(&config).expect("repair plan");
+
+        assert!(plan.provider_configured);
+        assert!(plan.requires_confirmation);
+        assert_eq!(
+            plan.summary,
+            "Update the default model provider to use a stored credential profile."
+        );
+    }
+
+    #[test]
+    fn credential_repair_plan_preserves_provider_auth_contract() {
+        let mut config = test_config(None);
+        config.default_model = ModelRef::parse("openai-codex/gpt-5.4").unwrap();
+
+        let plan = credential_repair_plan(&config).expect("repair plan");
+
+        assert_eq!(plan.provider, "openai-codex");
+        assert_eq!(plan.credential_profile, "openai-codex");
+        assert_eq!(plan.credential_kind, "oauth");
+        assert!(plan.provider_configured);
+        assert!(!plan.requires_confirmation);
+    }
+
+    #[test]
+    fn credential_repair_plan_marks_unknown_default_provider_unconfigured() {
+        let mut config = test_config(None);
+        config.default_model = ModelRef::parse("custom/gpt-5.4").unwrap();
+
+        let plan = credential_repair_plan(&config).expect("repair plan");
+
+        assert_eq!(plan.provider, "custom");
+        assert_eq!(plan.credential_profile, "custom");
+        assert_eq!(plan.credential_kind, "api_key");
+        assert!(!plan.provider_configured);
+        assert!(!plan.requires_confirmation);
     }
 
     #[test]

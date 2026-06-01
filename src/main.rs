@@ -298,6 +298,13 @@ fn run_interactive_onboarding(config: AppConfig, report: OnboardingReport) -> Re
     println!("- {}", plan.summary);
     println!("  provider: {}", plan.provider);
     println!("  credential profile: {}", plan.credential_profile);
+    if !plan.provider_configured {
+        println!(
+            "Provider {} is not configured. Configure it first with `holon config providers set {}`.",
+            plan.provider, plan.provider
+        );
+        return Ok(());
+    }
     if plan.requires_confirmation
         && !confirm(
             "This will update the existing provider auth configuration. Continue?",
@@ -341,24 +348,35 @@ fn apply_onboarding_credential_repair(
     let credential_kind = CredentialKind::parse(&plan.credential_kind)?;
 
     let mut persisted = load_persisted_config_at(&config.config_file_path)?;
-    let mut provider_config = if let Some(provider_config) =
-        persisted.providers.remove(&provider_id)
-    {
-        provider_config
-    } else {
-        built_in_provider_default_config(&provider_id)?.with_context(|| {
-            format!(
-                "provider {} has no built-in defaults; configure it with `holon config providers set`",
+    let mut provider_config =
+        if let Some(provider_config) = persisted.providers.remove(&provider_id) {
+            provider_config
+        } else {
+            let provider = config.providers.get(&provider_id).with_context(|| {
+                format!(
+                "provider {} is not configured; configure it with `holon config providers set {}`",
+                provider_id.as_str(),
                 provider_id.as_str()
             )
-        })?
-    };
+            })?;
+            ProviderConfigFile {
+                transport: provider.transport,
+                base_url: provider.base_url.clone(),
+                auth: provider.auth.clone(),
+                reasoning_effort: provider.reasoning_effort.clone(),
+                builtin_web_search: provider.builtin_web_search.clone(),
+            }
+        };
+    let credential_external = config
+        .providers
+        .get(&provider_id)
+        .and_then(|provider| provider.auth.external.clone());
     provider_config.auth = ProviderAuthConfig {
         source: CredentialSource::AuthProfile,
         kind: credential_kind,
         env: None,
         profile: Some(plan.credential_profile.clone()),
-        external: None,
+        external: credential_external,
     };
     validate_provider_config(&provider_id, &provider_config)?;
 
