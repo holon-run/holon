@@ -1450,6 +1450,9 @@ fn is_successful_work_item_tool_event(event: &ProjectionEventRecord) -> bool {
     if event.kind != "tool_executed" {
         return false;
     }
+    if event.payload.get("status").and_then(Value::as_str) != Some("success") {
+        return false;
+    }
     matches!(
         event.payload.get("tool_name").and_then(Value::as_str),
         Some("CreateWorkItem" | "UpdateWorkItem" | "CompleteWorkItem")
@@ -2448,6 +2451,7 @@ mod tests {
             "Updated work item: UpdateWorkItem",
             json!({
                 "tool_name": "UpdateWorkItem",
+                "status": "success",
                 "summary": "updated work item"
             }),
         );
@@ -2456,6 +2460,28 @@ mod tests {
         let items = reducer.reduce(&[event]);
 
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn reducer_keeps_error_status_work_item_tool_bookkeeping() {
+        let event = make_event(
+            "tool_executed",
+            "UpdateWorkItem error validation_failed: missing work item",
+            json!({
+                "tool_name": "UpdateWorkItem",
+                "status": "error",
+                "error": "missing work item"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::ToolAction { .. } => {}
+            other => panic!("expected ToolAction, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2740,6 +2766,7 @@ mod tests {
             "Updated work item: UpdateWorkItem",
             json!({
                 "tool_name": "UpdateWorkItem",
+                "status": "success",
                 "summary": "updated work item"
             }),
         );
