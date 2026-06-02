@@ -1587,8 +1587,8 @@ mod tests {
             sample_event(
                 "tool_executed",
                 json!({
-                    "tool_name": "UpdateWorkItem",
-                    "summary": "updated work item"
+                    "tool_name": "TaskStatus",
+                    "summary": "inspected task status"
                 }),
             ),
             &writer,
