@@ -52,6 +52,9 @@ from unrelated message and brief windows.
 - Preserve the causal relation between operator input, runtime/task/external
   input, assistant result briefs, tool references, WorkItem changes, and wait
   or completion transitions.
+- Support multiple user-facing briefs from one turn when one activation
+  completes multiple WorkItems or produces both lifecycle reports and a final
+  continuation result.
 - Keep trusted operator intent and WorkItem state from being displaced by
   provider fallback, retry, timer, duplicate wake, or bookkeeping turns.
 - Make prompt retention priority rule-based and provenance-aware before using
@@ -136,7 +139,44 @@ turn_record:
 The turn record does not need to duplicate full object bodies. It should keep
 stable references and enough bounded summary fields for prompt assembly.
 
-### 5.2 Link Operator Inputs And Briefs Through Turns
+### 5.2 Treat Briefs As Turn Outputs, Not Turn Boundaries
+
+A turn may produce zero, one, or many user-facing briefs. A normal terminal
+assistant result is one kind of brief. A `CompleteWorkItem` transition may also
+produce a completion-report brief, and that brief is simultaneously the
+canonical report stored on the completed WorkItem.
+
+`CompleteWorkItem` is a WorkItem lifecycle boundary, not a hard turn boundary:
+
+- completing a WorkItem records the WorkItem state transition
+- the runtime captures the completion report associated with that transition
+- waits attached to the completed WorkItem are resolved or cancelled
+- the current turn may continue if the model has further assistant output,
+  tool calls, queue updates, or other explicit continuation work
+
+If no continuation follows a successful `CompleteWorkItem`, the runtime may
+soft-stop without asking the model to restate the same report as another final
+brief. That duplicate-suppression behavior must not prevent same-turn
+continuation or same-turn completion of additional WorkItems.
+
+Completion report capture should be deterministic and local to the tool call.
+For a sequence such as:
+
+```text
+assistant text: report for WorkItem A
+tool call: CompleteWorkItem(A)
+assistant text: report for WorkItem B
+tool call: CompleteWorkItem(B)
+```
+
+the turn should produce two completion-report briefs, each linked to its own
+WorkItem completion. The runtime should not rely on the whole turn's final text
+to infer every completed WorkItem report, and it should not reject report
+promotion merely because multiple `CompleteWorkItem` calls appear in one turn.
+If a completion lacks nearby non-empty assistant report text, the runtime may
+record a missing-report warning for that specific completion.
+
+### 5.3 Link Operator Inputs And Briefs Through Turns
 
 Result briefs should be associated with the turn that produced them, and that
 turn should reference the inputs it was responding to.
@@ -147,7 +187,8 @@ The prompt should be able to render:
 Turn T:
 - trigger: trusted operator input
 - operator asked: ...
-- result: ...
+- produced briefs:
+  - normal result: ...
 - work item delta: ...
 ```
 
@@ -158,13 +199,27 @@ Turn U:
 - trigger: task_result
 - continues operator turn: T
 - task result: cargo test passed
-- result: verification complete
+- produced briefs:
+  - normal result: verification complete
+```
+
+or:
+
+```text
+Turn V:
+- trigger: scheduler
+- produced briefs:
+  - completion report for WorkItem A: ...
+  - completion report for WorkItem B: ...
+- completion delta:
+  - WorkItem A completed
+  - WorkItem B completed
 ```
 
 This is preferable to separately rendering a recent operator message list and a
 recent brief list with no guaranteed linkage.
 
-### 5.3 Classify Current Input Relation Before Rendering History
+### 5.4 Classify Current Input Relation Before Rendering History
 
 Every prompt should make the current turn relation explicit:
 
@@ -179,7 +234,7 @@ Every prompt should make the current turn relation explicit:
 This relation is a structural runtime fact. It should not require an LLM to
 infer it from prose.
 
-### 5.4 Compute Baseline Retention From Runtime Facts
+### 5.5 Compute Baseline Retention From Runtime Facts
 
 The runtime should compute a conservative retention priority from provenance,
 trigger kind, and state delta.
@@ -222,7 +277,7 @@ These classes should be derived from runtime-known structure and deltas. If the
 runtime is unsure, it should classify conservatively as normal or high rather
 than dropping the turn.
 
-### 5.5 Preserve Authority Boundaries Across Compression
+### 5.6 Preserve Authority Boundaries Across Compression
 
 LLM-generated summaries may help explain old turns, but they must not become
 the authority source for:
@@ -252,7 +307,7 @@ compressed_turn_episode:
 The summary is evidence for the model, not a replacement for the runtime
 ledger.
 
-### 5.6 Project Recent Turns By Chain And Priority, Not FIFO Alone
+### 5.7 Project Recent Turns By Chain And Priority, Not FIFO Alone
 
 Prompt assembly should not simply render the last N physical turns.
 

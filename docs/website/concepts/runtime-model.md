@@ -67,9 +67,14 @@ visible through `GetWorkItem` and `ListWorkItems`, and indexed by
 conclude on that issue?" without re-reading the full transcript.
 
 Completion reports replace free-form manual summaries. They are tied to the
-work item lifecycle, not to individual model turns. Once a completion report is
-promoted, it is the terminal user-facing delivery for that turn; the scheduler
-resumes any other runnable work in a later work-queue tick.
+work item lifecycle, not to a requirement that the model turn must end. A
+`CompleteWorkItem` call is the lifecycle boundary for that work item: the
+runtime captures the associated report and completes the item. If there is no
+follow-up action, the runtime can stop without asking the model to repeat the
+same report as a second final brief. If the turn contains further assistant
+output, tool calls, or additional WorkItem completions, those continuation
+actions belong to the same turn and do not overwrite the already-promoted
+completion report.
 ```
 
 ### Tasks
