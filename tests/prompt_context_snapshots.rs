@@ -9,11 +9,11 @@ use holon::{
     system::{ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         AdmissionContext, AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset,
-        AgentRegistryStatus, AgentState, AgentVisibility, AuthorityClass, ContinuationClass,
-        ContinuationResolution, ContinuationTriggerKind, LoadedAgentsMd, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        SkillsRuntimeView, TodoItem, TodoItemState, WaitingReason, WorkItemRecord, WorkItemState,
-        WorkingMemoryDelta, WorkingMemorySnapshot,
+        AgentRegistryStatus, AgentState, AgentVisibility, AuthorityClass, BriefKind, BriefRecord,
+        ContinuationClass, ContinuationResolution, ContinuationTriggerKind, LoadedAgentsMd,
+        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        SkillsRuntimeView, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
+        WaitingReason, WorkItemRecord, WorkItemState, WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
 use serde_json::json;
@@ -136,6 +136,270 @@ fn append_work_item_todo(
     work_item.todo_list = todo_list;
     work_item.updated_at = Utc::now();
     storage.append_work_item(&work_item)?;
+    Ok(())
+}
+
+#[test]
+fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
+    let dir = tempdir()?;
+    let storage = AppStorage::new(dir.path())?;
+
+    let previous_operator = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Run the focused prompt projection test.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    storage.append_message(&previous_operator)?;
+    storage.append_brief(&BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "Focused prompt projection test passed.",
+        Some(previous_operator.id.clone()),
+        None,
+    ))?;
+
+    let current_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Continue with the next prompt projection case.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+
+    let rendered = render_context_snapshot(
+        &storage,
+        &AgentState::new("default"),
+        &current_message,
+        None,
+    )?;
+    let expected = format!(
+        r#"## agent
+Agent id: default
+
+## execution_environment
+{EXECUTION_ENVIRONMENT}
+
+## context_contract
+{CONTEXT_CONTRACT}
+
+## continuation_anchor
+Continuation anchor:
+Latest trusted operator input: current_input.
+Current input relation: current_input is the latest trusted operator input.
+
+## recent_turns
+Recent turns:
+- Turn message_seq 1:
+  - trigger: trusted operator input
+  - operator asked: Run the focused prompt projection test.
+  - produced briefs:
+    - Result: Focused prompt projection test passed.
+
+## recent_messages
+Recent messages:
+- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt] Run the focused prompt projection test.
+
+## latest_result
+Latest completed result:
+Focused prompt projection test passed.
+
+## current_input
+Current input:
+- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt]
+  Continue with the next prompt projection case."#
+    );
+    assert_snapshot(&rendered, &expected);
+    Ok(())
+}
+
+#[test]
+fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Result<()> {
+    let dir = tempdir()?;
+    let storage = AppStorage::new(dir.path())?;
+
+    let operator_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Run cargo test runtime_flow and report back.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    storage.append_message(&operator_message)?;
+    storage.append_brief(&BriefRecord::new(
+        "default",
+        BriefKind::Ack,
+        "Started cargo test runtime_flow.",
+        Some(operator_message.id.clone()),
+        Some("task_exec_1".into()),
+    ))?;
+    let mut turn_index_brief = BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "Captured completion report promotion.",
+        None,
+        None,
+    );
+    turn_index_brief.turn_index = Some(1);
+    storage.append_brief(&turn_index_brief)?;
+    storage.append_tool_execution(&ToolExecutionRecord {
+        id: "tool_exec_1".into(),
+        agent_id: "default".into(),
+        work_item_id: None,
+        turn_index: 1,
+        tool_name: "ExecCommand".into(),
+        created_at: Utc::now(),
+        completed_at: Some(Utc::now()),
+        duration_ms: 42,
+        authority_class: AuthorityClass::RuntimeInstruction,
+        status: ToolExecutionStatus::Success,
+        input: json!({ "fixture": true }),
+        output: json!({ "exit": 0 }),
+        summary: "Run command: cargo test runtime_flow".into(),
+        invocation_surface: Some("commentary".into()),
+    })?;
+
+    let mut work_item = WorkItemRecord::new("default", "Track\nruntime flow", WorkItemState::Open);
+    work_item.id = "work_runtime_flow".into();
+    storage.append_work_item(&work_item)?;
+
+    let task_result = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task_exec_1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "Command task completed successfully: cargo test runtime_flow".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+
+    let continuation = ContinuationResolution {
+        trigger_kind: ContinuationTriggerKind::TaskResult,
+        class: ContinuationClass::ResumeExpectedWait,
+        model_reentry: true,
+        prior_closure_outcome: holon::types::ClosureOutcome::Waiting,
+        prior_waiting_reason: Some(WaitingReason::AwaitingTaskResult),
+        matched_waiting_reason: true,
+        evidence: vec![],
+    };
+
+    let rendered = render_context_snapshot(
+        &storage,
+        &{
+            let mut session = AgentState::new("default");
+            session.current_work_item_id = Some(work_item.id.clone());
+            session
+        },
+        &task_result,
+        Some(&continuation),
+    )?;
+    let expected = format!(
+        r#"## agent
+Agent id: default
+
+## execution_environment
+{EXECUTION_ENVIRONMENT}
+
+## current_work_item
+Current work item:
+- Id: work_runtime_flow
+- State: Open
+- Readiness: Runnable
+- Objective: Track
+runtime flow
+- Plan status: draft
+- Plan artifact: $AGENT_HOME/work-items/work_runtime_flow/plan.md
+- Plan preview complete: true
+
+## context_contract
+{CONTEXT_CONTRACT}
+
+## continuation_anchor
+Continuation anchor:
+Latest trusted operator input: message_seq 1.
+Current input relation: current_input is a task-result continuation, not a new operator request. Continue the latest trusted operator input above unless the current WorkItem projection is more specific.
+
+## recent_turns
+Recent turns:
+- Turn message_seq 1:
+  - trigger: trusted operator input
+  - continues input: message_seq 1
+  - continuation trigger: a task-result continuation
+  - operator asked: Run cargo test runtime_flow and report back.
+  - produced briefs:
+    - Ack: Started cargo test runtime_flow.
+    - Result: Captured completion report promotion.
+  - tool executions:
+    - [trusted_system][Success] Run command: cargo test runtime_flow
+  - current relation: a task-result continuation
+  - current input: Command task completed successfully: cargo test runtime_flow
+  - current work item: work_runtime_flow :: Track runtime flow
+
+## recent_messages
+Recent messages:
+- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt] Run cargo test runtime_flow and report back.
+
+## latest_result
+Latest completed result:
+Captured completion report promotion.
+
+## recent_briefs
+Recent briefs:
+- [Ack] Started cargo test runtime_flow.
+
+## recent_tool_executions
+Recent tool executions:
+- [trusted_system][Success] Run command: cargo test runtime_flow
+
+## continuation_context
+Continuation context:
+ - Trigger kind: task_result
+ - Continuation class: resume_expected_wait
+ - Prior closure outcome: waiting
+ - Prior waiting reason: awaiting_task_result
+ - Waiting reason matched: true
+
+## current_input
+Current input:
+- [task][task_rejoin][runtime_owned][runtime_instruction][TaskResult]
+  Command task completed successfully: cargo test runtime_flow"#
+    );
+    assert_snapshot(&rendered, &expected);
     Ok(())
 }
 

@@ -324,6 +324,21 @@ pub fn build_context(
         );
     }
 
+    if let Some(content) = render_recent_turns_with_budget(
+        &messages,
+        &briefs,
+        &tools,
+        current_message,
+        current_work_item,
+        remaining_budget,
+    ) {
+        push_budgeted_section(
+            &mut sections,
+            &mut remaining_budget,
+            turn_section("recent_turns", content),
+        );
+    }
+
     if let Some(content) = render_recent_messages_with_budget(&messages, remaining_budget) {
         push_budgeted_section(
             &mut sections,
@@ -1565,6 +1580,168 @@ fn render_recent_briefs_with_budget(briefs: &[BriefRecord], budget: usize) -> Op
         briefs.iter().map(render_brief).collect(),
         budget,
     )
+}
+
+fn render_recent_turns_with_budget(
+    messages: &[MessageEnvelope],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    current_message: &MessageEnvelope,
+    current_work_item: Option<&WorkItemRecord>,
+    budget: usize,
+) -> Option<String> {
+    let latest_operator_for_continuation = (!is_trusted_operator_input(current_message))
+        .then(|| latest_trusted_operator_input(messages, current_message))
+        .flatten();
+    let mut rendered_turns = messages
+        .iter()
+        .filter(|message| include_in_prompt_context(message))
+        .filter(|message| {
+            latest_operator_for_continuation
+                .is_none_or(|operator| !same_message_identity(message, operator))
+        })
+        .filter(|message| {
+            briefs
+                .iter()
+                .any(|brief| brief_matches_message(brief, message))
+                || tools.iter().any(|tool| {
+                    tool.turn_index != 0 && message.message_seq == Some(tool.turn_index)
+                })
+        })
+        .map(|message| render_turn_projection(message, briefs, tools, None))
+        .collect::<Vec<_>>();
+
+    if let Some(operator) = latest_operator_for_continuation {
+        rendered_turns.push(render_current_continuation_turn_projection(
+            current_message,
+            operator,
+            briefs,
+            tools,
+            current_work_item,
+        ));
+    }
+
+    if rendered_turns.is_empty() {
+        return None;
+    }
+
+    render_budgeted_lines("Recent turns:", rendered_turns, budget)
+}
+
+fn render_turn_projection(
+    message: &MessageEnvelope,
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    continuation: Option<&MessageEnvelope>,
+) -> String {
+    let mut lines = vec![format!(
+        "- Turn {}:",
+        message
+            .message_seq
+            .map(|seq| format!("message_seq {seq}"))
+            .unwrap_or_else(|| message.id.clone())
+    )];
+    lines.push(format!("  - trigger: {}", turn_trigger_label(message)));
+    if let Some(continuation) = continuation {
+        lines.push(format!(
+            "  - continues input: {}",
+            message
+                .message_seq
+                .map(|seq| format!("message_seq {seq}"))
+                .unwrap_or_else(|| message.id.clone())
+        ));
+        lines.push(format!(
+            "  - continuation trigger: {}",
+            turn_trigger_label(continuation)
+        ));
+    }
+    if is_trusted_operator_input(message) {
+        lines.push(format!(
+            "  - operator asked: {}",
+            sanitize_inline(&body_preview(&message.body))
+        ));
+    } else {
+        lines.push(format!(
+            "  - input: {}",
+            sanitize_inline(&body_preview(&message.body))
+        ));
+    }
+
+    let related_briefs = briefs
+        .iter()
+        .filter(|brief| brief_matches_message(brief, message))
+        .map(|brief| {
+            format!(
+                "    - {:?}: {}",
+                brief.kind,
+                sanitize_inline(&truncate_text(&brief.text, 160))
+            )
+        })
+        .collect::<Vec<_>>();
+    if !related_briefs.is_empty() {
+        lines.push("  - produced briefs:".to_string());
+        lines.extend(related_briefs);
+    }
+
+    let related_tools = tools
+        .iter()
+        .filter(|tool| tool.turn_index != 0 && message.message_seq == Some(tool.turn_index))
+        .map(render_recent_tool_execution)
+        .collect::<Vec<_>>();
+    if !related_tools.is_empty() {
+        lines.push("  - tool executions:".to_string());
+        lines.extend(related_tools.into_iter().map(|tool| format!("    {tool}")));
+    }
+
+    lines.join("\n")
+}
+
+fn render_current_continuation_turn_projection(
+    current_message: &MessageEnvelope,
+    operator: &MessageEnvelope,
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    current_work_item: Option<&WorkItemRecord>,
+) -> String {
+    let mut rendered = render_turn_projection(operator, briefs, tools, Some(current_message));
+    let mut lines = vec![
+        format!(
+            "  - current relation: {}",
+            runtime_continuation_label(current_message)
+        ),
+        format!(
+            "  - current input: {}",
+            sanitize_inline(&body_preview(&current_message.body))
+        ),
+    ];
+    if let Some(work_item) = current_work_item {
+        lines.push(format!(
+            "  - current work item: {} :: {}",
+            sanitize_inline(&work_item.id),
+            sanitize_inline(&truncate_text(&work_item.objective, 160))
+        ));
+    }
+    rendered.push('\n');
+    rendered.push_str(&lines.join("\n"));
+    rendered
+}
+
+fn brief_matches_message(brief: &BriefRecord, message: &MessageEnvelope) -> bool {
+    brief.related_message_id.as_deref() == Some(message.id.as_str())
+        || brief
+            .turn_index
+            .is_some_and(|turn_index| message.message_seq == Some(turn_index))
+}
+
+fn turn_trigger_label(message: &MessageEnvelope) -> &'static str {
+    if is_trusted_operator_input(message) {
+        return "trusted operator input";
+    }
+    runtime_continuation_label(message)
+}
+
+fn sanitize_inline(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn render_recent_tools_with_budget(tools: &[ToolExecutionRecord], budget: usize) -> Option<String> {
