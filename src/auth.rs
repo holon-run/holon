@@ -1,7 +1,10 @@
 use std::{
     fs,
+    io::{Read, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -16,6 +19,7 @@ pub struct CodexCliCredential {
     pub access_token: String,
     pub account_id: String,
     pub expires_at: Option<DateTime<Utc>>,
+    pub refreshed_at: Option<DateTime<Utc>>,
     pub source: String,
 }
 
@@ -41,6 +45,12 @@ struct TokenData {
 pub struct RefreshedCodexOAuthProfile {
     pub material: String,
     pub credential: CodexCliCredential,
+}
+
+#[derive(Debug, Clone)]
+pub struct CodexOAuthLoginResult {
+    pub material: String,
+    pub account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,18 +80,24 @@ pub struct CodexOAuthRefreshFailure {
 
 pub fn load_codex_cli_credential(codex_home: &Path) -> Result<CodexCliCredential> {
     let home = canonical_or_original(codex_home);
+    let mut candidates = Vec::new();
     if let Ok(auth) = load_auth_from_file(&home) {
-        return auth_to_credential(auth, "file");
+        candidates.push(auth_to_credential(auth, "file")?);
     }
     if cfg!(target_os = "macos") {
         if let Ok(auth) = load_auth_from_macos_keychain(&home) {
-            return auth_to_credential(auth, "keychain");
+            candidates.push(auth_to_credential(auth, "keychain")?);
         }
     }
-    Err(anyhow!(
-        "no Codex CLI credentials found in {} or the local keychain; run `codex login` first",
-        home.display()
-    ))
+    candidates
+        .into_iter()
+        .max_by_key(codex_cli_credential_freshness_key)
+        .ok_or_else(|| {
+            anyhow!(
+                "no Codex CLI credential found in {}; run `codex login` to configure the external fallback",
+                home.display()
+            )
+        })
 }
 
 pub fn load_codex_oauth_profile_credential(
@@ -170,8 +186,86 @@ struct RefreshResponse {
 }
 
 const CODEX_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CODEX_OAUTH_ISSUER: &str = "https://auth.openai.com";
+const CODEX_OAUTH_ISSUER_OVERRIDE_ENV_VAR: &str = "CODEX_OAUTH_ISSUER_OVERRIDE";
 const CODEX_REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const CODEX_REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
+const CODEX_OAUTH_CALLBACK_PORT: u16 = 1455;
+const CODEX_OAUTH_CALLBACK_FALLBACK_PORT: u16 = 1457;
+
+pub fn run_codex_oauth_login_profile_material() -> Result<CodexOAuthLoginResult> {
+    run_codex_oauth_login_profile_material_with_browser(true)
+}
+
+fn run_codex_oauth_login_profile_material_with_browser(
+    open_browser: bool,
+) -> Result<CodexOAuthLoginResult> {
+    let issuer = std::env::var(CODEX_OAUTH_ISSUER_OVERRIDE_ENV_VAR)
+        .unwrap_or_else(|_| CODEX_OAUTH_ISSUER.to_string());
+    let listener = bind_codex_oauth_callback_listener()?;
+    listener
+        .set_nonblocking(false)
+        .context("failed to configure Codex OAuth callback listener")?;
+    let port = listener
+        .local_addr()
+        .context("failed to read Codex OAuth callback listener address")?
+        .port();
+    let redirect_uri = format!("http://localhost:{port}/auth/callback");
+    let pkce = generate_codex_pkce();
+    let state = generate_oauth_random_string();
+    let auth_url = build_codex_oauth_authorize_url(&issuer, &redirect_uri, &pkce, &state);
+
+    if open_browser {
+        open_url_in_browser(&auth_url);
+    }
+    eprintln!(
+        "Starting Holon OpenAI Codex OAuth login on http://localhost:{port}.\nIf your browser did not open, navigate to this URL:\n\n{auth_url}\n"
+    );
+
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .context("failed to receive Codex OAuth callback")?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .context("failed to configure Codex OAuth callback read timeout")?;
+        let mut buffer = [0_u8; 8192];
+        let size = stream
+            .read(&mut buffer)
+            .context("failed to read Codex OAuth callback request")?;
+        let request = String::from_utf8_lossy(&buffer[..size]);
+        let Some(target) = parse_http_get_target(&request) else {
+            write_http_response(&mut stream, 400, "Bad Request", "Bad Request")?;
+            continue;
+        };
+
+        match handle_codex_oauth_callback(
+            target,
+            &issuer,
+            &redirect_uri,
+            &pkce.code_verifier,
+            &state,
+        ) {
+            Ok(Some(result)) => {
+                write_http_response(
+                    &mut stream,
+                    200,
+                    "OK",
+                    "Holon OpenAI Codex login complete. You can close this tab and return to Holon.",
+                )?;
+                return Ok(result);
+            }
+            Ok(None) => {
+                write_http_response(&mut stream, 404, "Not Found", "Not Found")?;
+            }
+            Err(error) => {
+                let body = format!("Holon OpenAI Codex login failed: {error}");
+                write_http_response(&mut stream, 400, "Bad Request", &body)?;
+                return Err(error);
+            }
+        }
+    }
+}
 
 async fn request_codex_oauth_refresh(
     client: &reqwest::Client,
@@ -207,16 +301,13 @@ async fn request_codex_oauth_refresh(
     let kind = classify_refresh_failure_kind(&body);
     let message = match kind {
         CodexOAuthRefreshFailureKind::Expired => {
-            "OpenAI Codex refresh token expired; run Holon-managed openai-codex login again."
-                .to_string()
+            "OpenAI Codex refresh token expired; run Holon onboarding login for openai-codex again.".to_string()
         }
         CodexOAuthRefreshFailureKind::Reused => {
-            "OpenAI Codex refresh token was reused; run Holon-managed openai-codex login again."
-                .to_string()
+            "OpenAI Codex refresh token was reused; run Holon onboarding login for openai-codex again.".to_string()
         }
         CodexOAuthRefreshFailureKind::Revoked => {
-            "OpenAI Codex refresh token was revoked; run Holon-managed openai-codex login again."
-                .to_string()
+            "OpenAI Codex refresh token was revoked; run Holon onboarding login for openai-codex again.".to_string()
         }
         CodexOAuthRefreshFailureKind::Other => {
             let hint = try_parse_refresh_error_message(&body).unwrap_or_else(|| body.clone());
@@ -226,8 +317,209 @@ async fn request_codex_oauth_refresh(
     Err(CodexOAuthRefreshFailure { kind, message })
 }
 
+#[derive(Debug, Clone)]
+struct CodexPkce {
+    code_verifier: String,
+    code_challenge: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginTokenResponse {
+    id_token: String,
+    access_token: String,
+    refresh_token: String,
+}
+
+fn bind_codex_oauth_callback_listener() -> Result<TcpListener> {
+    TcpListener::bind(("127.0.0.1", CODEX_OAUTH_CALLBACK_PORT))
+        .or_else(|_| TcpListener::bind(("127.0.0.1", CODEX_OAUTH_CALLBACK_FALLBACK_PORT)))
+        .context("failed to bind OpenAI Codex OAuth callback listener")
+}
+
+fn generate_codex_pkce() -> CodexPkce {
+    let code_verifier = generate_oauth_random_string();
+    let digest = Sha256::digest(code_verifier.as_bytes());
+    let code_challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest);
+    CodexPkce {
+        code_verifier,
+        code_challenge,
+    }
+}
+
+fn generate_oauth_random_string() -> String {
+    let mut bytes = Vec::with_capacity(64);
+    for _ in 0..4 {
+        bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    }
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn build_codex_oauth_authorize_url(
+    issuer: &str,
+    redirect_uri: &str,
+    pkce: &CodexPkce,
+    state: &str,
+) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("response_type", "code")
+        .append_pair("client_id", CODEX_OAUTH_CLIENT_ID)
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair(
+            "scope",
+            "openid profile email offline_access api.connectors.read api.connectors.invoke",
+        )
+        .append_pair("code_challenge", &pkce.code_challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("id_token_add_organizations", "true")
+        .append_pair("codex_cli_simplified_flow", "true")
+        .append_pair("state", state)
+        .append_pair("originator", "codex_cli_rs")
+        .finish();
+    format!("{}/oauth/authorize?{query}", issuer.trim_end_matches('/'))
+}
+
+fn open_url_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let command = ("open", vec![url]);
+    #[cfg(target_os = "linux")]
+    let command = ("xdg-open", vec![url]);
+    #[cfg(target_os = "windows")]
+    let command = ("cmd", vec!["/C", "start", "", url]);
+
+    #[allow(unused_variables)]
+    let _ = Command::new(command.0).args(command.1).status();
+}
+
+fn parse_http_get_target(request: &str) -> Option<&str> {
+    let line = request.lines().next()?;
+    let mut parts = line.split_whitespace();
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("GET"), Some(target), Some(_version)) => Some(target),
+        _ => None,
+    }
+}
+
+fn handle_codex_oauth_callback(
+    target: &str,
+    issuer: &str,
+    redirect_uri: &str,
+    code_verifier: &str,
+    state: &str,
+) -> Result<Option<CodexOAuthLoginResult>> {
+    let parsed = url::Url::parse(&format!("http://localhost{target}"))
+        .context("failed to parse OpenAI Codex OAuth callback URL")?;
+    if parsed.path() != "/auth/callback" {
+        return Ok(None);
+    }
+    let params = parsed
+        .query_pairs()
+        .into_owned()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if params.get("state").map(String::as_str) != Some(state) {
+        anyhow::bail!("OpenAI Codex OAuth callback state did not match");
+    }
+    if let Some(error) = params.get("error") {
+        let description = params
+            .get("error_description")
+            .map(String::as_str)
+            .unwrap_or("no description");
+        anyhow::bail!("OpenAI Codex OAuth callback returned {error}: {description}");
+    }
+    let code = params
+        .get("code")
+        .filter(|code| !code.trim().is_empty())
+        .context("OpenAI Codex OAuth callback did not include an authorization code")?;
+
+    let exchange = exchange_codex_oauth_code_for_tokens(issuer, redirect_uri, code_verifier, code);
+    let tokens = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(exchange))
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("failed to start OpenAI Codex OAuth token exchange runtime")?;
+        runtime.block_on(exchange)
+    }?;
+    Ok(Some(codex_oauth_tokens_to_login_result(tokens)?))
+}
+
+async fn exchange_codex_oauth_code_for_tokens(
+    issuer: &str,
+    redirect_uri: &str,
+    code_verifier: &str,
+    code: &str,
+) -> Result<LoginTokenResponse> {
+    let endpoint = format!("{}/oauth/token", issuer.trim_end_matches('/'));
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("grant_type", "authorization_code")
+        .append_pair("code", code)
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("client_id", CODEX_OAUTH_CLIENT_ID)
+        .append_pair("code_verifier", code_verifier)
+        .finish();
+    let response = reqwest::Client::new()
+        .post(endpoint)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .context("failed to exchange OpenAI Codex OAuth code for tokens")?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "OpenAI Codex OAuth token exchange failed with HTTP {status}: {}",
+            try_parse_refresh_error_message(&body).unwrap_or(body)
+        );
+    }
+    response
+        .json::<LoginTokenResponse>()
+        .await
+        .context("failed to parse OpenAI Codex OAuth token response")
+}
+
+fn codex_oauth_tokens_to_login_result(tokens: LoginTokenResponse) -> Result<CodexOAuthLoginResult> {
+    let account_id = extract_account_id_from_access_token(&tokens.access_token)
+        .or_else(|| extract_account_id_from_id_token(&Value::String(tokens.id_token.clone())));
+    let auth = AuthDotJson {
+        tokens: Some(TokenData {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            account_id: account_id.clone(),
+            id_token: Some(Value::String(tokens.id_token)),
+        }),
+        last_refresh: Some(Utc::now()),
+    };
+    let material = serde_json::to_string(&auth)
+        .context("failed to serialize OpenAI Codex OAuth credential")?;
+    Ok(CodexOAuthLoginResult {
+        material,
+        account_id,
+    })
+}
+
+fn write_http_response(
+    stream: &mut std::net::TcpStream,
+    status: u16,
+    reason: &str,
+    body: &str,
+) -> Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .context("failed to write OpenAI Codex OAuth callback response")?;
+    stream
+        .flush()
+        .context("failed to flush OpenAI Codex OAuth callback response")
+}
+
 pub fn codex_cli_auth_file_exists(codex_home: &Path) -> bool {
-    auth_file_path(&canonical_or_original(codex_home)).is_file()
+    let home = canonical_or_original(codex_home);
+    auth_file_path(&home).is_file()
+        || (cfg!(target_os = "macos") && load_auth_from_macos_keychain(&home).is_ok())
 }
 
 fn load_auth_from_file(codex_home: &Path) -> Result<AuthDotJson> {
@@ -282,8 +574,20 @@ fn auth_to_credential(auth: AuthDotJson, source: &str) -> Result<CodexCliCredent
         access_token: tokens.access_token,
         account_id,
         expires_at,
+        refreshed_at: auth.last_refresh,
         source: source.to_string(),
     })
+}
+
+fn codex_cli_credential_freshness_key(
+    credential: &CodexCliCredential,
+) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>, u8) {
+    let source_rank = match credential.source.as_str() {
+        "keychain" => 2,
+        "file" => 1,
+        _ => 0,
+    };
+    (credential.expires_at, credential.refreshed_at, source_rank)
 }
 
 fn auth_file_path(codex_home: &Path) -> PathBuf {
@@ -474,6 +778,29 @@ mod tests {
 
         assert_eq!(credential.account_id, "acct_id_token");
         assert_eq!(credential.source, "file");
+    }
+
+    #[test]
+    fn codex_oauth_login_result_material_is_profile_compatible() {
+        let result = codex_oauth_tokens_to_login_result(LoginTokenResponse {
+            id_token: make_token(json!({
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct_login"
+                }
+            })),
+            access_token: make_token(json!({
+                "exp": 1_900_000_000
+            })),
+            refresh_token: "refresh_login".to_string(),
+        })
+        .expect("login material should serialize");
+
+        let credential = load_codex_oauth_profile_credential(&result.material, "openai-codex")
+            .expect("login material should parse as a Holon OAuth profile");
+
+        assert_eq!(result.account_id.as_deref(), Some("acct_login"));
+        assert_eq!(credential.account_id, "acct_login");
+        assert_eq!(credential.source, "credential_profile:openai-codex");
     }
 
     #[test]

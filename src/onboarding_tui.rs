@@ -12,15 +12,16 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    layout::{Constraint, Direction, Layout, Position, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
 
 use crate::{
-    config::{AppConfig, CredentialKind, ProviderId},
+    auth::run_codex_oauth_login_profile_material,
+    config::{AppConfig, CredentialKind, ModelRef, ProviderId},
     onboarding::{
         apply_onboarding_wizard_draft, onboarding_model_choices, onboarding_provider_choices,
         onboarding_search_choices, OnboardingApplySummary, OnboardingModelChoice,
@@ -47,7 +48,8 @@ pub fn run_onboarding_tui(config: AppConfig) -> Result<OnboardingApplySummary> {
     loop {
         terminal.draw(|frame| draw(frame, &app))?;
         if app.should_quit {
-            anyhow::bail!("onboarding cancelled");
+            drop(guard);
+            anyhow::bail!("Onboarding cancelled.");
         }
         if let Some(draft) = app.completed_draft.clone() {
             terminal.show_cursor()?;
@@ -80,6 +82,7 @@ struct OnboardingTuiApp {
     selected_model: Option<OnboardingModelChoice>,
     selected_search: OnboardingSearchSelection,
     credential_input: String,
+    custom_model_input: String,
     credential_material: Option<String>,
     completed_draft: Option<OnboardingWizardDraft>,
     should_quit: bool,
@@ -91,6 +94,7 @@ enum Step {
     Provider,
     Auth,
     Model,
+    CustomModel,
     Search,
     Confirm,
 }
@@ -123,10 +127,12 @@ impl OnboardingTuiApp {
         let search_choices = onboarding_search_choices(config);
         let selected_search = if !config.web_config.search.enabled {
             OnboardingSearchSelection::Disabled
+        } else if config.web_config.search.builtin_provider_enabled {
+            OnboardingSearchSelection::Auto
         } else if config.web_config.search.provider == DUCKDUCKGO_SEARCH_PROVIDER_ID {
-            OnboardingSearchSelection::DuckDuckGo
+            OnboardingSearchSelection::ManagedDuckDuckGo
         } else {
-            OnboardingSearchSelection::BuiltInProvider
+            OnboardingSearchSelection::Auto
         };
         let search_index = search_choices
             .iter()
@@ -145,6 +151,7 @@ impl OnboardingTuiApp {
             selected_model: None,
             selected_search,
             credential_input: String::new(),
+            custom_model_input: String::new(),
             credential_material: None,
             completed_draft: None,
             should_quit: false,
@@ -158,7 +165,16 @@ impl OnboardingTuiApp {
             KeyCode::Backspace if self.step == Step::Auth => {
                 self.credential_input.pop();
             }
+            KeyCode::Backspace if self.step == Step::CustomModel => {
+                self.custom_model_input.pop();
+            }
+            KeyCode::Char('l') | KeyCode::Char('L') if self.can_run_codex_login() => {
+                self.run_codex_login_for_selected_provider()?;
+            }
             KeyCode::Char(ch) if self.step == Step::Auth => self.credential_input.push(ch),
+            KeyCode::Char(ch) if self.step == Step::CustomModel => {
+                self.custom_model_input.push(ch);
+            }
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
             KeyCode::Enter => self.advance()?,
@@ -187,6 +203,8 @@ impl OnboardingTuiApp {
             Step::Provider => Step::Provider,
             Step::Auth => Step::Provider,
             Step::Model => Step::Auth,
+            Step::CustomModel => Step::Model,
+            Step::Search if !self.custom_model_input.trim().is_empty() => Step::CustomModel,
             Step::Search => Step::Model,
             Step::Confirm => Step::Search,
         };
@@ -224,7 +242,7 @@ impl OnboardingTuiApp {
                     .context("provider not selected")?;
                 if provider.credential_kind == CredentialKind::OAuth {
                     if !provider.credential_configured {
-                        self.status = "OAuth login initiation is not available yet; import a Holon OAuth profile or run codex login, then rerun onboard.".into();
+                        self.run_codex_login_for_selected_provider()?;
                         return Ok(());
                     }
                     self.credential_material = None;
@@ -240,7 +258,36 @@ impl OnboardingTuiApp {
                 self.step = Step::Model;
             }
             Step::Model => {
-                self.selected_model = self.models.get(self.model_index).cloned();
+                let model = self
+                    .models
+                    .get(self.model_index)
+                    .cloned()
+                    .context("no model choices are available")?;
+                if model.custom {
+                    self.selected_model = None;
+                    self.custom_model_input.clear();
+                    self.status =
+                        "Enter a model id. Use `provider/model` or a model name for this provider."
+                            .into();
+                    self.step = Step::CustomModel;
+                } else {
+                    self.selected_model = Some(model);
+                    self.custom_model_input.clear();
+                    self.step = Step::Search;
+                }
+            }
+            Step::CustomModel => {
+                let provider = self
+                    .selected_provider
+                    .as_ref()
+                    .context("provider not selected")?;
+                let model_ref = parse_custom_model_ref(provider, &self.custom_model_input)?;
+                self.selected_model = Some(OnboardingModelChoice {
+                    title: model_ref.as_string(),
+                    detail: "custom model".into(),
+                    model: model_ref,
+                    custom: false,
+                });
                 self.step = Step::Search;
             }
             Step::Search => {
@@ -248,7 +295,7 @@ impl OnboardingTuiApp {
                     .search_choices
                     .get(self.search_index)
                     .map(|choice| choice.selection)
-                    .unwrap_or(OnboardingSearchSelection::BuiltInProvider);
+                    .unwrap_or(OnboardingSearchSelection::Auto);
                 self.step = Step::Confirm;
             }
             Step::Confirm => {
@@ -268,17 +315,93 @@ impl OnboardingTuiApp {
         }
         Ok(())
     }
+
+    fn run_codex_login_for_selected_provider(&mut self) -> Result<()> {
+        let provider = self
+            .selected_provider
+            .as_mut()
+            .context("provider not selected")?;
+        if !provider.id.is_openai_codex() {
+            self.status =
+                "This OAuth provider does not have an onboard-managed login command yet.".into();
+            return Ok(());
+        }
+
+        disable_raw_mode()?;
+        execute!(io::stdout(), LeaveAlternateScreen)?;
+        println!("Starting Holon OpenAI Codex OAuth login. Complete the browser login, then return here.");
+        let login_result = run_codex_oauth_login_profile_material();
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        enable_raw_mode()?;
+        let login = match login_result {
+            Ok(login) => login,
+            Err(error) => {
+                self.status = format!("Holon OpenAI Codex OAuth login failed: {error}");
+                return Ok(());
+            }
+        };
+        if login.material.trim().is_empty() {
+            self.status =
+                "Holon OpenAI Codex OAuth login did not return credential material.".into();
+            return Ok(());
+        }
+        provider.credential_configured = true;
+        self.credential_material = Some(login.material);
+        if provider.credential_configured {
+            self.status = login
+                .account_id
+                .map(|account| {
+                    format!(
+                        "Holon OpenAI Codex OAuth credential saved for account {account}; continuing to model selection."
+                    )
+                })
+                .unwrap_or_else(|| {
+                    "Holon OpenAI Codex OAuth credential saved; continuing to model selection."
+                        .into()
+                });
+            self.step = Step::Model;
+        }
+        Ok(())
+    }
+
+    fn can_run_codex_login(&self) -> bool {
+        self.step == Step::Auth
+            && self
+                .selected_provider
+                .as_ref()
+                .is_some_and(|provider| provider.id.is_openai_codex())
+    }
+}
+
+fn parse_custom_model_ref(provider: &OnboardingProviderChoice, input: &str) -> Result<ModelRef> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("enter a model id before continuing");
+    }
+    let model_ref = if trimmed.contains('/') {
+        ModelRef::parse(trimmed)?
+    } else {
+        ModelRef::new(provider.id.clone(), trimmed)
+    };
+    if model_ref.provider != provider.id {
+        anyhow::bail!(
+            "custom model provider {} does not match selected provider {}",
+            model_ref.provider.as_str(),
+            provider.id.as_str()
+        );
+    }
+    Ok(model_ref)
 }
 
 fn draw(frame: &mut Frame<'_>, app: &OnboardingTuiApp) {
-    let area = centered(frame.area(), 90, 80);
+    let area = centered(frame.area(), 92, 84);
     frame.render_widget(Clear, area);
-    let chunks = Layout::default()
+    let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(4),
             Constraint::Min(8),
-            Constraint::Length(4),
+            Constraint::Length(3),
         ])
         .split(area);
     let title = Paragraph::new(Text::from(vec![
@@ -289,57 +412,146 @@ fn draw(frame: &mut Frame<'_>, app: &OnboardingTuiApp) {
         Line::from(step_label(app.step)),
     ]))
     .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(title, chunks[0]);
+    frame.render_widget(title, outer[0]);
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(28), Constraint::Min(48)])
+        .split(outer[1]);
+    draw_sidebar(frame, body[0], app);
     match app.step {
         Step::Provider => draw_list(
             frame,
-            chunks[1],
+            body[1],
             "Choose model provider",
             app.providers
                 .iter()
-                .map(|v| (&v.title, &v.detail))
+                .map(|v| (v.title.clone(), provider_detail(v)))
                 .collect(),
             app.provider_index,
         ),
-        Step::Auth => draw_auth(frame, chunks[1], app),
+        Step::Auth => draw_auth(frame, body[1], app),
         Step::Model => draw_list(
             frame,
-            chunks[1],
+            body[1],
             "Choose default model",
-            app.models.iter().map(|v| (&v.title, &v.detail)).collect(),
+            app.models
+                .iter()
+                .map(|v| (v.title.clone(), v.detail.clone()))
+                .collect(),
             app.model_index,
         ),
+        Step::CustomModel => draw_custom_model(frame, body[1], app),
         Step::Search => draw_list(
             frame,
-            chunks[1],
+            body[1],
             "Configure search",
             app.search_choices
                 .iter()
-                .map(|v| (&v.title, &v.detail))
+                .map(|v| (v.title.clone(), v.detail.clone()))
                 .collect(),
             app.search_index,
         ),
-        Step::Confirm => draw_confirm(frame, chunks[1], app),
+        Step::Confirm => draw_confirm(frame, body[1], app),
     }
     frame.render_widget(
-        Paragraph::new(format!("{}  ·  ← back", app.status))
-            .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).title("Help")),
-        chunks[2],
+        Paragraph::new(format!(
+            "{}  ·  ↑/↓ move · Enter select/continue · ← back · Esc cancel",
+            app.status
+        ))
+        .wrap(Wrap { trim: true })
+        .block(Block::default().borders(Borders::ALL).title("Help")),
+        outer[2],
     );
+}
+
+fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, app: &OnboardingTuiApp) {
+    let steps = [
+        (Step::Provider, "Provider"),
+        (Step::Auth, "Auth"),
+        (Step::Model, "Model"),
+        (Step::Search, "Search"),
+        (Step::Confirm, "Confirm"),
+    ];
+    let mut lines = steps
+        .iter()
+        .map(|(step, label)| {
+            let marker =
+                if *step == app.step || (app.step == Step::CustomModel && *step == Step::Model) {
+                    "●"
+                } else {
+                    "○"
+                };
+            let style =
+                if *step == app.step || (app.step == Step::CustomModel && *step == Step::Model) {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+            Line::from(vec![
+                Span::styled(marker, style),
+                Span::raw(" "),
+                Span::styled(*label, style),
+            ])
+        })
+        .collect::<Vec<_>>();
+    lines.push(Line::from(""));
+    lines.push(Line::from("Current"));
+    lines.push(Line::from(format!(
+        "provider: {}",
+        app.selected_provider
+            .as_ref()
+            .map(|provider| provider.id.as_str())
+            .unwrap_or("-")
+    )));
+    lines.push(Line::from(format!(
+        "model: {}",
+        app.selected_model
+            .as_ref()
+            .map(|model| model.model.as_string())
+            .unwrap_or_else(|| "-".into())
+    )));
+    lines.push(Line::from(format!(
+        "search: {}",
+        app.selected_search.label()
+    )));
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: true })
+            .block(Block::default().borders(Borders::ALL).title("Progress")),
+        area,
+    );
+}
+
+fn provider_detail(provider: &OnboardingProviderChoice) -> String {
+    let origin = if provider.configured {
+        "configured"
+    } else {
+        "built-in"
+    };
+    let auth = if provider.credential_configured {
+        "credential ready"
+    } else {
+        "needs credential"
+    };
+    format!("{} · {} · {}", provider.detail, origin, auth)
 }
 
 fn draw_list(
     frame: &mut Frame<'_>,
     area: Rect,
     title: &str,
-    rows: Vec<(&String, &String)>,
+    rows: Vec<(String, String)>,
     selected: usize,
 ) {
     let items = rows
         .into_iter()
         .map(|(title, detail)| {
-            ListItem::new(vec![Line::from(title.clone()), Line::from(detail.clone())])
+            ListItem::new(vec![
+                Line::from(title),
+                Line::from(Span::styled(detail, Style::default().fg(Color::DarkGray))),
+            ])
         })
         .collect::<Vec<_>>();
     let mut state = ListState::default();
@@ -348,8 +560,12 @@ fn draw_list(
     }
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_symbol("> ")
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+        .highlight_symbol("› ")
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
     frame.render_stateful_widget(list, area, &mut state);
 }
 
@@ -358,38 +574,89 @@ fn draw_auth(frame: &mut Frame<'_>, area: Rect, app: &OnboardingTuiApp) {
     let title = provider
         .map(|provider| format!("Authenticate {}", provider.title))
         .unwrap_or_else(|| "Authenticate provider".into());
-    let body = provider
-        .map(|provider| {
-            let masked = "*".repeat(app.credential_input.chars().count());
-            let instruction = match provider.credential_kind {
-                CredentialKind::OAuth => "Use the existing Holon-owned OAuth profile or external Codex fallback. If it is missing, import credentials with `holon config credentials set --kind oauth --stdin openai-codex` or run `codex login`, then rerun onboard.",
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(provider) = provider else {
+        frame.render_widget(Paragraph::new("No provider selected."), inner);
+        return;
+    };
+
+    let input_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    let masked = "*".repeat(app.credential_input.chars().count());
+    let input_prefix = if provider.credential_kind == CredentialKind::OAuth {
+        "credential input: handled by OAuth profile; nothing is echoed here"
+    } else {
+        "credential: "
+    };
+    let input_line = if provider.credential_kind == CredentialKind::OAuth {
+        Line::from(input_prefix)
+    } else {
+        Line::from(format!("{input_prefix}{masked}"))
+    };
+    let body = {
+        let instruction = match provider.credential_kind {
+                CredentialKind::OAuth if provider.id.is_openai_codex() => "Press Enter to continue when credential is ready. If missing, Enter starts Holon's built-in Codex OAuth login; press `l` anytime to run/refresh it.",
+                CredentialKind::OAuth => "Use an existing Holon-owned OAuth profile. Onboard-managed login is currently available for OpenAI Codex only.",
                 CredentialKind::ApiKey => {
                     "Enter API key. The value is masked and stored in the local Holon credential store."
                 }
                 _ => "Enter credential material if required.",
             };
-            Text::from(vec![
-                Line::from(format!("profile: {}", provider.credential_profile)),
-                Line::from(format!("kind: {}", provider.credential_kind.as_str())),
-                Line::from(format!(
-                    "configured: {}",
-                    if provider.credential_configured { "yes" } else { "no" }
-                )),
-                Line::from(""),
-                Line::from(instruction),
-                Line::from(""),
-                if provider.credential_kind == CredentialKind::OAuth {
-                    Line::from("credential input: handled by OAuth profile; nothing is echoed here")
+        Text::from(vec![
+            Line::from(format!("profile: {}", provider.credential_profile)),
+            Line::from(format!("kind: {}", provider.credential_kind.as_str())),
+            Line::from(format!(
+                "configured: {}",
+                if provider.credential_configured {
+                    "yes"
                 } else {
-                    Line::from(format!("credential: {masked}"))
-                },
-            ])
-        })
-        .unwrap_or_else(|| Text::from("No provider selected."));
+                    "no"
+                }
+            )),
+            Line::from(""),
+            Line::from(instruction),
+            Line::from(""),
+        ])
+    };
     frame.render_widget(
-        Paragraph::new(body)
+        Paragraph::new(body).wrap(Wrap { trim: true }),
+        input_area[0],
+    );
+    frame.render_widget(Paragraph::new(input_line), input_area[1]);
+    if provider.credential_kind != CredentialKind::OAuth {
+        frame.set_cursor_position(Position {
+            x: input_area[1]
+                .x
+                .saturating_add((input_prefix.len() + app.credential_input.chars().count()) as u16),
+            y: input_area[1].y,
+        });
+    }
+}
+
+fn draw_custom_model(frame: &mut Frame<'_>, area: Rect, app: &OnboardingTuiApp) {
+    let provider = app.selected_provider.as_ref();
+    let text = Text::from(vec![
+        Line::from("Enter a custom model id, then press Enter."),
+        Line::from(""),
+        Line::from(format!(
+            "selected provider: {}",
+            provider
+                .map(|provider| provider.id.as_str().to_string())
+                .unwrap_or_else(|| "-".into())
+        )),
+        Line::from("accepted forms: provider/model or model-name"),
+        Line::from(""),
+        Line::from(format!("model: {}", app.custom_model_input)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(text)
             .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).title(title)),
+            .block(Block::default().borders(Borders::ALL).title("Custom model")),
         area,
     );
 }
@@ -435,6 +702,7 @@ fn step_label(step: Step) -> &'static str {
         Step::Provider => "Step 1/5 · model provider",
         Step::Auth => "Step 2/5 · authentication",
         Step::Model => "Step 3/5 · default model",
+        Step::CustomModel => "Step 3/5 · custom model",
         Step::Search => "Step 4/5 · search",
         Step::Confirm => "Step 5/5 · confirm",
     }
