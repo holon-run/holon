@@ -12,6 +12,7 @@ use crate::{
     context::ContextConfig,
     host::RuntimeHostBridge,
     model_catalog::BuiltInModelMetadata,
+    model_discovery::{discovery_cache_path, load_discovery_cache_at},
     provider::{build_provider_from_model_chain, resolved_model_availability, AgentProvider},
     queue::RuntimeQueue,
     storage::AppStorage,
@@ -424,11 +425,27 @@ impl RuntimeHandle {
         self.inner.context_config.read().await.clone()
     }
 
+    fn model_config_with_fresh_discovery_cache(&self) -> Result<Option<AppConfig>> {
+        let Some(reconfig) = self.inner.provider_reconfig.as_ref() else {
+            return Ok(None);
+        };
+        let mut config = reconfig.config.clone();
+        config.model_discovery_cache =
+            load_discovery_cache_at(&discovery_cache_path(&config.home_dir))?;
+        Ok(Some(config))
+    }
+
     pub(crate) async fn available_models(&self) -> Result<Vec<BuiltInModelMetadata>> {
+        if let Some(config) = self.model_config_with_fresh_discovery_cache()? {
+            return Ok(RuntimeModelCatalog::from_config(&config).available_models());
+        }
         Ok(self.inner.model_catalog.available_models())
     }
 
     pub(crate) async fn model_availability(&self) -> Result<Vec<ResolvedModelAvailability>> {
+        if let Some(config) = self.model_config_with_fresh_discovery_cache()? {
+            return Ok(resolved_model_availability(&config));
+        }
         Ok(self.inner.model_availability.clone())
     }
 }
