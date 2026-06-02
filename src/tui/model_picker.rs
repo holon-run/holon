@@ -263,6 +263,16 @@ mod tests {
     }
 
     #[test]
+    fn picker_rows_skip_unavailable_models() {
+        let agent = summary();
+        let availability = model_availability();
+        let rows = model_picker_rows(Some(&agent), &availability, "");
+        assert!(!rows
+            .iter()
+            .any(|row| row.title.contains("anthropic/claude-sonnet-4-6")));
+    }
+
+    #[test]
     fn picker_rows_filter_by_model_and_label() {
         let agent = summary();
         let availability = model_availability();
