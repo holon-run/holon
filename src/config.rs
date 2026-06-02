@@ -2883,13 +2883,6 @@ fn built_in_provider_registry_with_settings(
         &["MINIMAX_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
-        &mut registry,
-        "minimax-portal",
-        "https://api.minimax.io/anthropic",
-        &["MINIMAX_API_KEY"],
-        settings_env,
-    )?;
     insert_vercel_ai_gateway_provider(&mut registry, settings_env)?;
     Ok(registry)
 }
@@ -5605,7 +5598,6 @@ mod tests {
             "bigmodel",
             "bigmodel-anthropic",
             "minimax",
-            "minimax-portal",
             "synthetic",
             "vercel-ai-gateway",
         ] {

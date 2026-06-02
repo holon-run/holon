@@ -6,7 +6,7 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **48 providers** and **240 models**.
+Holon includes built-in configuration for **47 providers** and **245 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -35,7 +35,6 @@ running Holon.
 | `kilocode` | OpenAI Chat Completions | `https://api.kilo.ai/api/gateway` | `KILOCODE_API_KEY` |
 | `litellm` | OpenAI Chat Completions | `http://localhost:4000` | `LITELLM_API_KEY` |
 | `minimax` | Anthropic Messages | `https://api.minimax.io/anthropic` | `MINIMAX_API_KEY` |
-| `minimax-portal` | Anthropic Messages | `https://api.minimax.io/anthropic` | `MINIMAX_API_KEY` |
 | `mistral` | OpenAI Chat Completions | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
 | `moonshot` | OpenAI Chat Completions | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` |
 | `nearai` | OpenAI Chat Completions | `https://cloud-api.near.ai/v1` | `NEARAI_API_KEY` |
@@ -151,9 +150,14 @@ and capabilities.
 | `huggingface` | `moonshotai/Kimi-K2-Instruct` | `huggingface/moonshotai/Kimi-K2-Instruct` | 262144 | 32768 | — | — |
 | `kilocode` | `kilo/auto` | `kilocode/kilo/auto` | 1000000 | 128000 | ✅ | ✅ |
 | `litellm` | `claude-opus-4-6` | `litellm/claude-opus-4-6` | 200000 | 128000 | ✅ | ✅ |
-| `minimax` | `MiniMax-M2.7` | `minimax/MiniMax-M2.7` | 200000 | 128000 | ✅ | — |
-| `minimax` | `MiniMax-M2.7-highspeed` | `minimax/MiniMax-M2.7-highspeed` | 200000 | 128000 | ✅ | — |
-| `minimax-portal` | `MiniMax-M2.7` | `minimax-portal/MiniMax-M2.7` | 200000 | 128000 | ✅ | — |
+| `minimax` | `MiniMax-M2` | `minimax/MiniMax-M2` | 204800 | 128000 | ✅ | — |
+| `minimax` | `MiniMax-M2.1` | `minimax/MiniMax-M2.1` | 204800 | 128000 | ✅ | — |
+| `minimax` | `MiniMax-M2.1-highspeed` | `minimax/MiniMax-M2.1-highspeed` | 204800 | 128000 | ✅ | — |
+| `minimax` | `MiniMax-M2.5` | `minimax/MiniMax-M2.5` | 204800 | 128000 | ✅ | — |
+| `minimax` | `MiniMax-M2.5-highspeed` | `minimax/MiniMax-M2.5-highspeed` | 204800 | 128000 | ✅ | — |
+| `minimax` | `MiniMax-M2.7` | `minimax/MiniMax-M2.7` | 204800 | 128000 | ✅ | — |
+| `minimax` | `MiniMax-M2.7-highspeed` | `minimax/MiniMax-M2.7-highspeed` | 204800 | 128000 | ✅ | — |
+| `minimax` | `MiniMax-M3` | `minimax/MiniMax-M3` | 1000000 | 32768 | ✅ | — |
 | `mistral` | `codestral-latest` | `mistral/codestral-latest` | 256000 | 4096 | — | — |
 | `mistral` | `devstral-medium-latest` | `mistral/devstral-medium-latest` | 262144 | 32768 | — | — |
 | `mistral` | `magistral-small` | `mistral/magistral-small` | 128000 | 40000 | ✅ | — |
