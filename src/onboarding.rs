@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
+    auth::load_codex_cli_credential,
     config::{
         built_in_provider_default_config, credential_store_path, load_persisted_config_at,
         save_persisted_config_at, set_credential_profile_at, validate_provider_config, AppConfig,
@@ -120,16 +121,16 @@ pub struct OnboardingWizardDraft {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardingSearchSelection {
     Disabled,
-    BuiltInProvider,
-    DuckDuckGo,
+    Auto,
+    ManagedDuckDuckGo,
 }
 
 impl OnboardingSearchSelection {
     pub fn label(self) -> &'static str {
         match self {
             Self::Disabled => "Disable WebSearch",
-            Self::BuiltInProvider => "Use model provider built-in search",
-            Self::DuckDuckGo => "Use DuckDuckGo managed search",
+            Self::Auto => "Auto: prefer native search, fallback to managed WebSearch",
+            Self::ManagedDuckDuckGo => "Managed WebSearch: DuckDuckGo",
         }
     }
 }
@@ -142,6 +143,8 @@ pub struct OnboardingProviderChoice {
     pub credential_kind: CredentialKind,
     pub credential_profile: String,
     pub credential_configured: bool,
+    pub codex_home: Option<PathBuf>,
+    pub configured: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +152,7 @@ pub struct OnboardingModelChoice {
     pub model: ModelRef,
     pub title: String,
     pub detail: String,
+    pub custom: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,22 +173,11 @@ pub struct OnboardingApplySummary {
 }
 
 pub fn onboarding_provider_choices(config: &AppConfig) -> Vec<OnboardingProviderChoice> {
-    [
-        ProviderId::openai_codex(),
-        ProviderId::openai(),
-        ProviderId::anthropic(),
-        ProviderId::gemini(),
-    ]
-    .into_iter()
-    .filter_map(|id| {
-        config.providers.get(&id).map(|provider| {
-            let title = match id.as_str() {
-                ProviderId::OPENAI_CODEX => "OpenAI Codex".to_string(),
-                ProviderId::OPENAI => "OpenAI".to_string(),
-                ProviderId::ANTHROPIC => "Anthropic".to_string(),
-                ProviderId::GEMINI => "Gemini".to_string(),
-                other => other.to_string(),
-            };
+    config
+        .providers
+        .values()
+        .filter(|provider| should_show_onboarding_provider(config, &provider.id))
+        .map(|provider| {
             let auth = match provider.auth.kind {
                 CredentialKind::OAuth => "OAuth login/profile",
                 CredentialKind::ApiKey => "API key",
@@ -192,36 +185,143 @@ pub fn onboarding_provider_choices(config: &AppConfig) -> Vec<OnboardingProvider
                 _ => provider.auth.kind.as_str(),
             };
             OnboardingProviderChoice {
-                id: id.clone(),
-                title,
+                id: provider.id.clone(),
+                title: provider_title(&provider.id),
                 detail: format!("{} · {}", provider.transport.as_str(), auth),
                 credential_kind: provider.auth.kind,
                 credential_profile: provider
                     .auth
                     .profile
                     .clone()
-                    .unwrap_or_else(|| id.as_str().to_string()),
-                credential_configured: provider.has_configured_credential()
-                    || provider.auth.source == CredentialSource::None,
+                    .unwrap_or_else(|| provider.id.as_str().to_string()),
+                credential_configured: provider_credential_configured(provider),
+                codex_home: provider.codex_home.clone(),
+                configured: config.stored_config.providers.contains_key(&provider.id),
             }
         })
-    })
-    .collect()
+        .collect()
+}
+
+fn should_show_onboarding_provider(config: &AppConfig, provider_id: &ProviderId) -> bool {
+    canonical_onboarding_provider_id(provider_id)
+        .map(|canonical_id| {
+            canonical_id == *provider_id || !config.providers.contains_key(&canonical_id)
+        })
+        .unwrap_or(true)
+}
+
+fn canonical_onboarding_provider_id(provider_id: &ProviderId) -> Option<ProviderId> {
+    let id = provider_id.as_str();
+    for suffix in ["-openai", "-anthropic"] {
+        if let Some(base) = id.strip_suffix(suffix) {
+            return ProviderId::parse(base).ok();
+        }
+    }
+    None
+}
+
+fn provider_title(provider_id: &ProviderId) -> String {
+    match provider_id.as_str() {
+        ProviderId::OPENAI_CODEX => "OpenAI Codex".to_string(),
+        ProviderId::OPENAI => "OpenAI".to_string(),
+        ProviderId::ANTHROPIC => "Anthropic".to_string(),
+        ProviderId::GEMINI => "Gemini".to_string(),
+        other => other
+            .split(['-', '_'])
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_uppercase().chain(chars).collect::<String>())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+fn provider_credential_configured(provider: &ProviderRuntimeConfig) -> bool {
+    provider.has_configured_credential()
+        || provider.auth.source == CredentialSource::None
+        || (provider.id.is_openai_codex()
+            && provider.auth.external.as_deref() == Some("codex_cli")
+            && provider
+                .codex_home
+                .as_deref()
+                .map(|home| load_codex_cli_credential(home).is_ok())
+                .unwrap_or(false))
 }
 
 pub fn onboarding_model_choices(
     config: &AppConfig,
     provider: &ProviderId,
 ) -> Vec<OnboardingModelChoice> {
-    let mut models = RuntimeModelCatalogShim::choices(config, provider);
+    let mut models = configured_model_choices(config, provider);
+    for choice in RuntimeModelCatalogShim::choices(config, provider) {
+        if !models.iter().any(|existing| existing.model == choice.model) {
+            models.push(choice);
+        }
+    }
     if models.is_empty() {
         models.push(OnboardingModelChoice {
             model: ModelRef::new(provider.clone(), "unknown"),
             title: format!("{}/unknown", provider.as_str()),
             detail: "custom provider model placeholder".into(),
+            custom: false,
         });
     }
+    models.push(OnboardingModelChoice {
+        model: ModelRef::new(provider.clone(), "__custom__"),
+        title: "Custom model…".into(),
+        detail: format!("enter any {} model id", provider.as_str()),
+        custom: true,
+    });
     models
+}
+
+fn configured_model_choices(
+    config: &AppConfig,
+    provider: &ProviderId,
+) -> Vec<OnboardingModelChoice> {
+    let mut models = Vec::new();
+    push_configured_model_choice(
+        &mut models,
+        &config.default_model,
+        provider,
+        "current default model",
+    );
+    for model in &config.fallback_models {
+        push_configured_model_choice(&mut models, model, provider, "configured fallback model");
+    }
+    let mut override_models = config
+        .validated_model_overrides
+        .keys()
+        .filter(|model| &model.provider == provider)
+        .cloned()
+        .collect::<Vec<_>>();
+    override_models.sort_by_key(ModelRef::as_string);
+    for model in override_models {
+        push_configured_model_choice(&mut models, &model, provider, "configured model override");
+    }
+    models
+}
+
+fn push_configured_model_choice(
+    models: &mut Vec<OnboardingModelChoice>,
+    model: &ModelRef,
+    provider: &ProviderId,
+    detail: &str,
+) {
+    if &model.provider != provider || models.iter().any(|choice| choice.model == *model) {
+        return;
+    }
+    models.push(OnboardingModelChoice {
+        model: model.clone(),
+        title: model.as_string(),
+        detail: detail.into(),
+        custom: false,
+    });
 }
 
 struct RuntimeModelCatalogShim;
@@ -254,6 +354,7 @@ impl RuntimeModelCatalogShim {
                     title: format!("{}{}", entry.display_name, preferred_suffix),
                     detail: entry.model_ref.as_string(),
                     model: entry.model_ref,
+                    custom: false,
                 }
             })
             .collect()
@@ -261,26 +362,26 @@ impl RuntimeModelCatalogShim {
 }
 
 pub fn onboarding_search_choices(config: &AppConfig) -> Vec<OnboardingSearchChoice> {
-    let builtin_detail = if config
+    let native_detail = if config
         .providers
         .get(&config.default_model.provider)
         .and_then(|provider| provider.builtin_web_search.as_ref())
         .is_some()
     {
-        "provider-declared native search when supported by the selected model"
+        "current provider declares native search; runtime still probes the active model"
     } else {
-        "enable provider-declared search for providers that support it"
+        "current provider has no native search declaration; managed WebSearch remains available"
     };
     vec![
         OnboardingSearchChoice {
-            selection: OnboardingSearchSelection::BuiltInProvider,
-            title: OnboardingSearchSelection::BuiltInProvider.label().into(),
-            detail: builtin_detail.into(),
+            selection: OnboardingSearchSelection::Auto,
+            title: OnboardingSearchSelection::Auto.label().into(),
+            detail: format!("{native_detail}; DuckDuckGo is used as the default managed fallback"),
         },
         OnboardingSearchChoice {
-            selection: OnboardingSearchSelection::DuckDuckGo,
-            title: OnboardingSearchSelection::DuckDuckGo.label().into(),
-            detail: "free managed provider; no API key required".into(),
+            selection: OnboardingSearchSelection::ManagedDuckDuckGo,
+            title: OnboardingSearchSelection::ManagedDuckDuckGo.label().into(),
+            detail: "global agent WebSearch provider; no per-model native search".into(),
         },
         OnboardingSearchChoice {
             selection: OnboardingSearchSelection::Disabled,
@@ -346,13 +447,13 @@ pub fn apply_onboarding_wizard_draft(
         OnboardingSearchSelection::Disabled => {
             persisted.web.search.enabled = Some(false);
         }
-        OnboardingSearchSelection::BuiltInProvider => {
+        OnboardingSearchSelection::Auto => {
             persisted.web.search.enabled = Some(true);
             persisted.web.search.builtin_provider.enabled = Some(true);
             persisted.web.search.provider = Some("auto".into());
             persisted.web.search.providers.clear();
         }
-        OnboardingSearchSelection::DuckDuckGo => {
+        OnboardingSearchSelection::ManagedDuckDuckGo => {
             persisted.web.search.enabled = Some(true);
             persisted.web.search.builtin_provider.enabled = Some(false);
             persisted.web.search.provider = Some(DUCKDUCKGO_SEARCH_PROVIDER_ID.into());
@@ -871,8 +972,9 @@ mod tests {
             credential_store_path, load_credential_store_at, load_persisted_config_at,
             provider_registry_for_tests, AppConfig, ControlAuthMode, CredentialKind,
             CredentialSource, ModelRef, ProviderAuthConfig, ProviderConfigFile, ProviderId,
-            ProviderTransportKind,
+            ProviderRuntimeConfig, ProviderTransportKind,
         },
+        model_catalog::ModelRuntimeOverride,
         onboarding::{
             apply_onboarding_wizard_draft, credential_repair_plan, onboarding_model_choices,
             onboarding_provider_choices, onboarding_report, search_diagnostics,
@@ -1027,7 +1129,87 @@ mod tests {
 
     #[test]
     fn onboarding_wizard_choices_include_provider_auth_and_models() {
-        let config = test_config(None);
+        let mut config = test_config(None);
+        let custom_provider = ProviderId::parse("custom-openai").unwrap();
+        let custom_provider_config = ProviderRuntimeConfig {
+            id: custom_provider.clone(),
+            transport: ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://custom.example/v1".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("CUSTOM_OPENAI_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        };
+        config
+            .providers
+            .insert(custom_provider.clone(), custom_provider_config.clone());
+        config.stored_config.providers.insert(
+            custom_provider.clone(),
+            ProviderConfigFile {
+                transport: custom_provider_config.transport,
+                base_url: custom_provider_config.base_url.clone(),
+                auth: custom_provider_config.auth.clone(),
+                reasoning_effort: None,
+                builtin_web_search: None,
+            },
+        );
+        let deepseek = ProviderId::parse("deepseek").unwrap();
+        let deepseek_anthropic = ProviderId::parse("deepseek-anthropic").unwrap();
+        let deepseek_openai = ProviderId::parse("deepseek-openai").unwrap();
+        let deepseek_config = ProviderRuntimeConfig {
+            id: deepseek.clone(),
+            transport: ProviderTransportKind::AnthropicMessages,
+            base_url: "https://api.deepseek.com/anthropic".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("DEEPSEEK_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        };
+        config
+            .providers
+            .insert(deepseek.clone(), deepseek_config.clone());
+        config.providers.insert(
+            deepseek_anthropic.clone(),
+            ProviderRuntimeConfig {
+                id: deepseek_anthropic.clone(),
+                ..deepseek_config.clone()
+            },
+        );
+        config.providers.insert(
+            deepseek_openai.clone(),
+            ProviderRuntimeConfig {
+                id: deepseek_openai.clone(),
+                transport: ProviderTransportKind::OpenAiChatCompletions,
+                base_url: "https://api.deepseek.com/v1".into(),
+                ..deepseek_config
+            },
+        );
+        config.default_model = ModelRef::parse("openai/custom-default").unwrap();
+        config.fallback_models = vec![ModelRef::parse("openai/custom-fallback").unwrap()];
+        config.validated_model_overrides.insert(
+            ModelRef::parse("openai/custom-override").unwrap(),
+            ModelRuntimeOverride::default(),
+        );
 
         let providers = onboarding_provider_choices(&config);
         let openai = providers
@@ -1038,16 +1220,36 @@ mod tests {
             .iter()
             .find(|provider| provider.id == ProviderId::openai_codex())
             .expect("openai-codex provider choice");
+        let custom = providers
+            .iter()
+            .find(|provider| provider.id == custom_provider)
+            .expect("custom provider choice");
 
         assert_eq!(openai.credential_kind, CredentialKind::ApiKey);
         assert_eq!(openai.credential_profile, "openai");
         assert_eq!(codex.credential_kind, CredentialKind::OAuth);
         assert_eq!(codex.credential_profile, "openai-codex");
+        assert_eq!(custom.credential_kind, CredentialKind::ApiKey);
+        assert_eq!(custom.credential_profile, "custom-openai");
+        assert!(custom.configured);
+        assert!(providers.iter().any(|provider| provider.id == deepseek));
+        assert!(!providers
+            .iter()
+            .any(|provider| provider.id == deepseek_anthropic));
+        assert!(!providers
+            .iter()
+            .any(|provider| provider.id == deepseek_openai));
 
         let models = onboarding_model_choices(&config, &ProviderId::openai());
+        assert_eq!(models[0].model.as_string(), "openai/custom-default");
+        assert_eq!(models[1].model.as_string(), "openai/custom-fallback");
+        assert_eq!(models[2].model.as_string(), "openai/custom-override");
         assert!(models
             .iter()
             .any(|choice| choice.model.as_string() == "openai/gpt-5.4"));
+        assert!(models
+            .iter()
+            .any(|choice| choice.custom && choice.title == "Custom model…"));
     }
 
     #[test]
@@ -1058,7 +1260,7 @@ mod tests {
             credential_profile: "openai".into(),
             credential_kind: CredentialKind::ApiKey,
             default_model: ModelRef::parse("openai/gpt-5.4").unwrap(),
-            search: OnboardingSearchSelection::DuckDuckGo,
+            search: OnboardingSearchSelection::ManagedDuckDuckGo,
         };
 
         let summary =
@@ -1068,7 +1270,7 @@ mod tests {
 
         assert_eq!(summary.provider, "openai");
         assert_eq!(summary.default_model, "openai/gpt-5.4");
-        assert_eq!(summary.search, "Use DuckDuckGo managed search");
+        assert_eq!(summary.search, "Managed WebSearch: DuckDuckGo");
         assert!(summary.credential_written);
         assert!(!format!("{summary:?}").contains("test-secret"));
 
@@ -1105,7 +1307,7 @@ mod tests {
             credential_profile: "openai".into(),
             credential_kind: CredentialKind::ApiKey,
             default_model: ModelRef::parse("openai/gpt-5.4").unwrap(),
-            search: OnboardingSearchSelection::BuiltInProvider,
+            search: OnboardingSearchSelection::Auto,
         };
 
         let summary = apply_onboarding_wizard_draft(&config, &draft, None).unwrap();
