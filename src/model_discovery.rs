@@ -225,7 +225,7 @@ impl OpenRouterModel {
             context_window_tokens: self.context_length,
             effective_context_window_percent: 95,
             auto_compact_token_limit: None,
-            default_max_output_tokens: max_output_tokens_upper_limit,
+            default_max_output_tokens: None,
             max_output_tokens_upper_limit,
             tool_output_truncation_estimated_tokens: None,
             capabilities: ModelCapabilityFlags {

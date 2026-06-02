@@ -877,9 +877,8 @@ impl RuntimeModelCatalog {
     pub fn available_models(&self) -> Vec<BuiltInModelMetadata> {
         let mut models = self.built_in_catalog.list();
         for discovered in self.discovered_models.values() {
-            if !self.model_overrides.contains_key(&discovered.model_ref)
-                && self.built_in_catalog.get(&discovered.model_ref).is_none()
-            {
+            if !self.model_overrides.contains_key(&discovered.model_ref) {
+                models.retain(|model| model.model_ref != discovered.model_ref);
                 models.push(discovered.clone());
             }
         }
