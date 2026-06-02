@@ -18,6 +18,7 @@ For scripting guidance, stability levels, and support policy, see
 ```
 holon (v0.14.1)
 ├── serve        Start HTTP control plane server
+├── onboard      Interactive setup wizard or secret-safe diagnostics
 ├── daemon       Background daemon lifecycle
 │   ├── start    Start the daemon
 │   ├── stop     Stop the daemon
@@ -144,12 +145,39 @@ holon daemon restart
 holon daemon stop
 ```
 
+### Onboarding
+
+`holon onboard` is the fastest way to configure Holon for the first time or
+repair a broken provider/model configuration. It has two modes:
+
+- **Interactive TUI** (default on a terminal): walks you through provider
+  selection, model choice, search settings, and credential input — without
+  echoing secret material to the screen.
+- **JSON diagnostics** (`--json` or non-TTY): prints a secret-safe diagnostic
+  report with actionable next steps, suitable for scripts and CI.
+
+```bash
+holon onboard                    # Interactive setup wizard (TTY)
+holon onboard --json             # Secret-safe diagnostic report (JSON)
+```
+
+The TUI flow guides you through:
+
+1. **Provider** — select from built-in and custom providers
+2. **Model** — pick a default model for your provider
+3. **Search** — enable DuckDuckGo managed search, model-native search, or disable
+4. **Credential** — enter your API key (input never echoed or stored in logs)
+- **Apply** — writes config, stores credentials, and prints a summary
+
+The JSON report includes `status`, `sections` (home, agent, model_provider,
+search, credentials), and `next_actions`. It is secret-safe by design: no
+credential material ever appears in the report.
+
 ### Configuration inspection
 
 ```bash
 holon config list                # All current config
 holon config schema              # All keys with types and defaults
-holon onboard                    # Secret-safe setup guidance and next steps
 holon config doctor              # Full health check
 holon config providers list      # All registered providers
 holon config models list         # Available models with status
