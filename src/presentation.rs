@@ -795,6 +795,11 @@ impl PresentationReducer {
                         i += 1;
                         continue;
                     }
+                    if let Some(item) = list_work_items_snapshot_item(event) {
+                        items.push(TimedItem::from_event(item, event));
+                        i += 1;
+                        continue;
+                    }
                     if is_apply_patch_tool_event(event) {
                         for item in apply_patch_items(event) {
                             items.push(TimedItem::from_event(item, event));
@@ -1444,6 +1449,149 @@ fn is_exec_command_tool_event(event: &ProjectionEventRecord) -> bool {
 
 fn is_apply_patch_tool_event(event: &ProjectionEventRecord) -> bool {
     event.payload.get("tool_name").and_then(Value::as_str) == Some("ApplyPatch")
+}
+
+fn list_work_items_snapshot_item(event: &ProjectionEventRecord) -> Option<PresentationItem> {
+    if event.kind != "tool_executed" {
+        return None;
+    }
+    if event.payload.get("tool_name").and_then(Value::as_str) != Some("ListWorkItems") {
+        return None;
+    }
+    if event.payload.get("status").and_then(Value::as_str) != Some("success") {
+        return None;
+    }
+    let result = event
+        .payload
+        .get("tool_result")
+        .or_else(|| event.payload.get("result"))?;
+    Some(PresentationItem::ToolAction {
+        summary: list_work_items_snapshot_summary(result),
+    })
+}
+
+fn list_work_items_snapshot_summary(result: &Value) -> String {
+    let filter = result
+        .get("filter")
+        .and_then(Value::as_str)
+        .unwrap_or("all");
+    let returned = result.get("returned").and_then(Value::as_u64).unwrap_or(0);
+    let total = result
+        .get("total_matching")
+        .and_then(Value::as_u64)
+        .unwrap_or(returned);
+    let limit = result.get("limit").and_then(Value::as_u64);
+    let mut lines = vec![match limit {
+        Some(limit) => {
+            format!("Work items: filter={filter} returned={returned} total={total} limit={limit}")
+        }
+        None => format!("Work items: filter={filter} returned={returned} total={total}"),
+    }];
+
+    let Some(items) = result.get("work_items").and_then(Value::as_array) else {
+        return lines.join("\n");
+    };
+    if items.is_empty() {
+        lines.push(format!("No work items matched filter={filter}."));
+        if let Some(current_id) = result
+            .get("context")
+            .and_then(|context| context.get("current_work_item_id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+        {
+            lines.push(format!("current: {}", short_work_item_id(current_id)));
+        }
+        return lines.join("\n");
+    }
+
+    for item in items.iter().take(5) {
+        if let Some(line) = list_work_item_line(item) {
+            lines.push(line);
+        }
+    }
+    let hidden = returned.saturating_sub(items.len().min(5) as u64);
+    if hidden > 0 {
+        lines.push(format!("… {hidden} more not shown"));
+    }
+    lines.join("\n")
+}
+
+fn list_work_item_line(item: &Value) -> Option<String> {
+    let id = item.get("id").and_then(Value::as_str)?;
+    let objective = item
+        .get("objective")
+        .and_then(Value::as_str)
+        .map(|value| truncate_text(value, 96))
+        .unwrap_or_else(|| "(no objective)".into());
+    let focus = item.get("focus").and_then(Value::as_str).unwrap_or("open");
+    let readiness = item
+        .get("readiness")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let mut line = format!(
+        "- [{}][{}] {} :: {}",
+        focus,
+        readiness,
+        short_work_item_id(id),
+        objective
+    );
+    if let Some(detail) = list_work_item_detail(item) {
+        line.push_str(&format!("\n  {detail}"));
+    }
+    Some(line)
+}
+
+fn list_work_item_detail(item: &Value) -> Option<String> {
+    if let Some(blocked_by) = item
+        .get("blocked_by")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(format!("blocked_by: {}", truncate_text(blocked_by, 140)));
+    }
+    if let Some(waiting_for) = item
+        .get("active_wait_conditions")
+        .and_then(Value::as_array)
+        .and_then(|waits| waits.first())
+        .and_then(|wait| wait.get("waiting_for"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(format!("waiting_for: {}", truncate_text(waiting_for, 140)));
+    }
+    if let Some(todo) = item
+        .get("todo_list")
+        .and_then(Value::as_array)
+        .and_then(|todos| {
+            todos
+                .iter()
+                .find(|todo| todo.get("state").and_then(Value::as_str) == Some("in_progress"))
+                .or_else(|| todos.first())
+        })
+        .and_then(|todo| todo.get("text"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(format!("todo: {}", truncate_text(todo, 140)));
+    }
+    item.get("completion_report")
+        .and_then(|report| report.get("text"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|report| format!("completed: {}", truncate_text(report, 140)))
+}
+
+fn short_work_item_id(id: &str) -> String {
+    const PREFIX_LEN: usize = 17;
+    if id.len() <= PREFIX_LEN {
+        id.to_string()
+    } else {
+        id.chars().take(PREFIX_LEN).collect()
+    }
 }
 
 fn is_successful_work_item_tool_event(event: &ProjectionEventRecord) -> bool {
@@ -2504,6 +2652,85 @@ mod tests {
                 assert!(summary.contains("Update work item failed"));
             }
             other => panic!("expected ToolAction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_list_work_items_result_becomes_snapshot() {
+        let event = make_event(
+            "tool_executed",
+            "Listed work items: ListWorkItems",
+            json!({
+                "tool_name": "ListWorkItems",
+                "status": "success",
+                "summary": "ListWorkItems",
+                "tool_result": {
+                    "context": {"current_work_item_id": "work_e8a1686c34d1653"},
+                    "filter": "blocked",
+                    "returned": 1,
+                    "total_matching": 1,
+                    "limit": 10,
+                    "work_items": [{
+                        "id": "work_e8a1686c34d1653",
+                        "objective": "Track PR #1552 for issue #1537 TUI composer Up/Down cursor movement through CI/review/merge",
+                        "focus": "blocked",
+                        "readiness": "blocked",
+                        "blocked_by": "PR #1552 CI is green and Copilot review had no comments; wait for human review, review feedback, merge, or close event before the next action.",
+                        "todo_list": [{
+                            "state": "in_progress",
+                            "text": "Track PR #1552 through human review/merge"
+                        }]
+                    }]
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::ToolAction { summary } => {
+                assert!(summary.contains("Work items: filter=blocked returned=1 total=1 limit=10"));
+                assert!(summary.contains("[blocked][blocked] work_e8a1686c34"));
+                assert!(summary.contains("Track PR #1552"));
+                assert!(summary.contains("blocked_by: PR #1552 CI is green"));
+                assert!(!summary.contains("Listed work items: ListWorkItems"));
+            }
+            other => panic!("expected ToolAction snapshot, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_list_work_items_empty_result_is_informative() {
+        let event = make_event(
+            "tool_executed",
+            "Listed work items: ListWorkItems",
+            json!({
+                "tool_name": "ListWorkItems",
+                "status": "success",
+                "tool_result": {
+                    "context": {"current_work_item_id": "work_f83896b472f10e1"},
+                    "filter": "runnable",
+                    "returned": 0,
+                    "total_matching": 0,
+                    "limit": 10,
+                    "work_items": []
+                }
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::ToolAction { summary } => {
+                assert!(summary.contains("Work items: filter=runnable returned=0 total=0 limit=10"));
+                assert!(summary.contains("No work items matched filter=runnable."));
+                assert!(summary.contains("current: work_f83896b472"));
+            }
+            other => panic!("expected ToolAction snapshot, got {:?}", other),
         }
     }
 
