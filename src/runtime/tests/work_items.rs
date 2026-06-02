@@ -28,6 +28,14 @@ fn legacy_blocking_payload_task_for_work_item(
     }
 }
 
+fn continuation_context_config() -> ContextConfig {
+    ContextConfig {
+        prompt_budget_estimated_tokens: 16384,
+        compaction_keep_recent_estimated_tokens: 2048,
+        ..context_config()
+    }
+}
+
 struct CompleteWorkItemReportProvider {
     work_item_id: String,
     report_text: Option<String>,
@@ -70,9 +78,103 @@ impl AgentProvider for CompleteWorkItemReportProvider {
     }
 }
 
+struct CompleteThenExecProvider {
+    work_item_id: String,
+    calls: Mutex<usize>,
+}
+
+#[async_trait]
+impl AgentProvider for CompleteThenExecProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let blocks = if *calls == 1 {
+            vec![
+                ModelBlock::Text {
+                    text: "Finished the tracked work.".into(),
+                },
+                ModelBlock::ToolUse {
+                    id: "complete-work".into(),
+                    name: "CompleteWorkItem".into(),
+                    input: serde_json::json!({
+                        "work_item_id": self.work_item_id.clone(),
+                    }),
+                },
+                ModelBlock::ToolUse {
+                    id: "verify".into(),
+                    name: "ExecCommand".into(),
+                    input: serde_json::json!({
+                        "cmd": "printf 'verified'",
+                        "shell": "sh",
+                    }),
+                },
+            ]
+        } else {
+            vec![ModelBlock::Text {
+                text: "Verified after completion.".into(),
+            }]
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+struct StaleTextThenCompleteProvider {
+    work_item_id: String,
+    calls: Mutex<usize>,
+}
+
+#[async_trait]
+impl AgentProvider for StaleTextThenCompleteProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let blocks = if *calls == 1 {
+            vec![
+                ModelBlock::Text {
+                    text: "This text belongs to the ExecCommand tool call.".into(),
+                },
+                ModelBlock::ToolUse {
+                    id: "inspect".into(),
+                    name: "ExecCommand".into(),
+                    input: serde_json::json!({
+                        "cmd": "printf 'inspected'",
+                        "shell": "sh",
+                    }),
+                },
+                ModelBlock::ToolUse {
+                    id: "complete-work".into(),
+                    name: "CompleteWorkItem".into(),
+                    input: serde_json::json!({
+                        "work_item_id": self.work_item_id.clone(),
+                    }),
+                },
+            ]
+        } else {
+            vec![ModelBlock::Text {
+                text: "No completion report was provided.".into(),
+            }]
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
 struct MultiCompleteWorkItemReportProvider {
     work_item_ids: Vec<String>,
-    report_text: String,
+    report_texts: Vec<String>,
     calls: Mutex<usize>,
 }
 
@@ -82,10 +184,13 @@ impl AgentProvider for MultiCompleteWorkItemReportProvider {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         let blocks = if *calls == 1 {
-            let mut blocks = vec![ModelBlock::Text {
-                text: self.report_text.clone(),
-            }];
+            let mut blocks = Vec::new();
             for (index, work_item_id) in self.work_item_ids.iter().enumerate() {
+                if let Some(report_text) = self.report_texts.get(index) {
+                    blocks.push(ModelBlock::Text {
+                        text: report_text.clone(),
+                    });
+                }
                 blocks.push(ModelBlock::ToolUse {
                     id: format!("complete-work-{index}"),
                     name: "CompleteWorkItem".into(),
@@ -1838,7 +1943,7 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         "http://127.0.0.1:7878".into(),
         provider.clone(),
         "default".into(),
-        context_config(),
+        continuation_context_config(),
     )
     .unwrap();
     let message = MessageEnvelope::new(
@@ -1864,8 +1969,8 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         .unwrap();
     assert_eq!(
         *provider.calls.lock().await,
-        1,
-        "promoted completion report should end the provider loop"
+        2,
+        "promoted completion report should not hard-stop the provider loop"
     );
 
     let completed = runtime
@@ -1937,6 +2042,169 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
             && event.data["reason"].as_str() == Some("work_item_completion_report_promoted")
             && event.data["work_item_id"].as_str() == Some(work_item.id.as_str())
     }));
+}
+
+#[tokio::test]
+async fn complete_work_item_followed_by_same_round_tool_keeps_terminal_brief() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = seed_runtime
+        .create_work_item("complete then verify".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(work_item.id.clone())
+        .await
+        .unwrap();
+
+    let provider = Arc::new(CompleteThenExecProvider {
+        work_item_id: work_item.id.clone(),
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        continuation_context_config(),
+    )
+    .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "complete and verify".into(),
+        },
+    );
+
+    runtime
+        .process_interactive_message(
+            &message,
+            None,
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(*provider.calls.lock().await, 2);
+    let briefs = runtime.recent_briefs(10).await.unwrap();
+    assert!(briefs.iter().any(|brief| {
+        brief.kind == BriefKind::Result && brief.text == "Finished the tracked work."
+    }));
+    assert!(briefs.iter().any(|brief| {
+        brief.kind == BriefKind::Result && brief.text == "Verified after completion."
+    }));
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == "turn_terminal_brief_suppressed"));
+}
+
+#[tokio::test]
+async fn complete_work_item_does_not_promote_text_before_other_tool() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = seed_runtime
+        .create_work_item("complete after another tool".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(work_item.id.clone())
+        .await
+        .unwrap();
+
+    let provider = Arc::new(StaleTextThenCompleteProvider {
+        work_item_id: work_item.id.clone(),
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "default".into(),
+        continuation_context_config(),
+    )
+    .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "inspect then complete".into(),
+        },
+    );
+
+    runtime
+        .process_interactive_message(
+            &message,
+            None,
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let completed = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.state, WorkItemState::Completed);
+    assert_eq!(completed.result_summary, None);
+    assert!(runtime
+        .storage()
+        .latest_delivery_summary(&work_item.id)
+        .unwrap()
+        .is_none());
+    let transcript = runtime.storage().read_recent_transcript(10).unwrap();
+    let tool_results = transcript
+        .iter()
+        .find(|entry| entry.kind == crate::types::TranscriptEntryKind::ToolResults)
+        .expect("tool results should be recorded");
+    let completion_result = tool_results.data["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|result| result["tool_use_id"].as_str() == Some("complete-work"))
+        .expect("completion result should be recorded");
+    let content: serde_json::Value =
+        serde_json::from_str(completion_result["content"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        content["result"]["completion_report_promoted"].as_bool(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -2136,7 +2404,10 @@ async fn multiple_complete_work_items_in_one_round_do_not_promote_or_short_circu
 
     let provider = Arc::new(MultiCompleteWorkItemReportProvider {
         work_item_ids: vec![first.id.clone(), second.id.clone()],
-        report_text: "Finished two work items in one report.".into(),
+        report_texts: vec![
+            "Finished the first work item.".into(),
+            "Finished the second work item.".into(),
+        ],
         calls: Mutex::new(0),
     });
     let runtime = RuntimeHandle::new(
@@ -2146,7 +2417,7 @@ async fn multiple_complete_work_items_in_one_round_do_not_promote_or_short_circu
         "http://127.0.0.1:7878".into(),
         provider.clone(),
         "default".into(),
-        context_config(),
+        continuation_context_config(),
     )
     .unwrap();
     let message = MessageEnvelope::new(
@@ -2171,20 +2442,49 @@ async fn multiple_complete_work_items_in_one_round_do_not_promote_or_short_circu
         .await
         .unwrap();
 
-    for work_item_id in [&first.id, &second.id] {
+    for (work_item_id, report_text) in [
+        (&first.id, "Finished the first work item."),
+        (&second.id, "Finished the second work item."),
+    ] {
         let completed = runtime
             .latest_work_item(work_item_id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(completed.state, WorkItemState::Completed);
-        assert_eq!(completed.result_summary, None);
-        assert!(runtime
-            .storage()
-            .latest_delivery_summary(work_item_id)
-            .unwrap()
-            .is_none());
+        assert_eq!(completed.result_summary.as_deref(), Some(report_text));
+        assert_eq!(
+            runtime
+                .storage()
+                .latest_delivery_summary(work_item_id)
+                .unwrap()
+                .expect("completion report should persist delivery summary")
+                .text,
+            report_text
+        );
     }
+    assert_eq!(
+        *provider.calls.lock().await,
+        2,
+        "multiple completion reports should not hard-stop the provider loop"
+    );
+    let briefs = runtime.recent_briefs(10).await.unwrap();
+    assert_eq!(
+        briefs
+            .iter()
+            .filter(|brief| brief.kind == BriefKind::Result
+                && brief.work_item_id.as_deref() == Some(first.id.as_str()))
+            .count(),
+        1
+    );
+    assert_eq!(
+        briefs
+            .iter()
+            .filter(|brief| brief.kind == BriefKind::Result
+                && brief.work_item_id.as_deref() == Some(second.id.as_str()))
+            .count(),
+        1
+    );
     let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
     assert_eq!(
         events
@@ -2195,11 +2495,15 @@ async fn multiple_complete_work_items_in_one_round_do_not_promote_or_short_circu
                         == Some("completion_report_not_promoted_multiple_completions")
             })
             .count(),
+        0
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "turn_terminal_brief_suppressed")
+            .count(),
         2
     );
-    assert!(!events
-        .iter()
-        .any(|event| event.kind == "turn_terminal_brief_suppressed"));
 }
 
 #[tokio::test]

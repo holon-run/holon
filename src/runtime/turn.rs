@@ -50,18 +50,38 @@ pub(super) struct AgentLoopOutcome {
 }
 
 #[derive(Debug, Clone)]
-pub(super) enum TurnTerminalDelivery {
-    /// The turn should emit the normal terminal result brief from its final
-    /// assistant text.
-    NormalBrief,
-    /// The turn already promoted a same-round WorkItem completion report into
-    /// a result brief, so the operator-dispatch path must suppress its
-    /// otherwise duplicate terminal brief.
-    WorkItemCompletionReportPromoted {
-        work_item_id: String,
-        delivery_summary_id: String,
-        brief_id: String,
-    },
+pub(super) struct TurnTerminalDelivery {
+    /// Completion reports already promoted during this turn.
+    pub(super) promoted_completion_reports: Vec<TurnPromotedCompletionReport>,
+    /// Whether the terminal result brief should be suppressed because it would
+    /// only duplicate a promoted completion report.
+    pub(super) suppress_normal_brief: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TurnPromotedCompletionReport {
+    pub(super) work_item_id: String,
+    pub(super) delivery_summary_id: String,
+    pub(super) brief_id: String,
+}
+
+impl TurnTerminalDelivery {
+    fn normal() -> Self {
+        Self {
+            promoted_completion_reports: Vec::new(),
+            suppress_normal_brief: false,
+        }
+    }
+
+    fn completion_reports(
+        promoted_completion_reports: Vec<TurnPromotedCompletionReport>,
+        suppress_normal_brief: bool,
+    ) -> Self {
+        Self {
+            promoted_completion_reports,
+            suppress_normal_brief,
+        }
+    }
 }
 
 pub(super) struct LoopControlOptions {
@@ -1395,7 +1415,7 @@ impl RuntimeHandle {
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
             terminal_kind: TurnTerminalKind::Aborted,
-            terminal_delivery: TurnTerminalDelivery::NormalBrief,
+            terminal_delivery: TurnTerminalDelivery::normal(),
         }))
     }
 
@@ -1553,7 +1573,7 @@ impl RuntimeHandle {
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
             terminal_kind,
-            terminal_delivery: TurnTerminalDelivery::NormalBrief,
+            terminal_delivery: TurnTerminalDelivery::normal(),
         }))
     }
 
@@ -1813,8 +1833,10 @@ impl TurnExecution<'_> {
         } = self;
         let mut completed_rounds = Vec::<TurnRoundRecord>::new();
         let turn_started_at = Instant::now();
-        let mut should_sleep = false;
         let mut sleep_duration_ms = None;
+        let mut promoted_completion_reports = Vec::<TurnPromotedCompletionReport>::new();
+        let mut post_completion_continuation_action = false;
+        let mut completed_work_item_this_turn = false;
         let mut round = 0usize;
         let mut truncated_text_history = Vec::new();
         let mut last_assistant_message: Option<String> = None;
@@ -1896,7 +1918,7 @@ impl TurnExecution<'_> {
                         sleep_duration_ms: None,
                         allow_sleep_runnable_work_override: false,
                         terminal_kind: TurnTerminalKind::Aborted,
-                        terminal_delivery: TurnTerminalDelivery::NormalBrief,
+                        terminal_delivery: TurnTerminalDelivery::normal(),
                     });
                 }
             }
@@ -2127,7 +2149,7 @@ impl TurnExecution<'_> {
                             sleep_duration_ms: None,
                             allow_sleep_runnable_work_override: false,
                             terminal_kind: TurnTerminalKind::BaselineOverBudget,
-                            terminal_delivery: TurnTerminalDelivery::NormalBrief,
+                            terminal_delivery: TurnTerminalDelivery::normal(),
                         });
                     }
                 };
@@ -2642,12 +2664,22 @@ impl TurnExecution<'_> {
                     turn_index: terminal.turn_index,
                     should_sleep: true,
                     sleep_duration_ms,
-                    allow_sleep_runnable_work_override: false,
+                    allow_sleep_runnable_work_override: completed_work_item_this_turn,
                     terminal_kind: TurnTerminalKind::Completed,
-                    terminal_delivery: TurnTerminalDelivery::NormalBrief,
+                    terminal_delivery: if !promoted_completion_reports.is_empty() {
+                        TurnTerminalDelivery::completion_reports(
+                            promoted_completion_reports,
+                            !post_completion_continuation_action,
+                        )
+                    } else {
+                        TurnTerminalDelivery::normal()
+                    },
                 });
             }
 
+            if !promoted_completion_reports.is_empty() && !tool_calls.is_empty() {
+                post_completion_continuation_action = true;
+            }
             let round_tool_calls = tool_calls.clone();
             let mut tool_results = Vec::new();
             let mut tool_result_envelopes = Vec::new();
@@ -2805,7 +2837,6 @@ impl TurnExecution<'_> {
                         }
 
                         if result.should_sleep {
-                            should_sleep = true;
                             sleep_duration_ms = result.sleep_duration_ms;
                         }
                         runtime.inner.storage.append_tool_execution(&record)?;
@@ -2905,16 +2936,29 @@ impl TurnExecution<'_> {
                     }
                 }
             }
-            let completion_promotion = runtime
+            let completion_promotions = runtime
                 .promote_round_completion_report_if_present(
                     agent_id,
                     round,
                     turn_index,
-                    &combined_text,
+                    &completed_round_assistant_blocks,
                     &mut tool_results,
                     &mut tool_result_envelopes,
                 )
                 .await?;
+            if tool_result_envelopes
+                .iter()
+                .any(envelope_completes_work_item)
+            {
+                completed_work_item_this_turn = true;
+            }
+            if !completion_promotions.is_empty()
+                && round_has_post_completion_non_completion_tool_call(
+                    &completed_round_assistant_blocks,
+                )
+            {
+                post_completion_continuation_action = true;
+            }
             runtime
                 .inner
                 .storage
@@ -2933,6 +2977,11 @@ impl TurnExecution<'_> {
             let mut interjections = before_tool_execution_interjections;
             interjections.extend(after_tool_results_interjections);
             let has_operator_interjections = !interjections.is_empty();
+            if (!promoted_completion_reports.is_empty() || !completion_promotions.is_empty())
+                && has_operator_interjections
+            {
+                post_completion_continuation_action = true;
+            }
             let round_record = TurnRoundRecord {
                 round,
                 estimated_tokens: build_round_estimated_tokens(
@@ -2960,32 +3009,13 @@ impl TurnExecution<'_> {
             }
             completed_rounds.push(round_record);
 
-            if let Some(promotion) = completion_promotion {
-                if !has_operator_interjections {
-                    let final_text = last_assistant_message.clone().unwrap_or_default();
-                    let terminal = runtime
-                        .persist_turn_terminal_record(
-                            TurnTerminalKind::Completed,
-                            last_assistant_message.clone(),
-                            turn_started_at.elapsed().as_millis() as u64,
-                            Some(&checkpoint_state),
-                        )
-                        .await?;
-                    return Ok(AgentLoopOutcome {
-                        final_text,
-                        turn_index: terminal.turn_index,
-                        should_sleep,
-                        sleep_duration_ms,
-                        allow_sleep_runnable_work_override: should_sleep,
-                        terminal_kind: TurnTerminalKind::Completed,
-                        terminal_delivery: TurnTerminalDelivery::WorkItemCompletionReportPromoted {
-                            work_item_id: promotion.record.id,
-                            delivery_summary_id: promotion.delivery_summary_id,
-                            brief_id: promotion.brief_id,
-                        },
-                    });
-                }
-            }
+            promoted_completion_reports.extend(completion_promotions.into_iter().map(
+                |promotion| TurnPromotedCompletionReport {
+                    work_item_id: promotion.record.id,
+                    delivery_summary_id: promotion.delivery_summary_id,
+                    brief_id: promotion.brief_id,
+                },
+            ));
 
             if only_sleep_tools && !has_operator_interjections {
                 let final_text = last_assistant_message.clone().unwrap_or_default();
@@ -3002,9 +3032,16 @@ impl TurnExecution<'_> {
                     turn_index: terminal.turn_index,
                     should_sleep: true,
                     sleep_duration_ms: sleep_duration_ms.or(legacy_sleep_duration_ms),
-                    allow_sleep_runnable_work_override: true,
+                    allow_sleep_runnable_work_override: completed_work_item_this_turn,
                     terminal_kind: TurnTerminalKind::Completed,
-                    terminal_delivery: TurnTerminalDelivery::NormalBrief,
+                    terminal_delivery: if !promoted_completion_reports.is_empty() {
+                        TurnTerminalDelivery::completion_reports(
+                            promoted_completion_reports,
+                            !post_completion_continuation_action,
+                        )
+                    } else {
+                        TurnTerminalDelivery::normal()
+                    },
                 });
             }
         }
@@ -3017,10 +3054,10 @@ impl RuntimeHandle {
         agent_id: &str,
         round: usize,
         turn_index: u64,
-        combined_text: &str,
+        assistant_blocks: &[ModelBlock],
         tool_results: &mut [ToolResultBlock],
         tool_result_envelopes: &mut [ToolResultEnvelope],
-    ) -> Result<Option<WorkItemCompletionReportPromotion>> {
+    ) -> Result<Vec<WorkItemCompletionReportPromotion>> {
         let completion_indexes = tool_result_envelopes
             .iter()
             .enumerate()
@@ -3037,14 +3074,21 @@ impl RuntimeHandle {
             .filter_map(|(index, envelope)| result_work_item_id(envelope).map(|id| (index, id)))
             .collect::<Vec<_>>();
         if completion_indexes.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
 
-        if completion_indexes.len() != 1 {
-            for (index, work_item_id) in completion_indexes {
+        let report_texts_by_tool_id = completion_report_texts_by_tool_id(assistant_blocks);
+        let mut promotions = Vec::new();
+        for (index, work_item_id) in completion_indexes {
+            let tool_use_id = tool_results[index].tool_use_id.as_str();
+            let report_text = report_texts_by_tool_id
+                .iter()
+                .find_map(|(id, text)| (id == tool_use_id).then_some(text.trim()))
+                .unwrap_or_default();
+            if report_text.is_empty() {
                 let warning = completion_report_warning(
-                    "completion_report_not_promoted_multiple_completions",
-                    "Completion report was not promoted because this round completed multiple work items.",
+                    "missing_completion_report",
+                    "CompleteWorkItem succeeded without nearby preceding same-round operator-facing report text; no canonical completion report was promoted.",
                 );
                 append_completion_warning(&mut tool_result_envelopes[index], warning.clone());
                 update_tool_result_block_content(
@@ -3054,77 +3098,98 @@ impl RuntimeHandle {
                 )?;
                 self.record_work_item_completion_warning(
                     work_item_id,
-                    "completion_report_not_promoted_multiple_completions",
-                    "Completion report was not promoted because this round completed multiple work items.",
+                    "missing_completion_report",
+                    "CompleteWorkItem succeeded without nearby preceding same-round operator-facing report text; no canonical completion report was promoted.",
                     Some(turn_index),
                     Some(round),
                 )
                 .await?;
+                continue;
             }
-            return Ok(None);
-        }
 
-        let (index, work_item_id) = completion_indexes
-            .into_iter()
-            .next()
-            .expect("checked non-empty");
-        let report_text = combined_text.trim();
-        if report_text.is_empty() {
-            let warning = completion_report_warning(
-                "missing_completion_report",
-                "CompleteWorkItem succeeded without same-round operator-facing report text; no canonical completion report was promoted.",
-            );
-            append_completion_warning(&mut tool_result_envelopes[index], warning.clone());
+            let warnings = envelope_warnings(&tool_result_envelopes[index]);
+            let promotion = match self
+                .promote_work_item_completion_report_with_metadata(
+                    work_item_id.clone(),
+                    report_text.to_string(),
+                    Some(turn_index),
+                    Some(round),
+                    warnings,
+                )
+                .await?
+            {
+                WorkItemCompletionReportPromotionOutcome::Promoted(promotion) => promotion,
+                WorkItemCompletionReportPromotionOutcome::Unchanged(_) => continue,
+            };
+            if let Some(result) = tool_result_envelopes[index].result.as_mut() {
+                if let Some(object) = result.as_object_mut() {
+                    object.insert("completion_report_promoted".into(), serde_json::json!(true));
+                    object.insert(
+                        "completion_report_source".into(),
+                        serde_json::json!("same_assistant_round_preceding_text"),
+                    );
+                }
+            }
             update_tool_result_block_content(index, tool_results, &tool_result_envelopes[index])?;
-            self.record_work_item_completion_warning(
-                work_item_id,
-                "missing_completion_report",
-                "CompleteWorkItem succeeded without same-round operator-facing report text; no canonical completion report was promoted.",
-                Some(turn_index),
-                Some(round),
-            )
-            .await?;
-            return Ok(None);
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_completion_report_candidate_promoted",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": work_item_id,
+                    "turn_index": turn_index,
+                    "round": round,
+                    "delivery_summary_id": promotion.delivery_summary_id.clone(),
+                    "brief_id": promotion.brief_id.clone(),
+                    "text_preview": truncate_preview(report_text, ROUND_TEXT_PREVIEW_LIMIT),
+                }),
+            ))?;
+            promotions.push(promotion);
         }
+        Ok(promotions)
+    }
+}
 
-        let warnings = envelope_warnings(&tool_result_envelopes[index]);
-        let promotion = match self
-            .promote_work_item_completion_report_with_metadata(
-                work_item_id.clone(),
-                report_text.to_string(),
-                Some(turn_index),
-                Some(round),
-                warnings,
-            )
-            .await?
-        {
-            WorkItemCompletionReportPromotionOutcome::Promoted(promotion) => promotion,
-            WorkItemCompletionReportPromotionOutcome::Unchanged(_) => return Ok(None),
-        };
-        if let Some(result) = tool_result_envelopes[index].result.as_mut() {
-            if let Some(object) = result.as_object_mut() {
-                object.insert("completion_report_promoted".into(), serde_json::json!(true));
-                object.insert(
-                    "completion_report_source".into(),
-                    serde_json::json!("same_assistant_round"),
-                );
+fn completion_report_texts_by_tool_id(assistant_blocks: &[ModelBlock]) -> Vec<(String, String)> {
+    let mut pending_text = Vec::<String>::new();
+    let mut reports = Vec::<(String, String)>::new();
+    for block in assistant_blocks {
+        match block {
+            ModelBlock::Text { text } => {
+                if !text.trim().is_empty() {
+                    pending_text.push(text.clone());
+                }
+            }
+            ModelBlock::ToolUse { id, name, .. } => {
+                if name == "CompleteWorkItem" {
+                    let report_text = pending_text
+                        .iter()
+                        .map(|text| text.trim())
+                        .filter(|text| !text.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    reports.push((id.clone(), report_text));
+                }
+                pending_text.clear();
+            }
+            ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {}
+        }
+    }
+    reports
+}
+
+fn round_has_post_completion_non_completion_tool_call(assistant_blocks: &[ModelBlock]) -> bool {
+    let mut saw_completion = false;
+    for block in assistant_blocks {
+        if let ModelBlock::ToolUse { name, .. } = block {
+            if saw_completion && name != "CompleteWorkItem" {
+                return true;
+            }
+            if name == "CompleteWorkItem" {
+                saw_completion = true;
             }
         }
-        update_tool_result_block_content(index, tool_results, &tool_result_envelopes[index])?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_completion_report_candidate_promoted",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "work_item_id": work_item_id,
-                "turn_index": turn_index,
-                "round": round,
-                "delivery_summary_id": promotion.delivery_summary_id.clone(),
-                "brief_id": promotion.brief_id.clone(),
-                "text_preview": truncate_preview(report_text, ROUND_TEXT_PREVIEW_LIMIT),
-            }),
-        ))?;
-        Ok(Some(promotion))
     }
+    false
 }
 
 fn result_work_item_id(envelope: &ToolResultEnvelope) -> Option<String> {
@@ -3135,6 +3200,17 @@ fn result_work_item_id(envelope: &ToolResultEnvelope) -> Option<String> {
         .get("id")?
         .as_str()
         .map(ToString::to_string)
+}
+
+fn envelope_completes_work_item(envelope: &ToolResultEnvelope) -> bool {
+    envelope.tool_name == "CompleteWorkItem"
+        && envelope.status == ToolResultStatus::Success
+        && envelope
+            .result
+            .as_ref()
+            .and_then(|result| result.get("completed_transition"))
+            .and_then(Value::as_bool)
+            == Some(true)
 }
 
 fn envelope_warnings(envelope: &ToolResultEnvelope) -> Vec<Value> {

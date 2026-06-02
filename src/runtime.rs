@@ -96,7 +96,7 @@ use command_task::ManagedTaskHandle;
 use continuation::{resolve_continuation, ContinuationTrigger};
 #[cfg(test)]
 use subagent::sanitize_subagent_result;
-use turn::{LoopControlOptions, TurnTerminalDelivery};
+use turn::LoopControlOptions;
 
 #[derive(Debug, Clone)]
 pub(super) struct WorkItemCompletionReportPromotion {

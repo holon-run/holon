@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -737,15 +737,31 @@ async fn build_response(
         None
     };
     let raw_final_text = raw_final_text(&final_state, baseline, final_status);
-    let delivery_summary_text = runtime
+    let new_delivery_summaries = runtime
         .storage()
         .read_recent_delivery_summaries(usize::MAX)?
         .into_iter()
         .filter(|summary| !baseline.delivery_summary_ids.contains(&summary.id))
+        .collect::<Vec<_>>();
+    let new_delivery_summary_by_id = new_delivery_summaries
+        .iter()
+        .map(|summary| (summary.id.as_str(), summary))
+        .collect::<HashMap<_, _>>();
+    let promoted_completion_report_text = view
+        .new_events
+        .iter()
+        .filter(|event| event.kind == "work_item_completion_report_promoted")
+        .filter_map(|event| event.data["delivery_summary_id"].as_str())
+        .filter_map(|id| new_delivery_summary_by_id.get(id))
         .last()
-        .map(|summary| summary.text)
-        .map(|text| text.trim().to_string())
+        .map(|summary| summary.text.trim().to_string())
         .filter(|text| !text.is_empty());
+    let delivery_summary_text = promoted_completion_report_text.or_else(|| {
+        new_delivery_summaries
+            .last()
+            .map(|summary| summary.text.trim().to_string())
+            .filter(|text| !text.is_empty())
+    });
     let final_text = delivery_summary_text
         .or_else(|| raw_final_text.clone())
         .unwrap_or_default();
