@@ -49,8 +49,7 @@ pub fn run_onboarding_tui(config: AppConfig) -> Result<OnboardingApplySummary> {
         terminal.draw(|frame| draw(frame, &app))?;
         if app.should_quit {
             drop(guard);
-            println!("\nOnboarding cancelled.");
-            std::process::exit(0);
+            anyhow::bail!("Onboarding cancelled.");
         }
         if let Some(draft) = app.completed_draft.clone() {
             terminal.show_cursor()?;
@@ -273,6 +272,7 @@ impl OnboardingTuiApp {
                     self.step = Step::CustomModel;
                 } else {
                     self.selected_model = Some(model);
+                    self.custom_model_input.clear();
                     self.step = Step::Search;
                 }
             }

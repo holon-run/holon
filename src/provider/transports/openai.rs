@@ -965,6 +965,7 @@ impl AgentProvider for OpenAiCodexProvider {
                 if is_openai_codex_auth_status_error(&error) {
                     if let Some(refreshed) =
                         self.refresh_after_auth_failure(&credential).await.map_err(|refresh_error| {
+                            invalidate_openai_continuation(&self.continuation, plan.scope.as_ref());
                             openai_codex_auth_error(
                                 "credential_refresh_after_auth_failure",
                                 &model_ref,

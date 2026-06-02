@@ -94,7 +94,7 @@ pub fn load_codex_cli_credential(codex_home: &Path) -> Result<CodexCliCredential
         .max_by_key(codex_cli_credential_freshness_key)
         .ok_or_else(|| {
             anyhow!(
-                "no Holon OpenAI Codex OAuth credential or Codex CLI fallback credential found in {}; run Holon onboarding login for openai-codex, or run `codex login` to configure the external fallback",
+                "no Codex CLI credential found in {}; run `codex login` to configure the external fallback",
                 home.display()
             )
         })
@@ -430,16 +430,16 @@ fn handle_codex_oauth_callback(
         .filter(|code| !code.trim().is_empty())
         .context("OpenAI Codex OAuth callback did not include an authorization code")?;
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("failed to start OpenAI Codex OAuth token exchange runtime")?;
-    let tokens = runtime.block_on(exchange_codex_oauth_code_for_tokens(
-        issuer,
-        redirect_uri,
-        code_verifier,
-        code,
-    ))?;
+    let exchange = exchange_codex_oauth_code_for_tokens(issuer, redirect_uri, code_verifier, code);
+    let tokens = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(exchange))
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("failed to start OpenAI Codex OAuth token exchange runtime")?;
+        runtime.block_on(exchange)
+    }?;
     Ok(Some(codex_oauth_tokens_to_login_result(tokens)?))
 }
 
