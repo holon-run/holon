@@ -745,11 +745,12 @@ The first implementation should deliver:
   `~/.holon/credentials.json` owner-only fallback
 - built-in provider auth defaults and strict custom-provider auth validation
 - resolved model/provider runtime status
+- OpenRouter model discovery cache refresh via
+  `holon config models refresh --provider openrouter`
 - tests for config parsing, fallback chain resolution, and provider construction
 
 It should not deliver:
 
-- dynamic network catalog refresh
 - provider plugin loading
 - multi-credential profile rotation
 - provider OAuth refresh flows
@@ -757,6 +758,14 @@ It should not deliver:
 - per-agent provider profiles
 
 Those can be added later without changing the core split defined here.
+
+OpenRouter discovery is intentionally a model metadata surface, not a runtime
+selection surface. Refresh writes a local discovery cache under `HOLON_HOME`;
+resolved model availability merges `models.catalog` overrides first, cached
+remote-discovered entries second, the curated built-in catalog third, and
+`model.unknown_fallback` only for otherwise unknown explicit refs. Discovery
+does not mutate `model.default` or `model.fallbacks`, and remote capabilities
+are displayed as hints because OpenRouter routing/provider metadata can change.
 
 ## Open Questions
 

@@ -576,6 +576,7 @@ fn openai_compaction_policy_from_config(
     let policy = BuiltInModelCatalog::default().resolve_policy(
         &ModelRef::new(provider, model),
         &config.validated_model_overrides,
+        &config.model_discovery_cache.models(),
         config.validated_unknown_model_fallback.as_ref(),
         &base_context_config,
         config.runtime_max_output_tokens,
@@ -592,6 +593,7 @@ fn openai_compaction_policy_for_model(
 ) -> OpenAiCompactionPolicy {
     let policy = BuiltInModelCatalog::default().resolve_policy(
         &ModelRef::new(provider, model),
+        &Default::default(),
         &Default::default(),
         None,
         &ContextConfig::default(),

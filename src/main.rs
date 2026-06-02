@@ -29,6 +29,7 @@ use holon::{
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
     http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
+    model_discovery::{discovery_cache_path, refresh_provider_models},
     onboarding::onboarding_report,
     onboarding_tui::run_onboarding_tui,
     provider::{provider_doctor, resolved_model_availability},
@@ -781,6 +782,7 @@ mod tests {
             tui_alternate_screen: AltScreenMode::Auto,
             validated_model_overrides: Default::default(),
             validated_unknown_model_fallback: None,
+            model_discovery_cache: Default::default(),
             providers: provider_registry_for_tests(None, Some("dummy"), home.join(".codex")),
             web_config: holon::web::WebConfig::default(),
         }
@@ -2407,6 +2409,19 @@ async fn handle_config_models_command(command: ConfigModelCommands) -> Result<()
         ConfigModelCommands::List => {
             let config = AppConfig::load_for_config_inspection()?;
             print_json(&serde_json::to_value(resolved_model_availability(&config))?)
+        }
+        ConfigModelCommands::Refresh { provider } => {
+            let provider_id = ProviderId::parse(&provider)?;
+            let config = AppConfig::load_for_config_inspection()?;
+            let provider = config.providers.get(&provider_id).with_context(|| {
+                format!(
+                    "provider {} is not configured or built in",
+                    provider_id.as_str()
+                )
+            })?;
+            let report =
+                refresh_provider_models(provider, &discovery_cache_path(&config.home_dir)).await?;
+            print_json(&serde_json::to_value(report)?)
         }
     }
 }

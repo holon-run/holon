@@ -914,6 +914,7 @@ mod tests {
             tui_alternate_screen: crate::config::AltScreenMode::Auto,
             validated_model_overrides: HashMap::new(),
             validated_unknown_model_fallback: None,
+            model_discovery_cache: Default::default(),
             providers: provider_registry_for_tests(openai_key, None, PathBuf::new()),
             web_config: crate::web::WebConfig::default(),
         }

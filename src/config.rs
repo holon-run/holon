@@ -15,6 +15,7 @@ use crate::{
     model_catalog::{
         BuiltInModelCatalog, BuiltInModelMetadata, ModelRuntimeOverride, ResolvedRuntimeModelPolicy,
     },
+    model_discovery::{discovery_cache_path, load_discovery_cache_at, ModelDiscoveryCacheFile},
     provider::ProviderNativeWebSearchKind,
     web::{WebProviderKind, WebSearchMode},
 };
@@ -90,6 +91,7 @@ pub struct RuntimeModelCatalog {
     pub fallback_models: Vec<ModelRef>,
     pub disable_provider_fallback: bool,
     pub built_in_catalog: BuiltInModelCatalog,
+    pub discovered_models: HashMap<ModelRef, BuiltInModelMetadata>,
     pub model_overrides: HashMap<ModelRef, ModelRuntimeOverride>,
     pub unknown_model_fallback: Option<ModelRuntimeOverride>,
     pub configured_runtime_max_output_tokens: u32,
@@ -127,6 +129,7 @@ pub struct AppConfig {
     pub tui_alternate_screen: AltScreenMode,
     pub validated_model_overrides: HashMap<ModelRef, ModelRuntimeOverride>,
     pub validated_unknown_model_fallback: Option<ModelRuntimeOverride>,
+    pub model_discovery_cache: ModelDiscoveryCacheFile,
     pub providers: ProviderRegistry,
 }
 
@@ -646,6 +649,11 @@ impl AppConfig {
         let validated_model_overrides = resolve_model_catalog(&stored_config)?;
         let validated_unknown_model_fallback =
             validate_optional_model_runtime_override(stored_config.model.unknown_fallback.clone())?;
+        let model_discovery_cache = load_discovery_cache_at(&discovery_cache_path(&home_dir))
+            .unwrap_or_else(|error| {
+                tracing::warn!(error = %error, "ignoring invalid model discovery cache");
+                ModelDiscoveryCacheFile::default()
+            });
         let mut providers =
             resolve_provider_registry(&stored_config, &settings_env, &credential_store)?;
         for provider in providers.values_mut() {
@@ -708,6 +716,7 @@ impl AppConfig {
             tui_alternate_screen,
             validated_model_overrides,
             validated_unknown_model_fallback,
+            model_discovery_cache,
             providers,
         })
     }
@@ -782,6 +791,11 @@ impl RuntimeModelCatalog {
             fallback_models: config.fallback_models.clone(),
             disable_provider_fallback: config.provider_fallback_disabled(),
             built_in_catalog: BuiltInModelCatalog::default(),
+            discovered_models: config
+                .model_discovery_cache
+                .models()
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
             model_overrides: config.validated_model_overrides.clone(),
             unknown_model_fallback: config.validated_unknown_model_fallback.clone(),
             configured_runtime_max_output_tokens: config.runtime_max_output_tokens,
@@ -836,6 +850,7 @@ impl RuntimeModelCatalog {
         self.built_in_catalog.resolve_policy(
             &model_ref,
             &self.model_overrides,
+            &self.discovered_models,
             self.unknown_model_fallback.as_ref(),
             base_context_config,
             self.configured_runtime_max_output_tokens,
@@ -851,6 +866,7 @@ impl RuntimeModelCatalog {
             .apply_policy(
                 &self.effective_model(model_override),
                 &self.model_overrides,
+                &self.discovered_models,
                 self.unknown_model_fallback.as_ref(),
                 base_context_config,
                 self.configured_runtime_max_output_tokens,
@@ -859,7 +875,66 @@ impl RuntimeModelCatalog {
     }
 
     pub fn available_models(&self) -> Vec<BuiltInModelMetadata> {
-        self.built_in_catalog.list()
+        let mut models = self.built_in_catalog.list();
+        for discovered in self.discovered_models.values() {
+            if !self.model_overrides.contains_key(&discovered.model_ref)
+                && self.built_in_catalog.get(&discovered.model_ref).is_none()
+            {
+                models.push(discovered.clone());
+            }
+        }
+        for (model_ref, override_config) in &self.model_overrides {
+            let base = self
+                .discovered_models
+                .get(model_ref)
+                .or_else(|| self.built_in_catalog.get(model_ref));
+            models.retain(|model| &model.model_ref != model_ref);
+            models.push(BuiltInModelMetadata {
+                model_ref: model_ref.clone(),
+                display_name: override_config
+                    .display_name
+                    .clone()
+                    .or_else(|| base.map(|model| model.display_name.clone()))
+                    .unwrap_or_else(|| model_ref.as_string()),
+                description: override_config
+                    .description
+                    .clone()
+                    .or_else(|| base.map(|model| model.description.clone()))
+                    .unwrap_or_else(|| "User-configured model metadata override.".to_string()),
+                context_window_tokens: override_config
+                    .context_window_tokens
+                    .or_else(|| base.and_then(|model| model.context_window_tokens)),
+                effective_context_window_percent: override_config
+                    .effective_context_window_percent
+                    .unwrap_or_else(|| {
+                        base.map(|model| model.effective_context_window_percent)
+                            .unwrap_or(95)
+                    }),
+                auto_compact_token_limit: override_config
+                    .auto_compact_token_limit
+                    .or_else(|| base.and_then(|model| model.auto_compact_token_limit)),
+                default_max_output_tokens: override_config
+                    .runtime_max_output_tokens
+                    .or_else(|| base.and_then(|model| model.default_max_output_tokens)),
+                max_output_tokens_upper_limit: base
+                    .and_then(|model| model.max_output_tokens_upper_limit),
+                tool_output_truncation_estimated_tokens: override_config
+                    .tool_output_truncation_estimated_tokens
+                    .or_else(|| {
+                        base.and_then(|model| model.tool_output_truncation_estimated_tokens)
+                    }),
+                capabilities: base
+                    .map(|model| model.capabilities.clone())
+                    .unwrap_or_default(),
+                source: crate::model_catalog::ModelMetadataSource::ConfigOverride,
+            });
+        }
+        models.sort_by(|left, right| {
+            left.display_name
+                .cmp(&right.display_name)
+                .then_with(|| left.model_ref.as_string().cmp(&right.model_ref.as_string()))
+        });
+        models
     }
 }
 
@@ -870,6 +945,7 @@ impl Default for RuntimeModelCatalog {
             fallback_models: Vec::new(),
             disable_provider_fallback: false,
             built_in_catalog: BuiltInModelCatalog::default(),
+            discovered_models: HashMap::new(),
             model_overrides: HashMap::new(),
             unknown_model_fallback: None,
             configured_runtime_max_output_tokens: 8192,
@@ -4102,7 +4178,8 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::context::ContextConfig;
-    use crate::model_catalog::ModelRuntimeOverride;
+    use crate::model_catalog::{BuiltInModelMetadata, ModelMetadataSource, ModelRuntimeOverride};
+    use crate::model_discovery::{ModelDiscoveryCacheFile, ProviderModelDiscoveryCache};
     use crate::provider::ProviderNativeWebSearchKind;
 
     use super::{
@@ -4251,6 +4328,7 @@ mod tests {
             tui_alternate_screen: crate::config::AltScreenMode::Auto,
             validated_model_overrides: HashMap::new(),
             validated_unknown_model_fallback: None,
+            model_discovery_cache: ModelDiscoveryCacheFile::default(),
             providers: provider_registry_for_tests(
                 Some("openai-key"),
                 Some("anthropic-token"),
@@ -6183,6 +6261,88 @@ mod tests {
             unknown.source,
             crate::model_catalog::ModelMetadataSource::UnknownFallback
         );
+    }
+
+    #[test]
+    fn runtime_model_catalog_uses_discovery_cache_between_overrides_and_builtins() {
+        let mut fixture = test_app_config("openrouter/anthropic/claude-3.5-sonnet", &[]);
+        let remote_model_ref = ModelRef::parse("openrouter/anthropic/claude-3.5-sonnet").unwrap();
+        fixture.config.model_discovery_cache.providers.insert(
+            ProviderId::parse("openrouter").unwrap(),
+            ProviderModelDiscoveryCache {
+                provider: ProviderId::parse("openrouter").unwrap(),
+                fetched_at: chrono::Utc::now(),
+                source_url: Some("https://openrouter.ai/api/v1/models".into()),
+                response_hash: Some("sha256:test".into()),
+                models: vec![BuiltInModelMetadata {
+                    model_ref: remote_model_ref.clone(),
+                    display_name: "Remote Claude".into(),
+                    description: "Remote discovered model.".into(),
+                    context_window_tokens: Some(123_456),
+                    effective_context_window_percent: 95,
+                    auto_compact_token_limit: None,
+                    default_max_output_tokens: Some(7_777),
+                    max_output_tokens_upper_limit: Some(7_777),
+                    tool_output_truncation_estimated_tokens: None,
+                    capabilities: Default::default(),
+                    source: ModelMetadataSource::RemoteDiscovered,
+                }],
+            },
+        );
+        let unknown_fallback = ModelRuntimeOverride {
+            prompt_budget_estimated_tokens: Some(12_000),
+            ..ModelRuntimeOverride::default()
+        };
+        fixture.config.stored_config.model.unknown_fallback = Some(unknown_fallback.clone());
+        fixture.config.validated_unknown_model_fallback = Some(unknown_fallback);
+
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+        let base_context = ContextConfig {
+            recent_messages: fixture.config.context_window_messages,
+            recent_briefs: fixture.config.context_window_briefs,
+            compaction_trigger_messages: fixture.config.compaction_trigger_messages,
+            compaction_keep_recent_messages: fixture.config.compaction_keep_recent_messages,
+            prompt_budget_estimated_tokens: fixture.config.prompt_budget_estimated_tokens,
+            compaction_trigger_estimated_tokens: fixture.config.compaction_trigger_estimated_tokens,
+            compaction_keep_recent_estimated_tokens: fixture
+                .config
+                .compaction_keep_recent_estimated_tokens,
+            recent_episode_candidates: fixture.config.recent_episode_candidates,
+            max_relevant_episodes: fixture.config.max_relevant_episodes,
+        };
+
+        let remote = catalog.resolved_model_policy(&base_context, None);
+        assert_eq!(remote.source, ModelMetadataSource::RemoteDiscovered);
+        assert_eq!(remote.prompt_budget_estimated_tokens, 117_283);
+        assert_eq!(remote.runtime_max_output_tokens, 7_777);
+
+        let available = catalog.available_models();
+        let listed = available
+            .iter()
+            .find(|model| model.model_ref == remote_model_ref)
+            .expect("remote model should be listed");
+        assert_eq!(listed.source, ModelMetadataSource::RemoteDiscovered);
+
+        let override_config = ModelRuntimeOverride {
+            display_name: Some("Configured Claude".into()),
+            prompt_budget_estimated_tokens: Some(42_000),
+            ..ModelRuntimeOverride::default()
+        };
+        fixture
+            .config
+            .validated_model_overrides
+            .insert(remote_model_ref.clone(), override_config.clone());
+        fixture
+            .config
+            .stored_config
+            .models
+            .catalog
+            .insert(remote_model_ref.as_string(), override_config);
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+        let overridden = catalog.resolved_model_policy(&base_context, None);
+        assert_eq!(overridden.source, ModelMetadataSource::ConfigOverride);
+        assert_eq!(overridden.display_name, "Configured Claude");
+        assert_eq!(overridden.prompt_budget_estimated_tokens, 42_000);
     }
 
     #[test]
