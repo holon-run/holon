@@ -105,27 +105,23 @@ impl RuntimeHandle {
             brief.turn_index = Some(outcome.turn_index);
             self.persist_brief(&brief).await?;
         } else {
-            match outcome.terminal_delivery {
-                TurnTerminalDelivery::NormalBrief => {
-                    let mut brief =
-                        brief::make_result(&message.agent_id, message, outcome.final_text.clone());
-                    brief.turn_index = Some(outcome.turn_index);
-                    self.persist_brief(&brief).await?;
-                }
-                TurnTerminalDelivery::WorkItemCompletionReportPromoted {
-                    work_item_id,
-                    delivery_summary_id,
-                    brief_id,
-                } => {
+            if !outcome.terminal_delivery.suppress_normal_brief {
+                let mut brief =
+                    brief::make_result(&message.agent_id, message, outcome.final_text.clone());
+                brief.turn_index = Some(outcome.turn_index);
+                self.persist_brief(&brief).await?;
+            }
+            for promotion in &outcome.terminal_delivery.promoted_completion_reports {
+                if outcome.terminal_delivery.suppress_normal_brief {
                     self.inner.storage.append_event(&AuditEvent::new(
                         "turn_terminal_brief_suppressed",
                         serde_json::json!({
                             "agent_id": message.agent_id.clone(),
                             "message_id": message.id.clone(),
                             "reason": "work_item_completion_report_promoted",
-                            "work_item_id": work_item_id,
-                            "delivery_summary_id": delivery_summary_id,
-                            "brief_id": brief_id,
+                            "work_item_id": &promotion.work_item_id,
+                            "delivery_summary_id": &promotion.delivery_summary_id,
+                            "brief_id": &promotion.brief_id,
                         }),
                     ))?;
                 }
