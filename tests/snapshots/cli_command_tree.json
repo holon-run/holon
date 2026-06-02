@@ -242,6 +242,20 @@
     "aliases": []
   },
   {
+    "path": "config.models.refresh",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "provider",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "config.providers",
     "positionals": [],
     "flags": [],

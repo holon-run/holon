@@ -16,6 +16,7 @@ pub enum ModelMetadataSource {
     BuiltInCatalog,
     ConservativeBuiltin,
     ConfigOverride,
+    RemoteDiscovered,
     UnknownFallback,
 }
 
@@ -183,11 +184,13 @@ impl BuiltInModelCatalog {
         &self,
         model_ref: &ModelRef,
         overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
         unknown_fallback: Option<&ModelRuntimeOverride>,
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
     ) -> ResolvedRuntimeModelPolicy {
-        let built_in = self.get(model_ref);
+        let discovered = discovered_models.get(model_ref);
+        let built_in = discovered.or_else(|| self.get(model_ref));
         let override_config = overrides.get(model_ref);
         let fallback_override = if built_in.is_none() {
             unknown_fallback
@@ -304,6 +307,7 @@ impl BuiltInModelCatalog {
         &self,
         model_ref: &ModelRef,
         overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
+        discovered_models: &HashMap<ModelRef, BuiltInModelMetadata>,
         unknown_fallback: Option<&ModelRuntimeOverride>,
         base_context_config: &ContextConfig,
         configured_runtime_max_output_tokens: u32,
@@ -311,6 +315,7 @@ impl BuiltInModelCatalog {
         let policy = self.resolve_policy(
             model_ref,
             overrides,
+            discovered_models,
             unknown_fallback,
             base_context_config,
             configured_runtime_max_output_tokens,
@@ -1854,6 +1859,7 @@ mod tests {
         let policy = catalog.resolve_policy(
             &ModelRef::new(ProviderId::openai_codex(), "gpt-5.4"),
             &HashMap::new(),
+            &HashMap::new(),
             None,
             &base_context(),
             8192,
@@ -1869,6 +1875,7 @@ mod tests {
         let catalog = BuiltInModelCatalog::new();
         let policy = catalog.resolve_policy(
             &ModelRef::new(ProviderId::openai_codex(), "gpt-5.3-codex-spark"),
+            &HashMap::new(),
             &HashMap::new(),
             None,
             &base_context(),
@@ -1887,6 +1894,7 @@ mod tests {
         let policy = catalog.resolve_policy(
             &ModelRef::new(ProviderId::openai_codex(), "gpt-5.3-codex"),
             &HashMap::new(),
+            &HashMap::new(),
             None,
             &base_context(),
             8192,
@@ -1904,6 +1912,7 @@ mod tests {
         let policy = catalog.resolve_policy(
             &ModelRef::parse("deepseek/deepseek-v4-flash").unwrap(),
             &HashMap::new(),
+            &HashMap::new(),
             None,
             &base_context(),
             8192,
@@ -1918,6 +1927,7 @@ mod tests {
 
         let nearai = catalog.resolve_policy(
             &ModelRef::parse("nearai/zai-org/GLM-5.1-FP8").unwrap(),
+            &HashMap::new(),
             &HashMap::new(),
             None,
             &base_context(),
@@ -1937,6 +1947,7 @@ mod tests {
         let deepseek = catalog.resolve_policy(
             &ModelRef::parse("deepseek-anthropic/deepseek-v4-flash").unwrap(),
             &HashMap::new(),
+            &HashMap::new(),
             None,
             &base_context(),
             8192,
@@ -1949,6 +1960,7 @@ mod tests {
         let deepseek_openai = catalog.resolve_policy(
             &ModelRef::parse("deepseek-openai/deepseek-v4-flash").unwrap(),
             &HashMap::new(),
+            &HashMap::new(),
             None,
             &base_context(),
             8192,
@@ -1958,6 +1970,7 @@ mod tests {
 
         let xiaomi = catalog.resolve_policy(
             &ModelRef::parse("xiaomi-token-plan-openai/mimo-v2-pro").unwrap(),
+            &HashMap::new(),
             &HashMap::new(),
             None,
             &base_context(),
@@ -1972,6 +1985,7 @@ mod tests {
         let zai = catalog.resolve_policy(
             &ModelRef::parse("zai-anthropic/glm-4.7").unwrap(),
             &HashMap::new(),
+            &HashMap::new(),
             None,
             &base_context(),
             8192,
@@ -1981,6 +1995,7 @@ mod tests {
 
         let bigmodel = catalog.resolve_policy(
             &ModelRef::parse("bigmodel-openai/glm-4.7").unwrap(),
+            &HashMap::new(),
             &HashMap::new(),
             None,
             &base_context(),
@@ -1995,6 +2010,7 @@ mod tests {
         let catalog = BuiltInModelCatalog::new();
         let policy = catalog.resolve_policy(
             &ModelRef::new(ProviderId::openai(), "custom-model"),
+            &HashMap::new(),
             &HashMap::new(),
             Some(&ModelRuntimeOverride {
                 prompt_budget_estimated_tokens: Some(64_000),
@@ -2026,6 +2042,7 @@ mod tests {
         let policy = catalog.resolve_policy(
             &ModelRef::new(ProviderId::anthropic(), "claude-sonnet-4-6"),
             &overrides,
+            &HashMap::new(),
             None,
             &base_context(),
             8192,

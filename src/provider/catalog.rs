@@ -147,6 +147,7 @@ fn resolved_model_policy_for_candidate(
     BuiltInModelCatalog::default().resolve_policy(
         model_ref,
         &config.validated_model_overrides,
+        &config.model_discovery_cache.models(),
         config.validated_unknown_model_fallback.as_ref(),
         &base_context_config,
         config.runtime_max_output_tokens,

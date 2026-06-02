@@ -354,6 +354,10 @@ pub enum ConfigCredentialCommands {
 #[derive(Debug, Subcommand)]
 pub enum ConfigModelCommands {
     List,
+    Refresh {
+        #[arg(long)]
+        provider: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
