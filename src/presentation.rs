@@ -791,6 +791,10 @@ impl PresentationReducer {
                         i += 1;
                         continue;
                     }
+                    if is_successful_work_item_tool_event(event) {
+                        i += 1;
+                        continue;
+                    }
                     if is_apply_patch_tool_event(event) {
                         for item in apply_patch_items(event) {
                             items.push(TimedItem::from_event(item, event));
@@ -1440,6 +1444,19 @@ fn is_exec_command_tool_event(event: &ProjectionEventRecord) -> bool {
 
 fn is_apply_patch_tool_event(event: &ProjectionEventRecord) -> bool {
     event.payload.get("tool_name").and_then(Value::as_str) == Some("ApplyPatch")
+}
+
+fn is_successful_work_item_tool_event(event: &ProjectionEventRecord) -> bool {
+    if event.kind != "tool_executed" {
+        return false;
+    }
+    if event.payload.get("status").and_then(Value::as_str) != Some("success") {
+        return false;
+    }
+    matches!(
+        event.payload.get("tool_name").and_then(Value::as_str),
+        Some("CreateWorkItem" | "UpdateWorkItem" | "CompleteWorkItem")
+    )
 }
 
 fn apply_patch_items(event: &ProjectionEventRecord) -> Vec<PresentationItem> {
@@ -2428,12 +2445,13 @@ mod tests {
     }
 
     #[test]
-    fn reducer_does_not_render_non_exec_tool_as_command() {
+    fn reducer_suppresses_successful_work_item_tool_bookkeeping() {
         let event = make_event(
             "tool_executed",
             "Updated work item: UpdateWorkItem",
             json!({
                 "tool_name": "UpdateWorkItem",
+                "status": "success",
                 "summary": "updated work item"
             }),
         );
@@ -2441,11 +2459,52 @@ mod tests {
         let mut reducer = PresentationReducer::new();
         let items = reducer.reduce(&[event]);
 
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn reducer_keeps_error_status_work_item_tool_bookkeeping() {
+        let event = make_event(
+            "tool_executed",
+            "UpdateWorkItem error validation_failed: missing work item",
+            json!({
+                "tool_name": "UpdateWorkItem",
+                "status": "error",
+                "error": "missing work item"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
         assert_eq!(items.len(), 1);
-        assert!(!matches!(
-            items[0].item,
-            PresentationItem::CommandExecuted { .. }
-        ));
+        match &items[0].item {
+            PresentationItem::ToolAction { .. } => {}
+            other => panic!("expected ToolAction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_keeps_failed_work_item_tool_bookkeeping() {
+        let event = make_event(
+            "tool_execution_failed",
+            "Update work item failed: missing work item",
+            json!({
+                "tool_name": "UpdateWorkItem",
+                "error": "missing work item"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::ToolAction { summary } => {
+                assert!(summary.contains("Update work item failed"));
+            }
+            other => panic!("expected ToolAction, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2680,6 +2739,52 @@ mod tests {
                 }
                 other => panic!("expected WorkItemBookkeeping, got {:?}", other),
             }
+        }
+    }
+
+    #[test]
+    fn reducer_suppresses_duplicate_update_work_item_tool_event() {
+        let updated = make_event(
+            "work_item_written",
+            "work item updated",
+            json!({
+                "action": "updated",
+                "record": {
+                    "id": "wi-1",
+                    "agent_id": "default",
+                    "workspace_id": "agent_home",
+                    "objective": "deduplicate work item update display",
+                    "state": "open",
+                    "plan_status": "ready",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:01Z"
+                }
+            }),
+        );
+        let tool_event = make_event(
+            "tool_executed",
+            "Updated work item: UpdateWorkItem",
+            json!({
+                "tool_name": "UpdateWorkItem",
+                "status": "success",
+                "summary": "updated work item"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[updated, tool_event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::WorkItemBookkeeping {
+                transition,
+                summary,
+                ..
+            } => {
+                assert_eq!(*transition, WorkItemTransition::Updated);
+                assert_eq!(summary, "deduplicate work item update display");
+            }
+            other => panic!("expected WorkItemBookkeeping, got {:?}", other),
         }
     }
 
