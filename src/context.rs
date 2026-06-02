@@ -1603,7 +1603,7 @@ fn render_recent_turns_with_budget(
         .filter(|message| {
             briefs
                 .iter()
-                .any(|brief| brief.related_message_id.as_deref() == Some(message.id.as_str()))
+                .any(|brief| brief_matches_message(brief, message))
                 || tools.iter().any(|tool| {
                     tool.turn_index != 0 && message.message_seq == Some(tool.turn_index)
                 })
@@ -1616,6 +1616,7 @@ fn render_recent_turns_with_budget(
             current_message,
             operator,
             briefs,
+            tools,
             current_work_item,
         ));
     }
@@ -1668,7 +1669,7 @@ fn render_turn_projection(
 
     let related_briefs = briefs
         .iter()
-        .filter(|brief| brief.related_message_id.as_deref() == Some(message.id.as_str()))
+        .filter(|brief| brief_matches_message(brief, message))
         .map(|brief| {
             format!(
                 "    - {:?}: {}",
@@ -1699,9 +1700,10 @@ fn render_current_continuation_turn_projection(
     current_message: &MessageEnvelope,
     operator: &MessageEnvelope,
     briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
     current_work_item: Option<&WorkItemRecord>,
 ) -> String {
-    let mut rendered = render_turn_projection(operator, briefs, &[], Some(current_message));
+    let mut rendered = render_turn_projection(operator, briefs, tools, Some(current_message));
     let mut lines = vec![
         format!(
             "  - current relation: {}",
@@ -1715,12 +1717,20 @@ fn render_current_continuation_turn_projection(
     if let Some(work_item) = current_work_item {
         lines.push(format!(
             "  - current work item: {} :: {}",
-            work_item.id, work_item.objective
+            sanitize_inline(&work_item.id),
+            sanitize_inline(&truncate_text(&work_item.objective, 160))
         ));
     }
     rendered.push('\n');
     rendered.push_str(&lines.join("\n"));
     rendered
+}
+
+fn brief_matches_message(brief: &BriefRecord, message: &MessageEnvelope) -> bool {
+    brief.related_message_id.as_deref() == Some(message.id.as_str())
+        || brief
+            .turn_index
+            .is_some_and(|turn_index| message.message_seq == Some(turn_index))
 }
 
 fn turn_trigger_label(message: &MessageEnvelope) -> &'static str {

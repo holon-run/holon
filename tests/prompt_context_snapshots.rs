@@ -12,8 +12,8 @@ use holon::{
         AgentRegistryStatus, AgentState, AgentVisibility, AuthorityClass, BriefKind, BriefRecord,
         ContinuationClass, ContinuationResolution, ContinuationTriggerKind, LoadedAgentsMd,
         MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        SkillsRuntimeView, TodoItem, TodoItemState, WaitingReason, WorkItemRecord, WorkItemState,
-        WorkingMemoryDelta, WorkingMemorySnapshot,
+        SkillsRuntimeView, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
+        WaitingReason, WorkItemRecord, WorkItemState, WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
 use serde_json::json;
@@ -261,6 +261,35 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
         Some(operator_message.id.clone()),
         Some("task_exec_1".into()),
     ))?;
+    let mut turn_index_brief = BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "Captured completion report promotion.",
+        None,
+        None,
+    );
+    turn_index_brief.turn_index = Some(1);
+    storage.append_brief(&turn_index_brief)?;
+    storage.append_tool_execution(&ToolExecutionRecord {
+        id: "tool_exec_1".into(),
+        agent_id: "default".into(),
+        work_item_id: None,
+        turn_index: 1,
+        tool_name: "ExecCommand".into(),
+        created_at: Utc::now(),
+        completed_at: Some(Utc::now()),
+        duration_ms: 42,
+        authority_class: AuthorityClass::RuntimeInstruction,
+        status: ToolExecutionStatus::Success,
+        input: json!({ "fixture": true }),
+        output: json!({ "exit": 0 }),
+        summary: "Run command: cargo test runtime_flow".into(),
+        invocation_surface: Some("commentary".into()),
+    })?;
+
+    let mut work_item = WorkItemRecord::new("default", "Track\nruntime flow", WorkItemState::Open);
+    work_item.id = "work_runtime_flow".into();
+    storage.append_work_item(&work_item)?;
 
     let task_result = MessageEnvelope::new(
         "default",
@@ -291,7 +320,11 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
 
     let rendered = render_context_snapshot(
         &storage,
-        &AgentState::new("default"),
+        &{
+            let mut session = AgentState::new("default");
+            session.current_work_item_id = Some(work_item.id.clone());
+            session
+        },
         &task_result,
         Some(&continuation),
     )?;
@@ -302,13 +335,23 @@ Agent id: default
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
 
+## current_work_item
+Current work item:
+- Id: work_runtime_flow
+- State: Open
+- Readiness: Runnable
+- Objective: Track
+runtime flow
+- Plan status: draft
+- Plan artifact: $AGENT_HOME/work-items/work_runtime_flow/plan.md
+- Plan preview complete: true
+
 ## context_contract
 {CONTEXT_CONTRACT}
 
 ## continuation_anchor
 Continuation anchor:
-Latest trusted operator input:
-Run cargo test runtime_flow and report back.
+Latest trusted operator input: message_seq 1.
 Current input relation: current_input is a task-result continuation, not a new operator request. Continue the latest trusted operator input above unless the current WorkItem projection is more specific.
 
 ## recent_turns
@@ -320,16 +363,28 @@ Recent turns:
   - operator asked: Run cargo test runtime_flow and report back.
   - produced briefs:
     - Ack: Started cargo test runtime_flow.
+    - Result: Captured completion report promotion.
+  - tool executions:
+    - [trusted_system][Success] Run command: cargo test runtime_flow
   - current relation: a task-result continuation
   - current input: Command task completed successfully: cargo test runtime_flow
+  - current work item: work_runtime_flow :: Track runtime flow
 
 ## recent_messages
 Recent messages:
 - [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt] Run cargo test runtime_flow and report back.
 
+## latest_result
+Latest completed result:
+Captured completion report promotion.
+
 ## recent_briefs
 Recent briefs:
 - [Ack] Started cargo test runtime_flow.
+
+## recent_tool_executions
+Recent tool executions:
+- [trusted_system][Success] Run command: cargo test runtime_flow
 
 ## continuation_context
 Continuation context:
