@@ -114,7 +114,7 @@ fn build_candidate_reports_missing_auth_for_each_provider() {
     .expect("missing Codex auth should fail codex candidate");
     assert!(codex_err
         .to_string()
-        .contains("no Codex CLI credentials found"));
+        .contains("no Holon openai-codex credential profile or usable Codex CLI credentials"));
 
     let gemini = test_config("gemini/gemini-3-pro", &[], None, None, false);
     let gemini_err = build_candidate(
@@ -291,7 +291,9 @@ async fn openai_codex_unauthorized_status_includes_login_hint_and_diagnostics() 
         .expect_err("401 should fail fast");
 
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
-    assert!(error.to_string().contains("Codex CLI token may be expired"));
+    assert!(error
+        .to_string()
+        .contains("OpenAI Codex authentication failed"));
     assert!(error.to_string().contains("codex login"));
     let timeline = provider_attempt_timeline(&error).expect("missing attempt timeline");
     assert_eq!(
@@ -376,10 +378,9 @@ fn provider_doctor_reports_success_and_failure_paths() {
         .as_str()
         .unwrap()
         .contains("missing OPENAI_API_KEY"));
-    assert!(providers[2]["availability"]["error"]
-        .as_str()
-        .unwrap()
-        .contains("no Codex CLI credentials found"));
+    let codex_error = providers[2]["availability"]["error"].as_str().unwrap();
+    assert!(codex_error.contains("Codex"));
+    assert!(codex_error.contains("credential"));
 }
 
 #[test]
@@ -1815,7 +1816,9 @@ fn build_candidate_fails_when_codex_external_cli_auth_missing() {
     )
     .err()
     .expect("missing external CLI auth should fail");
-    assert!(err.to_string().contains("no Codex CLI credentials found"));
+    assert!(err
+        .to_string()
+        .contains("no Holon openai-codex credential profile or usable Codex CLI credentials"));
 }
 
 #[test]
@@ -1899,10 +1902,9 @@ fn provider_doctor_reports_missing_codex_external_cli_auth() {
         codex_provider["availability"]["available"],
         Value::Bool(false)
     );
-    assert!(codex_provider["availability"]["error"]
-        .as_str()
-        .unwrap()
-        .contains("no Codex CLI credentials found"));
+    let codex_error = codex_provider["availability"]["error"].as_str().unwrap();
+    assert!(codex_error.contains("Codex"));
+    assert!(codex_error.contains("credential"));
 }
 
 #[test]
