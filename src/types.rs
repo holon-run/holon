@@ -3228,7 +3228,6 @@ impl WorkItemRecord {
             recheck_at: None,
             recheck_consumed_at: None,
             result_summary: None,
-            turn_id: None,
             created_at: now,
             updated_at: now,
             turn_id: None,
