@@ -84,6 +84,8 @@ not rendered in full by default.
 Each turn assembles a prompt from budgeted memory sections:
 
 - Hot turn context (current input, continuation, recent events)
+- Turn-based context projection (linked turns, result briefs, task results,
+  and work item transitions)
 - Current work item and plan
 - Relevant episode memory
 - Working memory snapshot
@@ -91,6 +93,8 @@ Each turn assembles a prompt from budgeted memory sections:
 
 This assembly keeps prompt size bounded while preserving continuity.
 Slow-changing memory sections keep provider cache identity stable.
+For a user-facing walkthrough of how these sections fit together, see
+[Context Continuity](/concepts/context-continuity.md).
 
 ## Memory vs Agent Home Files
 
@@ -149,6 +153,7 @@ surface and let shared workspaces accumulate knowledge across multiple agents.
 
 ## See Also
 
+- [Context Continuity](/concepts/context-continuity.md) — How Holon keeps context coherent without replaying the entire transcript
 - [Runtime Model](/concepts/runtime-model.md) — Agents, work items, and the execution loop
 - [Documentation Layers](/concepts/documentation-layers.md) — How memory fits into Holon's documentation architecture
 - [Agent Templates](/guides/agent-templates.md) — How templates initialize agent role contracts

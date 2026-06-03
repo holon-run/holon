@@ -52,6 +52,10 @@ out, and the state disappears. Holon is different because:
 The **memory system** page explains how Holon preserves continuity across
 turns through working memory, episode archives, and indexed search.
 
+The **context continuity** page explains how Holon assembles bounded prompt
+context from turns, work items, task results, briefs, and structured episodes
+without relying on raw transcript replay.
+
 The **runtime model** page expands the four-object mental model into precise
 lifecycle vocabulary: agent profiles, work-item states, task kinds, queue
 semantics, triggers, and workspace isolation.
@@ -73,6 +77,10 @@ These are maintainer-facing documents; you do not need them to use Holon.
 
 - [Runtime model](./runtime-model.md)
   Agents, tasks, work items, workspaces, and the execution loop that make up Holon's runtime.
+  <!-- mdorigin:index kind=article -->
+
+- [Context continuity](./context-continuity.md)
+  How Holon keeps long-lived agent context coherent without replaying every transcript turn.
   <!-- mdorigin:index kind=article -->
 
 - [Memory system](./memory.md)
