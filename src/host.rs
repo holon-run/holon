@@ -1209,9 +1209,7 @@ impl RuntimeHost {
                 .compaction_keep_recent_estimated_tokens,
             recent_episode_candidates: self.config().recent_episode_candidates,
             max_relevant_episodes: self.config().max_relevant_episodes,
-            turn_projection_budget_ratio: 0.30,
-            turn_projection_min_budget: 4096,
-            turn_projection_max_budget: 64000,
+            ..ContextConfig::default()
         };
         RuntimeModelCatalog::from_config(self.config()).resolved_context_config(&base, None)
     }

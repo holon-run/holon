@@ -2077,10 +2077,11 @@ impl TurnExecution<'_> {
                 let stale_work_item_reminder = if let Some((work_item, reminder)) =
                     stale_work_item_reminder
                 {
+                    let turn_projection_budget = context_config.turn_projection_budget();
                     if runtime_reminder_fits_baseline(
                         &prompt_frame,
                         &available_tools,
-                        context_config.prompt_budget_estimated_tokens,
+                        turn_projection_budget,
                         &reminder,
                     ) {
                         Some((work_item, reminder))
@@ -2127,7 +2128,7 @@ impl TurnExecution<'_> {
                     &available_tools,
                     &checkpoint_state,
                     checkpoint_request_id,
-                    context_config.prompt_budget_estimated_tokens,
+                    context_config.turn_projection_budget(),
                     context_config.compaction_keep_recent_estimated_tokens,
                     stale_work_item_reminder
                         .as_ref()

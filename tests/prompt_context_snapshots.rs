@@ -90,9 +90,7 @@ fn test_config() -> ContextConfig {
         compaction_keep_recent_estimated_tokens: 768,
         recent_episode_candidates: 6,
         max_relevant_episodes: 2,
-        turn_projection_budget_ratio: 0.30,
-        turn_projection_min_budget: 4096,
-        turn_projection_max_budget: 64000,
+        ..ContextConfig::default()
     }
 }
 

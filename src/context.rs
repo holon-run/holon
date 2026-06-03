@@ -2140,6 +2140,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn turn_projection_budget_applies_ratio_floor_and_ceiling() {
+        let ratio = ContextConfig {
+            prompt_budget_estimated_tokens: 20_000,
+            turn_projection_budget_ratio: 0.25,
+            turn_projection_min_budget: 4_096,
+            turn_projection_max_budget: 64_000,
+            ..ContextConfig::default()
+        };
+        assert_eq!(ratio.turn_projection_budget(), 5_000);
+
+        let floor = ContextConfig {
+            prompt_budget_estimated_tokens: 2_000,
+            turn_projection_budget_ratio: 0.30,
+            turn_projection_min_budget: 4_096,
+            turn_projection_max_budget: 64_000,
+            ..ContextConfig::default()
+        };
+        assert_eq!(floor.turn_projection_budget(), 4_096);
+
+        let ceiling = ContextConfig {
+            prompt_budget_estimated_tokens: 258_400,
+            turn_projection_budget_ratio: 0.30,
+            turn_projection_min_budget: 4_096,
+            turn_projection_max_budget: 64_000,
+            ..ContextConfig::default()
+        };
+        assert_eq!(ceiling.turn_projection_budget(), 64_000);
+    }
+
+    #[test]
     fn compaction_adds_summary_when_message_count_exceeds_threshold() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
