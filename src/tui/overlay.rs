@@ -26,6 +26,7 @@ pub(super) enum OverlayState {
         detail_scroll: u16,
     },
     ModelPicker {
+        provider: Option<String>,
         filter: String,
         selected: usize,
     },
@@ -62,9 +63,11 @@ pub(super) fn draw_overlay(frame: &mut Frame<'_>, app: &TuiApp) {
             selected,
             detail_scroll,
         } => draw_tasks_overlay(frame, app, *selected, *detail_scroll),
-        OverlayState::ModelPicker { filter, selected } => {
-            draw_model_picker_overlay(frame, app, filter, *selected)
-        }
+        OverlayState::ModelPicker {
+            provider,
+            filter,
+            selected,
+        } => draw_model_picker_overlay(frame, app, provider.as_deref(), filter, *selected),
         OverlayState::ModelEffortPicker {
             model, selected, ..
         } => draw_model_effort_picker_overlay(frame, app, model, *selected),
@@ -304,7 +307,13 @@ fn draw_tasks_overlay(frame: &mut Frame<'_>, app: &TuiApp, selected: usize, deta
     frame.render_widget(detail, layout[1]);
 }
 
-fn draw_model_picker_overlay(frame: &mut Frame<'_>, app: &TuiApp, filter: &str, selected: usize) {
+fn draw_model_picker_overlay(
+    frame: &mut Frame<'_>,
+    app: &TuiApp,
+    provider: Option<&str>,
+    filter: &str,
+    selected: usize,
+) {
     let popup = centered_rect(92, 80, frame.area());
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -321,19 +330,26 @@ fn draw_model_picker_overlay(frame: &mut Frame<'_>, app: &TuiApp, filter: &str, 
     } else {
         format!("Filter: {filter}")
     };
+    let title = provider
+        .map(|provider| format!("Model · provider:{provider}"))
+        .unwrap_or_else(|| "Model · providers".to_string());
     let filter_widget =
-        Paragraph::new(filter_text).block(Block::default().title("Model").borders(Borders::ALL));
+        Paragraph::new(filter_text).block(Block::default().title(title).borders(Borders::ALL));
     frame.render_widget(filter_widget, layout[0]);
 
     let rows = crate::tui::model_picker::model_picker_rows(
         app.selected_agent_summary(),
         &app.model_availability,
+        provider,
         filter,
     );
     let items = if rows.is_empty() {
-        vec![ListItem::new(
-            "No runtime-provided model availability matches the filter",
-        )]
+        let message = provider
+            .map(|provider| {
+                format!("No runtime-provided models for provider {provider} match the filter")
+            })
+            .unwrap_or_else(|| "No runtime-provided model providers match the filter".to_string());
+        vec![ListItem::new(message)]
     } else {
         rows.iter()
             .map(|row| {
@@ -347,7 +363,15 @@ fn draw_model_picker_overlay(frame: &mut Frame<'_>, app: &TuiApp, filter: &str, 
         state.select(Some(selected.min(rows.len().saturating_sub(1))));
     }
     let list = List::new(items)
-        .block(Block::default().title("Models").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title(if provider.is_some() {
+                    "Models"
+                } else {
+                    "Providers"
+                })
+                .borders(Borders::ALL),
+        )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, layout[1], &mut state);
@@ -357,7 +381,12 @@ fn draw_model_picker_overlay(frame: &mut Frame<'_>, app: &TuiApp, filter: &str, 
         .map(render::render_model_status)
         .unwrap_or_else(|| "model: <no agent selected>".into());
     let help = Paragraph::new(format!(
-        "{current}\nType to filter, Backspace edits, Up/Down moves, Enter selects, Esc cancels"
+        "{current}\nType to filter, Backspace edits, Up/Down moves, Enter selects, Esc {}",
+        if provider.is_some() {
+            "goes back"
+        } else {
+            "cancels"
+        }
     ))
     .block(Block::default().borders(Borders::ALL))
     .wrap(Wrap { trim: false });

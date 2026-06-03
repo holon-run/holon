@@ -3,7 +3,13 @@ use crate::types::{AgentSummary, ResolvedModelAvailability};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ModelPickerChoice {
     InheritDefault,
-    Model { model: String },
+    Provider {
+        provider: String,
+    },
+    Model {
+        model: String,
+        supports_reasoning_effort: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +24,7 @@ pub(super) struct ModelPickerRow {
 pub(super) fn model_picker_rows(
     agent: Option<&AgentSummary>,
     model_availability: &[ResolvedModelAvailability],
+    provider: Option<&str>,
     filter: &str,
 ) -> Vec<ModelPickerRow> {
     let Some(agent) = agent else {
@@ -25,40 +32,45 @@ pub(super) fn model_picker_rows(
     };
     let inherit_row = inherit_default_row(agent);
     let query = filter.trim().to_ascii_lowercase();
-    let model_rows = model_availability
-        .iter()
-        .filter(|entry| entry.available)
-        .map(model_availability_row);
+    let choice_rows = match provider {
+        Some(provider) => provider_model_rows(model_availability, provider),
+        None => provider_rows(model_availability),
+    };
     if query.is_empty() {
         let mut rows = vec![inherit_row];
-        rows.extend(model_rows);
+        rows.extend(choice_rows);
         return rows;
     }
 
     let mut rows = vec![inherit_row];
-    rows.extend(model_rows.filter(|row| row.searchable.contains(&query)));
+    rows.extend(
+        choice_rows
+            .into_iter()
+            .filter(|row| row.searchable.contains(&query)),
+    );
     rows
 }
 
-pub(super) fn selected_model_choice(
+pub(super) fn selected_model_picker_row(
     agent: Option<&AgentSummary>,
     model_availability: &[ResolvedModelAvailability],
+    provider: Option<&str>,
     filter: &str,
     selected: usize,
-) -> Option<ModelPickerChoice> {
-    model_picker_rows(agent, model_availability, filter)
+) -> Option<ModelPickerRow> {
+    model_picker_rows(agent, model_availability, provider, filter)
         .into_iter()
         .nth(selected)
-        .map(|row| row.choice)
 }
 
 pub(super) fn clamp_model_picker_selection(
     agent: Option<&AgentSummary>,
     model_availability: &[ResolvedModelAvailability],
+    provider: Option<&str>,
     filter: &str,
     selected: usize,
 ) -> usize {
-    let len = model_picker_rows(agent, model_availability, filter).len();
+    let len = model_picker_rows(agent, model_availability, provider, filter).len();
     if len == 0 {
         0
     } else {
@@ -83,6 +95,81 @@ fn inherit_default_row(agent: &AgentSummary) -> ModelPickerRow {
     }
 }
 
+fn provider_rows(model_availability: &[ResolvedModelAvailability]) -> Vec<ModelPickerRow> {
+    let mut providers =
+        std::collections::BTreeMap::<String, Vec<&ResolvedModelAvailability>>::new();
+    for entry in model_availability {
+        providers
+            .entry(entry.provider.clone())
+            .or_default()
+            .push(entry);
+    }
+
+    providers
+        .into_iter()
+        .map(|(provider, models)| provider_row(provider, models))
+        .collect()
+}
+
+fn provider_row(provider: String, models: Vec<&ResolvedModelAvailability>) -> ModelPickerRow {
+    let available_count = models.iter().filter(|entry| entry.available).count();
+    let discovered_count = models
+        .iter()
+        .filter(|entry| entry.metadata_source == "remote_discovered")
+        .count();
+    let first = models.first().copied();
+    let transport = first
+        .and_then(|entry| entry.transport.as_deref())
+        .map(|transport| format!(" transport:{transport}"))
+        .unwrap_or_default();
+    let source = first
+        .and_then(|entry| entry.provider_source.as_deref())
+        .map(|source| format!(" provider:{source}"))
+        .unwrap_or_default();
+    let credential = first
+        .and_then(|entry| entry.credential_source.as_deref())
+        .map(|source| format!(" credential:{source}"))
+        .unwrap_or_default();
+    let status = if available_count > 0 {
+        format!(
+            "ready: {available_count}/{} models selectable",
+            models.len()
+        )
+    } else {
+        let reason = models
+            .iter()
+            .find_map(|entry| entry.unavailable_reason.as_deref())
+            .unwrap_or("provider unavailable");
+        format!("unavailable: {reason}")
+    };
+    let discovery = if discovered_count > 0 {
+        format!(" remote-discovered:{discovered_count}")
+    } else {
+        String::new()
+    };
+    ModelPickerRow {
+        choice: ModelPickerChoice::Provider {
+            provider: provider.clone(),
+        },
+        title: provider.clone(),
+        detail: format!("{status}{transport}{source}{credential}{discovery}"),
+        searchable: format!("{provider} {status}{transport}{source}{credential}{discovery}")
+            .to_ascii_lowercase(),
+        available: true,
+    }
+}
+
+fn provider_model_rows(
+    model_availability: &[ResolvedModelAvailability],
+    provider: &str,
+) -> Vec<ModelPickerRow> {
+    model_availability
+        .iter()
+        .filter(|entry| entry.provider == provider)
+        .map(model_availability_row)
+        .collect()
+}
+
 fn model_availability_row(entry: &ResolvedModelAvailability) -> ModelPickerRow {
     let status = if entry.available {
         "ready".to_string()
@@ -94,6 +181,11 @@ fn model_availability_row(entry: &ResolvedModelAvailability) -> ModelPickerRow {
                 .as_deref()
                 .unwrap_or("provider unavailable")
         )
+    };
+    let reasoning = if supports_reasoning_effort(entry) {
+        " reasoning:configurable"
+    } else {
+        " reasoning:skipped"
     };
     let provider = entry
         .provider_source
@@ -108,24 +200,35 @@ fn model_availability_row(entry: &ResolvedModelAvailability) -> ModelPickerRow {
     ModelPickerRow {
         choice: ModelPickerChoice::Model {
             model: entry.model.clone(),
+            supports_reasoning_effort: supports_reasoning_effort(entry),
         },
         title: format!("{}  {}", entry.model, entry.display_name),
         detail: format!(
-            "{status}  {provider}{transport}  source:{}",
+            "{status}  {provider}{transport}{reasoning}  source:{}",
             entry.metadata_source
         ),
         searchable: format!(
-            "{} {} {} {} {}",
-            entry.model, entry.display_name, entry.provider, entry.metadata_source, status
+            "{} {} {} {} {} {}",
+            entry.model,
+            entry.display_name,
+            entry.provider,
+            entry.metadata_source,
+            status,
+            reasoning
         )
         .to_ascii_lowercase(),
         available: entry.available,
     }
 }
 
+fn supports_reasoning_effort(entry: &ResolvedModelAvailability) -> bool {
+    entry.policy.capabilities.reasoning_summaries
+        && entry.transport.as_deref() == Some("openai_codex_responses")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{clamp_model_picker_selection, model_picker_rows, selected_model_choice};
+    use super::{clamp_model_picker_selection, model_picker_rows, selected_model_picker_row};
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
     use crate::{
         config::{ModelRef, ProviderId},
@@ -139,7 +242,7 @@ mod tests {
         },
     };
 
-    fn policy(model: &str, display_name: &str) -> ResolvedRuntimeModelPolicy {
+    fn policy(model: &str, display_name: &str, reasoning: bool) -> ResolvedRuntimeModelPolicy {
         ResolvedRuntimeModelPolicy {
             model_ref: ModelRef::parse(model).unwrap(),
             display_name: display_name.into(),
@@ -152,12 +255,20 @@ mod tests {
             runtime_max_output_tokens: 32_000,
             tool_output_truncation_estimated_tokens: 2_500,
             max_output_tokens_upper_limit: Some(128_000),
-            capabilities: ModelCapabilityFlags::default(),
+            capabilities: ModelCapabilityFlags {
+                reasoning_summaries: reasoning,
+                ..ModelCapabilityFlags::default()
+            },
             source: ModelMetadataSource::BuiltInCatalog,
         }
     }
 
-    fn availability(model: &str, display_name: &str, available: bool) -> ResolvedModelAvailability {
+    fn availability(
+        model: &str,
+        display_name: &str,
+        available: bool,
+        reasoning: bool,
+    ) -> ResolvedModelAvailability {
         let model_ref = ModelRef::parse(model).unwrap();
         ResolvedModelAvailability {
             model: model.into(),
@@ -172,14 +283,20 @@ mod tests {
             credential_configured: available,
             available,
             unavailable_reason: (!available).then_some("credential_missing".into()),
-            policy: policy(model, display_name),
+            policy: policy(model, display_name, reasoning),
         }
     }
 
     fn model_availability() -> Vec<ResolvedModelAvailability> {
         vec![
-            availability("openai/gpt-5.4", "GPT-5.4", true),
-            availability("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6", false),
+            availability("openai/gpt-5.4", "GPT-5.4", true, true),
+            availability(
+                "anthropic/claude-sonnet-4-6",
+                "Claude Sonnet 4.6",
+                false,
+                false,
+            ),
+            availability("openrouter/deepseek-v3", "DeepSeek V3", true, false),
         ]
     }
 
@@ -211,7 +328,7 @@ mod tests {
                 effective_fallback_models: Vec::new(),
                 override_model: None,
                 override_reasoning_effort: None,
-                resolved_policy: policy("openai/gpt-5.4", "GPT-5.4"),
+                resolved_policy: policy("openai/gpt-5.4", "GPT-5.4", true),
             },
             token_usage: AgentTokenUsageSummary {
                 total: TokenUsage::new(0, 0),
@@ -252,33 +369,51 @@ mod tests {
     }
 
     #[test]
-    fn picker_rows_include_inherit_and_runtime_availability() {
+    fn picker_rows_start_with_provider_choices() {
         let agent = summary();
         let availability = model_availability();
-        let rows = model_picker_rows(Some(&agent), &availability, "");
+        let rows = model_picker_rows(Some(&agent), &availability, None, "");
+        assert_eq!(rows.len(), 4);
+        assert!(rows[0].title.contains("inherit runtime default"));
+        assert!(rows.iter().any(|row| row.title == "openai"));
+        assert!(rows.iter().any(|row| row.title == "openrouter"));
+    }
+
+    #[test]
+    fn provider_model_page_shows_provider_specific_models() {
+        let agent = summary();
+        let availability = model_availability();
+        let rows = model_picker_rows(Some(&agent), &availability, Some("openrouter"), "");
         assert_eq!(rows.len(), 2);
         assert!(rows[0].title.contains("inherit runtime default"));
-        assert!(rows[1].title.contains("openai/gpt-5.4"));
+        assert!(rows[1].title.contains("openrouter/deepseek-v3"));
         assert!(rows[1].available);
+        assert!(rows[1].detail.contains("reasoning:skipped"));
     }
 
     #[test]
-    fn picker_rows_skip_unavailable_models() {
+    fn provider_model_page_surfaces_unavailable_models() {
         let agent = summary();
         let availability = model_availability();
-        let rows = model_picker_rows(Some(&agent), &availability, "");
-        assert!(!rows
+        let rows = model_picker_rows(Some(&agent), &availability, Some("anthropic"), "");
+        assert!(rows
             .iter()
             .any(|row| row.title.contains("anthropic/claude-sonnet-4-6")));
+        assert!(!rows[1].available);
+        assert!(rows[1].detail.contains("credential_missing"));
     }
 
     #[test]
-    fn picker_rows_filter_by_model_and_label() {
+    fn picker_rows_filter_by_provider_or_model_context() {
         let agent = summary();
         let availability = model_availability();
-        let rows = model_picker_rows(Some(&agent), &availability, "sonnet");
-        assert_eq!(rows.len(), 1);
+        let rows = model_picker_rows(Some(&agent), &availability, None, "router");
+        assert_eq!(rows.len(), 2);
         assert!(rows[0].title.contains("inherit runtime default"));
+
+        let rows = model_picker_rows(Some(&agent), &availability, Some("anthropic"), "sonnet");
+        assert_eq!(rows.len(), 2);
+        assert!(rows[1].title.contains("claude-sonnet"));
     }
 
     #[test]
@@ -286,9 +421,14 @@ mod tests {
         let agent = summary();
         let availability = model_availability();
         assert_eq!(
-            clamp_model_picker_selection(Some(&agent), &availability, "gpt", 10),
+            clamp_model_picker_selection(Some(&agent), &availability, Some("openai"), "gpt", 10),
             1
         );
-        assert!(selected_model_choice(Some(&agent), &availability, "", 1).is_some());
+        assert!(selected_model_picker_row(Some(&agent), &availability, None, "", 1).is_some());
+        assert!(
+            !selected_model_picker_row(Some(&agent), &availability, Some("anthropic"), "", 1)
+                .unwrap()
+                .available
+        );
     }
 }
