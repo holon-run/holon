@@ -1979,29 +1979,32 @@ fn render_episode_block(episode: &ContextEpisodeRecord) -> String {
         ));
     }
     if !episode.source_turn_ids.is_empty() || !episode.source_refs.is_empty() {
-        let turn_ids = episode
-            .source_turn_ids
-            .iter()
-            .take(8)
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        let source_refs = episode
-            .source_refs
-            .iter()
-            .take(4)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        lines.push(format!(
-            "  - Source refs: turns [{}]{}",
-            turn_ids,
-            if source_refs.is_empty() {
-                String::new()
-            } else {
-                format!("; refs [{source_refs}]")
-            }
-        ));
+        let mut source_parts = Vec::new();
+        if !episode.source_turn_ids.is_empty() {
+            source_parts.push(format!(
+                "turns [{}]",
+                episode
+                    .source_turn_ids
+                    .iter()
+                    .take(8)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !episode.source_refs.is_empty() {
+            source_parts.push(format!(
+                "refs [{}]",
+                episode
+                    .source_refs
+                    .iter()
+                    .take(4)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        lines.push(format!("  - Source refs: {}", source_parts.join("; ")));
     }
     if let Some(generated_by) = episode.generated_by.as_ref() {
         lines.push(format!(

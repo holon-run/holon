@@ -350,7 +350,7 @@ fn episode_operator_intents(builder: &ActiveEpisodeBuilder) -> Vec<String> {
         intents.push(format!("objective: {objective}"));
     }
     if let Some(work_summary) = builder.work_summary.as_deref() {
-        if !intents.iter().any(|intent| intent.ends_with(work_summary)) {
+        if builder.objective.as_deref() != Some(work_summary) {
             intents.push(format!("work_summary: {work_summary}"));
         }
     }
@@ -404,7 +404,10 @@ fn episode_model_inferences(summary: &str) -> Vec<String> {
     if summary.trim().is_empty() {
         Vec::new()
     } else {
-        vec![format!("non_authoritative_summary: {summary}")]
+        vec![format!(
+            "non_authoritative_summary: {}",
+            summary.split_whitespace().collect::<Vec<_>>().join(" ")
+        )]
     }
 }
 
