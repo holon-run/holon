@@ -27,9 +27,9 @@ use crate::{
     types::{
         AdmissionContext, AuditEvent, AuthorityClass, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
-        TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        TurnTerminalCheckpointRecord, TurnTerminalKind, TurnTerminalRecord, WorkItemPlanStatus,
-        WorkItemRecord,
+        TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, TurnRecord,
+        TurnTerminalCheckpointRecord, TurnTerminalKind, TurnTerminalRecord, TurnTerminalSummary,
+        TurnTriggerSummary, WorkItemPlanStatus, WorkItemRecord,
     },
 };
 
@@ -42,6 +42,7 @@ use super::{
 pub(super) struct AgentLoopOutcome {
     pub(super) final_text: String,
     pub(super) turn_index: u64,
+    pub(super) terminal: TurnTerminalRecord,
     pub(super) should_sleep: bool,
     pub(super) sleep_duration_ms: Option<u64>,
     pub(super) allow_sleep_runnable_work_override: bool,
@@ -99,6 +100,7 @@ const WORK_ITEM_STALE_REMINDER_MAX_TOKENS: usize = 512;
 const WORK_ITEM_STALE_REMINDER_PLAN_LINE_LIMIT: usize = 8;
 const WORK_ITEM_STALE_REMINDER_PLAN_CHAR_LIMIT: usize = 1_200;
 const WORK_ITEM_STALE_REMINDER_TODO_LIMIT: usize = 8;
+const TURN_RECORD_SCAN_LIMIT: usize = 4096;
 const OPERATOR_INTERJECTION_HEADER: &str =
     "[Operator message received while this turn was in progress]";
 const COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT: &str = "\
@@ -227,6 +229,13 @@ fn terminal_checkpoint_from_state(
         text: latest.text.clone(),
         checkpoint_anchor_generation: latest.anchor_generation,
         current_anchor_generation: checkpoint_state.anchor_generation,
+    })
+}
+
+fn turn_optional_id_matches(candidate: Option<&str>, turn_id: &str) -> bool {
+    candidate.is_some_and(|candidate| {
+        let candidate = candidate.trim();
+        !candidate.is_empty() && candidate == turn_id
     })
 }
 
@@ -1419,6 +1428,7 @@ impl RuntimeHandle {
         Ok(Some(AgentLoopOutcome {
             final_text,
             turn_index: terminal.turn_index,
+            terminal,
             should_sleep: false,
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
@@ -1468,6 +1478,108 @@ impl RuntimeHandle {
             serde_json::to_value(&record)?,
         ))?;
         Ok(record)
+    }
+
+    pub(super) async fn persist_turn_record(&self, terminal: &TurnTerminalRecord) -> Result<()> {
+        let (agent_id, run_id, current_work_item_id) = {
+            let guard = self.inner.agent.lock().await;
+            (
+                guard.state.id.clone(),
+                guard.state.current_run_id.clone(),
+                guard
+                    .state
+                    .current_turn_work_item_id
+                    .clone()
+                    .or_else(|| guard.state.current_work_item_id.clone()),
+            )
+        };
+        let turn_id = terminal.turn_id.trim();
+        if turn_id.is_empty() {
+            return Ok(());
+        }
+
+        let messages = self.inner.storage.read_all_messages()?;
+        let briefs = self
+            .inner
+            .storage
+            .read_recent_briefs(TURN_RECORD_SCAN_LIMIT)?;
+        let tools = self
+            .inner
+            .storage
+            .read_recent_tool_executions(TURN_RECORD_SCAN_LIMIT)?;
+        let delivery_summaries = self
+            .inner
+            .storage
+            .read_recent_delivery_summaries(TURN_RECORD_SCAN_LIMIT)?;
+        let wait_conditions = self
+            .inner
+            .storage
+            .read_recent_wait_conditions(TURN_RECORD_SCAN_LIMIT)?;
+
+        let input_messages = messages
+            .iter()
+            .filter(|message| {
+                turn_optional_id_matches(message.turn_id.as_deref(), turn_id)
+                    || message.message_seq == Some(terminal.turn_index)
+            })
+            .collect::<Vec<_>>();
+
+        let mut record = TurnRecord::new(agent_id, turn_id, terminal.turn_index);
+        record.run_id = run_id;
+        record.current_work_item_id = current_work_item_id;
+        record.trigger = input_messages
+            .first()
+            .map(|message| TurnTriggerSummary::from_message(message));
+        record.input_message_ids = input_messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect();
+        record.tool_execution_ids = tools
+            .iter()
+            .filter(|tool| {
+                turn_optional_id_matches(tool.turn_id.as_deref(), turn_id)
+                    || tool.turn_index == terminal.turn_index
+            })
+            .map(|tool| tool.id.clone())
+            .collect();
+        record.produced_brief_ids = briefs
+            .iter()
+            .filter(|brief| {
+                turn_optional_id_matches(brief.turn_id.as_deref(), turn_id)
+                    || brief.turn_index == Some(terminal.turn_index)
+            })
+            .map(|brief| brief.id.clone())
+            .collect();
+        let turn_delivery_summaries = delivery_summaries
+            .iter()
+            .filter(|summary| {
+                turn_optional_id_matches(summary.turn_id.as_deref(), turn_id)
+                    || summary.source_turn_index == Some(terminal.turn_index)
+            })
+            .collect::<Vec<_>>();
+        record.delivery_summary_ids = turn_delivery_summaries
+            .iter()
+            .map(|summary| summary.id.clone())
+            .collect();
+        record.completed_work_item_ids = turn_delivery_summaries
+            .iter()
+            .map(|summary| summary.work_item_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        record.waiting_condition_ids = wait_conditions
+            .iter()
+            .filter(|condition| turn_optional_id_matches(condition.turn_id.as_deref(), turn_id))
+            .map(|condition| condition.id.clone())
+            .collect();
+        record.terminal = Some(TurnTerminalSummary::from_terminal(terminal));
+
+        self.inner.storage.append_turn(&record)?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "turn_record",
+            serde_json::to_value(&record)?,
+        ))?;
+        Ok(())
     }
 
     async fn maybe_defer_provider_lineage_failure(
@@ -1585,6 +1697,7 @@ impl RuntimeHandle {
         Ok(Some(AgentLoopOutcome {
             final_text,
             turn_index: terminal.turn_index,
+            terminal,
             should_sleep: false,
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
@@ -1623,6 +1736,7 @@ impl RuntimeHandle {
             self.inner.storage.write_agent(&guard.state)?;
             record
         };
+        self.persist_turn_record(&record).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "turn_terminal",
             serde_json::to_value(&record)?,
@@ -1938,6 +2052,7 @@ impl TurnExecution<'_> {
                     return Ok(AgentLoopOutcome {
                         final_text,
                         turn_index: terminal.turn_index,
+                        terminal,
                         should_sleep: false,
                         sleep_duration_ms: None,
                         allow_sleep_runnable_work_override: false,
@@ -2170,6 +2285,7 @@ impl TurnExecution<'_> {
                         return Ok(AgentLoopOutcome {
                             final_text,
                             turn_index: terminal.turn_index,
+                            terminal,
                             should_sleep: false,
                             sleep_duration_ms: None,
                             allow_sleep_runnable_work_override: false,
@@ -2687,6 +2803,7 @@ impl TurnExecution<'_> {
                 return Ok(AgentLoopOutcome {
                     final_text,
                     turn_index: terminal.turn_index,
+                    terminal,
                     should_sleep: true,
                     sleep_duration_ms,
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,
@@ -3057,6 +3174,7 @@ impl TurnExecution<'_> {
                 return Ok(AgentLoopOutcome {
                     final_text,
                     turn_index: terminal.turn_index,
+                    terminal,
                     should_sleep: true,
                     sleep_duration_ms: sleep_duration_ms.or(legacy_sleep_duration_ms),
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,

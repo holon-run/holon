@@ -1294,6 +1294,103 @@ pub struct TurnTerminalRecord {
     pub duration_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TurnTriggerSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    pub kind: MessageKind,
+    pub origin: MessageOrigin,
+    pub authority_class: AuthorityClass,
+    pub priority: Priority,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_kind: Option<ContinuationTriggerKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+}
+
+impl TurnTriggerSummary {
+    pub fn from_message(message: &MessageEnvelope) -> Self {
+        Self {
+            message_id: Some(message.id.clone()),
+            kind: message.kind.clone(),
+            origin: message.origin.clone(),
+            authority_class: message.authority_class,
+            priority: message.priority.clone(),
+            trigger_kind: message.trigger_kind,
+            task_id: message.task_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnTerminalSummary {
+    pub kind: TurnTerminalKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub completed_at: DateTime<Utc>,
+    pub duration_ms: u64,
+}
+
+impl TurnTerminalSummary {
+    pub fn from_terminal(record: &TurnTerminalRecord) -> Self {
+        Self {
+            kind: record.kind,
+            reason: record.reason.clone(),
+            completed_at: record.completed_at,
+            duration_ms: record.duration_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TurnRecord {
+    pub turn_id: String,
+    pub turn_index: u64,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<TurnTriggerSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_message_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_execution_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub produced_brief_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delivery_summary_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completed_work_item_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_condition_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<TurnTerminalSummary>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl TurnRecord {
+    pub fn new(agent_id: impl Into<String>, turn_id: impl Into<String>, turn_index: u64) -> Self {
+        Self {
+            turn_id: turn_id.into().trim().to_string(),
+            turn_index,
+            agent_id: agent_id.into(),
+            run_id: None,
+            current_work_item_id: None,
+            trigger: None,
+            input_message_ids: Vec::new(),
+            tool_execution_ids: Vec::new(),
+            produced_brief_ids: Vec::new(),
+            delivery_summary_ids: Vec::new(),
+            completed_work_item_ids: Vec::new(),
+            waiting_condition_ids: Vec::new(),
+            terminal: None,
+            created_at: Utc::now(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnTerminalCheckpointRecord {
     pub request_id: String,
