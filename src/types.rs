@@ -3871,6 +3871,54 @@ pub struct ResolvedModelAvailability {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelProviderAvailability {
+    Available,
+    Degraded,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelProviderEntry {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub availability: ModelProviderAvailability,
+    pub provider_configured: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_kind: Option<String>,
+    pub credential_configured: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    pub model_count: usize,
+    pub discovered_model_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderModelEntry {
+    pub provider: String,
+    pub id: String,
+    pub model_ref: String,
+    pub display_name: String,
+    pub availability: ModelProviderAvailability,
+    pub selectable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+    pub metadata_source: String,
+    pub policy: ResolvedRuntimeModelPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentLifecycleHint {
     pub accepts_external_messages: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

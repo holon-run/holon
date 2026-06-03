@@ -4,10 +4,13 @@ use serde_json::{json, Value};
 
 use crate::{
     auth::{load_codex_cli_credential, load_codex_oauth_profile_credential},
-    config::{AppConfig, CredentialSource, ModelRef, RuntimeModelCatalog},
+    config::{AppConfig, CredentialSource, ModelRef, ProviderId, RuntimeModelCatalog},
     context::ContextConfig,
     onboarding::{onboarding_report, search_diagnostics},
-    types::ResolvedModelAvailability,
+    types::{
+        ModelProviderAvailability, ModelProviderEntry, ProviderModelEntry,
+        ResolvedModelAvailability,
+    },
 };
 
 use super::{build_candidate, classify_provider_error, retry::provider_retry_policy_json};
@@ -49,6 +52,16 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
             &availability,
         ));
     }
+    let model_providers = resolved_model_providers(config);
+    let models_by_provider = model_providers
+        .iter()
+        .map(|provider| {
+            (
+                provider.id.clone(),
+                resolved_provider_models(config, &provider.id),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
 
     json!({
         "default_model": config.default_model.as_string(),
@@ -59,6 +72,8 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
         "onboarding": onboarding_report(config),
         "search": search_diagnostics(config),
         "model_availability": model_availability,
+        "model_providers": model_providers,
+        "models_by_provider": models_by_provider,
         "providers": providers,
     })
 }
@@ -89,6 +104,112 @@ pub fn resolved_model_availability(config: &AppConfig) -> Vec<ResolvedModelAvail
         .collect()
 }
 
+pub fn resolved_model_providers(config: &AppConfig) -> Vec<ModelProviderEntry> {
+    let models = resolved_model_availability(config);
+    let mut providers = BTreeMap::<String, Vec<&ResolvedModelAvailability>>::new();
+    for model in &models {
+        providers
+            .entry(model.provider.clone())
+            .or_default()
+            .push(model);
+    }
+    for provider_id in config.providers.keys() {
+        providers
+            .entry(provider_id.as_str().to_string())
+            .or_default();
+    }
+
+    providers
+        .into_iter()
+        .map(|(provider_id, models)| {
+            let parsed_provider_id = ProviderId::parse(&provider_id).ok();
+            let provider = parsed_provider_id
+                .as_ref()
+                .and_then(|provider_id| config.providers.get(provider_id));
+            let first_model = models.first().copied();
+            let available_count = models.iter().filter(|model| model.available).count();
+            let model_count = models.len();
+            let availability = if model_count == 0 || available_count == 0 {
+                ModelProviderAvailability::Unavailable
+            } else if available_count == model_count {
+                ModelProviderAvailability::Available
+            } else {
+                ModelProviderAvailability::Degraded
+            };
+            let provider_configured = provider.is_some()
+                || first_model
+                    .map(|model| model.provider_configured)
+                    .unwrap_or(false);
+            let provider_source = first_model
+                .and_then(|model| model.provider_source.clone())
+                .or_else(|| {
+                    if provider.is_some() {
+                        parsed_provider_id
+                            .as_ref()
+                            .map(|provider_id| provider_source_for_config(config, provider_id))
+                    } else {
+                        None
+                    }
+                });
+            let credential_configured = models.iter().any(|model| model.credential_configured)
+                || provider
+                    .map(provider_static_credential_configured)
+                    .unwrap_or(false);
+
+            ModelProviderEntry {
+                id: provider_id.clone(),
+                display_name: Some(provider_id.clone()),
+                availability,
+                provider_configured,
+                provider_source,
+                transport: first_model
+                    .and_then(|model| model.transport.clone())
+                    .or_else(|| provider.map(|provider| provider.transport.as_str().to_string())),
+                credential_source: first_model
+                    .and_then(|model| model.credential_source.clone())
+                    .or_else(|| provider.map(|provider| provider.auth.source.as_str().to_string())),
+                credential_kind: first_model
+                    .and_then(|model| model.credential_kind.clone())
+                    .or_else(|| provider.map(|provider| provider.auth.kind.as_str().to_string())),
+                credential_configured,
+                default_model: default_model_for_provider(config, &provider_id),
+                model_count,
+                discovered_model_count: models
+                    .iter()
+                    .filter(|model| model.metadata_source == "remote_discovered")
+                    .count(),
+                policy_notes: Vec::new(),
+            }
+        })
+        .collect()
+}
+
+pub fn resolved_provider_models(config: &AppConfig, provider: &str) -> Vec<ProviderModelEntry> {
+    resolved_model_availability(config)
+        .into_iter()
+        .filter(|model| model.provider == provider)
+        .map(|model| {
+            let model_id = model.policy.model_ref.model.clone();
+            ProviderModelEntry {
+                provider: model.provider,
+                id: model_id,
+                model_ref: model.model,
+                display_name: model.display_name,
+                availability: if model.available {
+                    ModelProviderAvailability::Available
+                } else {
+                    ModelProviderAvailability::Unavailable
+                },
+                selectable: model.available,
+                unavailable_reason: model.unavailable_reason,
+                metadata_source: model.metadata_source,
+                policy: model.policy,
+                policy_notes: Vec::new(),
+            }
+        })
+        .collect()
+}
+
 fn resolved_model_availability_entry(
     config: &AppConfig,
     catalog: &RuntimeModelCatalog,
@@ -107,17 +228,7 @@ fn resolved_model_availability_entry(
     };
     let provider = config.providers.get(&model_ref.provider);
     let provider_configured = provider.is_some();
-    let provider_source = provider.map(|_| {
-        if config
-            .stored_config
-            .providers
-            .contains_key(&model_ref.provider)
-        {
-            "config".to_string()
-        } else {
-            "built_in".to_string()
-        }
-    });
+    let provider_source = provider.map(|_| provider_source_for_config(config, &model_ref.provider));
     let credential_configured = provider
         .map(provider_static_credential_configured)
         .unwrap_or(false);
@@ -155,6 +266,25 @@ fn resolved_model_availability_entry(
         unavailable_reason,
         policy,
     }
+}
+
+fn provider_source_for_config(config: &AppConfig, provider_id: &ProviderId) -> String {
+    if config.stored_config.providers.contains_key(provider_id) {
+        "config".to_string()
+    } else {
+        "built_in".to_string()
+    }
+}
+
+fn default_model_for_provider(config: &AppConfig, provider_id: &str) -> Option<String> {
+    if config.default_model.provider.as_str() == provider_id {
+        return Some(config.default_model.model.clone());
+    }
+    config
+        .fallback_models
+        .iter()
+        .find(|model| model.provider.as_str() == provider_id)
+        .map(|model| model.model.clone())
 }
 
 fn provider_static_credential_configured(provider: &crate::config::ProviderRuntimeConfig) -> bool {
@@ -259,7 +389,10 @@ mod tests {
         model_catalog::{ModelMetadataSource, ModelRuntimeOverride},
     };
 
-    use super::{provider_doctor, resolved_model_availability};
+    use super::{
+        provider_doctor, resolved_model_availability, resolved_model_providers,
+        resolved_provider_models,
+    };
 
     struct TestConfigFixture {
         _home_dir: tempfile::TempDir,
@@ -407,6 +540,43 @@ mod tests {
         assert_eq!(custom.metadata_source, "config_override");
         assert!(custom.available);
         assert_eq!(custom.policy.runtime_max_output_tokens, 1024);
+    }
+
+    #[test]
+    fn resolved_model_providers_groups_models_by_provider() {
+        let fixture = test_config(Some("openai-key"));
+        let providers = resolved_model_providers(&fixture.config);
+        let openai = providers
+            .iter()
+            .find(|entry| entry.id == "openai")
+            .expect("openai provider entry");
+
+        assert!(openai.provider_configured);
+        assert!(openai.credential_configured);
+        assert_eq!(openai.default_model.as_deref(), Some("gpt-5.4"));
+        assert!(openai.model_count > 0);
+        assert_eq!(
+            openai.availability,
+            crate::types::ModelProviderAvailability::Available
+        );
+    }
+
+    #[test]
+    fn resolved_provider_models_returns_models_for_one_provider() {
+        let fixture = test_config(Some("openai-key"));
+        let models = resolved_provider_models(&fixture.config, "openai");
+        let openai = models
+            .iter()
+            .find(|entry| entry.model_ref == "openai/gpt-5.4")
+            .expect("openai model entry");
+
+        assert_eq!(openai.provider, "openai");
+        assert_eq!(openai.id, "gpt-5.4");
+        assert!(openai.selectable);
+        assert_eq!(
+            openai.availability,
+            crate::types::ModelProviderAvailability::Available
+        );
     }
 
     #[test]
