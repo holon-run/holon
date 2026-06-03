@@ -553,6 +553,8 @@ async fn work_item_query_tools_return_current_open_done_views() {
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+
+            turn_id: None,
         })
         .unwrap();
 
@@ -922,6 +924,8 @@ async fn work_item_query_tools_return_readiness_views() {
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+
+            turn_id: None,
         })
         .unwrap();
 
@@ -2822,6 +2826,7 @@ async fn turn_end_work_item_commit_keeps_failed_turn_open_without_blocker() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.last_turn_terminal = Some(TurnTerminalRecord {
+            turn_id: "test-turn".into(),
             turn_index: guard.state.turn_index,
             kind: TurnTerminalKind::Aborted,
             reason: None,
@@ -2869,6 +2874,7 @@ async fn turn_end_work_item_commit_preserves_existing_blocker_on_failed_turn() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.last_turn_terminal = Some(TurnTerminalRecord {
+            turn_id: "test-turn".into(),
             turn_index: guard.state.turn_index,
             kind: TurnTerminalKind::Aborted,
             reason: None,

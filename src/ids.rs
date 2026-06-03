@@ -30,6 +30,10 @@ pub fn run_id() -> String {
     runtime_id("run")
 }
 
+pub fn turn_id() -> String {
+    runtime_id("turn")
+}
+
 pub fn tool_execution_id() -> String {
     runtime_id("tool")
 }
@@ -115,6 +119,7 @@ mod tests {
             (message_id(), "msg"),
             (task_id(), "task"),
             (run_id(), "run"),
+            (turn_id(), "turn"),
             (tool_execution_id(), "tool"),
             (workspace_id(), "ws"),
             (work_item_id(), "work"),

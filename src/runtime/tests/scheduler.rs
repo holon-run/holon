@@ -219,6 +219,7 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
     agent.turn_index = agent_fixture.turn_index;
     if let Some(kind) = agent_fixture.last_turn_terminal_kind {
         agent.last_turn_terminal = Some(TurnTerminalRecord {
+            turn_id: "test-turn".into(),
             turn_index: agent.turn_index,
             kind,
             reason: Some("fixture terminal".into()),
@@ -373,7 +374,8 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
                 id: tool.id,
                 agent_id: "default".into(),
                 work_item_id: tool.work_item_id,
-                turn_index: 1,
+                turn_index: 0,
+                turn_id: None,
                 tool_name: tool.tool_name,
                 created_at: Utc::now(),
                 completed_at: Some(Utc::now()),
@@ -1048,6 +1050,8 @@ fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() 
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+
+            turn_id: None,
         })
         .unwrap();
 
@@ -1123,6 +1127,8 @@ fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+
+            turn_id: None,
         })
         .unwrap();
 
@@ -1167,6 +1173,8 @@ fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+
+            turn_id: None,
         })
         .unwrap();
     storage

@@ -2848,6 +2848,7 @@ mod tests {
                 pending_count: 1,
                 last_turn: Some(TurnTerminalRecord {
                     turn_index: 1,
+                    turn_id: "test".into(),
                     kind: TurnTerminalKind::Completed,
                     reason: None,
                     last_assistant_message: Some("done".into()),

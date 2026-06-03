@@ -253,7 +253,9 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
         MessageDeliverySurface::CliPrompt,
         AdmissionContext::LocalProcess,
     );
-    storage.append_message(&operator_message)?;
+    let mut operator_message_with_turn = operator_message.clone();
+    operator_message_with_turn.turn_id = Some("turn_op_test".into());
+    storage.append_message(&operator_message_with_turn)?;
     storage.append_brief(&BriefRecord::new(
         "default",
         BriefKind::Ack,
@@ -275,6 +277,7 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
         agent_id: "default".into(),
         work_item_id: None,
         turn_index: 1,
+        turn_id: Some("turn_op_test".into()),
         tool_name: "ExecCommand".into(),
         created_at: Utc::now(),
         completed_at: Some(Utc::now()),
@@ -291,7 +294,7 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
     work_item.id = "work_runtime_flow".into();
     storage.append_work_item(&work_item)?;
 
-    let task_result = MessageEnvelope::new(
+    let mut task_result = MessageEnvelope::new(
         "default",
         MessageKind::TaskResult,
         MessageOrigin::Task {
@@ -307,6 +310,7 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
     );
+    task_result.turn_id = Some("turn_task_result".into());
 
     let continuation = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::TaskResult,
@@ -685,7 +689,7 @@ fn task_result_context_snapshot_renders_follow_up_continuation() -> Result<()> {
     let dir = tempdir()?;
     let storage = AppStorage::new(dir.path())?;
 
-    let task_result = MessageEnvelope::new(
+    let mut task_result = MessageEnvelope::new(
         "default",
         MessageKind::TaskResult,
         MessageOrigin::Task {
@@ -701,6 +705,7 @@ fn task_result_context_snapshot_renders_follow_up_continuation() -> Result<()> {
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
     );
+    task_result.turn_id = Some("turn_task_result".into());
 
     let continuation = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::TaskResult,
@@ -1418,7 +1423,7 @@ fn task_result_with_multiple_work_items() -> Result<()> {
         ],
     )?;
 
-    let task_result = MessageEnvelope::new(
+    let mut task_result = MessageEnvelope::new(
         "default",
         MessageKind::TaskResult,
         MessageOrigin::Task {
@@ -1434,6 +1439,7 @@ fn task_result_with_multiple_work_items() -> Result<()> {
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
     );
+    task_result.turn_id = Some("turn_task_result".into());
 
     let continuation = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::TaskResult,

@@ -1856,6 +1856,7 @@ fn wait_condition_from_waiting_intent(record: &WaitingIntentRecord) -> WaitCondi
         expires_at: None,
         resolved_at: None,
         cancelled_at: record.cancelled_at,
+        turn_id: None,
     }
 }
 
@@ -2980,6 +2981,8 @@ mod tests {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
+
+                turn_id: None,
             },
             WaitConditionRecord {
                 id: "recoverable".into(),
@@ -3004,6 +3007,8 @@ mod tests {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
+
+                turn_id: None,
             },
             WaitConditionRecord {
                 id: "explicit".into(),
@@ -3025,6 +3030,8 @@ mod tests {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
+
+                turn_id: None,
             },
         ] {
             storage.append_wait_condition(&record).unwrap();
@@ -3160,6 +3167,8 @@ mod tests {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
+
+                turn_id: None,
             })
             .unwrap();
         storage
@@ -3181,6 +3190,8 @@ mod tests {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
+
+                turn_id: None,
             })
             .unwrap();
         storage
@@ -3200,6 +3211,8 @@ mod tests {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
+
+                turn_id: None,
             })
             .unwrap();
         storage
@@ -3221,6 +3234,8 @@ mod tests {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
+
+                turn_id: None,
             })
             .unwrap();
         storage
@@ -3240,6 +3255,8 @@ mod tests {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
+
+                turn_id: None,
             })
             .unwrap();
 
@@ -3362,6 +3379,8 @@ mod tests {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
+
+                turn_id: None,
             })
             .unwrap();
         let task_projection = storage.agent_posture_projection(&agent).unwrap();
@@ -3439,6 +3458,8 @@ mod tests {
                         expires_at: None,
                         resolved_at: None,
                         cancelled_at: None,
+
+                        turn_id: None,
                     })
                     .unwrap();
             };

@@ -65,6 +65,7 @@ pub fn refresh_working_memory(
         !working_memory_snapshot_is_empty(&next_snapshot) && agent.context_summary.take().is_some();
     let turn_delta = derive_turn_memory_delta(
         agent.turn_index,
+        agent.current_turn_id.as_deref(),
         &previous_snapshot,
         &next_snapshot,
         storage.read_recent_tool_executions(MEMORY_TOOL_LIMIT)?,
@@ -213,14 +214,24 @@ fn derive_update_reason(
 
 fn derive_turn_memory_delta(
     turn_index: u64,
+    turn_id: Option<&str>,
     previous: &WorkingMemorySnapshot,
     next: &WorkingMemorySnapshot,
     recent_tools: Vec<ToolExecutionRecord>,
 ) -> TurnMemoryDelta {
-    let current_turn_tools = recent_tools
-        .into_iter()
-        .filter(|record| record.turn_index == turn_index.max(1))
-        .collect::<Vec<_>>();
+    let current_turn_tools: Vec<ToolExecutionRecord> = if let Some(current_turn_id) = turn_id {
+        // When turn_id is available, use it for precise matching
+        recent_tools
+            .into_iter()
+            .filter(|record| record.turn_id.as_deref() == Some(current_turn_id))
+            .collect()
+    } else {
+        // Legacy fallback: use turn_index with max(1) adjustment
+        recent_tools
+            .into_iter()
+            .filter(|record| record.turn_index == turn_index.max(1))
+            .collect()
+    };
     let commands = current_turn_tools
         .iter()
         .rev()
@@ -933,7 +944,8 @@ mod tests {
                 id: "tool-1".into(),
                 agent_id: "default".into(),
                 work_item_id: Some(active.id.clone()),
-                turn_index: 1,
+                turn_index: 0,
+            turn_id: None,
                 tool_name: "ApplyPatch".into(),
                 created_at: Utc::now(),
                 completed_at: Some(Utc::now()),
@@ -951,7 +963,8 @@ mod tests {
                 id: "tool-2".into(),
                 agent_id: "default".into(),
                 work_item_id: Some(active.id.clone()),
-                turn_index: 1,
+                turn_index: 0,
+                turn_id: None,
                 tool_name: "ExecCommand".into(),
                 created_at: Utc::now(),
                 completed_at: Some(Utc::now()),
@@ -1117,7 +1130,8 @@ mod tests {
                 id: "tool-active".into(),
                 agent_id: "default".into(),
                 work_item_id: Some(active.id.clone()),
-                turn_index: 1,
+                turn_index: 0,
+            turn_id: None,
                 tool_name: "ApplyPatch".into(),
                 created_at: Utc::now(),
                 completed_at: Some(Utc::now()),
@@ -1135,7 +1149,8 @@ mod tests {
                 id: "tool-legacy".into(),
                 agent_id: "default".into(),
                 work_item_id: None,
-                turn_index: 1,
+                turn_index: 0,
+            turn_id: None,
                 tool_name: "ApplyPatch".into(),
                 created_at: Utc::now(),
                 completed_at: Some(Utc::now()),
@@ -1153,7 +1168,8 @@ mod tests {
                 id: "tool-other".into(),
                 agent_id: "default".into(),
                 work_item_id: Some(other.id.clone()),
-                turn_index: 1,
+                turn_index: 0,
+            turn_id: None,
                 tool_name: "ApplyPatch".into(),
                 created_at: Utc::now(),
                 completed_at: Some(Utc::now()),
@@ -1220,7 +1236,8 @@ mod tests {
                 id: "tool-active-earlier".into(),
                 agent_id: "default".into(),
                 work_item_id: Some(active.id.clone()),
-                turn_index: 1,
+                turn_index: 0,
+            turn_id: None,
                 tool_name: "ApplyPatch".into(),
                 created_at: Utc::now(),
                 completed_at: Some(Utc::now()),
@@ -1255,6 +1272,7 @@ mod tests {
                     agent_id: "default".into(),
                     work_item_id: Some(other.id.clone()),
                     turn_index: 1,
+                    turn_id: None,
                     tool_name: "ApplyPatch".into(),
                     created_at: Utc::now(),
                     completed_at: Some(Utc::now()),
@@ -1636,6 +1654,7 @@ mod tests {
         let next = WorkingMemorySnapshot::default();
         let delta = derive_turn_memory_delta(
             4,
+            Some("turn-new"),
             &previous,
             &next,
             vec![
@@ -1643,7 +1662,8 @@ mod tests {
                     id: "tool-old".into(),
                     agent_id: "default".into(),
                     work_item_id: None,
-                    turn_index: 3,
+                    turn_index: 1,
+                    turn_id: Some("turn-old".into()),
                     tool_name: "ExecCommand".into(),
                     created_at: Utc::now(),
                     completed_at: Some(Utc::now()),
@@ -1659,7 +1679,8 @@ mod tests {
                     id: "tool-new".into(),
                     agent_id: "default".into(),
                     work_item_id: None,
-                    turn_index: 4,
+                    turn_index: 0,
+                    turn_id: Some("turn-new".into()),
                     tool_name: "ExecCommand".into(),
                     created_at: Utc::now(),
                     completed_at: Some(Utc::now()),

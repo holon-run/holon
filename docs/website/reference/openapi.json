@@ -385,6 +385,12 @@
                 },
                 "type": "array"
               },
+              "turn_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "updated_at": {
                 "format": "date-time",
                 "type": "string"
@@ -554,6 +560,12 @@
                   "type": "object"
                 },
                 "type": "array"
+              },
+              "turn_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "updated_at": {
                 "format": "date-time",
@@ -2489,6 +2501,12 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "updated_at": {
             "format": "date-time",
