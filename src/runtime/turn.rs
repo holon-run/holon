@@ -42,6 +42,7 @@ use super::{
 pub(super) struct AgentLoopOutcome {
     pub(super) final_text: String,
     pub(super) turn_index: u64,
+    pub(super) terminal: TurnTerminalRecord,
     pub(super) should_sleep: bool,
     pub(super) sleep_duration_ms: Option<u64>,
     pub(super) allow_sleep_runnable_work_override: bool,
@@ -99,6 +100,7 @@ const WORK_ITEM_STALE_REMINDER_MAX_TOKENS: usize = 512;
 const WORK_ITEM_STALE_REMINDER_PLAN_LINE_LIMIT: usize = 8;
 const WORK_ITEM_STALE_REMINDER_PLAN_CHAR_LIMIT: usize = 1_200;
 const WORK_ITEM_STALE_REMINDER_TODO_LIMIT: usize = 8;
+const TURN_RECORD_SCAN_LIMIT: usize = 4096;
 const OPERATOR_INTERJECTION_HEADER: &str =
     "[Operator message received while this turn was in progress]";
 const COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT: &str = "\
@@ -231,7 +233,10 @@ fn terminal_checkpoint_from_state(
 }
 
 fn turn_optional_id_matches(candidate: Option<&str>, turn_id: &str) -> bool {
-    candidate.is_some_and(|candidate| !candidate.trim().is_empty() && candidate == turn_id)
+    candidate.is_some_and(|candidate| {
+        let candidate = candidate.trim();
+        !candidate.is_empty() && candidate == turn_id
+    })
 }
 
 fn build_checkpoint_resume_round(
@@ -1423,6 +1428,7 @@ impl RuntimeHandle {
         Ok(Some(AgentLoopOutcome {
             final_text,
             turn_index: terminal.turn_index,
+            terminal,
             should_sleep: false,
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
@@ -1467,7 +1473,6 @@ impl RuntimeHandle {
             self.inner.storage.write_agent(&guard.state)?;
             record
         };
-        self.persist_turn_record(&record).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "turn_terminal",
             serde_json::to_value(&record)?,
@@ -1475,7 +1480,7 @@ impl RuntimeHandle {
         Ok(record)
     }
 
-    async fn persist_turn_record(&self, terminal: &TurnTerminalRecord) -> Result<()> {
+    pub(super) async fn persist_turn_record(&self, terminal: &TurnTerminalRecord) -> Result<()> {
         let (agent_id, run_id, current_work_item_id) = {
             let guard = self.inner.agent.lock().await;
             (
@@ -1494,13 +1499,22 @@ impl RuntimeHandle {
         }
 
         let messages = self.inner.storage.read_all_messages()?;
-        let briefs = self.inner.storage.read_recent_briefs(usize::MAX)?;
-        let tools = self.inner.storage.read_recent_tool_executions(usize::MAX)?;
+        let briefs = self
+            .inner
+            .storage
+            .read_recent_briefs(TURN_RECORD_SCAN_LIMIT)?;
+        let tools = self
+            .inner
+            .storage
+            .read_recent_tool_executions(TURN_RECORD_SCAN_LIMIT)?;
         let delivery_summaries = self
             .inner
             .storage
-            .read_recent_delivery_summaries(usize::MAX)?;
-        let wait_conditions = self.inner.storage.read_recent_wait_conditions(usize::MAX)?;
+            .read_recent_delivery_summaries(TURN_RECORD_SCAN_LIMIT)?;
+        let wait_conditions = self
+            .inner
+            .storage
+            .read_recent_wait_conditions(TURN_RECORD_SCAN_LIMIT)?;
 
         let input_messages = messages
             .iter()
@@ -1510,7 +1524,7 @@ impl RuntimeHandle {
             })
             .collect::<Vec<_>>();
 
-        let mut record = TurnRecord::new(agent_id, terminal.turn_id.clone(), terminal.turn_index);
+        let mut record = TurnRecord::new(agent_id, turn_id, terminal.turn_index);
         record.run_id = run_id;
         record.current_work_item_id = current_work_item_id;
         record.trigger = input_messages
@@ -1683,6 +1697,7 @@ impl RuntimeHandle {
         Ok(Some(AgentLoopOutcome {
             final_text,
             turn_index: terminal.turn_index,
+            terminal,
             should_sleep: false,
             sleep_duration_ms: None,
             allow_sleep_runnable_work_override: false,
@@ -2037,6 +2052,7 @@ impl TurnExecution<'_> {
                     return Ok(AgentLoopOutcome {
                         final_text,
                         turn_index: terminal.turn_index,
+                        terminal,
                         should_sleep: false,
                         sleep_duration_ms: None,
                         allow_sleep_runnable_work_override: false,
@@ -2269,6 +2285,7 @@ impl TurnExecution<'_> {
                         return Ok(AgentLoopOutcome {
                             final_text,
                             turn_index: terminal.turn_index,
+                            terminal,
                             should_sleep: false,
                             sleep_duration_ms: None,
                             allow_sleep_runnable_work_override: false,
@@ -2786,6 +2803,7 @@ impl TurnExecution<'_> {
                 return Ok(AgentLoopOutcome {
                     final_text,
                     turn_index: terminal.turn_index,
+                    terminal,
                     should_sleep: true,
                     sleep_duration_ms,
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,
@@ -3156,6 +3174,7 @@ impl TurnExecution<'_> {
                 return Ok(AgentLoopOutcome {
                     final_text,
                     turn_index: terminal.turn_index,
+                    terminal,
                     should_sleep: true,
                     sleep_duration_ms: sleep_duration_ms.or(legacy_sleep_duration_ms),
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,

@@ -127,6 +127,7 @@ impl RuntimeHandle {
                 }
             }
         }
+        self.persist_turn_record(&outcome.terminal).await?;
         self.promote_turn_active_skills().await?;
 
         if outcome.should_sleep {

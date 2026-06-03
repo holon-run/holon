@@ -1749,7 +1749,7 @@ fn brief_matches_message(brief: &BriefRecord, message: &MessageEnvelope) -> bool
         (Some(brief_turn_id), Some(message_turn_id))
             if !brief_turn_id.trim().is_empty() && !message_turn_id.trim().is_empty() =>
         {
-            brief_turn_id == message_turn_id
+            brief_turn_id.trim() == message_turn_id.trim()
         }
         _ => {
             brief.related_message_id.as_deref() == Some(message.id.as_str())
@@ -1765,7 +1765,7 @@ fn tool_execution_matches_message(tool: &ToolExecutionRecord, message: &MessageE
         (Some(tool_turn_id), Some(message_turn_id))
             if !tool_turn_id.trim().is_empty() && !message_turn_id.trim().is_empty() =>
         {
-            tool_turn_id == message_turn_id
+            tool_turn_id.trim() == message_turn_id.trim()
         }
         _ => tool.turn_index != 0 && message.message_seq == Some(tool.turn_index),
     }
@@ -4993,6 +4993,7 @@ mod tests {
             invocation_surface: None,
         };
 
+        tool.turn_id = Some(" turn-current ".into());
         assert!(tool_execution_matches_message(&tool, &message));
 
         tool.turn_id = Some("turn-other".into());
@@ -5029,6 +5030,7 @@ mod tests {
         brief.turn_index = Some(4);
         brief.turn_id = Some("turn-current".into());
 
+        brief.turn_id = Some(" turn-current ".into());
         assert!(brief_matches_message(&brief, &message));
 
         brief.turn_id = Some("turn-other".into());

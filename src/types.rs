@@ -1373,7 +1373,7 @@ pub struct TurnRecord {
 impl TurnRecord {
     pub fn new(agent_id: impl Into<String>, turn_id: impl Into<String>, turn_index: u64) -> Self {
         Self {
-            turn_id: turn_id.into(),
+            turn_id: turn_id.into().trim().to_string(),
             turn_index,
             agent_id: agent_id.into(),
             run_id: None,

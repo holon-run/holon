@@ -2163,7 +2163,7 @@ mod tests {
     fn append_turn_persists_lightweight_turn_record() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
-        let mut record = TurnRecord::new("default", "turn-1", 7);
+        let mut record = TurnRecord::new("default", " turn-1 ", 7);
         record.input_message_ids = vec!["msg-1".into()];
         record.tool_execution_ids = vec!["tool-1".into()];
         record.produced_brief_ids = vec!["brief-1".into()];
