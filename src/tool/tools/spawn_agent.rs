@@ -7,7 +7,7 @@ use crate::{
     host_registry::validate_agent_id_format,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{AgentProfilePreset, AuthorityClass, ToolCapabilityFamily},
+    types::{AgentProfilePreset, AuthorityClass, SpawnAgentModelRequest, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -39,6 +39,7 @@ pub(crate) struct SpawnAgentArgs {
     pub(crate) agent_id: Option<String>,
     pub(crate) template: Option<String>,
     pub(crate) workspace_mode: Option<SpawnAgentWorkspaceMode>,
+    pub(crate) model: Option<SpawnAgentModelRequest>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -147,6 +148,7 @@ pub(crate) async fn execute(
             agent_id,
             worktree,
             template,
+            args.model,
         )
         .await?;
     serialize_success(NAME, &result)

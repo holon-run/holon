@@ -60,7 +60,10 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
         .map(|provider| {
             (
                 provider.id.clone(),
-                provider_models_from_availability(&provider_model_availability, &provider.id),
+                provider_models_from_availability_for_runtime(
+                    &provider_model_availability,
+                    &provider.id,
+                ),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -115,6 +118,13 @@ fn resolved_model_providers_from_availability(
     config: &AppConfig,
     models: &[ResolvedModelAvailability],
 ) -> Vec<ModelProviderEntry> {
+    resolved_model_providers_from_availability_for_runtime(Some(config), models)
+}
+
+pub(crate) fn resolved_model_providers_from_availability_for_runtime(
+    config: Option<&AppConfig>,
+    models: &[ResolvedModelAvailability],
+) -> Vec<ModelProviderEntry> {
     let mut providers = BTreeMap::<String, Vec<&ResolvedModelAvailability>>::new();
     for model in models {
         providers
@@ -122,19 +132,25 @@ fn resolved_model_providers_from_availability(
             .or_default()
             .push(model);
     }
-    for provider_id in config.providers.keys() {
-        providers
-            .entry(provider_id.as_str().to_string())
-            .or_default();
+    if let Some(config) = config {
+        for provider_id in config.providers.keys() {
+            providers
+                .entry(provider_id.as_str().to_string())
+                .or_default();
+        }
     }
 
     providers
         .into_iter()
         .map(|(provider_id, models)| {
             let parsed_provider_id = ProviderId::parse(&provider_id).ok();
-            let provider = parsed_provider_id
-                .as_ref()
-                .and_then(|provider_id| config.providers.get(provider_id));
+            let provider = config
+                .and_then(|config| {
+                    parsed_provider_id
+                        .as_ref()
+                        .map(|provider_id| (config, provider_id))
+                })
+                .and_then(|(config, provider_id)| config.providers.get(provider_id));
             let first_model = models.first().copied();
             let available_count = models.iter().filter(|model| model.available).count();
             let model_count = models.len();
@@ -153,9 +169,11 @@ fn resolved_model_providers_from_availability(
                 .and_then(|model| model.provider_source.clone())
                 .or_else(|| {
                     if provider.is_some() {
-                        parsed_provider_id
-                            .as_ref()
-                            .map(|provider_id| provider_source_for_config(config, provider_id))
+                        config.and_then(|config| {
+                            parsed_provider_id
+                                .as_ref()
+                                .map(|provider_id| provider_source_for_config(config, provider_id))
+                        })
                     } else {
                         None
                     }
@@ -181,7 +199,8 @@ fn resolved_model_providers_from_availability(
                     .and_then(|model| model.credential_kind.clone())
                     .or_else(|| provider.map(|provider| provider.auth.kind.as_str().to_string())),
                 credential_configured,
-                default_model: default_model_for_provider(config, &provider_id),
+                default_model: config
+                    .and_then(|config| default_model_for_provider(config, &provider_id)),
                 model_count,
                 discovered_model_count: models
                     .iter()
@@ -195,10 +214,10 @@ fn resolved_model_providers_from_availability(
 
 pub fn resolved_provider_models(config: &AppConfig, provider: &str) -> Vec<ProviderModelEntry> {
     let models = resolved_model_availability(config);
-    provider_models_from_availability(&models, provider)
+    provider_models_from_availability_for_runtime(&models, provider)
 }
 
-fn provider_models_from_availability(
+pub(crate) fn provider_models_from_availability_for_runtime(
     models: &[ResolvedModelAvailability],
     provider: &str,
 ) -> Vec<ProviderModelEntry> {
@@ -209,6 +228,7 @@ fn provider_models_from_availability(
         .into_iter()
         .map(|model| {
             let model_id = model.policy.model_ref.model.clone();
+            let supported_parameters = supported_model_parameters(&model);
             ProviderModelEntry {
                 provider: model.provider,
                 id: model_id,
@@ -222,11 +242,22 @@ fn provider_models_from_availability(
                 selectable: model.available,
                 unavailable_reason: model.unavailable_reason,
                 metadata_source: model.metadata_source,
+                supported_parameters,
                 policy: model.policy,
                 policy_notes: Vec::new(),
             }
         })
         .collect()
+}
+
+fn supported_model_parameters(model: &ResolvedModelAvailability) -> Vec<String> {
+    let mut parameters = vec!["reasoning_effort".to_string()];
+    if model.policy.max_output_tokens_upper_limit.is_some()
+        || model.policy.runtime_max_output_tokens > 0
+    {
+        parameters.push("max_output_tokens".to_string());
+    }
+    parameters
 }
 
 fn resolved_model_availability_entry(
@@ -596,6 +627,14 @@ mod tests {
             openai.availability,
             crate::types::ModelAvailability::Available
         );
+        assert!(openai
+            .supported_parameters
+            .iter()
+            .any(|parameter| parameter == "reasoning_effort"));
+        assert!(openai
+            .supported_parameters
+            .iter()
+            .any(|parameter| parameter == "max_output_tokens"));
     }
 
     #[test]

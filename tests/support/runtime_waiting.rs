@@ -597,6 +597,7 @@ pub async fn notify_operator_records_default_public_and_private_child_targets() 
             None,
             false,
             None,
+            None,
         )
         .await?;
     let child_runtime = host.get_or_create_agent(&spawned.agent_id).await?;

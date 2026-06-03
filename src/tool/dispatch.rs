@@ -415,6 +415,22 @@ mod tests {
             .get("objective")
             .is_some());
 
+        let list_model_providers = specs
+            .iter()
+            .find(|spec| spec.name == "ListModelProviders")
+            .expect("ListModelProviders should be present");
+        assert!(list_model_providers.input_schema["properties"]
+            .get("include_unavailable")
+            .is_some());
+
+        let list_provider_models = specs
+            .iter()
+            .find(|spec| spec.name == "ListProviderModels")
+            .expect("ListProviderModels should be present");
+        assert!(list_provider_models.input_schema["properties"]
+            .get("provider")
+            .is_some());
+
         let spawn_agent = specs
             .iter()
             .find(|spec| spec.name == "SpawnAgent")
@@ -431,6 +447,12 @@ mod tests {
         assert!(spawn_agent.input_schema["properties"]
             .get("template")
             .is_some());
+        assert!(spawn_agent.input_schema["properties"]
+            .get("model")
+            .is_some());
+        assert!(spawn_agent.input_schema["properties"]["model"]
+            .to_string()
+            .contains("allow_fallback"));
         assert!(spawn_agent.input_schema["properties"]["preset"]
             .to_string()
             .contains("public_named"));

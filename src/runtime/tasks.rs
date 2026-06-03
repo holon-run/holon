@@ -1,10 +1,12 @@
 use super::message_dispatch::message_text;
 use super::{task_state_reducer, *};
+use crate::config::{ModelRef, ProviderId};
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
     AgentProfilePreset, BriefKind, BriefRecord, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot,
-    DeliverySummaryRecord, FailureArtifact, FailureArtifactCategory, SpawnAgentResult, TaskHandle,
+    DeliverySummaryRecord, FailureArtifact, FailureArtifactCategory, SpawnAgentModelRequest,
+    SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, SpawnAgentResult, TaskHandle,
     TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus,
     TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef, WorkItemDelegationRecord,
     WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
@@ -69,6 +71,29 @@ fn spawn_agent_task_label(initial_message: &str) -> String {
         collapsed
     };
     crate::tool::helpers::truncate_text(&label, SPAWN_AGENT_TASK_LABEL_CHAR_BUDGET)
+}
+
+fn inherited_model_parameters(
+    model: &crate::types::AgentModelState,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let mut parameters = serde_json::Map::new();
+    if let Some(reasoning_effort) = model.override_reasoning_effort.clone() {
+        parameters.insert("reasoning_effort".into(), reasoning_effort.into());
+    }
+    (!parameters.is_empty()).then_some(parameters)
+}
+
+fn inherited_spawn_model_resolution(
+    model: &crate::types::AgentModelState,
+) -> SpawnAgentModelResolution {
+    SpawnAgentModelResolution {
+        requested: None,
+        resolved_provider: model.effective_model.provider.as_str().to_string(),
+        resolved_model: model.effective_model.model.clone(),
+        resolved_parameters: inherited_model_parameters(model),
+        resolution_status: SpawnAgentModelResolutionStatus::Inherited,
+        policy_notes: Vec::new(),
+    }
 }
 
 fn task_status_label(status: &TaskStatus) -> &'static str {
@@ -306,6 +331,7 @@ impl RuntimeHandle {
         agent_id: Option<String>,
         worktree: bool,
         template: Option<String>,
+        model_request: Option<SpawnAgentModelRequest>,
     ) -> Result<SpawnAgentResult> {
         if !self.supports_child_agent_spawning() {
             return Err(anyhow::Error::from(
@@ -322,6 +348,9 @@ impl RuntimeHandle {
                 ),
             ));
         }
+        let model_resolution = self
+            .resolve_spawn_agent_model_request(model_request)
+            .await?;
         let bridge = self
             .inner
             .host_bridge
@@ -355,6 +384,7 @@ impl RuntimeHandle {
                         authority_class.clone(),
                         worktree,
                         template.clone(),
+                        model_resolution.clone(),
                     )
                     .await
                 {
@@ -423,6 +453,7 @@ impl RuntimeHandle {
                     delegation_id: None,
                     parent_work_item_id: None,
                     child_work_item_id: None,
+                    model_resolution: Some(model_resolution),
                 })
             }
             AgentProfilePreset::PublicNamed => {
@@ -441,6 +472,7 @@ impl RuntimeHandle {
                         initial_message,
                         authority_class,
                         template,
+                        model_resolution.clone(),
                     )
                     .await?;
 
@@ -457,9 +489,122 @@ impl RuntimeHandle {
                     delegation_id: None,
                     parent_work_item_id: None,
                     child_work_item_id: None,
+                    model_resolution: Some(model_resolution),
                 })
             }
         }
+    }
+
+    async fn resolve_spawn_agent_model_request(
+        &self,
+        request: Option<SpawnAgentModelRequest>,
+    ) -> Result<SpawnAgentModelResolution> {
+        let Some(request) = request else {
+            let inherited = self.model_state_for(&self.agent_state().await?);
+            return Ok(inherited_spawn_model_resolution(&inherited));
+        };
+
+        let provider = ProviderId::parse(&request.provider).map_err(|error| {
+            ToolError::new(
+                "invalid_tool_input",
+                format!("SpawnAgent model.provider is invalid: {error}"),
+            )
+            .with_details(serde_json::json!({
+                "field": "model.provider",
+                "validation_error": error.to_string(),
+            }))
+            .with_recovery_hint("provide a lowercase provider id from ListModelProviders")
+        })?;
+        let requested_model = request.model.trim();
+        if requested_model.is_empty() {
+            return Err(anyhow::Error::from(
+                ToolError::new(
+                    "invalid_tool_input",
+                    "SpawnAgent model.model must not be empty",
+                )
+                .with_details(serde_json::json!({
+                    "field": "model.model",
+                    "validation_error": "must not be empty",
+                }))
+                .with_recovery_hint("provide a model id from ListProviderModels"),
+            ));
+        }
+        let model_ref = ModelRef::new(provider, requested_model.to_string());
+        let model_ref_string = model_ref.as_string();
+        let availability =
+            self.model_availability().await?.into_iter().find(|entry| {
+                entry.policy.model_ref == model_ref || entry.model == model_ref_string
+            });
+        let Some(availability) = availability else {
+            return Err(anyhow::Error::from(
+                ToolError::new(
+                    "model_request_rejected",
+                    format!("requested model {model_ref_string} is not in the model catalog"),
+                )
+                .with_details(serde_json::json!({
+                    "requested_model": model_ref_string,
+                    "resolution_status": "rejected",
+                }))
+                .with_recovery_hint(
+                    "call ListModelProviders and ListProviderModels before requesting a model",
+                ),
+            ));
+        };
+
+        if !availability.available {
+            let allow_fallback = request.allow_fallback.unwrap_or(true);
+            let reason = availability
+                .unavailable_reason
+                .clone()
+                .unwrap_or_else(|| "model_unavailable".to_string());
+            let recovery_hint = if allow_fallback {
+                "request an available/selectable model; fallback for explicit unavailable SpawnAgent requests is not used before child creation"
+            } else {
+                "request an available/selectable model, or omit model to inherit the parent model"
+            };
+            return Err(anyhow::Error::from(
+                ToolError::new(
+                    "model_request_rejected",
+                    format!("requested model {model_ref_string} is unavailable: {reason}"),
+                )
+                .with_details(serde_json::json!({
+                    "requested_model": model_ref_string,
+                    "unavailable_reason": reason,
+                    "allow_fallback": allow_fallback,
+                    "resolution_status": "rejected",
+                }))
+                .with_recovery_hint(recovery_hint),
+            ));
+        }
+
+        let mut resolved_parameters = serde_json::Map::new();
+        let mut policy_notes = Vec::new();
+        if let Some(reasoning_effort) = request.reasoning_effort.clone() {
+            resolved_parameters.insert("reasoning_effort".into(), reasoning_effort.into());
+        }
+        if let Some(temperature) = request.temperature {
+            resolved_parameters.insert("temperature".into(), temperature.into());
+            policy_notes.push(
+                "temperature is accepted for audit output; provider support is transport-specific"
+                    .to_string(),
+            );
+        }
+        if let Some(max_output_tokens) = request.max_output_tokens {
+            resolved_parameters.insert("max_output_tokens".into(), max_output_tokens.into());
+            policy_notes.push(
+                "max_output_tokens is accepted for audit output; runtime policy may cap effective output"
+                    .to_string(),
+            );
+        }
+
+        Ok(SpawnAgentModelResolution {
+            requested: Some(request),
+            resolved_provider: availability.policy.model_ref.provider.as_str().to_string(),
+            resolved_model: availability.policy.model_ref.model,
+            resolved_parameters: (!resolved_parameters.is_empty()).then_some(resolved_parameters),
+            resolution_status: SpawnAgentModelResolutionStatus::Accepted,
+            policy_notes,
+        })
     }
 
     async fn schedule_worktree_child_agent_task(
@@ -668,6 +813,8 @@ impl RuntimeHandle {
 
         let existing_detail = task_record.detail.clone();
         let existing_child_id = detail_string(&existing_detail, "child_agent_id");
+        let inherited_model_resolution =
+            inherited_spawn_model_resolution(&self.model_state_for(&self.agent_state().await?));
         let runtime = self.clone();
         let task_id = task_record.id.clone();
         let task_id_for_cleanup = task_id.clone();
@@ -697,6 +844,7 @@ impl RuntimeHandle {
                                 authority_class.clone(),
                                 worktree,
                                 None,
+                                inherited_model_resolution.clone(),
                             )
                             .await?;
                         Ok((
@@ -714,6 +862,7 @@ impl RuntimeHandle {
                             authority_class.clone(),
                             worktree,
                             None,
+                            inherited_model_resolution.clone(),
                         )
                         .await?;
                     Ok((
