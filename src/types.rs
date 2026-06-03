@@ -3007,6 +3007,7 @@ pub struct SpawnAgentResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SpawnAgentModelRequest {
     pub provider: String,
     pub model: String,

@@ -197,6 +197,7 @@
             ]
           },
           "model": {
+            "additionalProperties": false,
             "properties": {
               "allow_fallback": {
                 "type": [

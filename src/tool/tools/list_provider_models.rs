@@ -72,25 +72,7 @@ pub(crate) async fn execute(
     if !args.include_unavailable {
         models.retain(|model| model.availability != ModelAvailability::Unavailable);
     }
-    let start = cursor
-        .as_deref()
-        .and_then(|cursor| {
-            models
-                .iter()
-                .position(|model| model.model_ref == cursor)
-                .map(|index| index + 1)
-        })
-        .unwrap_or(0);
-    let mut page = models
-        .into_iter()
-        .skip(start)
-        .take(limit + 1)
-        .collect::<Vec<_>>();
-    let next_cursor = if page.len() > limit {
-        page.pop().map(|model| model.model_ref)
-    } else {
-        None
-    };
+    let (page, next_cursor) = page_provider_models(models, cursor.as_deref(), limit);
     let returned = page.len();
     serialize_success(
         NAME,
@@ -103,4 +85,89 @@ pub(crate) async fn execute(
             models: page,
         },
     )
+}
+
+fn page_provider_models(
+    models: Vec<ProviderModelEntry>,
+    cursor: Option<&str>,
+    limit: usize,
+) -> (Vec<ProviderModelEntry>, Option<String>) {
+    let start = cursor
+        .and_then(|cursor| {
+            models
+                .iter()
+                .position(|model| model.model_ref == cursor)
+                .map(|index| index + 1)
+        })
+        .unwrap_or(0);
+    let mut page = models
+        .into_iter()
+        .skip(start)
+        .take(limit + 1)
+        .collect::<Vec<_>>();
+    if page.len() <= limit {
+        return (page, None);
+    }
+
+    page.truncate(limit);
+    let next_cursor = page.last().map(|model| model.model_ref.clone());
+    (page, next_cursor)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::ModelRef;
+    use crate::types::{ModelAvailability, ProviderModelEntry};
+
+    use super::page_provider_models;
+
+    fn model(model_ref: &str) -> ProviderModelEntry {
+        let policy = crate::model_catalog::ResolvedRuntimeModelPolicy {
+            model_ref: ModelRef::parse(model_ref).unwrap(),
+            ..crate::model_catalog::ResolvedRuntimeModelPolicy::default()
+        };
+        ProviderModelEntry {
+            provider: "test".to_string(),
+            id: model_ref.trim_start_matches("test/").to_string(),
+            model_ref: model_ref.to_string(),
+            display_name: model_ref.to_string(),
+            availability: ModelAvailability::Available,
+            selectable: true,
+            unavailable_reason: None,
+            metadata_source: "test".to_string(),
+            policy,
+            supported_parameters: Vec::new(),
+            policy_notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pagination_cursor_resumes_after_last_returned_model() {
+        let models = vec![
+            model("test/a"),
+            model("test/b"),
+            model("test/c"),
+            model("test/d"),
+        ];
+
+        let (first_page, next_cursor) = page_provider_models(models.clone(), None, 2);
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|entry| entry.model_ref.as_str())
+                .collect::<Vec<_>>(),
+            vec!["test/a", "test/b"]
+        );
+        assert_eq!(next_cursor.as_deref(), Some("test/b"));
+
+        let (second_page, next_cursor) = page_provider_models(models, next_cursor.as_deref(), 2);
+        assert_eq!(
+            second_page
+                .iter()
+                .map(|entry| entry.model_ref.as_str())
+                .collect::<Vec<_>>(),
+            vec!["test/c", "test/d"]
+        );
+        assert_eq!(next_cursor, None);
+    }
 }
