@@ -196,6 +196,52 @@
               "null"
             ]
           },
+          "model": {
+            "additionalProperties": false,
+            "properties": {
+              "allow_fallback": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "max_output_tokens": {
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "reasoning_effort": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "temperature": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "provider",
+              "model"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "preset": {
             "enum": [
               "private_child",
@@ -394,6 +440,77 @@
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
         "success_result": "TaskStopResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "List configured/discovered model providers. By default unavailable providers are omitted; set include_unavailable=true to inspect blocked options.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "include_unavailable": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ListModelProviders",
+      "related_surfaces": [],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "ListModelProvidersResult"
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "List models for a provider. Use provider from ListModelProviders; cursor is a model_ref returned by a previous page.",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "include_unavailable": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "type": "object"
+      },
+      "name": "ListProviderModels",
+      "related_surfaces": [],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "ListProviderModelsResult"
       },
       "stability": "stable"
     },

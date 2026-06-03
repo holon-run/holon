@@ -3002,6 +3002,46 @@ pub struct SpawnAgentResult {
     pub parent_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_resolution: Option<SpawnAgentModelResolution>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnAgentModelRequest {
+    pub provider: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_fallback: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpawnAgentModelResolutionStatus {
+    Inherited,
+    Accepted,
+    Normalized,
+    FallbackUsed,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpawnAgentModelResolution {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested: Option<SpawnAgentModelRequest>,
+    pub resolved_provider: String,
+    pub resolved_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_parameters: Option<serde_json::Map<String, serde_json::Value>>,
+    pub resolution_status: SpawnAgentModelResolutionStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -3921,6 +3961,8 @@ pub struct ProviderModelEntry {
     pub unavailable_reason: Option<String>,
     pub metadata_source: String,
     pub policy: ResolvedRuntimeModelPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_parameters: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policy_notes: Vec<String>,
 }

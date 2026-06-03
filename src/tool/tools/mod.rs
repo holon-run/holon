@@ -18,6 +18,8 @@ pub(crate) mod enqueue;
 pub(crate) mod exec_command;
 pub(crate) mod exec_command_batch;
 pub(crate) mod get_work_item;
+pub(crate) mod list_model_providers;
+pub(crate) mod list_provider_models;
 pub(crate) mod list_work_items;
 pub(crate) mod memory_get;
 pub(crate) mod memory_search;
@@ -54,6 +56,8 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         task_input::definition()?,
         task_output::definition()?,
         task_stop::definition()?,
+        list_model_providers::definition()?,
+        list_provider_models::definition()?,
         create_work_item::definition()?,
         pick_work_item::definition()?,
         get_work_item::definition()?,
@@ -116,6 +120,12 @@ pub(crate) async fn execute_builtin_tool(
         }
         task_stop::NAME => {
             task_stop::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        list_model_providers::NAME => {
+            list_model_providers::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        list_provider_models::NAME => {
+            list_provider_models::execute(runtime, agent_id, authority_class, &call.input).await
         }
         create_work_item::NAME => {
             create_work_item::execute(runtime, agent_id, authority_class, &call.input).await

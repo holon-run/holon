@@ -20,6 +20,10 @@ pub use diagnostics::{
     provider_doctor, resolved_model_availability, resolved_model_providers,
     resolved_provider_models,
 };
+pub(crate) use diagnostics::{
+    provider_models_from_availability_for_runtime,
+    resolved_model_providers_from_availability_for_runtime,
+};
 pub use http_trace::ProviderHttpTraceDiagnostics;
 pub(crate) use retry::sanitize_transport_url;
 pub use transports::{

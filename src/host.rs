@@ -37,8 +37,9 @@ use crate::{
         AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus,
         AgentSummary, AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome,
         ExternalTriggerRecord, ExternalTriggerStatus, OperatorNotificationRecord,
-        RuntimeFailureSummary, TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind,
-        WorkspaceEntry, WorkspaceOccupancyRecord,
+        RuntimeFailureSummary, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
+        TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -123,6 +124,27 @@ pub(crate) struct ChildTaskTerminalResult {
     pub status: TaskStatus,
     pub text: String,
     pub task_detail: Option<Value>,
+}
+
+async fn apply_spawn_model_resolution(
+    runtime: &RuntimeHandle,
+    resolution: &SpawnAgentModelResolution,
+) -> Result<()> {
+    if resolution.resolution_status == SpawnAgentModelResolutionStatus::Inherited {
+        return Ok(());
+    }
+    let provider = crate::config::ProviderId::parse(&resolution.resolved_provider)?;
+    let model_ref = crate::config::ModelRef::new(provider, resolution.resolved_model.clone());
+    let reasoning_effort = resolution
+        .resolved_parameters
+        .as_ref()
+        .and_then(|parameters| parameters.get("reasoning_effort"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    runtime
+        .set_model_override(model_ref, reasoning_effort)
+        .await?;
+    Ok(())
 }
 
 impl RuntimeHost {
@@ -905,6 +927,7 @@ impl RuntimeHost {
         authority_class: AuthorityClass,
         worktree: bool,
         template: Option<String>,
+        model_resolution: SpawnAgentModelResolution,
     ) -> Result<ChildTaskSpawn> {
         let parent_state = parent_runtime.agent_state().await?;
         let parent_agent_home = self.agent_data_dir(&parent_state.id);
@@ -920,6 +943,7 @@ impl RuntimeHost {
         child_runtime
             .inherit_from_parent_state(&parent_state)
             .await?;
+        apply_spawn_model_resolution(&child_runtime, &model_resolution).await?;
         let child_turn_baseline = child_runtime.agent_state().await?.turn_index;
 
         let mut task_detail = json!({
@@ -931,6 +955,7 @@ impl RuntimeHost {
             "child_profile_preset": AgentProfilePreset::PrivateChild,
             "wait_policy": task.wait_policy(),
             "workspace_mode": if worktree { "worktree" } else { "inherit" },
+            "model_resolution": model_resolution,
         });
 
         if worktree {
@@ -1003,6 +1028,7 @@ impl RuntimeHost {
         initial_message: Option<String>,
         authority_class: AuthorityClass,
         template: Option<String>,
+        model_resolution: SpawnAgentModelResolution,
     ) -> Result<String> {
         let parent_state = parent_runtime.agent_state().await?;
         let parent_agent_home = self.agent_data_dir(&parent_state.id);
@@ -1020,6 +1046,7 @@ impl RuntimeHost {
                 .inherit_attached_workspaces_from_parent_state(&parent_state)
                 .await?;
         }
+        apply_spawn_model_resolution(&named_runtime, &model_resolution).await?;
 
         let Some(initial_message) = initial_message else {
             return Ok(named_identity.agent_id);
@@ -1347,6 +1374,7 @@ impl RuntimeHostBridge {
         authority_class: AuthorityClass,
         worktree: bool,
         template: Option<String>,
+        model_resolution: SpawnAgentModelResolution,
     ) -> Result<ChildTaskSpawn> {
         self.host()?
             .spawn_child_task(
@@ -1356,6 +1384,7 @@ impl RuntimeHostBridge {
                 authority_class,
                 worktree,
                 template,
+                model_resolution,
             )
             .await
     }
@@ -1367,6 +1396,7 @@ impl RuntimeHostBridge {
         initial_message: Option<String>,
         authority_class: AuthorityClass,
         template: Option<String>,
+        model_resolution: SpawnAgentModelResolution,
     ) -> Result<String> {
         self.host()?
             .spawn_public_named_agent(
@@ -1375,6 +1405,7 @@ impl RuntimeHostBridge {
                 initial_message,
                 authority_class,
                 template,
+                model_resolution,
             )
             .await
     }
@@ -1566,6 +1597,17 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    fn inherited_model_resolution(provider: &str, model: &str) -> SpawnAgentModelResolution {
+        SpawnAgentModelResolution {
+            requested: None,
+            resolved_provider: provider.to_string(),
+            resolved_model: model.to_string(),
+            resolved_parameters: None,
+            resolution_status: SpawnAgentModelResolutionStatus::Inherited,
+            policy_notes: Vec::new(),
+        }
     }
 
     struct BlockingProvider {
@@ -1821,6 +1863,7 @@ mod tests {
             Some("continue release work".into()),
             AuthorityClass::OperatorInstruction,
             None,
+            inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
         )
         .await
         .unwrap();
@@ -1843,6 +1886,7 @@ mod tests {
             Some("coordinate release work".into()),
             AuthorityClass::OperatorInstruction,
             None,
+            inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
         )
         .await
         .unwrap();
@@ -1884,6 +1928,7 @@ mod tests {
                 AgentProfilePreset::PrivateChild,
                 None,
                 false,
+                None,
                 None,
             )
             .await
@@ -1938,6 +1983,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_child_spawn_accepts_explicit_model_selection() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        let host = RuntimeHost::new(fixture.config).unwrap();
+        let parent = host.default_runtime().await.unwrap();
+
+        let spawned = parent
+            .spawn_agent(
+                Some("compare implementation".into()),
+                AuthorityClass::OperatorInstruction,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                None,
+                Some(crate::types::SpawnAgentModelRequest {
+                    provider: "anthropic".into(),
+                    model: "claude-haiku-4-5".into(),
+                    reasoning_effort: Some("high".into()),
+                    temperature: None,
+                    max_output_tokens: None,
+                    allow_fallback: Some(false),
+                }),
+            )
+            .await
+            .unwrap();
+
+        let resolution = spawned
+            .model_resolution
+            .as_ref()
+            .expect("spawn should return model resolution");
+        assert_eq!(
+            resolution.resolution_status,
+            SpawnAgentModelResolutionStatus::Accepted
+        );
+        assert_eq!(resolution.resolved_provider, "anthropic");
+        assert_eq!(resolution.resolved_model, "claude-haiku-4-5");
+
+        let child = host.get_or_create_agent(&spawned.agent_id).await.unwrap();
+        let child_summary = child.agent_summary().await.unwrap();
+        assert_eq!(
+            child_summary.model.override_model.unwrap().as_string(),
+            "anthropic/claude-haiku-4-5"
+        );
+        assert_eq!(
+            child_summary.model.override_reasoning_effort.as_deref(),
+            Some("high")
+        );
+    }
+
+    #[tokio::test]
+    async fn private_child_spawn_rejects_unavailable_explicit_model_without_fallback() {
+        let fixture = provider_test_config(Some("dummy-token"));
+        let host = RuntimeHost::new(fixture.config).unwrap();
+        let parent = host.default_runtime().await.unwrap();
+
+        let error = parent
+            .spawn_agent(
+                Some("compare implementation".into()),
+                AuthorityClass::OperatorInstruction,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                None,
+                Some(crate::types::SpawnAgentModelRequest {
+                    provider: "openai".into(),
+                    model: "gpt-5.4".into(),
+                    reasoning_effort: None,
+                    temperature: None,
+                    max_output_tokens: None,
+                    allow_fallback: Some(false),
+                }),
+            )
+            .await
+            .expect_err("unavailable explicit model should be rejected before child creation");
+
+        assert!(error.to_string().contains("requested model"));
+        assert!(error.to_string().contains("unavailable"));
+    }
+
+    #[tokio::test]
     async fn private_child_runtime_spawn_rejects_blank_initial_message() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
@@ -1949,6 +2073,7 @@ mod tests {
                 AgentProfilePreset::PrivateChild,
                 None,
                 false,
+                None,
                 None,
             )
             .await
@@ -1997,6 +2122,7 @@ mod tests {
             None,
             AuthorityClass::OperatorInstruction,
             None,
+            inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
         )
         .await
         .unwrap();
@@ -2026,6 +2152,7 @@ mod tests {
             Some("bootstrap release lane".into()),
             AuthorityClass::OperatorInstruction,
             None,
+            inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
         )
         .await
         .unwrap();
@@ -2085,6 +2212,7 @@ mod tests {
             None,
             AuthorityClass::OperatorInstruction,
             Some("worker".into()),
+            inherited_model_resolution("anthropic", "claude-sonnet-4-6"),
         )
         .await
         .unwrap();

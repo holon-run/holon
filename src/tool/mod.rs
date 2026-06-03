@@ -83,7 +83,7 @@ fn tool_stability_level(name: &str) -> &'static str {
         | "TaskStatus" | "TaskInput" | "TaskOutput" | "TaskStop" | "CreateWorkItem"
         | "PickWorkItem" | "GetWorkItem" | "ListWorkItems" | "UpdateWorkItem"
         | "CompleteWorkItem" | "UseWorkspace" | "AgentGet" | "Enqueue" | "SpawnAgent"
-        | "MemorySearch" | "MemoryGet" => "stable",
+        | "ListModelProviders" | "ListProviderModels" | "MemorySearch" | "MemoryGet" => "stable",
         _ => "experimental",
     }
 }
@@ -97,6 +97,8 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         "ExecCommand" => "ExecCommandResult",
         "ExecCommandBatch" => "ExecCommandBatchResult",
         "GetWorkItem" => "GetWorkItemResult",
+        "ListModelProviders" => "ListModelProvidersResult",
+        "ListProviderModels" => "ListProviderModelsResult",
         "ListWorkItems" => "ListWorkItemsResult",
         "MemoryGet" => "MemoryGetResponse",
         "MemorySearch" => "MemorySearchResponse",

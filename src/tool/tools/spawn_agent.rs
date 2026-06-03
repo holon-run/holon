@@ -7,7 +7,7 @@ use crate::{
     host_registry::validate_agent_id_format,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{AgentProfilePreset, AuthorityClass, ToolCapabilityFamily},
+    types::{AgentProfilePreset, AuthorityClass, SpawnAgentModelRequest, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -39,6 +39,7 @@ pub(crate) struct SpawnAgentArgs {
     pub(crate) agent_id: Option<String>,
     pub(crate) template: Option<String>,
     pub(crate) workspace_mode: Option<SpawnAgentWorkspaceMode>,
+    pub(crate) model: Option<SpawnAgentModelRequest>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -147,7 +148,35 @@ pub(crate) async fn execute(
             agent_id,
             worktree,
             template,
+            args.model,
         )
         .await?;
     serialize_success(NAME, &result)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::tool::helpers::parse_tool_args;
+
+    use super::{SpawnAgentArgs, NAME};
+
+    #[test]
+    fn spawn_agent_rejects_unknown_nested_model_fields() {
+        let result = parse_tool_args::<SpawnAgentArgs>(
+            NAME,
+            &json!({
+                "initial_message": "compare implementation",
+                "model": {
+                    "provider": "anthropic",
+                    "model": "claude-haiku-4-5",
+                    "max_output_token": 1000
+                }
+            }),
+        );
+        let error = result.err().expect("nested model typos should be rejected");
+
+        assert!(error.to_string().contains("max_output_token"));
+    }
 }

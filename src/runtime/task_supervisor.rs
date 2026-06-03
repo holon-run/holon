@@ -47,6 +47,7 @@ impl ManagedTaskSupervisor<'_> {
         agent_id: Option<String>,
         worktree: bool,
         template: Option<String>,
+        model_request: Option<crate::types::SpawnAgentModelRequest>,
     ) -> Result<SpawnAgentResult> {
         self.runtime
             .spawn_agent(
@@ -56,6 +57,7 @@ impl ManagedTaskSupervisor<'_> {
                 agent_id,
                 worktree,
                 template,
+                model_request,
             )
             .await
     }

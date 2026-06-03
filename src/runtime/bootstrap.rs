@@ -466,4 +466,30 @@ impl RuntimeHandle {
         }
         Ok(self.inner.model_availability.clone())
     }
+
+    pub(crate) async fn model_providers(&self) -> Result<Vec<crate::types::ModelProviderEntry>> {
+        let models = self.model_availability().await?;
+        let config = self.provider_config_for_projection().await;
+        Ok(
+            crate::provider::resolved_model_providers_from_availability_for_runtime(
+                config.as_ref(),
+                &models,
+            ),
+        )
+    }
+
+    pub(crate) async fn provider_models(
+        &self,
+        provider: &str,
+    ) -> Result<Vec<crate::types::ProviderModelEntry>> {
+        let models = self.model_availability().await?;
+        Ok(crate::provider::provider_models_from_availability_for_runtime(&models, provider))
+    }
+
+    async fn provider_config_for_projection(&self) -> Option<AppConfig> {
+        self.inner
+            .provider_reconfig
+            .as_ref()
+            .map(|reconfig| reconfig.config.clone())
+    }
 }
