@@ -3879,6 +3879,13 @@ pub enum ModelProviderAvailability {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelAvailability {
+    Available,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelProviderEntry {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3908,7 +3915,7 @@ pub struct ProviderModelEntry {
     pub id: String,
     pub model_ref: String,
     pub display_name: String,
-    pub availability: ModelProviderAvailability,
+    pub availability: ModelAvailability,
     pub selectable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable_reason: Option<String>,

@@ -8,7 +8,7 @@ use crate::{
     context::ContextConfig,
     onboarding::{onboarding_report, search_diagnostics},
     types::{
-        ModelProviderAvailability, ModelProviderEntry, ProviderModelEntry,
+        ModelAvailability, ModelProviderAvailability, ModelProviderEntry, ProviderModelEntry,
         ResolvedModelAvailability,
     },
 };
@@ -52,13 +52,15 @@ pub fn provider_doctor(config: &AppConfig) -> Value {
             &availability,
         ));
     }
-    let model_providers = resolved_model_providers(config);
+    let provider_model_availability = resolved_model_availability(config);
+    let model_providers =
+        resolved_model_providers_from_availability(config, &provider_model_availability);
     let models_by_provider = model_providers
         .iter()
         .map(|provider| {
             (
                 provider.id.clone(),
-                resolved_provider_models(config, &provider.id),
+                provider_models_from_availability(&provider_model_availability, &provider.id),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -106,8 +108,15 @@ pub fn resolved_model_availability(config: &AppConfig) -> Vec<ResolvedModelAvail
 
 pub fn resolved_model_providers(config: &AppConfig) -> Vec<ModelProviderEntry> {
     let models = resolved_model_availability(config);
+    resolved_model_providers_from_availability(config, &models)
+}
+
+fn resolved_model_providers_from_availability(
+    config: &AppConfig,
+    models: &[ResolvedModelAvailability],
+) -> Vec<ModelProviderEntry> {
     let mut providers = BTreeMap::<String, Vec<&ResolvedModelAvailability>>::new();
-    for model in &models {
+    for model in models {
         providers
             .entry(model.provider.clone())
             .or_default()
@@ -185,9 +194,19 @@ pub fn resolved_model_providers(config: &AppConfig) -> Vec<ModelProviderEntry> {
 }
 
 pub fn resolved_provider_models(config: &AppConfig, provider: &str) -> Vec<ProviderModelEntry> {
-    resolved_model_availability(config)
-        .into_iter()
+    let models = resolved_model_availability(config);
+    provider_models_from_availability(&models, provider)
+}
+
+fn provider_models_from_availability(
+    models: &[ResolvedModelAvailability],
+    provider: &str,
+) -> Vec<ProviderModelEntry> {
+    models
+        .iter()
         .filter(|model| model.provider == provider)
+        .cloned()
+        .into_iter()
         .map(|model| {
             let model_id = model.policy.model_ref.model.clone();
             ProviderModelEntry {
@@ -196,9 +215,9 @@ pub fn resolved_provider_models(config: &AppConfig, provider: &str) -> Vec<Provi
                 model_ref: model.model,
                 display_name: model.display_name,
                 availability: if model.available {
-                    ModelProviderAvailability::Available
+                    ModelAvailability::Available
                 } else {
-                    ModelProviderAvailability::Unavailable
+                    ModelAvailability::Unavailable
                 },
                 selectable: model.available,
                 unavailable_reason: model.unavailable_reason,
@@ -575,7 +594,7 @@ mod tests {
         assert!(openai.selectable);
         assert_eq!(
             openai.availability,
-            crate::types::ModelProviderAvailability::Available
+            crate::types::ModelAvailability::Available
         );
     }
 
