@@ -50,6 +50,12 @@ Common causes:
 
 ### "No available model" or credential errors
 
+For the fastest repair, run the interactive onboarding wizard:
+
+```bash
+holon onboard
+```
+
 Run the diagnostic tool:
 
 ```bash

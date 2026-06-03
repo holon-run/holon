@@ -206,6 +206,29 @@ In the TUI, you can switch between agents using the agent list view.
 
 ## Step 5: Configure models
 
+### Recommended: Quick setup with `holon onboard`
+
+The fastest way to configure Holon is the interactive onboarding wizard:
+
+```bash
+holon onboard
+```
+
+In a terminal, this launches an interactive TUI that walks you through:
+
+1. **Provider selection** — choose from built-in providers (Anthropic, OpenAI,
+   DeepSeek, Codex, etc.) or a custom provider
+2. **Credential entry** — for OpenAI Codex: browser-based OAuth login; for other
+   providers: enter your API key (input is never echoed or stored in logs)
+3. **Model selection** — pick your default model, or enter a custom model id
+4. **Search configuration** — enable DuckDuckGo managed search, model-native
+   search, or keep search disabled
+
+`holon onboard` writes the config, stores credentials securely, and prints a
+summary. It's the recommended path for first-time setup.
+
+### Manual setup (alternative)
+
 Holon requires model configuration to work with providers like Anthropic or OpenAI.
 
 ### Configuration layers
