@@ -1201,3 +1201,76 @@ async fn runtime_failure_artifacts_preserve_provider_attempt_timeline() {
     assert!(failure.data["provider_attempt_timeline"]["winning_model_ref"].is_null());
     assert!(!failure.data["error_chain"].as_array().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn runtime_failure_artifacts_append_turn_record_after_failure_brief() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(FailingTimelineProvider),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "trigger runtime failure".into(),
+        },
+    );
+    let error = match runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+    {
+        Ok(_) => panic!("provider failure should abort the turn"),
+        Err(error) => error,
+    };
+    let terminal = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .last_turn_terminal
+        .expect("missing aborted turn terminal");
+    assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
+
+    runtime
+        .persist_runtime_failure_artifacts(&message, &error)
+        .await
+        .unwrap();
+
+    let briefs = runtime.storage().read_recent_briefs(10).unwrap();
+    let failure_brief = briefs
+        .iter()
+        .find(|brief| brief.kind == BriefKind::Failure)
+        .expect("missing runtime failure brief");
+    assert_eq!(
+        failure_brief.turn_id.as_deref(),
+        Some(terminal.turn_id.as_str())
+    );
+
+    let turns = runtime.storage().read_recent_turns(10).unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].turn_id, terminal.turn_id);
+    assert_eq!(turns[0].turn_index, terminal.turn_index);
+    assert_eq!(
+        turns[0].terminal.as_ref().map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::Aborted)
+    );
+    assert_eq!(turns[0].produced_brief_ids, vec![failure_brief.id.clone()]);
+}

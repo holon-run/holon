@@ -30,7 +30,7 @@ fn legacy_blocking_payload_task_for_work_item(
 
 fn continuation_context_config() -> ContextConfig {
     ContextConfig {
-        prompt_budget_estimated_tokens: 16384,
+        prompt_budget_estimated_tokens: 32768,
         turn_projection_budget_ratio: 1.0,
         compaction_keep_recent_estimated_tokens: 2048,
         ..context_config()

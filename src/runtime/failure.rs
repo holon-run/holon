@@ -291,6 +291,13 @@ impl RuntimeHandle {
             .collect::<Vec<_>>();
         let brief = brief::make_failure(&message.agent_id, message, failure_text.clone());
         self.persist_brief(&brief).await?;
+        let terminal = {
+            let guard = self.inner.agent.lock().await;
+            guard.state.last_turn_terminal.clone()
+        };
+        if let Some(terminal) = terminal {
+            self.persist_turn_record(&terminal).await?;
+        }
         self.inner
             .storage
             .append_transcript_entry(&TranscriptEntry::new(
