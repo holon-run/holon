@@ -170,6 +170,18 @@ fn merge_into_active_episode(
         &turn_delta.waiting_on,
         EPISODE_CARRY_FORWARD_LIMIT,
     );
+    if let Some(turn_id) = turn_delta.turn_id.as_deref() {
+        merge_unique(
+            &mut builder.source_turn_ids,
+            &[turn_id.to_string()],
+            EPISODE_TURN_HARD_CAP as usize,
+        );
+    }
+    merge_unique(
+        &mut builder.task_results,
+        &turn_delta.task_results,
+        EPISODE_CARRY_FORWARD_LIMIT,
+    );
 
     if builder.current_work_item_id.is_none() {
         builder.current_work_item_id = current_snapshot.current_work_item_id.clone();
@@ -284,8 +296,7 @@ fn finalize_episode(
 ) -> ContextEpisodeRecord {
     let finalized_at = Utc::now();
     let summary = render_episode_summary(&builder);
-    let source_turn_ids =
-        episode_source_turn_ids(builder.start_turn_index, builder.latest_turn_index);
+    let source_turn_ids = builder.source_turn_ids.clone();
     let source_refs = source_turn_ids
         .iter()
         .map(|turn_id| format!("turn:{turn_id}"))
@@ -324,7 +335,7 @@ fn finalize_episode(
         }),
         operator_intents,
         runtime_facts,
-        task_results: Vec::new(),
+        task_results: builder.task_results,
         unresolved_items,
         model_inferences,
         summary,
@@ -335,13 +346,6 @@ fn finalize_episode(
         carry_forward: builder.carry_forward,
         waiting_on: builder.waiting_on,
     }
-}
-
-fn episode_source_turn_ids(start: u64, end: u64) -> Vec<u64> {
-    if start == 0 || end < start {
-        return Vec::new();
-    }
-    (start..=end).collect()
 }
 
 fn episode_operator_intents(builder: &ActiveEpisodeBuilder) -> Vec<String> {
@@ -573,8 +577,8 @@ mod tests {
         assert_eq!(episodes[0].current_work_item_id.as_deref(), Some("work_a"));
         assert!(episodes[0].verification.is_empty());
         assert!(episodes[0].scope_hints.is_empty());
-        assert_eq!(episodes[0].source_turn_ids, vec![2]);
-        assert_eq!(episodes[0].source_refs, vec!["turn:2"]);
+        assert!(episodes[0].source_turn_ids.is_empty());
+        assert!(episodes[0].source_refs.is_empty());
         assert_eq!(
             episodes[0]
                 .generated_by
@@ -619,9 +623,11 @@ mod tests {
         };
         let delta = TurnMemoryDelta {
             turn_index: 6,
+            turn_id: Some("turn-stable-6".into()),
             decisions: vec!["defer follow-up until review lands".into()],
             pending_followups: current.pending_followups.clone(),
             waiting_on: current.waiting_on.clone(),
+            task_results: vec!["task task_1: child completed verification".into()],
             ..TurnMemoryDelta::default()
         };
 
@@ -663,6 +669,12 @@ mod tests {
             .unresolved_items
             .iter()
             .any(|item| item.contains("wait for reviewer")));
+        assert_eq!(episodes[0].source_turn_ids, vec!["turn-stable-6"]);
+        assert_eq!(episodes[0].source_refs, vec!["turn:turn-stable-6"]);
+        assert_eq!(
+            episodes[0].task_results,
+            vec!["task task_1: child completed verification"]
+        );
     }
 
     #[test]

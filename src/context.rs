@@ -4711,8 +4711,13 @@ mod tests {
             objective: Some("Fix wake path".into()),
             work_summary: Some("wake path patching".into()),
             scope_hints: vec!["keep behavior unchanged outside the wake path".into()],
-            source_turn_ids: vec![4, 5, 6, 7],
-            source_refs: vec!["turn:4".into(), "turn:5".into()],
+            source_turn_ids: vec![
+                "turn-stable-4".into(),
+                "turn-stable-5".into(),
+                "turn-stable-6".into(),
+                "turn-stable-7".into(),
+            ],
+            source_refs: vec!["turn:turn-stable-4".into(), "turn:turn-stable-5".into()],
             generated_by: Some(crate::types::ContextEpisodeGeneratedBy {
                 component: "runtime_episode_memory".into(),
                 reason: EpisodeBoundaryReason::WaitBoundary,
@@ -4775,9 +4780,9 @@ mod tests {
         .expect("relevant episode memory section should be present");
 
         assert!(episode_section.content.contains("ep_relevant"));
-        assert!(episode_section
-            .content
-            .contains("Source refs: turns [4, 5, 6, 7]"));
+        assert!(episode_section.content.contains(
+            "Source refs: turns [turn-stable-4, turn-stable-5, turn-stable-6, turn-stable-7]"
+        ));
         assert!(episode_section
             .content
             .contains("Operator intent (authoritative only from sources)"));
