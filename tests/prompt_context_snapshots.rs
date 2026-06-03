@@ -310,7 +310,7 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
     );
-    task_result.turn_id = Some("turn_op_test".into());
+    task_result.turn_id = Some("turn_task_result".into());
 
     let continuation = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::TaskResult,
@@ -705,7 +705,7 @@ fn task_result_context_snapshot_renders_follow_up_continuation() -> Result<()> {
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
     );
-    task_result.turn_id = Some("turn_op_test".into());
+    task_result.turn_id = Some("turn_task_result".into());
 
     let continuation = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::TaskResult,
@@ -1439,7 +1439,7 @@ fn task_result_with_multiple_work_items() -> Result<()> {
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
     );
-    task_result.turn_id = Some("turn_op_test".into());
+    task_result.turn_id = Some("turn_task_result".into());
 
     let continuation = ContinuationResolution {
         trigger_kind: ContinuationTriggerKind::TaskResult,

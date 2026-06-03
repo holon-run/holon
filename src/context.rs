@@ -1604,9 +1604,9 @@ fn render_recent_turns_with_budget(
             briefs
                 .iter()
                 .any(|brief| brief_matches_message(brief, message))
-                || tools.iter().any(|tool| {
-                    tool.turn_index != 0 && message.message_seq == Some(tool.turn_index)
-                })
+                || tools
+                    .iter()
+                    .any(|tool| tool_execution_matches_message(tool, message))
         })
         .map(|message| render_turn_projection(message, briefs, tools, None))
         .collect::<Vec<_>>();
@@ -1685,15 +1685,7 @@ fn render_turn_projection(
 
     let related_tools = tools
         .iter()
-        .filter(|tool| {
-            tool.turn_id.is_some()
-                && tool.turn_id == message.turn_id
-                && tool
-                    .turn_id
-                    .as_ref()
-                    .map(|id| !id.is_empty())
-                    .unwrap_or(false)
-        })
+        .filter(|tool| tool_execution_matches_message(tool, message))
         .map(render_recent_tool_execution)
         .collect::<Vec<_>>();
     if !related_tools.is_empty() {
@@ -1739,6 +1731,17 @@ fn brief_matches_message(brief: &BriefRecord, message: &MessageEnvelope) -> bool
         || brief
             .turn_index
             .is_some_and(|turn_index| message.message_seq == Some(turn_index))
+}
+
+fn tool_execution_matches_message(tool: &ToolExecutionRecord, message: &MessageEnvelope) -> bool {
+    match (&tool.turn_id, &message.turn_id) {
+        (Some(tool_turn_id), Some(message_turn_id))
+            if !tool_turn_id.trim().is_empty() && !message_turn_id.trim().is_empty() =>
+        {
+            tool_turn_id == message_turn_id
+        }
+        _ => tool.turn_index != 0 && message.message_seq == Some(tool.turn_index),
+    }
 }
 
 fn turn_trigger_label(message: &MessageEnvelope) -> &'static str {
@@ -4763,6 +4766,49 @@ mod tests {
         assert!(header.contains("[work_item:work-1___operator]"));
         assert!(header.contains("[task:task-1_bad]"));
         assert!(!header.contains("[operator]"));
+    }
+
+    #[test]
+    fn tool_execution_matches_message_uses_turn_id_then_legacy_turn_index() {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "run tests".into(),
+            },
+        );
+        message.message_seq = Some(4);
+        message.turn_id = Some("turn-current".into());
+
+        let mut tool = ToolExecutionRecord {
+            id: "tool-1".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 4,
+            turn_id: Some("turn-current".into()),
+            tool_name: "ExecCommand".into(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 10,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": "cargo test"}),
+            output: json!({"exit_code": 0}),
+            summary: "cargo test".into(),
+            invocation_surface: None,
+        };
+
+        assert!(tool_execution_matches_message(&tool, &message));
+
+        tool.turn_id = Some("turn-other".into());
+        assert!(!tool_execution_matches_message(&tool, &message));
+
+        tool.turn_id = None;
+        message.turn_id = None;
+        assert!(tool_execution_matches_message(&tool, &message));
     }
 
     fn execution_snapshot_for(session: &AgentState) -> ExecutionSnapshot {

@@ -3326,8 +3326,12 @@ pub struct DeliverySummaryRecord {
     pub work_item_id: String,
     pub created_at: DateTime<Utc>,
     pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_turn_id: Option<String>,
+    #[serde(
+        default,
+        alias = "source_turn_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_turn_index: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3348,7 +3352,7 @@ impl DeliverySummaryRecord {
             work_item_id: work_item_id.into(),
             created_at: Utc::now(),
             text: text.into(),
-            source_turn_id: None,
+            turn_id: None,
             source_turn_index,
             evidence,
         }

@@ -1296,6 +1296,44 @@ async fn enqueue_normalizes_task_rejoin_identity_and_artifact_refs() {
 }
 
 #[tokio::test]
+async fn enqueue_generates_turn_id_for_blank_admitted_turn_id() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue".into(),
+        },
+    );
+    message.turn_id = Some("  ".into());
+
+    let queued = runtime.enqueue(message).await.unwrap();
+
+    assert!(queued
+        .turn_id
+        .as_deref()
+        .is_some_and(|turn_id| turn_id.starts_with("turn_")));
+}
+
+#[tokio::test]
 async fn enqueue_normalizes_callback_payload_without_operator_elevation() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

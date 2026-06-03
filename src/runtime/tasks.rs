@@ -2365,7 +2365,7 @@ impl RuntimeHandle {
             source_turn_index,
             Some(evidence.clone()),
         );
-        delivery_summary.source_turn_id = current_turn_id.clone();
+        delivery_summary.turn_id = current_turn_id.clone();
         self.inner
             .storage
             .append_delivery_summary(&delivery_summary)?;

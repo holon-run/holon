@@ -737,7 +737,7 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             guard.state.turn_index += 1;
             guard.state.current_turn_id = message
-                .and_then(|message| message.turn_id.clone())
+                .and_then(|message| normalized_turn_id(message.turn_id.as_deref()))
                 .or_else(|| Some(crate::ids::turn_id()));
             guard.state.last_turn_terminal = None;
             if guard.state.current_turn_work_item_id.is_none() {
@@ -963,6 +963,7 @@ impl RuntimeHandle {
 
     pub async fn enqueue(&self, mut message: MessageEnvelope) -> Result<MessageEnvelope> {
         message.normalize_admission_fields();
+        message.turn_id = normalized_turn_id(message.turn_id.as_deref());
         if message.turn_id.is_none() {
             message.turn_id = Some(crate::ids::turn_id());
         }
@@ -1353,6 +1354,13 @@ fn is_max_output_stop_reason(stop_reason: Option<&str>) -> bool {
         stop_reason,
         Some("max_tokens") | Some("max_output_tokens") | Some("model_context_window_exceeded")
     )
+}
+
+fn normalized_turn_id(turn_id: Option<&str>) -> Option<String> {
+    turn_id
+        .map(str::trim)
+        .filter(|turn_id| !turn_id.is_empty())
+        .map(ToString::to_string)
 }
 
 #[cfg(test)]

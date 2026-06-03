@@ -1434,12 +1434,15 @@ impl RuntimeHandle {
             } else {
                 None
             };
+            let turn_id = guard
+                .state
+                .current_turn_id
+                .clone()
+                .filter(|turn_id| !turn_id.trim().is_empty())
+                .unwrap_or_else(crate::ids::turn_id);
+            guard.state.current_turn_id = Some(turn_id.clone());
             let record = TurnTerminalRecord {
-                turn_id: guard
-                    .state
-                    .current_turn_id
-                    .clone()
-                    .unwrap_or_else(crate::ids::turn_id),
+                turn_id,
                 turn_index: guard.state.turn_index,
                 kind,
                 reason: None,
@@ -1591,12 +1594,15 @@ impl RuntimeHandle {
     ) -> Result<TurnTerminalRecord> {
         let record = {
             let mut guard = self.inner.agent.lock().await;
+            let turn_id = guard
+                .state
+                .current_turn_id
+                .clone()
+                .filter(|turn_id| !turn_id.trim().is_empty())
+                .unwrap_or_else(crate::ids::turn_id);
+            guard.state.current_turn_id = Some(turn_id.clone());
             let record = TurnTerminalRecord {
-                turn_id: guard
-                    .state
-                    .current_turn_id
-                    .clone()
-                    .unwrap_or_else(crate::ids::turn_id),
+                turn_id,
                 turn_index: guard.state.turn_index,
                 kind: TurnTerminalKind::Aborted,
                 reason: Some(reason.to_string()),
