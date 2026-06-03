@@ -18,7 +18,7 @@ use crate::types::{
     ExternalWaitRecoverability, MessageEnvelope, OperatorDeliveryRecord,
     OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, QueueEntryStatus,
     TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
-    TranscriptEntry, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
+    TranscriptEntry, TurnRecord, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
     WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WakeSource,
     WorkItemDelegationRecord, WorkItemDelegationState, WorkItemReadiness, WorkItemRecord,
     WorkItemSchedulingState, WorkItemState, WorkingMemoryDelta, WorkspaceEntry,
@@ -171,6 +171,7 @@ pub struct AppStorage {
     work_item_delegations_path: PathBuf,
     timers_path: PathBuf,
     tools_path: PathBuf,
+    turns_path: PathBuf,
     transcript_path: PathBuf,
     queue_entries_path: PathBuf,
     waiting_intents_path: PathBuf,
@@ -242,6 +243,7 @@ impl AppStorage {
             work_item_delegations_path: ledger_dir.join("work_item_delegations.jsonl"),
             timers_path: ledger_dir.join("timers.jsonl"),
             tools_path: ledger_dir.join("tools.jsonl"),
+            turns_path: ledger_dir.join("turns.jsonl"),
             transcript_path,
             queue_entries_path: ledger_dir.join("queue_entries.jsonl"),
             waiting_intents_path: ledger_dir.join("waiting_intents.jsonl"),
@@ -374,6 +376,10 @@ impl AppStorage {
             self.mark_memory_index_dirty()?;
         }
         Ok(())
+    }
+
+    pub fn append_turn(&self, record: &TurnRecord) -> Result<()> {
+        self.append_jsonl(&self.turns_path, record)
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
@@ -670,6 +676,10 @@ impl AppStorage {
 
     pub fn read_recent_tool_executions(&self, limit: usize) -> Result<Vec<ToolExecutionRecord>> {
         read_recent_jsonl(&self.tools_path, limit)
+    }
+
+    pub fn read_recent_turns(&self, limit: usize) -> Result<Vec<TurnRecord>> {
+        read_recent_jsonl(&self.turns_path, limit)
     }
 
     pub fn read_recent_transcript(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {
@@ -2147,6 +2157,39 @@ mod tests {
             .unwrap();
         let events = reopened.read_recent_events(10).unwrap();
         assert_eq!(events.last().map(|event| event.event_seq), Some(3));
+    }
+
+    #[test]
+    fn append_turn_persists_lightweight_turn_record() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut record = TurnRecord::new("default", "turn-1", 7);
+        record.input_message_ids = vec!["msg-1".into()];
+        record.tool_execution_ids = vec!["tool-1".into()];
+        record.produced_brief_ids = vec!["brief-1".into()];
+        record.delivery_summary_ids = vec!["delivery-1".into()];
+        record.completed_work_item_ids = vec!["work-1".into()];
+        record.terminal = Some(crate::types::TurnTerminalSummary {
+            kind: crate::types::TurnTerminalKind::Completed,
+            reason: None,
+            completed_at: Utc::now(),
+            duration_ms: 42,
+        });
+
+        storage.append_turn(&record).unwrap();
+
+        let turns = storage.read_recent_turns(10).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].turn_id, "turn-1");
+        assert_eq!(turns[0].input_message_ids, vec!["msg-1"]);
+        assert_eq!(turns[0].tool_execution_ids, vec!["tool-1"]);
+        assert_eq!(turns[0].produced_brief_ids, vec!["brief-1"]);
+        assert_eq!(turns[0].delivery_summary_ids, vec!["delivery-1"]);
+        assert_eq!(turns[0].completed_work_item_ids, vec!["work-1"]);
+        assert_eq!(
+            turns[0].terminal.as_ref().map(|terminal| terminal.kind),
+            Some(crate::types::TurnTerminalKind::Completed)
+        );
     }
 
     #[test]

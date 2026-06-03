@@ -1745,10 +1745,19 @@ fn render_current_continuation_turn_projection(
 }
 
 fn brief_matches_message(brief: &BriefRecord, message: &MessageEnvelope) -> bool {
-    brief.related_message_id.as_deref() == Some(message.id.as_str())
-        || brief
-            .turn_index
-            .is_some_and(|turn_index| message.message_seq == Some(turn_index))
+    match (&brief.turn_id, &message.turn_id) {
+        (Some(brief_turn_id), Some(message_turn_id))
+            if !brief_turn_id.trim().is_empty() && !message_turn_id.trim().is_empty() =>
+        {
+            brief_turn_id == message_turn_id
+        }
+        _ => {
+            brief.related_message_id.as_deref() == Some(message.id.as_str())
+                || brief
+                    .turn_index
+                    .is_some_and(|turn_index| message.message_seq == Some(turn_index))
+        }
+    }
 }
 
 fn tool_execution_matches_message(tool: &ToolExecutionRecord, message: &MessageEnvelope) -> bool {
@@ -4992,6 +5001,42 @@ mod tests {
         tool.turn_id = None;
         message.turn_id = None;
         assert!(tool_execution_matches_message(&tool, &message));
+    }
+
+    #[test]
+    fn brief_matches_message_uses_turn_id_then_legacy_refs() {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "finish work".into(),
+            },
+        );
+        message.id = "msg-1".into();
+        message.message_seq = Some(4);
+        message.turn_id = Some("turn-current".into());
+
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "done",
+            Some("msg-1".into()),
+            None,
+        );
+        brief.turn_index = Some(4);
+        brief.turn_id = Some("turn-current".into());
+
+        assert!(brief_matches_message(&brief, &message));
+
+        brief.turn_id = Some("turn-other".into());
+        assert!(!brief_matches_message(&brief, &message));
+
+        brief.turn_id = None;
+        message.turn_id = None;
+        assert!(brief_matches_message(&brief, &message));
     }
 
     fn execution_snapshot_for(session: &AgentState) -> ExecutionSnapshot {
