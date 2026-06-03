@@ -1356,6 +1356,8 @@ pub struct WorkingMemoryDelta {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct TurnMemoryDelta {
     pub turn_index: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     #[serde(default)]
     pub active_work_changed: bool,
     #[serde(default)]
@@ -1376,6 +1378,8 @@ pub struct TurnMemoryDelta {
     pub pending_followups: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waiting_on: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_results: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1417,6 +1421,10 @@ pub struct ActiveEpisodeBuilder {
     pub carry_forward: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waiting_on: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_turn_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_results: Vec<String>,
 }
 
 impl ActiveEpisodeBuilder {
@@ -1453,8 +1461,37 @@ impl ActiveEpisodeBuilder {
             decisions: Vec::new(),
             carry_forward: snapshot.pending_followups.clone(),
             waiting_on: snapshot.waiting_on.clone(),
+            source_turn_ids: Vec::new(),
+            task_results: Vec::new(),
         }
     }
+}
+
+fn deserialize_source_turn_ids<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = Vec::<Value>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .filter_map(|value| match value {
+            Value::String(value) => Some(value),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextEpisodeGeneratedBy {
+    pub component: String,
+    pub reason: EpisodeBoundaryReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1478,6 +1515,26 @@ pub struct ContextEpisodeRecord {
     pub work_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scope_hints: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_source_turn_ids",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub source_turn_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_by: Option<ContextEpisodeGeneratedBy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operator_intents: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_facts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_results: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_items: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_inferences: Vec<String>,
     pub summary: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub working_set_files: Vec<String>,

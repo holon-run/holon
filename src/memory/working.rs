@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::{
     storage::AppStorage,
     types::{
-        AgentState, AuditEvent, ClosureDecision, MessageEnvelope, MessageKind, TodoItem,
-        TodoItemState, ToolExecutionRecord, TurnMemoryDelta, WaitingIntentScope,
+        AgentState, AuditEvent, ClosureDecision, MessageBody, MessageEnvelope, MessageKind,
+        TodoItem, TodoItemState, ToolExecutionRecord, TurnMemoryDelta, WaitingIntentScope,
         WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
         WorkingMemoryUpdateReason,
     },
@@ -66,6 +66,7 @@ pub fn refresh_working_memory(
     let turn_delta = derive_turn_memory_delta(
         agent.turn_index,
         agent.current_turn_id.as_deref(),
+        trigger,
         &previous_snapshot,
         &next_snapshot,
         storage.read_recent_tool_executions(MEMORY_TOOL_LIMIT)?,
@@ -215,6 +216,7 @@ fn derive_update_reason(
 fn derive_turn_memory_delta(
     turn_index: u64,
     turn_id: Option<&str>,
+    trigger: &MessageEnvelope,
     previous: &WorkingMemorySnapshot,
     next: &WorkingMemorySnapshot,
     recent_tools: Vec<ToolExecutionRecord>,
@@ -249,6 +251,7 @@ fn derive_turn_memory_delta(
 
     TurnMemoryDelta {
         turn_index: turn_index.max(1),
+        turn_id: turn_id.map(ToString::to_string),
         active_work_changed: previous.current_work_item_id != next.current_work_item_id
             || previous.objective != next.objective
             || previous.work_summary != next.work_summary,
@@ -261,7 +264,46 @@ fn derive_turn_memory_delta(
         decisions: Vec::new(),
         pending_followups: next.pending_followups.clone(),
         waiting_on: next.waiting_on.clone(),
+        task_results: task_result_facts(trigger),
     }
+}
+
+fn task_result_facts(trigger: &MessageEnvelope) -> Vec<String> {
+    if !matches!(
+        trigger.kind,
+        MessageKind::TaskResult | MessageKind::TaskStatus
+    ) {
+        return Vec::new();
+    }
+
+    let task_ref = trigger
+        .task_id
+        .as_deref()
+        .or_else(|| trigger.source_refs.get("task_id").map(String::as_str));
+    let body = match &trigger.body {
+        MessageBody::Brief { title, text, .. } => title
+            .as_deref()
+            .filter(|title| !title.trim().is_empty())
+            .map(|title| format!("{title}: {text}"))
+            .unwrap_or_else(|| text.clone()),
+        MessageBody::Text { text } => text.clone(),
+        MessageBody::Json { value } => value
+            .get("result_summary")
+            .or_else(|| value.get("summary"))
+            .or_else(|| value.get("status"))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| value.to_string()),
+    };
+    let body = truncate_line(&body.split_whitespace().collect::<Vec<_>>().join(" "), 180);
+    if body.is_empty() {
+        return Vec::new();
+    }
+
+    vec![match task_ref {
+        Some(task_ref) if !task_ref.trim().is_empty() => format!("task {task_ref}: {body}"),
+        _ => body,
+    }]
 }
 
 fn derive_working_memory_delta(
@@ -1652,9 +1694,20 @@ mod tests {
     fn derive_turn_memory_delta_only_uses_current_turn_tool_evidence() {
         let previous = WorkingMemorySnapshot::default();
         let next = WorkingMemorySnapshot::default();
+        let trigger = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue".into(),
+            },
+        );
         let delta = derive_turn_memory_delta(
             4,
             Some("turn-new"),
+            &trigger,
             &previous,
             &next,
             vec![
@@ -1699,6 +1752,44 @@ mod tests {
         assert_eq!(
             delta.verification,
             vec!["Verified with cargo test --test metrics_export"]
+        );
+        assert_eq!(delta.turn_id.as_deref(), Some("turn-new"));
+        assert!(delta.task_results.is_empty());
+    }
+
+    #[test]
+    fn derive_turn_memory_delta_captures_task_result_fact() {
+        let previous = WorkingMemorySnapshot::default();
+        let next = WorkingMemorySnapshot::default();
+        let mut trigger = MessageEnvelope::new(
+            "default",
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: "task_123".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Brief {
+                title: Some("Task completed".into()),
+                text: "verified cargo test memory::episode".into(),
+                attachments: None,
+            },
+        );
+        trigger.normalize_admission_fields();
+
+        let delta = derive_turn_memory_delta(
+            8,
+            Some("turn-task-result"),
+            &trigger,
+            &previous,
+            &next,
+            Vec::new(),
+        );
+
+        assert_eq!(delta.turn_id.as_deref(), Some("turn-task-result"));
+        assert_eq!(
+            delta.task_results,
+            vec!["task task_123: Task completed: verified cargo test memory::episode"]
         );
     }
 }
