@@ -51,17 +51,16 @@ pub(super) fn model_picker_rows(
     rows
 }
 
-pub(super) fn selected_model_choice(
+pub(super) fn selected_model_picker_row(
     agent: Option<&AgentSummary>,
     model_availability: &[ResolvedModelAvailability],
     provider: Option<&str>,
     filter: &str,
     selected: usize,
-) -> Option<ModelPickerChoice> {
+) -> Option<ModelPickerRow> {
     model_picker_rows(agent, model_availability, provider, filter)
         .into_iter()
         .nth(selected)
-        .and_then(|row| row.available.then_some(row.choice))
 }
 
 pub(super) fn clamp_model_picker_selection(
@@ -224,11 +223,12 @@ fn model_availability_row(entry: &ResolvedModelAvailability) -> ModelPickerRow {
 
 fn supports_reasoning_effort(entry: &ResolvedModelAvailability) -> bool {
     entry.policy.capabilities.reasoning_summaries
+        && entry.transport.as_deref() == Some("openai_codex_responses")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_model_picker_selection, model_picker_rows, selected_model_choice};
+    use super::{clamp_model_picker_selection, model_picker_rows, selected_model_picker_row};
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
     use crate::{
         config::{ModelRef, ProviderId},
@@ -424,9 +424,11 @@ mod tests {
             clamp_model_picker_selection(Some(&agent), &availability, Some("openai"), "gpt", 10),
             1
         );
-        assert!(selected_model_choice(Some(&agent), &availability, None, "", 1).is_some());
+        assert!(selected_model_picker_row(Some(&agent), &availability, None, "", 1).is_some());
         assert!(
-            selected_model_choice(Some(&agent), &availability, Some("anthropic"), "", 1).is_none()
+            !selected_model_picker_row(Some(&agent), &availability, Some("anthropic"), "", 1)
+                .unwrap()
+                .available
         );
     }
 }

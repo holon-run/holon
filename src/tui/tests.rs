@@ -254,7 +254,11 @@ fn sample_model_availability(
         metadata_source: "remote_discovered".into(),
         provider_configured: true,
         provider_source: Some("config".into()),
-        transport: Some("openai_chat_completions".into()),
+        transport: Some(if model_ref.provider.as_str() == "openai_codex" {
+            "openai_codex_responses".into()
+        } else {
+            "openai_chat_completions".into()
+        }),
         credential_source: Some("env".into()),
         credential_kind: Some("api_key".into()),
         credential_configured: available,
@@ -1625,13 +1629,13 @@ async fn model_picker_opens_effort_for_models_with_reasoning_support() {
     );
     app.apply_agent_list(vec![sample_agent_summary("default")]);
     app.model_availability = vec![sample_model_availability(
-        "openai/gpt-5.4",
-        "GPT-5.4",
+        "openai_codex/gpt-5.4",
+        "GPT-5.4 Codex",
         true,
         true,
     )];
     app.overlay = OverlayState::ModelPicker {
-        provider: Some("openai".into()),
+        provider: Some("openai_codex".into()),
         filter: String::new(),
         selected: 1,
     };
@@ -1643,10 +1647,74 @@ async fn model_picker_opens_effort_for_models_with_reasoning_support() {
     assert_eq!(
         app.overlay,
         OverlayState::ModelEffortPicker {
-            model: "openai/gpt-5.4".into(),
+            model: "openai_codex/gpt-5.4".into(),
             selected: 0,
             return_filter: String::new(),
             return_selected: 1,
+        }
+    );
+}
+
+#[tokio::test]
+async fn model_picker_enter_on_unavailable_model_keeps_provider_page_open() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.apply_agent_list(vec![sample_agent_summary("default")]);
+    app.model_availability = vec![sample_model_availability(
+        "openrouter/deepseek-v3",
+        "DeepSeek V3",
+        false,
+        false,
+    )];
+    app.overlay = OverlayState::ModelPicker {
+        provider: Some("openrouter".into()),
+        filter: String::new(),
+        selected: 1,
+    };
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        app.overlay,
+        OverlayState::ModelPicker {
+            provider: Some("openrouter".into()),
+            filter: String::new(),
+            selected: 1,
+        }
+    );
+    assert!(app.status_line.contains("Model unavailable"));
+    assert!(app.status_line.contains("credential_missing"));
+}
+
+#[tokio::test]
+async fn model_effort_picker_esc_returns_to_provider_model_page() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.overlay = OverlayState::ModelEffortPicker {
+        model: "openai_codex/gpt-5.4".into(),
+        selected: 0,
+        return_filter: "gpt".into(),
+        return_selected: 1,
+    };
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        app.overlay,
+        OverlayState::ModelPicker {
+            provider: Some("openai_codex".into()),
+            filter: "gpt".into(),
+            selected: 1,
         }
     );
 }

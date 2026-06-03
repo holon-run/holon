@@ -1053,8 +1053,11 @@ impl TuiApp {
             } => {
                 match resolve_key(KeyContext::ModelEffortPicker, key) {
                     TuiKeyAction::OverlayClose => {
+                        let provider = model
+                            .split_once('/')
+                            .map(|(provider, _)| provider.to_string());
                         self.overlay = OverlayState::ModelPicker {
-                            provider: None,
+                            provider,
                             filter: return_filter,
                             selected: return_selected,
                         };
@@ -1375,7 +1378,7 @@ impl TuiApp {
             .selected_agent_id()
             .ok_or_else(|| anyhow!("no agent selected"))?
             .to_string();
-        let choice = crate::tui::model_picker::selected_model_choice(
+        let row = crate::tui::model_picker::selected_model_picker_row(
             self.selected_agent_summary(),
             &self.model_availability,
             provider,
@@ -1383,8 +1386,17 @@ impl TuiApp {
             selected,
         )
         .ok_or_else(|| anyhow!("no model selection available"))?;
+        if !row.available {
+            self.status_line = format!("Model unavailable: {}; {}", row.title, row.detail);
+            self.overlay = OverlayState::ModelPicker {
+                provider: provider.map(str::to_string),
+                filter: filter.to_string(),
+                selected,
+            };
+            return Ok(());
+        }
 
-        match choice {
+        match row.choice {
             crate::tui::model_picker::ModelPickerChoice::InheritDefault => {
                 self.client.clear_agent_model_override(&agent_id).await?;
                 self.status_line =
