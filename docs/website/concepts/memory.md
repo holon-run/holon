@@ -85,7 +85,7 @@ Each turn assembles a prompt from budgeted memory sections:
 
 - Hot turn context (current input, continuation, recent events)
 - Turn-based context projection (linked turns, result briefs, task results,
-  and WorkItem transitions)
+  and work item transitions)
 - Current work item and plan
 - Relevant episode memory
 - Working memory snapshot

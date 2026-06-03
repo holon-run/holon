@@ -71,6 +71,8 @@ Holon uses projection instead:
 
 The result is a shorter prompt that still preserves why the agent is acting,
 what it has already done, and which evidence supports the current state.
+This turn-based context projection is Holon's intended direction for preserving
+continuity without rendering an unbounded transcript.
 
 ## Compaction Preserves Provenance
 
@@ -104,7 +106,7 @@ Because these objects are linked through turns, the agent can answer questions
 such as "what did we do for that issue?" or "why are you waiting?" without
 searching an unstructured transcript.
 
-## What Is User-Facing Contract
+## What Is the User-Facing Contract
 
 Users should be able to rely on these behaviors:
 
