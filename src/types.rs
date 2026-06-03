@@ -1458,6 +1458,16 @@ impl ActiveEpisodeBuilder {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextEpisodeGeneratedBy {
+    pub component: String,
+    pub reason: EpisodeBoundaryReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextEpisodeRecord {
     pub id: String,
     pub agent_id: String,
@@ -1478,6 +1488,22 @@ pub struct ContextEpisodeRecord {
     pub work_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scope_hints: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_turn_ids: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_by: Option<ContextEpisodeGeneratedBy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operator_intents: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_facts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_results: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_items: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_inferences: Vec<String>,
     pub summary: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub working_set_files: Vec<String>,
