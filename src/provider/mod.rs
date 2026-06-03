@@ -16,7 +16,10 @@ mod tool_schema;
 mod transports;
 
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
-pub use diagnostics::{provider_doctor, resolved_model_availability};
+pub use diagnostics::{
+    provider_doctor, resolved_model_availability, resolved_model_providers,
+    resolved_provider_models,
+};
 pub use http_trace::ProviderHttpTraceDiagnostics;
 pub(crate) use retry::sanitize_transport_url;
 pub use transports::{
