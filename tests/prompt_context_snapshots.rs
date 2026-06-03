@@ -90,6 +90,7 @@ fn test_config() -> ContextConfig {
         compaction_keep_recent_estimated_tokens: 768,
         recent_episode_candidates: 6,
         max_relevant_episodes: 2,
+        ..ContextConfig::default()
     }
 }
 

@@ -6236,6 +6236,7 @@ mod tests {
                 .compaction_keep_recent_estimated_tokens,
             recent_episode_candidates: fixture.config.recent_episode_candidates,
             max_relevant_episodes: fixture.config.max_relevant_episodes,
+            ..ContextConfig::default()
         };
 
         let known = catalog.resolved_model_policy(&base_context, None);
@@ -6300,6 +6301,7 @@ mod tests {
                 .compaction_keep_recent_estimated_tokens,
             recent_episode_candidates: fixture.config.recent_episode_candidates,
             max_relevant_episodes: fixture.config.max_relevant_episodes,
+            ..ContextConfig::default()
         };
 
         let remote = catalog.resolved_model_policy(&base_context, None);
@@ -6352,6 +6354,7 @@ mod tests {
                 .compaction_keep_recent_estimated_tokens,
             recent_episode_candidates: fixture.config.recent_episode_candidates,
             max_relevant_episodes: fixture.config.max_relevant_episodes,
+            ..ContextConfig::default()
         };
 
         let resolved = catalog.resolved_model_policy(&base_context, None);

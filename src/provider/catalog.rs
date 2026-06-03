@@ -143,6 +143,7 @@ fn resolved_model_policy_for_candidate(
         compaction_keep_recent_estimated_tokens: config.compaction_keep_recent_estimated_tokens,
         recent_episode_candidates: config.recent_episode_candidates,
         max_relevant_episodes: config.max_relevant_episodes,
+        ..ContextConfig::default()
     };
     BuiltInModelCatalog::default().resolve_policy(
         model_ref,

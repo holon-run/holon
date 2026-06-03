@@ -469,6 +469,9 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
         ContextConfig {
             prompt_budget_estimated_tokens,
             compaction_keep_recent_estimated_tokens: 180,
+            turn_projection_budget_ratio: 1.0,
+            turn_projection_min_budget: 0,
+            turn_projection_max_budget: prompt_budget_estimated_tokens,
             ..context_config()
         },
     )
