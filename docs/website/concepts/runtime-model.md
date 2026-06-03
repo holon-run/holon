@@ -139,6 +139,12 @@ Holon separates **internal execution traces** from **user-facing delivery**:
 - **Task output** — Command stdout/stderr, available through task inspection
 - **Transcripts** — Full turn history for debugging
 
+Briefs and task results are linked back to the runtime turns that produced
+them. This lets Holon preserve continuity across wakeups and task-result
+continuations without treating the raw transcript as the only context source.
+See [Context Continuity](/concepts/context-continuity.md) for the
+user-facing model of prompt layout, projection, and compaction.
+
 ### Workspaces
 
 Every agent has exactly one active workspace. Workspaces define:
@@ -164,6 +170,7 @@ Each agent turn follows this pattern:
 
 ## See Also
 
+- [Context Continuity](/concepts/context-continuity.md) — How Holon preserves model-visible continuity across turns
 - [Memory System](/concepts/memory.md) — How Holon preserves continuity across turns
 - [Trust Boundaries](/concepts/trust-boundaries.md) — How Holon classifies and
   enforces trust
