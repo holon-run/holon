@@ -854,10 +854,14 @@ pub async fn runtime_compaction_multi_pass_recovery_preserves_progress_and_artif
         let mut config = aggressive_compaction_config();
         config.compaction_trigger_estimated_tokens = 1_000;
         config.compaction_keep_recent_estimated_tokens = 200;
-        config.prompt_budget_estimated_tokens = 24_000;
+        // The fixture's scripted multi-pass flow needs roughly the pre-#1527
+        // 24k turn-local projection budget. With the production 30% ratio,
+        // use an 80k resolved prompt budget to preserve that projection space
+        // while still exercising the derived-budget path.
+        config.prompt_budget_estimated_tokens = 80_000;
 
         let model_override = holon::model_catalog::ModelRuntimeOverride {
-            prompt_budget_estimated_tokens: Some(24_000),
+            prompt_budget_estimated_tokens: Some(80_000),
             compaction_trigger_estimated_tokens: Some(1_000),
             compaction_keep_recent_estimated_tokens: Some(200),
             ..holon::model_catalog::ModelRuntimeOverride::default()
