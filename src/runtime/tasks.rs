@@ -2354,13 +2354,18 @@ impl RuntimeHandle {
             "source_round": source_round,
             "warnings": warnings.clone(),
         });
-        let delivery_summary = DeliverySummaryRecord::new(
+        let current_turn_id = {
+            let guard = self.inner.agent.lock().await;
+            guard.state.current_turn_id.clone()
+        };
+        let mut delivery_summary = DeliverySummaryRecord::new(
             agent_id.clone(),
             record.id.clone(),
             report_text,
             source_turn_index,
             Some(evidence.clone()),
         );
+        delivery_summary.source_turn_id = current_turn_id.clone();
         self.inner
             .storage
             .append_delivery_summary(&delivery_summary)?;
@@ -2369,6 +2374,7 @@ impl RuntimeHandle {
         brief.work_item_id = Some(record.id.clone());
         brief.workspace_id = record.workspace_id.clone();
         brief.turn_index = source_turn_index;
+        brief.turn_id = current_turn_id;
         self.persist_brief(&brief).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_completion_report_promoted",

@@ -1685,7 +1685,15 @@ fn render_turn_projection(
 
     let related_tools = tools
         .iter()
-        .filter(|tool| tool.turn_index != 0 && message.message_seq == Some(tool.turn_index))
+        .filter(|tool| {
+            tool.turn_id.is_some()
+                && tool.turn_id == message.turn_id
+                && tool
+                    .turn_id
+                    .as_ref()
+                    .map(|id| !id.is_empty())
+                    .unwrap_or(false)
+        })
         .map(render_recent_tool_execution)
         .collect::<Vec<_>>();
     if !related_tools.is_empty() {
@@ -2353,7 +2361,8 @@ mod tests {
             id: "tool-1".to_string(),
             agent_id: "default".to_string(),
             work_item_id: Some("work_123".to_string()),
-            turn_index: 1,
+            turn_index: 0,
+            turn_id: None,
             tool_name: "ExecCommand".to_string(),
             created_at: chrono::Utc::now(),
             completed_at: Some(chrono::Utc::now()),
@@ -2430,7 +2439,8 @@ mod tests {
             id: "tool-context-1246".to_string(),
             agent_id: "default".to_string(),
             work_item_id: Some("work_123".to_string()),
-            turn_index: 1,
+            turn_index: 0,
+            turn_id: None,
             tool_name: "ExecCommand".to_string(),
             created_at: chrono::Utc::now(),
             completed_at: Some(chrono::Utc::now()),
@@ -2458,7 +2468,8 @@ mod tests {
             id: "tool-context-batch-1246".to_string(),
             agent_id: "default".to_string(),
             work_item_id: None,
-            turn_index: 1,
+            turn_index: 0,
+            turn_id: None,
             tool_name: "ExecCommandBatch".to_string(),
             created_at: chrono::Utc::now(),
             completed_at: Some(chrono::Utc::now()),
@@ -2790,7 +2801,8 @@ mod tests {
                 id: "tool-raw-evidence".to_string(),
                 agent_id: "default".to_string(),
                 work_item_id: None,
-                turn_index: 1,
+                turn_index: 0,
+                turn_id: None,
                 tool_name: "ExecCommand".to_string(),
                 created_at: chrono::Utc::now(),
                 completed_at: Some(chrono::Utc::now()),
@@ -3228,7 +3240,8 @@ mod tests {
                 id: "tool-current".into(),
                 agent_id: "default".into(),
                 work_item_id: Some(active.id.clone()),
-                turn_index: 1,
+                turn_index: 0,
+                turn_id: None,
                 tool_name: "ExecCommand".into(),
                 created_at: chrono::Utc::now(),
                 completed_at: Some(chrono::Utc::now()),
@@ -3246,7 +3259,8 @@ mod tests {
                 id: "tool-other-agent".into(),
                 agent_id: "other-agent".into(),
                 work_item_id: Some(active.id.clone()),
-                turn_index: 1,
+                turn_index: 0,
+                turn_id: None,
                 tool_name: "ExecCommand".into(),
                 created_at: chrono::Utc::now(),
                 completed_at: Some(chrono::Utc::now()),
@@ -4314,7 +4328,8 @@ mod tests {
             id: "tool-budgeted".into(),
             agent_id: "default".into(),
             work_item_id: None,
-            turn_index: 1,
+            turn_index: 0,
+            turn_id: None,
             tool_name: "ExecCommand".into(),
             created_at: chrono::Utc::now(),
             completed_at: Some(chrono::Utc::now()),

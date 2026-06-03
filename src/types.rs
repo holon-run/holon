@@ -29,6 +29,8 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
             id: String,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             message_seq: Option<u64>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            turn_id: Option<String>,
             #[serde(alias = "session_id")]
             agent_id: String,
             created_at: DateTime<Utc>,
@@ -65,6 +67,7 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
         Ok(Self {
             id: compat.id,
             message_seq: compat.message_seq,
+            turn_id: compat.turn_id,
             agent_id: compat.agent_id,
             created_at: compat.created_at,
             kind: compat.kind,
@@ -1006,6 +1009,8 @@ pub struct MessageEnvelope {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     #[serde(alias = "session_id")]
     pub agent_id: String,
     pub created_at: DateTime<Utc>,
@@ -1043,6 +1048,7 @@ impl MessageEnvelope {
         Self {
             id: ids::message_id(),
             message_seq: None,
+            turn_id: None,
             agent_id: agent_id.into(),
             created_at: Utc::now(),
             kind,
@@ -1274,6 +1280,8 @@ impl TurnTerminalKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnTerminalRecord {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub turn_id: String,
     pub turn_index: u64,
     pub kind: TurnTerminalKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1542,6 +1550,8 @@ pub struct AgentState {
     #[serde(default)]
     pub turn_index: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_turn_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_work_item_id: Option<String>,
@@ -1623,6 +1633,7 @@ impl AgentState {
             active_workspace_entry: None,
             worktree_session: None,
             turn_index: 0,
+            current_turn_id: None,
             current_turn_work_item_id: None,
             current_work_item_id: None,
             current_turn_operator_binding_id: None,
@@ -3311,6 +3322,8 @@ pub struct DeliverySummaryRecord {
     pub created_at: DateTime<Utc>,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_turn_index: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Value>,
@@ -3330,6 +3343,7 @@ impl DeliverySummaryRecord {
             work_item_id: work_item_id.into(),
             created_at: Utc::now(),
             text: text.into(),
+            source_turn_id: None,
             source_turn_index,
             evidence,
         }
@@ -3449,6 +3463,8 @@ pub struct ToolExecutionRecord {
     pub work_item_id: Option<String>,
     #[serde(default)]
     pub turn_index: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     pub tool_name: String,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
@@ -3566,6 +3582,8 @@ pub struct BriefRecord {
     pub work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     pub kind: BriefKind,
     pub created_at: DateTime<Utc>,
     pub text: String,
@@ -3589,6 +3607,7 @@ impl BriefRecord {
             agent_id,
             work_item_id: None,
             turn_index: None,
+            turn_id: None,
             kind,
             created_at: Utc::now(),
             text: text.into(),

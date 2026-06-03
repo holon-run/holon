@@ -736,6 +736,9 @@ impl RuntimeHandle {
         let state = {
             let mut guard = self.inner.agent.lock().await;
             guard.state.turn_index += 1;
+            guard.state.current_turn_id = message
+                .and_then(|message| message.turn_id.clone())
+                .or_else(|| Some(crate::ids::turn_id()));
             guard.state.last_turn_terminal = None;
             if guard.state.current_turn_work_item_id.is_none() {
                 guard.state.current_turn_work_item_id = guard.state.current_work_item_id.clone();
@@ -771,6 +774,7 @@ impl RuntimeHandle {
                 serde_json::json!({
                     "agent_id": message.agent_id.clone(),
                     "message_id": message.id.clone(),
+                    "turn_id": state.current_turn_id.clone(),
                     "message_kind": message.kind.clone(),
                     "run_id": state.current_run_id,
                     "turn_index": state.turn_index,
@@ -959,6 +963,9 @@ impl RuntimeHandle {
 
     pub async fn enqueue(&self, mut message: MessageEnvelope) -> Result<MessageEnvelope> {
         message.normalize_admission_fields();
+        if message.turn_id.is_none() {
+            message.turn_id = Some(crate::ids::turn_id());
+        }
         self.inner.storage.append_message(&message)?;
         self.inner.storage.append_queue_entry(&QueueEntryRecord {
             message_id: message.id.clone(),

@@ -172,6 +172,7 @@ impl ToolRegistry {
             agent_id: agent_id.to_string(),
             work_item_id: None,
             turn_index: 0,
+            turn_id: None,
             tool_name: call.name.clone(),
             created_at: started_at,
             completed_at: Some(completed_at),

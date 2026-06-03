@@ -2522,6 +2522,7 @@ mod tests {
         child_state.status = AgentStatus::AwakeIdle;
         child_state.last_turn_terminal = Some(crate::types::TurnTerminalRecord {
             turn_index: 1,
+            turn_id: "test".into(),
             kind: crate::types::TurnTerminalKind::Completed,
             reason: None,
             last_assistant_message: Some("child finished after restart".into()),

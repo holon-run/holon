@@ -80,6 +80,9 @@ impl RuntimeHandle {
             if bound_brief.work_item_id.is_none() {
                 bound_brief.work_item_id = guard.state.current_turn_work_item_id.clone();
             }
+            if bound_brief.turn_id.is_none() {
+                bound_brief.turn_id = guard.state.current_turn_id.clone();
+            }
         }
         self.inner.storage.append_brief(&bound_brief)?;
         self.inner.storage.append_event(&AuditEvent::new(
