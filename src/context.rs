@@ -30,6 +30,9 @@ pub struct ContextConfig {
     pub compaction_keep_recent_estimated_tokens: usize,
     pub recent_episode_candidates: usize,
     pub max_relevant_episodes: usize,
+    pub turn_projection_budget_ratio: f32,
+    pub turn_projection_min_budget: usize,
+    pub turn_projection_max_budget: usize,
 }
 
 impl Default for ContextConfig {
@@ -44,7 +47,22 @@ impl Default for ContextConfig {
             compaction_keep_recent_estimated_tokens: 768,
             recent_episode_candidates: 12,
             max_relevant_episodes: 3,
+            turn_projection_budget_ratio: 0.30,
+            turn_projection_min_budget: 4096,
+            turn_projection_max_budget: 64000,
         }
+    }
+}
+impl ContextConfig {
+    /// Derive turn projection budget from resolved prompt budget.
+    /// Applies ratio with floor and ceiling guards.
+    pub fn turn_projection_budget(&self) -> usize {
+        let budget = (self.prompt_budget_estimated_tokens as f32
+            * self.turn_projection_budget_ratio) as usize;
+        budget.clamp(
+            self.turn_projection_min_budget,
+            self.turn_projection_max_budget,
+        )
     }
 }
 

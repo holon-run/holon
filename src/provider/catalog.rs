@@ -143,6 +143,9 @@ fn resolved_model_policy_for_candidate(
         compaction_keep_recent_estimated_tokens: config.compaction_keep_recent_estimated_tokens,
         recent_episode_candidates: config.recent_episode_candidates,
         max_relevant_episodes: config.max_relevant_episodes,
+        turn_projection_budget_ratio: 0.30,
+        turn_projection_min_budget: 4096,
+        turn_projection_max_budget: 64000,
     };
     BuiltInModelCatalog::default().resolve_policy(
         model_ref,

@@ -527,6 +527,14 @@ fn select_exact_tail_start(rounds: &[TurnRoundRecord], keep_recent_budget: usize
         return 0;
     }
 
+    // Check if the newest round alone exceeds the budget
+    let newest_round_tokens = estimate_round_tokens(rounds.last().unwrap());
+    if newest_round_tokens > keep_recent_budget {
+        // When the newest round is oversized, ensure we keep at least MIN_EXACT_TAIL_ROUNDS
+        return rounds.len().saturating_sub(MIN_EXACT_TAIL_ROUNDS);
+    }
+
+    // Otherwise, respect the budget exactly
     let mut exact_tail_tokens = 0usize;
     let mut tail_start = rounds.len();
     for index in (0..rounds.len()).rev() {

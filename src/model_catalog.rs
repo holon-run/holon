@@ -330,6 +330,9 @@ impl BuiltInModelCatalog {
             compaction_keep_recent_estimated_tokens: policy.compaction_keep_recent_estimated_tokens,
             recent_episode_candidates: base_context_config.recent_episode_candidates,
             max_relevant_episodes: base_context_config.max_relevant_episodes,
+            turn_projection_budget_ratio: 0.30,
+            turn_projection_min_budget: 4096,
+            turn_projection_max_budget: 64000,
         };
         (context_config, policy)
     }
@@ -1895,6 +1898,9 @@ mod tests {
             compaction_keep_recent_estimated_tokens: 768,
             recent_episode_candidates: 12,
             max_relevant_episodes: 3,
+            turn_projection_budget_ratio: 0.30,
+            turn_projection_min_budget: 4096,
+            turn_projection_max_budget: 64000,
         }
     }
 
