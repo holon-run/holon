@@ -1815,6 +1815,8 @@ pub struct WaitConditionRecord {
     pub resolved_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 impl WaitConditionRecord {
@@ -3199,6 +3201,8 @@ pub struct WorkItemRecord {
     pub result_summary: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 impl WorkItemRecord {
@@ -3226,6 +3230,7 @@ impl WorkItemRecord {
             result_summary: None,
             created_at: now,
             updated_at: now,
+            turn_id: None,
         }
     }
 

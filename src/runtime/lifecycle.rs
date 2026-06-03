@@ -63,6 +63,11 @@ impl RuntimeHandle {
             (turn_index, work_item_id)
         };
 
+        let current_turn_id = {
+            let guard = self.inner.agent.lock().await;
+            guard.state.current_turn_id.clone()
+        };
+
         let Some(work_item_id) = work_item_id else {
             return Ok(None);
         };
@@ -102,6 +107,7 @@ impl RuntimeHandle {
                 revision: latest.revision + 1,
                 blocked_by,
                 updated_at: chrono::Utc::now(),
+                turn_id: current_turn_id,
                 ..refreshed
             };
             self.inner.storage.append_work_item(&record)?;

@@ -553,6 +553,8 @@ async fn work_item_query_tools_return_current_open_done_views() {
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+
+            turn_id: None,
         })
         .unwrap();
 
@@ -922,6 +924,8 @@ async fn work_item_query_tools_return_readiness_views() {
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+
+            turn_id: None,
         })
         .unwrap();
 

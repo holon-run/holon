@@ -52,6 +52,11 @@ impl RuntimeHandle {
             return Err(anyhow!("wait_for agent mismatch: {}", agent_id));
         }
 
+        let current_turn_id = {
+            let guard = self.inner.agent.lock().await;
+            guard.state.current_turn_id.clone()
+        };
+
         let now = Utc::now();
         let (kind, subject_ref, wake_sources) = wait_condition_parts(wake, resource.clone())?;
         let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
@@ -107,6 +112,7 @@ impl RuntimeHandle {
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+            turn_id: current_turn_id,
         };
         self.inner.storage.append_wait_condition(&condition)?;
         self.inner.storage.append_event(&AuditEvent::new(

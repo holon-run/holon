@@ -1050,6 +1050,8 @@ fn scheduling_diagnostics_detect_weak_external_wait_and_unrecoverable_blocker() 
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+
+            turn_id: None,
         })
         .unwrap();
 
@@ -1125,6 +1127,8 @@ fn scheduling_diagnostics_do_not_warn_for_common_legal_waits() {
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+
+            turn_id: None,
         })
         .unwrap();
 
@@ -1169,6 +1173,8 @@ fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+
+            turn_id: None,
         })
         .unwrap();
     storage

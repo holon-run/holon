@@ -35,6 +35,8 @@ fn task_wait_condition_for_work_item(task_id: &str, work_item_id: &str) -> WaitC
         expires_at: None,
         resolved_at: None,
         cancelled_at: None,
+
+        turn_id: None,
     }
 }
 
@@ -1999,6 +2001,8 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
             expires_at: None,
             resolved_at: None,
             cancelled_at: None,
+
+            turn_id: None,
         })
         .unwrap();
 
@@ -2109,6 +2113,8 @@ async fn timer_operator_and_system_ticks_record_wait_reconciliation_signals() {
                 expires_at: None,
                 resolved_at: None,
                 cancelled_at: None,
+
+                turn_id: None,
             })
             .unwrap();
     }
