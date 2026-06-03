@@ -517,11 +517,16 @@ impl TuiApp {
                 self.reset_composer_key_burst();
                 self.sync_slash_menu_after_edit(before != self.composer.as_str());
             }
-            OverlayState::ModelPicker { filter, selected } => {
+            OverlayState::ModelPicker {
+                provider,
+                filter,
+                selected,
+            } => {
                 filter.push_str(&paste_inline_text(text));
                 *selected = crate::tui::model_picker::clamp_model_picker_selection(
                     selected_agent.as_ref(),
                     &model_availability,
+                    provider.as_deref(),
                     filter,
                     *selected,
                 );
@@ -644,6 +649,7 @@ impl TuiApp {
             SlashCommand::Model => {
                 self.begin_load_models();
                 self.overlay = OverlayState::ModelPicker {
+                    provider: None,
                     filter: String::new(),
                     selected: 0,
                 };
@@ -957,50 +963,85 @@ impl TuiApp {
                 Ok(())
             }
             OverlayState::ModelPicker {
+                provider,
                 mut filter,
                 mut selected,
             } => {
                 match resolve_key(KeyContext::ModelPicker, key) {
-                    TuiKeyAction::OverlayClose => {}
+                    TuiKeyAction::OverlayClose => {
+                        if provider.is_some() {
+                            self.overlay = OverlayState::ModelPicker {
+                                provider: None,
+                                filter: String::new(),
+                                selected: 0,
+                            };
+                        }
+                    }
                     TuiKeyAction::OverlayAccept => {
-                        self.apply_model_picker_selection(&filter, selected).await?;
+                        self.apply_model_picker_selection(provider.as_deref(), &filter, selected)
+                            .await?;
                     }
                     TuiKeyAction::OverlayMoveUp => {
                         selected = selected.saturating_sub(1);
-                        self.overlay = OverlayState::ModelPicker { filter, selected };
+                        self.overlay = OverlayState::ModelPicker {
+                            provider,
+                            filter,
+                            selected,
+                        };
                     }
                     TuiKeyAction::OverlayMoveDown => {
                         let max = crate::tui::model_picker::model_picker_rows(
                             self.selected_agent_summary(),
                             &self.model_availability,
+                            provider.as_deref(),
                             &filter,
                         )
                         .len()
                         .saturating_sub(1);
                         selected = (selected + 1).min(max);
-                        self.overlay = OverlayState::ModelPicker { filter, selected };
+                        self.overlay = OverlayState::ModelPicker {
+                            provider,
+                            filter,
+                            selected,
+                        };
                     }
                     TuiKeyAction::ModelFilterBackspace => {
                         filter.pop();
                         selected = crate::tui::model_picker::clamp_model_picker_selection(
                             self.selected_agent_summary(),
                             &self.model_availability,
+                            provider.as_deref(),
                             &filter,
                             selected,
                         );
-                        self.overlay = OverlayState::ModelPicker { filter, selected };
+                        self.overlay = OverlayState::ModelPicker {
+                            provider,
+                            filter,
+                            selected,
+                        };
                     }
                     TuiKeyAction::InsertChar(ch) => {
                         filter.push(ch);
                         selected = crate::tui::model_picker::clamp_model_picker_selection(
                             self.selected_agent_summary(),
                             &self.model_availability,
+                            provider.as_deref(),
                             &filter,
                             selected,
                         );
-                        self.overlay = OverlayState::ModelPicker { filter, selected };
+                        self.overlay = OverlayState::ModelPicker {
+                            provider,
+                            filter,
+                            selected,
+                        };
                     }
-                    _ => self.overlay = OverlayState::ModelPicker { filter, selected },
+                    _ => {
+                        self.overlay = OverlayState::ModelPicker {
+                            provider,
+                            filter,
+                            selected,
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -1013,6 +1054,7 @@ impl TuiApp {
                 match resolve_key(KeyContext::ModelEffortPicker, key) {
                     TuiKeyAction::OverlayClose => {
                         self.overlay = OverlayState::ModelPicker {
+                            provider: None,
                             filter: return_filter,
                             selected: return_selected,
                         };
@@ -1323,7 +1365,12 @@ impl TuiApp {
         }
     }
 
-    async fn apply_model_picker_selection(&mut self, filter: &str, selected: usize) -> Result<()> {
+    async fn apply_model_picker_selection(
+        &mut self,
+        provider: Option<&str>,
+        filter: &str,
+        selected: usize,
+    ) -> Result<()> {
         let agent_id = self
             .selected_agent_id()
             .ok_or_else(|| anyhow!("no agent selected"))?
@@ -1331,6 +1378,7 @@ impl TuiApp {
         let choice = crate::tui::model_picker::selected_model_choice(
             self.selected_agent_summary(),
             &self.model_availability,
+            provider,
             filter,
             selected,
         )
@@ -1344,13 +1392,27 @@ impl TuiApp {
                 self.overlay = OverlayState::None;
                 self.begin_bootstrap_selected_agent();
             }
-            crate::tui::model_picker::ModelPickerChoice::Model { model } => {
-                self.overlay = OverlayState::ModelEffortPicker {
-                    model,
+            crate::tui::model_picker::ModelPickerChoice::Provider { provider } => {
+                self.overlay = OverlayState::ModelPicker {
+                    provider: Some(provider),
+                    filter: String::new(),
                     selected: 0,
-                    return_filter: filter.to_string(),
-                    return_selected: selected,
                 };
+            }
+            crate::tui::model_picker::ModelPickerChoice::Model {
+                model,
+                supports_reasoning_effort,
+            } => {
+                if supports_reasoning_effort {
+                    self.overlay = OverlayState::ModelEffortPicker {
+                        model,
+                        selected: 0,
+                        return_filter: filter.to_string(),
+                        return_selected: selected,
+                    };
+                } else {
+                    self.set_model_override(&agent_id, &model, None).await?;
+                }
             }
         }
         Ok(())
@@ -1374,8 +1436,19 @@ impl TuiApp {
         } else {
             Some(reasoning_effort.to_string())
         };
+        self.set_model_override(&agent_id, model, reasoning_effort)
+            .await?;
+        Ok(())
+    }
+
+    async fn set_model_override(
+        &mut self,
+        agent_id: &str,
+        model: &str,
+        reasoning_effort: Option<String>,
+    ) -> Result<()> {
         self.client
-            .set_agent_model_override(&agent_id, model.to_string(), reasoning_effort.clone())
+            .set_agent_model_override(agent_id, model.to_string(), reasoning_effort.clone())
             .await?;
         let suffix = reasoning_effort
             .as_deref()

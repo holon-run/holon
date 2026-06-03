@@ -240,6 +240,47 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
     }
 }
 
+fn sample_model_availability(
+    model: &str,
+    display_name: &str,
+    available: bool,
+    reasoning: bool,
+) -> crate::types::ResolvedModelAvailability {
+    let model_ref = crate::config::ModelRef::parse(model).unwrap();
+    crate::types::ResolvedModelAvailability {
+        model: model.into(),
+        provider: model_ref.provider.as_str().into(),
+        display_name: display_name.into(),
+        metadata_source: "remote_discovered".into(),
+        provider_configured: true,
+        provider_source: Some("config".into()),
+        transport: Some("openai_chat_completions".into()),
+        credential_source: Some("env".into()),
+        credential_kind: Some("api_key".into()),
+        credential_configured: available,
+        available,
+        unavailable_reason: (!available).then_some("credential_missing".into()),
+        policy: crate::model_catalog::ResolvedRuntimeModelPolicy {
+            model_ref,
+            display_name: display_name.into(),
+            description: "Sample policy".into(),
+            context_window_tokens: Some(128_000),
+            effective_context_window_percent: 90,
+            prompt_budget_estimated_tokens: 115_200,
+            compaction_trigger_estimated_tokens: 115_200,
+            compaction_keep_recent_estimated_tokens: 43_776,
+            runtime_max_output_tokens: 16_000,
+            tool_output_truncation_estimated_tokens: 2_500,
+            max_output_tokens_upper_limit: Some(64_000),
+            capabilities: crate::model_catalog::ModelCapabilityFlags {
+                reasoning_summaries: reasoning,
+                ..crate::model_catalog::ModelCapabilityFlags::default()
+            },
+            source: crate::model_catalog::ModelMetadataSource::RemoteDiscovered,
+        },
+    }
+}
+
 fn sample_snapshot(agent_id: &str, _cursor: &str) -> AgentStateSnapshot {
     AgentStateSnapshot {
         agent: sample_agent_summary(agent_id),
@@ -1138,6 +1179,7 @@ async fn paste_updates_model_picker_filter() {
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
     app.overlay = OverlayState::ModelPicker {
+        provider: None,
         filter: "gpt".into(),
         selected: 0,
     };
@@ -1147,6 +1189,7 @@ async fn paste_updates_model_picker_filter() {
     assert_eq!(
         app.overlay,
         OverlayState::ModelPicker {
+            provider: None,
             filter: "gpt-5.3".into(),
             selected: 0,
         }
@@ -1503,6 +1546,7 @@ async fn slash_model_opens_model_picker_overlay() {
     assert_eq!(
         app.overlay,
         OverlayState::ModelPicker {
+            provider: None,
             filter: String::new(),
             selected: 0
         }
@@ -1536,6 +1580,75 @@ fn loaded_models_clear_lazy_load_in_flight_flag() {
     app.apply_loaded_models(Ok(Vec::new()));
 
     assert!(!app.model_availability_load_in_flight);
+}
+
+#[tokio::test]
+async fn model_picker_enter_opens_provider_model_page() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.apply_agent_list(vec![sample_agent_summary("default")]);
+    app.model_availability = vec![sample_model_availability(
+        "openrouter/deepseek-v3",
+        "DeepSeek V3",
+        true,
+        false,
+    )];
+    app.overlay = OverlayState::ModelPicker {
+        provider: None,
+        filter: String::new(),
+        selected: 1,
+    };
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        app.overlay,
+        OverlayState::ModelPicker {
+            provider: Some("openrouter".into()),
+            filter: String::new(),
+            selected: 0,
+        }
+    );
+}
+
+#[tokio::test]
+async fn model_picker_opens_effort_for_models_with_reasoning_support() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.apply_agent_list(vec![sample_agent_summary("default")]);
+    app.model_availability = vec![sample_model_availability(
+        "openai/gpt-5.4",
+        "GPT-5.4",
+        true,
+        true,
+    )];
+    app.overlay = OverlayState::ModelPicker {
+        provider: Some("openai".into()),
+        filter: String::new(),
+        selected: 1,
+    };
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        app.overlay,
+        OverlayState::ModelEffortPicker {
+            model: "openai/gpt-5.4".into(),
+            selected: 0,
+            return_filter: String::new(),
+            return_selected: 1,
+        }
+    );
 }
 
 #[tokio::test]
@@ -1626,6 +1739,7 @@ async fn slash_menu_enter_runs_selected_prefix_command() {
     assert_eq!(
         app.overlay,
         OverlayState::ModelPicker {
+            provider: None,
             filter: String::new(),
             selected: 0
         }
