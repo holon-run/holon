@@ -1480,6 +1480,25 @@ impl RuntimeHandle {
         Ok(record)
     }
 
+    async fn persist_turn_terminal_and_record(
+        &self,
+        kind: TurnTerminalKind,
+        last_assistant_message: Option<String>,
+        duration_ms: u64,
+        checkpoint_state: Option<&TurnLocalCheckpointState>,
+    ) -> Result<TurnTerminalRecord> {
+        let terminal = self
+            .persist_turn_terminal_record(
+                kind,
+                last_assistant_message,
+                duration_ms,
+                checkpoint_state,
+            )
+            .await?;
+        self.persist_turn_record(&terminal).await?;
+        Ok(terminal)
+    }
+
     pub(super) async fn persist_turn_record(&self, terminal: &TurnTerminalRecord) -> Result<()> {
         let (agent_id, run_id, current_work_item_id) = {
             let guard = self.inner.agent.lock().await;
@@ -2148,7 +2167,7 @@ impl TurnExecution<'_> {
                             }
                         }
                         runtime
-                            .persist_turn_terminal_record(
+                            .persist_turn_terminal_and_record(
                                 TurnTerminalKind::Aborted,
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
@@ -2406,7 +2425,7 @@ impl TurnExecution<'_> {
                             }
                         }
                         runtime
-                            .persist_turn_terminal_record(
+                            .persist_turn_terminal_and_record(
                                 TurnTerminalKind::Aborted,
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
