@@ -42,19 +42,19 @@ impl RuntimeHandle {
         let delivery_mode = CallbackDeliveryMode::WakeHint;
         let agent_id = self.agent_id().await?;
         let now = Utc::now();
-        if let Some(descriptor) =
-            self.latest_external_triggers()
-                .await?
-                .into_iter()
-                .find(|descriptor| {
-                    descriptor.status == ExternalTriggerStatus::Active
-                        && descriptor.scope == ExternalTriggerScope::Agent
-                        && descriptor.target_agent_id == agent_id
-                        && descriptor.delivery_mode == delivery_mode
-                        && descriptor.trigger_url.is_some()
-                })
+        if let Some(descriptor) = self
+            .inner
+            .runtime_db
+            .external_triggers()
+            .active_default_for_agent(&agent_id)?
         {
-            return capability_from_record(&descriptor);
+            if descriptor.trigger_url.is_some() {
+                return capability_from_record(&descriptor);
+            }
+            let mut revoked = descriptor;
+            revoked.status = ExternalTriggerStatus::Revoked;
+            revoked.revoked_at = Some(now);
+            self.inner.runtime_db.external_triggers().upsert(&revoked)?;
         }
 
         let external_trigger_id = crate::ids::external_trigger_id();
@@ -75,7 +75,10 @@ impl RuntimeHandle {
             delivery_count: 0,
         };
 
-        self.inner.storage.append_external_trigger(&descriptor)?;
+        self.inner
+            .runtime_db
+            .external_triggers()
+            .upsert(&descriptor)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "external_trigger_created",
             serde_json::json!({
@@ -101,10 +104,10 @@ impl RuntimeHandle {
         payload: CallbackDeliveryPayload,
     ) -> Result<CallbackDeliveryResult> {
         let descriptor = self
-            .latest_external_triggers()
-            .await?
-            .into_iter()
-            .find(|record| record.external_trigger_id == descriptor_id)
+            .inner
+            .runtime_db
+            .external_triggers()
+            .latest(descriptor_id)?
             .ok_or_else(|| anyhow!("external trigger {} not found", descriptor_id))?;
         if descriptor.status != ExternalTriggerStatus::Active {
             return Err(anyhow!("external trigger is not active"));
@@ -174,8 +177,9 @@ impl RuntimeHandle {
         updated_descriptor.last_delivered_at = Some(now);
         updated_descriptor.delivery_count += 1;
         self.inner
-            .storage
-            .append_external_trigger(&updated_descriptor)?;
+            .runtime_db
+            .external_triggers()
+            .upsert(&updated_descriptor)?;
 
         let updated_descriptor_id = updated_descriptor.external_trigger_id.clone();
         let descriptor_delivery_mode = updated_descriptor.delivery_mode.clone();
@@ -218,10 +222,10 @@ impl RuntimeHandle {
         external_trigger_id: &str,
     ) -> Result<ExternalTriggerRecord> {
         let descriptor = self
-            .latest_external_triggers()
-            .await?
-            .into_iter()
-            .find(|record| record.external_trigger_id == external_trigger_id)
+            .inner
+            .runtime_db
+            .external_triggers()
+            .latest(external_trigger_id)?
             .ok_or_else(|| anyhow!("external trigger {} not found", external_trigger_id))?;
         if descriptor.status == ExternalTriggerStatus::Revoked {
             return Ok(descriptor);
@@ -230,7 +234,7 @@ impl RuntimeHandle {
         let mut revoked = descriptor;
         revoked.status = ExternalTriggerStatus::Revoked;
         revoked.revoked_at = Some(Utc::now());
-        self.inner.storage.append_external_trigger(&revoked)?;
+        self.inner.runtime_db.external_triggers().upsert(&revoked)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "external_trigger_revoked",
             serde_json::json!({

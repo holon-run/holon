@@ -8,7 +8,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
-use crate::types::{TaskRecord, TaskStatus, WorkItemRecord, WorkItemState};
+use crate::types::{
+    CallbackDeliveryMode, ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus,
+    TaskRecord, TaskStatus, WorkItemRecord, WorkItemState,
+};
 
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
 const TASK_PAYLOAD_ARRAY_LIMIT: usize = 64;
@@ -24,6 +27,10 @@ pub struct WorkItemRepository<'a> {
 }
 
 pub struct TaskRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct ExternalTriggerRepository<'a> {
     db: &'a RuntimeDb,
 }
 
@@ -125,6 +132,100 @@ impl WorkItemRepository<'_> {
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.map(|row| decode_work_item_payload(&row?)).collect()
+    }
+}
+
+impl ExternalTriggerRepository<'_> {
+    pub fn import_legacy(&self, records: Vec<ExternalTriggerRecord>) -> Result<()> {
+        self.db.transaction(|tx| {
+            let domain = read_storage_domain(tx, "external_triggers")?;
+            if domain.as_ref().is_some_and(|domain| {
+                domain.import_status == "complete" && domain.canonical_source == "db"
+            }) {
+                return Ok(());
+            }
+
+            upsert_storage_domain(tx, "external_triggers", "importing", "jsonl", None)?;
+            let latest = reduce_external_trigger_records(records);
+            for record in latest.values() {
+                upsert_external_trigger_tx(tx, record)?;
+            }
+            upsert_storage_domain(
+                tx,
+                "external_triggers",
+                "complete",
+                "db",
+                Some(serde_json::json!({ "imported_records": latest.len() })),
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert(&self, record: &ExternalTriggerRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_external_trigger_tx(tx, record))
+    }
+
+    pub fn latest(&self, external_trigger_id: &str) -> Result<Option<ExternalTriggerRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json FROM external_triggers WHERE external_trigger_id = ?1",
+                [external_trigger_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_external_trigger_payload(&payload))
+            .transpose()
+    }
+
+    pub fn latest_for_agent(&self, agent_id: &str) -> Result<Vec<ExternalTriggerRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM external_triggers
+             WHERE target_agent_id = ?1
+             ORDER BY created_at DESC, external_trigger_id ASC",
+        )?;
+        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_external_trigger_payload(&row?))
+            .collect()
+    }
+
+    pub fn active_default_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<ExternalTriggerRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json
+                 FROM external_triggers
+                 WHERE target_agent_id = ?1 AND status = 'active'
+                 ORDER BY created_at DESC, external_trigger_id ASC
+                 LIMIT 1",
+                [agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_external_trigger_payload(&payload))
+            .transpose()
+    }
+
+    pub fn active_by_token_hash(&self, token_hash: &str) -> Result<Option<ExternalTriggerRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json
+                 FROM external_triggers
+                 WHERE token_hash = ?1 AND status = 'active'
+                 LIMIT 1",
+                [token_hash],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_external_trigger_payload(&payload))
+            .transpose()
     }
 }
 
@@ -283,6 +384,61 @@ fn upsert_storage_domain(
     Ok(())
 }
 
+fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerRecord) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let status = enum_string(&record.status)?;
+    let revoked_at = record.revoked_at.map(timestamp);
+    let last_delivered_at = record.last_delivered_at.map(timestamp);
+    tx.execute(
+        "INSERT INTO external_triggers (
+            external_trigger_id, target_agent_id, waiting_intent_id, trigger_url,
+            token_hash, status, created_at, revoked_at, last_delivered_at,
+            delivery_count, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(external_trigger_id) DO UPDATE SET
+            target_agent_id = excluded.target_agent_id,
+            waiting_intent_id = excluded.waiting_intent_id,
+            trigger_url = excluded.trigger_url,
+            token_hash = excluded.token_hash,
+            status = excluded.status,
+            created_at = excluded.created_at,
+            revoked_at = excluded.revoked_at,
+            last_delivered_at = excluded.last_delivered_at,
+            delivery_count = excluded.delivery_count,
+            payload_json = excluded.payload_json
+         WHERE excluded.delivery_count > external_triggers.delivery_count
+            OR (
+                excluded.delivery_count = external_triggers.delivery_count
+                AND COALESCE(excluded.last_delivered_at, '') > COALESCE(external_triggers.last_delivered_at, '')
+            )
+            OR (
+                excluded.delivery_count = external_triggers.delivery_count
+                AND COALESCE(excluded.last_delivered_at, '') = COALESCE(external_triggers.last_delivered_at, '')
+                AND COALESCE(excluded.revoked_at, '') > COALESCE(external_triggers.revoked_at, '')
+            )
+            OR (
+                excluded.delivery_count = external_triggers.delivery_count
+                AND COALESCE(excluded.last_delivered_at, '') = COALESCE(external_triggers.last_delivered_at, '')
+                AND COALESCE(excluded.revoked_at, '') = COALESCE(external_triggers.revoked_at, '')
+                AND excluded.created_at >= external_triggers.created_at
+            )",
+        params![
+            record.external_trigger_id,
+            record.target_agent_id,
+            record.waiting_intent_id,
+            record.trigger_url,
+            record.token_hash,
+            status,
+            timestamp(record.created_at),
+            revoked_at,
+            last_delivered_at,
+            record.delivery_count as i64,
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
 fn upsert_work_item_tx(
     tx: &Transaction<'_>,
     record: &WorkItemRecord,
@@ -415,6 +571,75 @@ fn newer_work_item_record(candidate: &WorkItemRecord, existing: &WorkItemRecord)
         .is_gt()
 }
 
+fn reduce_external_trigger_records(
+    records: Vec<ExternalTriggerRecord>,
+) -> BTreeMap<String, ExternalTriggerRecord> {
+    let mut latest_by_id = BTreeMap::<String, ExternalTriggerRecord>::new();
+    for record in records {
+        if latest_by_id
+            .get(&record.external_trigger_id)
+            .is_none_or(|existing| newer_external_trigger_record(&record, existing))
+        {
+            latest_by_id.insert(
+                record.external_trigger_id.clone(),
+                normalize_external_trigger_record(record),
+            );
+        }
+    }
+
+    let mut active_by_agent = BTreeMap::<String, String>::new();
+    for record in latest_by_id.values() {
+        if record.status != ExternalTriggerStatus::Active {
+            continue;
+        }
+        let replace = active_by_agent
+            .get(&record.target_agent_id)
+            .and_then(|id| latest_by_id.get(id))
+            .is_none_or(|existing| newer_external_trigger_record(record, existing));
+        if replace {
+            active_by_agent.insert(
+                record.target_agent_id.clone(),
+                record.external_trigger_id.clone(),
+            );
+        }
+    }
+
+    for record in latest_by_id.values_mut() {
+        if record.status == ExternalTriggerStatus::Active
+            && active_by_agent.get(&record.target_agent_id) != Some(&record.external_trigger_id)
+        {
+            record.status = ExternalTriggerStatus::Revoked;
+            record.revoked_at.get_or_insert(record.created_at);
+        }
+    }
+    latest_by_id
+}
+
+fn normalize_external_trigger_record(mut record: ExternalTriggerRecord) -> ExternalTriggerRecord {
+    record.scope = ExternalTriggerScope::Agent;
+    record.delivery_mode = CallbackDeliveryMode::WakeHint;
+    record.waiting_intent_id = None;
+    record
+}
+
+fn newer_external_trigger_record(
+    candidate: &ExternalTriggerRecord,
+    existing: &ExternalTriggerRecord,
+) -> bool {
+    candidate
+        .delivery_count
+        .cmp(&existing.delivery_count)
+        .then_with(|| candidate.last_delivered_at.cmp(&existing.last_delivered_at))
+        .then_with(|| candidate.revoked_at.cmp(&existing.revoked_at))
+        .then_with(|| candidate.created_at.cmp(&existing.created_at))
+        .then_with(|| {
+            candidate
+                .external_trigger_id
+                .cmp(&existing.external_trigger_id)
+        })
+        .is_gt()
+}
+
 fn reduce_task_records(records: Vec<TaskRecord>) -> BTreeMap<String, TaskRecord> {
     let mut latest = BTreeMap::<String, TaskRecord>::new();
     for record in records {
@@ -489,6 +714,10 @@ fn task_revision(record: &TaskRecord) -> i64 {
 
 fn decode_work_item_payload(payload: &str) -> Result<WorkItemRecord> {
     serde_json::from_str(payload).context("decoding work item payload from runtime db")
+}
+
+fn decode_external_trigger_payload(payload: &str) -> Result<ExternalTriggerRecord> {
+    serde_json::from_str(payload).context("decoding external trigger payload from runtime db")
 }
 
 fn decode_task_payload(payload: &str) -> Result<TaskRecord> {
@@ -688,6 +917,35 @@ CREATE INDEX IF NOT EXISTS idx_tasks_owner_active
   ON tasks(owner_agent_id, status, updated_at);
 "#,
     },
+    Migration {
+        version: 4,
+        name: "external_triggers_current_state",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS external_triggers (
+  external_trigger_id TEXT PRIMARY KEY,
+  target_agent_id TEXT NOT NULL,
+  waiting_intent_id TEXT,
+  trigger_url TEXT,
+  token_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  revoked_at TEXT,
+  last_delivered_at TEXT,
+  delivery_count INTEGER NOT NULL DEFAULT 0,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_external_triggers_agent_status
+  ON external_triggers(target_agent_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_external_triggers_token_hash
+  ON external_triggers(token_hash);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_external_triggers_active_default_agent
+  ON external_triggers(target_agent_id)
+  WHERE status = 'active';
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -741,6 +999,10 @@ impl RuntimeDb {
 
     pub fn tasks(&self) -> TaskRepository<'_> {
         TaskRepository { db: self }
+    }
+
+    pub fn external_triggers(&self) -> ExternalTriggerRepository<'_> {
+        ExternalTriggerRepository { db: self }
     }
 
     pub fn migrate(&self) -> Result<()> {
@@ -1002,6 +1264,29 @@ mod tests {
         }
     }
 
+    fn external_trigger_record(
+        id: &str,
+        agent_id: &str,
+        status: ExternalTriggerStatus,
+        offset: i64,
+    ) -> ExternalTriggerRecord {
+        let created_at = Utc::now() + chrono::Duration::seconds(offset);
+        ExternalTriggerRecord {
+            external_trigger_id: id.into(),
+            target_agent_id: agent_id.into(),
+            waiting_intent_id: Some(format!("wait-{id}")),
+            scope: ExternalTriggerScope::Agent,
+            delivery_mode: CallbackDeliveryMode::EnqueueMessage,
+            trigger_url: Some(format!("https://example.test/{id}")),
+            token_hash: format!("hash-{id}"),
+            status,
+            created_at,
+            revoked_at: None,
+            last_delivered_at: None,
+            delivery_count: 0,
+        }
+    }
+
     #[test]
     fn runtime_db_fresh_migration_creates_foundation_schema() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
@@ -1009,7 +1294,7 @@ mod tests {
         let connection = db.connection()?;
 
         let version = db.current_schema_version()?;
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         for table in [
             "schema_migrations",
             "storage_domains",
@@ -1017,6 +1302,7 @@ mod tests {
             "audit_events",
             "work_items",
             "tasks",
+            "external_triggers",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -1040,8 +1326,8 @@ mod tests {
             connection.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
                 row.get(0)
             })?;
-        assert_eq!(count, 3);
-        assert_eq!(current_schema_version(&connection)?, 3);
+        assert_eq!(count, 4);
+        assert_eq!(current_schema_version(&connection)?, 4);
         Ok(())
     }
 
@@ -1159,7 +1445,101 @@ mod tests {
         let temp_db = test_support::TempRuntimeDb::new()?;
         assert!(temp_db.db.path().ends_with("state/runtime.sqlite"));
         assert!(temp_db.db.lock_path().ends_with("state/runtime.lock"));
-        assert_eq!(temp_db.db.current_schema_version()?, 3);
+        assert_eq!(temp_db.db.current_schema_version()?, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn external_trigger_import_normalizes_to_one_default_active_per_agent() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let older =
+            external_trigger_record("trigger-older", "agent-a", ExternalTriggerStatus::Active, 0);
+        let newer = external_trigger_record(
+            "trigger-newer",
+            "agent-a",
+            ExternalTriggerStatus::Active,
+            10,
+        );
+
+        db.external_triggers()
+            .import_legacy(vec![older.clone(), newer.clone()])?;
+        db.external_triggers()
+            .import_legacy(vec![older.clone(), newer.clone()])?;
+
+        let active = db
+            .external_triggers()
+            .active_default_for_agent("agent-a")?
+            .expect("active default trigger");
+        assert_eq!(active.external_trigger_id, "trigger-newer");
+        assert_eq!(active.scope, ExternalTriggerScope::Agent);
+        assert_eq!(active.delivery_mode, CallbackDeliveryMode::WakeHint);
+        assert_eq!(active.waiting_intent_id, None);
+
+        let all = db.external_triggers().latest_for_agent("agent-a")?;
+        assert_eq!(all.len(), 2);
+        assert_eq!(
+            all.into_iter()
+                .filter(|record| record.status == ExternalTriggerStatus::Active)
+                .count(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn external_trigger_upsert_tracks_delivery_and_token_lookup() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.external_triggers().import_legacy(Vec::new())?;
+        let mut trigger = external_trigger_record(
+            "trigger-active",
+            "agent-a",
+            ExternalTriggerStatus::Active,
+            0,
+        );
+        trigger.delivery_mode = CallbackDeliveryMode::WakeHint;
+        trigger.waiting_intent_id = None;
+        db.external_triggers().upsert(&trigger)?;
+
+        trigger.delivery_count = 2;
+        trigger.last_delivered_at = Some(trigger.created_at + chrono::Duration::seconds(30));
+        db.external_triggers().upsert(&trigger)?;
+
+        let by_token = db
+            .external_triggers()
+            .active_by_token_hash("hash-trigger-active")?
+            .expect("active trigger by token");
+        assert_eq!(by_token.delivery_count, 2);
+        assert_eq!(by_token.last_delivered_at, trigger.last_delivered_at);
+        Ok(())
+    }
+
+    #[test]
+    fn external_trigger_upsert_does_not_revert_newer_revocation() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.external_triggers().import_legacy(Vec::new())?;
+        let active = external_trigger_record(
+            "trigger-active",
+            "agent-a",
+            ExternalTriggerStatus::Active,
+            0,
+        );
+        db.external_triggers().upsert(&active)?;
+
+        let mut revoked = active.clone();
+        revoked.status = ExternalTriggerStatus::Revoked;
+        revoked.revoked_at = Some(active.created_at + chrono::Duration::seconds(30));
+        db.external_triggers().upsert(&revoked)?;
+        db.external_triggers().upsert(&active)?;
+
+        let latest = db
+            .external_triggers()
+            .latest("trigger-active")?
+            .expect("latest trigger");
+        assert_eq!(latest.status, ExternalTriggerStatus::Revoked);
+        assert_eq!(latest.revoked_at, revoked.revoked_at);
         Ok(())
     }
 

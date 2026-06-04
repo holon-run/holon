@@ -367,8 +367,6 @@ external_triggers(
   external_trigger_id text primary key,
   target_agent_id text not null,
   waiting_intent_id text,
-  scope text not null,
-  delivery_mode text not null,
   trigger_url text,
   token_hash text not null,
   status text not null,
@@ -376,7 +374,6 @@ external_triggers(
   revoked_at text,
   last_delivered_at text,
   delivery_count integer not null,
-  revision integer not null,
   payload_json text
 );
 ```
@@ -384,6 +381,10 @@ external_triggers(
 The first DB version intentionally keeps `external_triggers` as a standalone
 state table because it maps directly to the current `external_triggers.jsonl`
 domain and avoids mixing capability lifecycle state into `agents` too early.
+The current product contract is one active default wake-hint trigger per agent,
+so `scope` and `delivery_mode` are not first-class DB dimensions. Legacy import
+normalizes old records to agent-scoped `wake_hint` records and preserves the
+full runtime record in `payload_json` for compatibility.
 Default agent ingress can be folded into an agent property or split into a
 dedicated secret/capability service later, after DB-backed state is stable.
 Until then, `trigger_url` and `token_hash` remain capability-bearing fields:

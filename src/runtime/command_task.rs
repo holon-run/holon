@@ -1582,8 +1582,10 @@ mod tests {
             .unwrap();
         runtime.pick_work_item(work.id.clone()).await.unwrap();
         runtime
-            .storage()
-            .append_external_trigger(&ExternalTriggerRecord {
+            .inner
+            .runtime_db
+            .external_triggers()
+            .upsert(&ExternalTriggerRecord {
                 external_trigger_id: "legacy-work-item-trigger".into(),
                 target_agent_id: "default".into(),
                 waiting_intent_id: None,

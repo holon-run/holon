@@ -15,10 +15,10 @@ Trigger Capability**.
 
 An external trigger capability is an agent-level ingress capability. It is not a
 WorkItem-owned waiting resource, and it is not partitioned by provider/source.
-Capability identity is the target agent plus the delivery mode.
+Capability identity is the target agent.
 
-The runtime should provision and expose a default external ingress capability
-for each agent and delivery mode. Agents should not normally create or cancel
+The runtime should provision and expose one default wake-hint external ingress
+capability for each agent. Agents should not normally create or cancel
 callback ingress as part of a wait. Waiting state records what the agent is
 waiting for; the ingress capability is long-lived agent infrastructure.
 
@@ -36,8 +36,8 @@ An external trigger lets an agent say:
 
 - this agent has a stable external ingress endpoint
 - an external system may use that endpoint later
-- when that endpoint is used, Holon should either wake the agent or enqueue the
-  delivered content according to `delivery_mode`
+- when that endpoint is used, Holon should wake the agent with the delivered
+  content as a wake hint
 
 This keeps Holon providerless. Holon does not need to understand GitHub,
 AgentInbox, Slack, CI, email, or any provider-specific subscription schema.
@@ -59,10 +59,10 @@ The runtime meaning is narrower and more useful:
 
 - the runtime provisions an agent-level ingress capability
 - Holon exposes or returns the existing capability for that agent and
-  delivery mode
+  default wake-hint ingress
 - an external system may use that capability later
 - Holon validates the capability and reactivates the target agent according to
-  an explicit delivery mode
+  the wake-hint ingress contract
 
 `ExternalTrigger` is also easier to distinguish from:
 
@@ -92,10 +92,9 @@ It is not:
 The capability is the token-bearing object returned to the agent. The agent may
 hand it to an external tool, skill, MCP server, worker, or integration service.
 
-The capability should be treated as bearer authority for one agent ingress
-surface and one delivery mode. Possession of the capability is enough to deliver
-to that specific external trigger, subject to descriptor status and
-delivery-mode checks.
+The capability should be treated as bearer authority for one agent's default
+wake-hint ingress surface. Possession of the capability is enough to deliver to
+that specific external trigger, subject to descriptor status checks.
 
 ### Waiting intent
 
@@ -125,7 +124,7 @@ CI, Slack, or another external system.
 The default public contract is:
 
 - the runtime provisions one active external trigger descriptor per target agent
-  and `delivery_mode`
+  for default wake-hint delivery
 - the agent context, status, or provider configuration may expose the descriptor
   needed by trusted integration code
 - provider adapters, skills, MCP servers, or external systems register their
@@ -148,16 +147,16 @@ returning the default agent ingress capability:
 
 Fields:
 
-- `delivery_mode`: `wake_hint` or `enqueue_message`
+- `delivery_mode`: accepted for compatibility, but normalized to `wake_hint`
 
 `source`, `description`, and `scope` are intentionally not part of the external
 trigger capability creation contract. Source is delivery provenance, provider
 subscription metadata, or waiting-intent metadata. Description belongs to the
 wait or WorkItem state that explains what the agent should inspect after waking.
 
-The tool is idempotent for the current agent and `delivery_mode`: if an active
-capability already exists, the runtime should return it instead of minting a new
-URL. One agent may have one default ingress per delivery mode. It is not the
+The tool is idempotent for the current agent: if an active capability already
+exists, the runtime should return it instead of minting a new URL. One agent has
+one default ingress. It is not the
 ordinary workflow for waiting on external conditions.
 
 The runtime creates, if needed:
@@ -172,7 +171,7 @@ ExternalTriggerCapability {
   external_trigger_id: string
   trigger_url: string
   target_agent_id: string
-  delivery_mode: 'wake_hint' | 'enqueue_message'
+  delivery_mode: 'wake_hint'
   status: 'active'
 }
 ```
@@ -204,21 +203,10 @@ Normal WorkItem completion or waiting-intent cleanup should not call
 the ingress capability. If this operation remains model-facing, a clearer
 long-term name is `RevokeExternalIngress` or `RotateExternalIngress`.
 
-## Delivery Modes
+## Wake-Hint Delivery
 
-External triggers have an explicit delivery mode. The external caller should
-not choose delivery semantics by request body.
-
-### `enqueue_message`
-
-`enqueue_message` means the delivered payload is meaningful input.
-
-On valid delivery:
-
-- Holon validates the trigger token
-- Holon checks the descriptor is still active and targets the agent
-- Holon preserves the request body as opaque content
-- Holon enqueues an integration event for the target agent
+External triggers use the default `wake_hint` delivery contract. The external
+caller should not choose delivery semantics by request body.
 
 The payload is opaque to Holon:
 
@@ -245,7 +233,7 @@ Activation context should include:
 
 - external trigger id
 - target agent id
-- delivery mode
+- delivery mode (`wake_hint`)
 - optional or correlated source
 - content type
 - callback body or opaque body envelope
@@ -272,8 +260,7 @@ The trigger URL is an opaque capability URL from the external system's
 perspective.
 
 Holon may encode delivery mode in the URL path and should still verify that the
-URL path mode matches the descriptor's stored delivery mode. A mode mismatch
-must be rejected.
+URL path mode is the supported wake-hint mode. A mode mismatch must be rejected.
 
 Every delivery must resolve to:
 
@@ -294,17 +281,8 @@ side effects and should tell the caller that the agent must be resumed first.
 External trigger deliveries should use the provenance and authority model from
 [Provenance, Admission, and Authority](./default-trust-auth-and-control.md).
 
-For `enqueue_message`, the message projects to:
-
-```ts
-origin: { kind: 'callback', descriptor_id: '...', source?: '...' }
-delivery_surface: 'http_callback_enqueue'
-admission_context: 'external_trigger_capability'
-authority_class: 'integration_signal'
-```
-
 For `wake_hint`, the wake hint or resulting runtime-owned system tick should
-preserve equivalent trigger provenance in metadata:
+preserve trigger provenance in metadata:
 
 ```ts
 delivery_surface: 'http_callback_wake'
@@ -382,8 +360,8 @@ remains active. Cleanup depends on the resource being cleaned up:
   the ingress capability, configured expiry fires, administrative cleanup runs,
   or the agent is removed.
 
-One agent may keep one active default ingress per `delivery_mode`. It should not
-be cancelled by WorkItem cleanup or by the absence of an active work item.
+One agent may keep one active default ingress. It should not be cancelled by
+WorkItem cleanup or by the absence of an active work item.
 
 Time-based expiry remains a future enhancement unless implemented separately.
 
@@ -424,15 +402,14 @@ This RFC does not define:
 The phase-1 direction is:
 
 1. rename the public concept to External Trigger Capability
-2. provision default agent-level external ingress for each supported
-   `delivery_mode`
-3. use `wake_hint` and `enqueue_message` as the model-facing delivery modes
+2. provision one default agent-level external ingress
+3. use `wake_hint` as the model-facing delivery mode
 4. project deliveries as `integration_signal`
 5. keep callback payloads opaque to Holon core
 6. preserve current token validation, mode mismatch rejection, stopped-agent
    rejection, cancellation, and restart behavior
 7. remove user-visible `work_item`/`agent` trigger scopes and make capability
-   identity agent-level, partitioned only by `delivery_mode`
+   identity agent-level
 8. keep `CreateExternalTrigger`/`CancelExternalTrigger` only as compatibility,
    diagnostic, or admin surfaces; do not require them for ordinary waits
 9. align prompt guidance, docs, tests, and event surfaces with the new

@@ -3254,8 +3254,10 @@ async fn legacy_descriptor_preserves_provenance_after_wait_cancel() {
         })
         .unwrap();
     runtime
-        .storage()
-        .append_external_trigger(&ExternalTriggerRecord {
+        .inner
+        .runtime_db
+        .external_triggers()
+        .upsert(&ExternalTriggerRecord {
             external_trigger_id: trigger_id.clone(),
             target_agent_id: "default".into(),
             waiting_intent_id: Some(waiting_id.clone()),
@@ -3476,8 +3478,10 @@ async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
         })
         .unwrap();
     runtime
-        .storage()
-        .append_external_trigger(&ExternalTriggerRecord {
+        .inner
+        .runtime_db
+        .external_triggers()
+        .upsert(&ExternalTriggerRecord {
             external_trigger_id: trigger_id.clone(),
             target_agent_id: "default".into(),
             waiting_intent_id: Some(waiting_id.clone()),
@@ -3702,8 +3706,10 @@ async fn default_external_ingress_ignores_legacy_active_trigger_without_url() {
     let now = Utc::now();
     let legacy_trigger_id = "legacy-missing-url-trigger".to_string();
     runtime
-        .storage()
-        .append_external_trigger(&ExternalTriggerRecord {
+        .inner
+        .runtime_db
+        .external_triggers()
+        .upsert(&ExternalTriggerRecord {
             external_trigger_id: legacy_trigger_id.clone(),
             target_agent_id: "default".into(),
             waiting_intent_id: None,
@@ -3730,7 +3736,7 @@ async fn default_external_ingress_ignores_legacy_active_trigger_without_url() {
     let descriptors = runtime.latest_external_triggers().await.unwrap();
     assert!(descriptors.iter().any(|record| {
         record.external_trigger_id == legacy_trigger_id
-            && record.status == ExternalTriggerStatus::Active
+            && record.status == ExternalTriggerStatus::Revoked
             && record.trigger_url.is_none()
     }));
     assert!(descriptors.iter().any(|record| {

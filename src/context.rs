@@ -80,6 +80,28 @@ pub fn build_context(
     continuation: Option<&ContinuationResolution>,
     config: &ContextConfig,
 ) -> Result<BuiltContext> {
+    build_context_with_default_external_ingress(
+        storage,
+        agent,
+        execution,
+        skills,
+        current_message,
+        continuation,
+        config,
+        None,
+    )
+}
+
+pub fn build_context_with_default_external_ingress(
+    storage: &AppStorage,
+    agent: &AgentState,
+    execution: &ExecutionSnapshot,
+    skills: &SkillsRuntimeView,
+    current_message: &MessageEnvelope,
+    continuation: Option<&ContinuationResolution>,
+    config: &ContextConfig,
+    default_external_ingress_override: Option<&ExternalTriggerRecord>,
+) -> Result<BuiltContext> {
     let messages =
         storage.read_messages_from(agent.compacted_message_count, config.recent_messages)?;
     let continuation_anchor_messages = storage.read_all_messages()?;
@@ -108,7 +130,11 @@ pub fn build_context(
         &mut remaining_budget,
         section("agent", format!("Agent id: {}", agent.id)),
     );
-    if let Some(default_ingress) = default_external_ingress(storage, &agent.id)? {
+    let default_ingress = match default_external_ingress_override {
+        Some(record) => Some(record.clone()),
+        None => default_external_ingress(storage, &agent.id)?,
+    };
+    if let Some(default_ingress) = default_ingress {
         push_budgeted_section(
             &mut sections,
             &mut remaining_budget,
