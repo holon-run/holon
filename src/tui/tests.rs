@@ -1655,40 +1655,20 @@ async fn model_picker_opens_effort_for_models_with_reasoning_support() {
     );
 }
 
-#[tokio::test]
-async fn model_picker_enter_on_unavailable_model_keeps_provider_page_open() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    app.apply_agent_list(vec![sample_agent_summary("default")]);
-    app.model_availability = vec![sample_model_availability(
+#[test]
+fn model_picker_omits_unavailable_provider_choices() {
+    let agent = sample_agent_summary("default");
+    let model_availability = vec![sample_model_availability(
         "openrouter/deepseek-v3",
         "DeepSeek V3",
         false,
         false,
     )];
-    app.overlay = OverlayState::ModelPicker {
-        provider: Some("openrouter".into()),
-        filter: String::new(),
-        selected: 1,
-    };
+    let rows = super::model_picker::model_picker_rows(Some(&agent), &model_availability, None, "");
 
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        app.overlay,
-        OverlayState::ModelPicker {
-            provider: Some("openrouter".into()),
-            filter: String::new(),
-            selected: 1,
-        }
-    );
-    assert!(app.status_line.contains("Model unavailable"));
-    assert!(app.status_line.contains("credential_missing"));
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].title.contains("inherit runtime default"));
+    assert!(!rows.iter().any(|row| row.title == "openrouter"));
 }
 
 #[tokio::test]

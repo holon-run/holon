@@ -99,6 +99,9 @@ fn provider_rows(model_availability: &[ResolvedModelAvailability]) -> Vec<ModelP
     let mut providers =
         std::collections::BTreeMap::<String, Vec<&ResolvedModelAvailability>>::new();
     for entry in model_availability {
+        if !entry.available {
+            continue;
+        }
         providers
             .entry(entry.provider.clone())
             .or_default()
@@ -130,18 +133,10 @@ fn provider_row(provider: String, models: Vec<&ResolvedModelAvailability>) -> Mo
         .and_then(|entry| entry.credential_source.as_deref())
         .map(|source| format!(" credential:{source}"))
         .unwrap_or_default();
-    let status = if available_count > 0 {
-        format!(
-            "ready: {available_count}/{} models selectable",
-            models.len()
-        )
-    } else {
-        let reason = models
-            .iter()
-            .find_map(|entry| entry.unavailable_reason.as_deref())
-            .unwrap_or("provider unavailable");
-        format!("unavailable: {reason}")
-    };
+    let status = format!(
+        "ready: {available_count}/{} models selectable",
+        models.len()
+    );
     let discovery = if discovered_count > 0 {
         format!(" remote-discovered:{discovered_count}")
     } else {
@@ -166,6 +161,7 @@ fn provider_model_rows(
     model_availability
         .iter()
         .filter(|entry| entry.provider == provider)
+        .filter(|entry| entry.available)
         .map(model_availability_row)
         .collect()
 }
@@ -369,14 +365,15 @@ mod tests {
     }
 
     #[test]
-    fn picker_rows_start_with_provider_choices() {
+    fn picker_rows_start_with_available_provider_choices() {
         let agent = summary();
         let availability = model_availability();
         let rows = model_picker_rows(Some(&agent), &availability, None, "");
-        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.len(), 3);
         assert!(rows[0].title.contains("inherit runtime default"));
         assert!(rows.iter().any(|row| row.title == "openai"));
         assert!(rows.iter().any(|row| row.title == "openrouter"));
+        assert!(!rows.iter().any(|row| row.title == "anthropic"));
     }
 
     #[test]
@@ -392,15 +389,15 @@ mod tests {
     }
 
     #[test]
-    fn provider_model_page_surfaces_unavailable_models() {
+    fn provider_model_page_omits_unavailable_models() {
         let agent = summary();
         let availability = model_availability();
         let rows = model_picker_rows(Some(&agent), &availability, Some("anthropic"), "");
-        assert!(rows
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].title.contains("inherit runtime default"));
+        assert!(!rows
             .iter()
             .any(|row| row.title.contains("anthropic/claude-sonnet-4-6")));
-        assert!(!rows[1].available);
-        assert!(rows[1].detail.contains("credential_missing"));
     }
 
     #[test]
@@ -412,8 +409,8 @@ mod tests {
         assert!(rows[0].title.contains("inherit runtime default"));
 
         let rows = model_picker_rows(Some(&agent), &availability, Some("anthropic"), "sonnet");
-        assert_eq!(rows.len(), 2);
-        assert!(rows[1].title.contains("claude-sonnet"));
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].title.contains("inherit runtime default"));
     }
 
     #[test]
@@ -426,9 +423,8 @@ mod tests {
         );
         assert!(selected_model_picker_row(Some(&agent), &availability, None, "", 1).is_some());
         assert!(
-            !selected_model_picker_row(Some(&agent), &availability, Some("anthropic"), "", 1)
-                .unwrap()
-                .available
+            selected_model_picker_row(Some(&agent), &availability, Some("anthropic"), "", 1)
+                .is_none()
         );
     }
 }

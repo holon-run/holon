@@ -452,6 +452,7 @@
         "properties": {
           "include_unavailable": {
             "default": false,
+            "description": "Diagnostic-only. Defaults to false so normal selection paths only see usable providers; set true only to inspect blocked provider options and unavailable reasons.",
             "type": "boolean"
           }
         },
@@ -469,7 +470,7 @@
       "stability": "stable"
     },
     {
-      "description": "List models for a provider. Use provider from ListModelProviders; cursor is a model_ref returned by a previous page.",
+      "description": "List selectable models for a provider. By default unavailable models are omitted; set include_unavailable=true only to inspect blocked models and unavailability reasons. Use provider from ListModelProviders; cursor is a model_ref returned by a previous page.",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -484,6 +485,7 @@
           },
           "include_unavailable": {
             "default": false,
+            "description": "Diagnostic-only. Defaults to false so normal selection paths only see usable models; set true only to inspect blocked models and unavailable reasons.",
             "type": "boolean"
           },
           "limit": {
