@@ -17,6 +17,8 @@ would be noisy or misleading if duplicated inside each RFC.
 - [event-and-operator-transport](event-and-operator-transport.md)
 - [memory-and-compaction](memory-and-compaction.md)
 - [policy-and-execution-boundary](policy-and-execution-boundary.md)
+- [recent-turns-context-spine](recent-turns-context-spine.md)
+- [runtime-database-storage-migration](runtime-database-storage-migration.md)
 - [runtime-scheduler-contract](runtime-scheduler-contract.md)
 - [tool-contracts](tool-contracts.md)
 - [work-items-and-waiting-plane](work-items-and-waiting-plane.md)
