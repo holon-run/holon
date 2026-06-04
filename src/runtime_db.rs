@@ -10,6 +10,9 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use crate::types::{TaskRecord, TaskStatus, WorkItemRecord, WorkItemState};
 
+const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
+const TASK_PAYLOAD_ARRAY_LIMIT: usize = 64;
+
 #[derive(Debug, Clone)]
 pub struct RuntimeDb {
     path: PathBuf,
@@ -337,19 +340,20 @@ fn upsert_work_item_tx(
 }
 
 fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
-    let payload_json = serde_json::to_string(record)?;
     let kind = record.kind.as_str();
     let status = enum_string(&record.status)?;
-    let parent_agent_id = Some(record.agent_id.clone());
     let child_agent_id = task_detail_string(&record.detail, "child_agent_id");
+    let parent_agent_id = child_agent_id.as_ref().map(|_| record.agent_id.clone());
     let input_target = task_detail_string(&record.detail, "input_target");
     let wait_policy = enum_string(&record.wait_policy())?;
     let output_path = task_detail_string(&record.detail, "output_path");
-    let result_summary = task_detail_string(&record.detail, "output_summary");
+    let result_summary = task_detail_string(&record.detail, "output_summary")
+        .map(|summary| truncate_task_payload_string(&summary));
     let exit_status = task_detail_i64(&record.detail, "exit_status");
     let terminal_reentry = i64::from(record.terminal_reentry());
     let completed_at =
         is_terminal_task_status(&record.status).then(|| timestamp(record.updated_at));
+    let payload_json = serde_json::to_string(&slim_task_record_for_payload(record))?;
     tx.execute(
         "INSERT INTO tasks (
             task_id, owner_agent_id, parent_agent_id, child_agent_id, kind, status,
@@ -416,6 +420,12 @@ fn reduce_task_records(records: Vec<TaskRecord>) -> BTreeMap<String, TaskRecord>
     for record in records {
         if let Some(previous) = latest.get(&record.id) {
             let mut merged = record.clone();
+            if merged.summary.is_none() {
+                merged.summary = previous.summary.clone();
+            }
+            if merged.detail.is_none() {
+                merged.detail = previous.detail.clone();
+            }
             if merged.recovery.is_none() {
                 merged.recovery = previous.recovery.clone();
             }
@@ -427,6 +437,42 @@ fn reduce_task_records(records: Vec<TaskRecord>) -> BTreeMap<String, TaskRecord>
         }
     }
     latest
+}
+
+fn slim_task_record_for_payload(record: &TaskRecord) -> TaskRecord {
+    let mut slim = record.clone();
+    slim.detail = slim.detail.as_ref().map(slim_task_detail_value);
+    slim
+}
+
+fn slim_task_detail_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut slim = serde_json::Map::new();
+            for (key, value) in map {
+                if key == "initial_output" {
+                    continue;
+                }
+                slim.insert(key.clone(), slim_task_detail_value(value));
+            }
+            serde_json::Value::Object(slim)
+        }
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .iter()
+                .take(TASK_PAYLOAD_ARRAY_LIMIT)
+                .map(slim_task_detail_value)
+                .collect(),
+        ),
+        serde_json::Value::String(value) => {
+            serde_json::Value::String(truncate_task_payload_string(value))
+        }
+        _ => value.clone(),
+    }
+}
+
+fn truncate_task_payload_string(value: &str) -> String {
+    value.chars().take(TASK_PAYLOAD_STRING_LIMIT).collect()
 }
 
 fn newer_task_record(candidate: &TaskRecord, existing: &TaskRecord) -> bool {
@@ -1227,6 +1273,100 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(terminal_rows, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn task_import_merges_legacy_metadata_when_latest_update_is_sparse() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let queued = task_record("task-sparse", "agent-a", TaskStatus::Queued, 0);
+        let mut completed = task_record("task-sparse", "agent-a", TaskStatus::Completed, 10);
+        completed.summary = None;
+        completed.detail = None;
+        completed.recovery = None;
+
+        db.tasks().import_legacy(vec![queued, completed])?;
+
+        let imported = db.tasks().latest("task-sparse")?.expect("task imported");
+        assert_eq!(imported.status, TaskStatus::Completed);
+        assert_eq!(imported.summary.as_deref(), Some("task-sparse"));
+        assert_eq!(
+            imported
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("output_path"))
+                .and_then(serde_json::Value::as_str),
+            Some("/tmp/task-sparse.log")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn task_parent_agent_column_is_only_set_for_child_agent_tasks() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let command = task_record("task-command", "agent-a", TaskStatus::Running, 0);
+        let mut child = task_record("task-child", "agent-a", TaskStatus::Running, 1);
+        child.detail = Some(serde_json::json!({
+            "child_agent_id": "child-a",
+            "input_target": "child_followup",
+        }));
+
+        db.tasks().upsert(&command)?;
+        db.tasks().upsert(&child)?;
+
+        let connection = db.connection()?;
+        let command_parent: Option<String> = connection.query_row(
+            "SELECT parent_agent_id FROM tasks WHERE task_id = 'task-command'",
+            [],
+            |row| row.get(0),
+        )?;
+        let child_parent: Option<String> = connection.query_row(
+            "SELECT parent_agent_id FROM tasks WHERE task_id = 'task-child'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(command_parent, None);
+        assert_eq!(child_parent.as_deref(), Some("agent-a"));
+        Ok(())
+    }
+
+    #[test]
+    fn task_payload_json_slimguards_large_preview_fields() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut task = task_record("task-large", "agent-a", TaskStatus::Running, 0);
+        task.detail = Some(serde_json::json!({
+            "output_path": "/tmp/task-large.log",
+            "initial_output": "i".repeat(TASK_PAYLOAD_STRING_LIMIT + 10),
+            "output_summary": "s".repeat(TASK_PAYLOAD_STRING_LIMIT + 10),
+            "lines": (0..(TASK_PAYLOAD_ARRAY_LIMIT + 10)).collect::<Vec<_>>(),
+        }));
+
+        db.tasks().upsert(&task)?;
+
+        let connection = db.connection()?;
+        let (payload_json, result_summary): (String, Option<String>) = connection.query_row(
+            "SELECT payload_json, result_summary FROM tasks WHERE task_id = 'task-large'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let payload: serde_json::Value = serde_json::from_str(&payload_json)?;
+        let detail = &payload["detail"];
+        assert!(detail.get("initial_output").is_none());
+        assert_eq!(
+            detail["output_summary"].as_str().expect("summary").len(),
+            TASK_PAYLOAD_STRING_LIMIT
+        );
+        assert_eq!(
+            detail["lines"].as_array().expect("lines").len(),
+            TASK_PAYLOAD_ARRAY_LIMIT
+        );
+        assert_eq!(
+            result_summary.expect("result summary").len(),
+            TASK_PAYLOAD_STRING_LIMIT
+        );
         Ok(())
     }
 
