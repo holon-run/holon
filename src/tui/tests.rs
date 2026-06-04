@@ -1,5 +1,5 @@
 use super::{
-    app::TuiApp,
+    app::{ComposerEditMode, TuiApp},
     chat::{
         build_chat_text, build_chat_text_for_width, chat_text, collect_chat_items,
         is_operator_origin_value, paragraph_max_scroll, paragraph_max_scroll_unframed,
@@ -703,6 +703,22 @@ fn statusbar_view_model_prefers_overlay_hint_over_transient_status() {
 
     assert!(view_model.status_line.contains("Tasks:"));
     assert!(!view_model.status_line.contains("Opened tasks overlay"));
+}
+
+#[test]
+fn statusbar_view_model_prefers_transient_status_over_vim_hint() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+    app.status_line = "Loaded older events".into();
+
+    let view_model = StatusbarViewModel::from_app(&app, false);
+
+    assert!(view_model.status_line.contains("Loaded older events"));
+    assert!(!view_model.status_line.contains("VIM NORMAL"));
 }
 
 #[test]
@@ -1769,6 +1785,393 @@ async fn slash_display_accepts_named_modes() {
 
     assert_eq!(app.display_mode, OperatorDisplayMode::Verbose);
     assert_eq!(app.status_line, "Display mode set to verbose (4)");
+}
+
+#[tokio::test]
+async fn slash_vim_toggles_session_local_composer_mode() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+
+    app.composer = ComposerState::from("/vim");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.composer.as_str(), "");
+    assert_eq!(app.composer_edit_mode, ComposerEditMode::VimNormal);
+    assert!(app.status_line.is_empty());
+
+    app.composer = ComposerState::from("/vim");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.composer_edit_mode, ComposerEditMode::Default);
+    assert!(app.status_line.contains("disabled"));
+}
+
+#[tokio::test]
+async fn slash_vim_enters_normal_mode_without_repositioning_submitted_command_text() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer = ComposerState::from("/vim");
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.composer.as_str(), "");
+    assert_eq!(app.composer.cursor(), 0);
+    assert_eq!(app.composer_edit_mode, ComposerEditMode::VimNormal);
+}
+
+#[tokio::test]
+async fn vim_mode_preserves_page_scroll_keys() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.chat_max_scroll = 12;
+    app.composer = ComposerState::from("draft");
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+
+    app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.chat_scroll.effective_scroll(12), 2);
+    assert!(!app.chat_scroll.is_following_tail());
+
+    app.composer_edit_mode = ComposerEditMode::VimInsert;
+    app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.chat_scroll.effective_scroll(12), 12);
+    assert_eq!(app.composer.as_str(), "draft");
+}
+
+#[tokio::test]
+async fn vim_page_scroll_clears_pending_normal_command() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.chat_max_scroll = 12;
+    app.composer = ComposerState::from("first\nsecond");
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.composer.as_str(), "first\nsecond");
+    assert_eq!(app.vim_pending_command, Some('d'));
+    assert_eq!(app.chat_scroll.effective_scroll(12), 2);
+}
+
+#[tokio::test]
+async fn vim_mode_preserves_empty_composer_help_shortcut() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+    app.vim_pending_command = Some('d');
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert!(matches!(app.overlay, OverlayState::HelpView { scroll: 0 }));
+    assert_eq!(app.vim_pending_command, None);
+    assert!(app.composer.is_empty());
+}
+
+#[tokio::test]
+async fn vim_mode_preserves_empty_composer_history_shortcuts() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.input_history = vec!["first".into(), "second".into()];
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+    app.vim_pending_command = Some('d');
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "second");
+    assert_eq!(app.history_index, Some(1));
+    assert_eq!(app.vim_pending_command, None);
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.composer.is_empty());
+    assert_eq!(app.history_index, None);
+}
+
+#[tokio::test]
+async fn vim_insert_esc_takes_precedence_over_slash_menu_dismissal() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer = ComposerState::from("/v");
+    app.composer_edit_mode = ComposerEditMode::VimInsert;
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.composer.as_str(), "/v");
+    assert_eq!(app.composer_edit_mode, ComposerEditMode::VimNormal);
+    assert_eq!(app.slash_menu_dismissed_for, None);
+}
+
+#[tokio::test]
+async fn vim_insert_and_normal_modes_switch_without_changing_default_behavior() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "hi");
+    assert_eq!(app.composer_edit_mode, ComposerEditMode::VimInsert);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer_edit_mode, ComposerEditMode::VimNormal);
+
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut default_app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    default_app
+        .handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(default_app.composer.as_str(), "h");
+}
+
+#[tokio::test]
+async fn vim_undo_restores_insert_entry_snapshot() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer = ComposerState::from("hi");
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "hi!");
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert_eq!(app.composer.as_str(), "hi");
+}
+
+#[tokio::test]
+async fn vim_normal_mode_moves_over_multiline_utf8_text() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer = ComposerState::from("你 好\nworld");
+    app.composer.move_to_start();
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.cursor(), "你 ".len());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('$'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.cursor(), "你 好".len());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.cursor(), "你 好\nwor".len());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.cursor(), "你 好\n".len());
+}
+
+#[tokio::test]
+async fn vim_normal_mode_edits_lines_words_and_undoes_last_change() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer = ComposerState::from("alpha beta\ngamma");
+    app.composer.move_to_start();
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "alpha \ngamma");
+    assert_eq!(app.composer_edit_mode, ComposerEditMode::VimInsert);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "alpha beta\ngamma");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "\ngamma");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "gamma");
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "amma");
+}
+
+#[tokio::test]
+async fn vim_open_line_commands_enter_insert_mode() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer = ComposerState::from("alpha");
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "alpha\nb");
+    assert_eq!(app.composer_edit_mode, ComposerEditMode::VimInsert);
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "alpha\nx\nb");
+}
+
+#[tokio::test]
+async fn vim_normal_enter_submits_non_empty_composer() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer = ComposerState::from("hi");
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+
+    let err = app
+        .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await
+        .expect_err("submit should fail without a selected agent");
+
+    assert!(err.to_string().contains("no agent selected"));
+    assert_eq!(app.composer.as_str(), "hi");
+}
+
+#[tokio::test]
+async fn vim_normal_slash_enters_insert_mode_and_keeps_slash_menu_usable() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "/");
+    assert_eq!(app.composer_edit_mode, ComposerEditMode::VimInsert);
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.slash_menu_selected, 1);
+
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "/agents");
 }
 
 #[tokio::test]

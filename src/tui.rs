@@ -18,7 +18,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Local};
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEvent, KeyEventKind,
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind,
         KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
