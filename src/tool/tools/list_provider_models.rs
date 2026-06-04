@@ -24,6 +24,9 @@ pub(crate) struct ListProviderModelsArgs {
     pub(crate) cursor: Option<String>,
     #[serde(default)]
     pub(crate) limit: Option<usize>,
+    #[schemars(
+        description = "Diagnostic-only. Defaults to false so normal selection paths only see usable models; set true only to inspect blocked models and unavailable reasons."
+    )]
     #[serde(default)]
     pub(crate) include_unavailable: bool,
 }
@@ -43,7 +46,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<ListProviderModelsArgs>(
             NAME,
-            "List models for a provider. Use provider from ListModelProviders; cursor is a model_ref returned by a previous page.",
+            "List selectable models for a provider. By default unavailable models are omitted; set include_unavailable=true only to inspect blocked models and unavailability reasons. Use provider from ListModelProviders; cursor is a model_ref returned by a previous page.",
         )?,
     })
 }

@@ -17,6 +17,9 @@ pub(crate) const NAME: &str = "ListModelProviders";
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ListModelProvidersArgs {
+    #[schemars(
+        description = "Diagnostic-only. Defaults to false so normal selection paths only see usable providers; set true only to inspect blocked provider options and unavailable reasons."
+    )]
     #[serde(default)]
     pub(crate) include_unavailable: bool,
 }
