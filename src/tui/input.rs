@@ -1215,6 +1215,22 @@ impl TuiApp {
         }
 
         if self.composer_edit_mode != ComposerEditMode::Default {
+            match key.code {
+                KeyCode::Char('?') if self.composer.is_empty() => {
+                    self.overlay = OverlayState::HelpView { scroll: 0 };
+                    return Ok(());
+                }
+                KeyCode::Up if self.history_index.is_some() || self.composer.is_empty() => {
+                    self.navigate_history(-1);
+                    return Ok(());
+                }
+                KeyCode::Down if self.history_index.is_some() || self.composer.is_empty() => {
+                    self.navigate_history(1);
+                    return Ok(());
+                }
+                _ => {}
+            }
+
             return self.handle_vim_composer_key(key).await;
         }
 

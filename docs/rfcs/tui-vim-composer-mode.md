@@ -2,6 +2,7 @@
 title: RFC: TUI Vim Composer Mode
 date: 2026-06-04
 status: draft
+Handle: rfc-tui-vim-composer-mode
 ---
 
 # RFC: TUI Vim Composer Mode
@@ -91,8 +92,7 @@ When vim mode is disabled:
 
 - running `/vim` enables vim composer mode
 - the composer enters normal mode
-- the status line reports that vim mode is enabled
-
+- the status bar shows a persistent `VIM NORMAL` / `VIM INSERT` hint
 When vim mode is enabled:
 
 - running `/vim` disables vim composer mode
