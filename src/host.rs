@@ -30,6 +30,7 @@ use crate::{
     ids,
     provider::{build_provider_from_config, AgentProvider},
     runtime::{InitialWorkspaceBinding, RuntimeHandle},
+    runtime_db::RuntimeDb,
     storage::AppStorage,
     system::WorkspaceAccessMode,
     types::{
@@ -92,6 +93,7 @@ impl std::error::Error for PublicAgentError {}
 
 struct HostInner {
     registry: RuntimeRegistry,
+    runtime_db: RuntimeDb,
     static_provider: Option<Arc<dyn AgentProvider>>,
     agents: RwLock<HashMap<String, AgentEntry>>,
 }
@@ -162,10 +164,13 @@ impl RuntimeHost {
         static_provider: Option<Arc<dyn AgentProvider>>,
     ) -> Result<Self> {
         seed_builtin_templates_for_home(&config.home_dir)?;
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
         let registry = RuntimeRegistry::new(config)?;
         let host = Self {
             inner: Arc::new(HostInner {
                 registry,
+                runtime_db,
                 static_provider,
                 agents: RwLock::new(HashMap::new()),
             }),
@@ -177,6 +182,10 @@ impl RuntimeHost {
 
     pub fn config(&self) -> &AppConfig {
         self.inner.registry.config()
+    }
+
+    pub fn runtime_db(&self) -> &RuntimeDb {
+        &self.inner.runtime_db
     }
 
     pub(crate) fn bridge(&self) -> RuntimeHostBridge {

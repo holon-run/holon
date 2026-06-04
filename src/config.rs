@@ -725,6 +725,14 @@ impl AppConfig {
         self.home_dir.join("run")
     }
 
+    pub fn runtime_db_path(&self) -> PathBuf {
+        self.data_dir.join("state").join("runtime.sqlite")
+    }
+
+    pub fn runtime_db_lock_path(&self) -> PathBuf {
+        self.data_dir.join("state").join("runtime.lock")
+    }
+
     pub fn agent_root_dir(&self) -> PathBuf {
         self.data_dir.join("agents")
     }
