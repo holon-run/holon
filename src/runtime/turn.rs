@@ -2606,9 +2606,7 @@ impl TurnExecution<'_> {
                     }),
                 ))?;
             }
-            runtime.inner
-                .storage
-                .append_transcript_entry(&TranscriptEntry {
+            runtime.persist_transcript_evidence(&TranscriptEntry {
                     stop_reason: stop_reason.clone(),
                     input_tokens: Some(response.input_tokens),
                     output_tokens: Some(response.output_tokens),
@@ -2737,19 +2735,16 @@ impl TurnExecution<'_> {
                         tool_result_envelopes: Vec::new(),
                         follow_up_user_texts: vec![continuation_text.clone()],
                     });
-                    runtime
-                        .inner
-                        .storage
-                        .append_transcript_entry(&TranscriptEntry::new(
-                            agent_id.to_string(),
-                            TranscriptEntryKind::ContinuationPrompt,
-                            Some(round),
-                            None,
-                            serde_json::json!({
-                                "text": continuation_text,
-                                "reason": "max_output_tokens",
-                            }),
-                        ))?;
+                    runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                        agent_id.to_string(),
+                        TranscriptEntryKind::ContinuationPrompt,
+                        Some(round),
+                        None,
+                        serde_json::json!({
+                            "text": continuation_text,
+                            "reason": "max_output_tokens",
+                        }),
+                    ))?;
                     runtime.inner.storage.append_event(&AuditEvent::new(
                         "max_output_tokens_recovery",
                         serde_json::json!({
@@ -2767,19 +2762,16 @@ impl TurnExecution<'_> {
                     completed_round_assistant_blocks,
                     text_blocks,
                 ));
-                runtime
-                    .inner
-                    .storage
-                    .append_transcript_entry(&TranscriptEntry::new(
-                        agent_id.to_string(),
-                        TranscriptEntryKind::ContinuationPrompt,
-                        Some(round),
-                        None,
-                        serde_json::json!({
-                            "text": CHECKPOINT_RESUME_PROMPT,
-                            "reason": "turn_local_checkpoint",
-                        }),
-                    ))?;
+                runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                    agent_id.to_string(),
+                    TranscriptEntryKind::ContinuationPrompt,
+                    Some(round),
+                    None,
+                    serde_json::json!({
+                        "text": CHECKPOINT_RESUME_PROMPT,
+                        "reason": "turn_local_checkpoint",
+                    }),
+                ))?;
                 runtime.inner.storage.append_event(&AuditEvent::new(
                     "turn_local_checkpoint_resume_requested",
                     serde_json::json!({
@@ -2983,7 +2975,7 @@ impl TurnExecution<'_> {
                         if result.should_sleep {
                             sleep_duration_ms = result.sleep_duration_ms;
                         }
-                        runtime.inner.storage.append_tool_execution(&record)?;
+                        runtime.persist_tool_execution_evidence(&record)?;
                         if matches!(record.status, crate::types::ToolExecutionStatus::Success) {
                             runtime
                                 .record_skill_tool_activation(
@@ -3103,18 +3095,15 @@ impl TurnExecution<'_> {
             {
                 post_completion_continuation_action = true;
             }
-            runtime
-                .inner
-                .storage
-                .append_transcript_entry(&TranscriptEntry::new(
-                    agent_id.to_string(),
-                    TranscriptEntryKind::ToolResults,
-                    Some(round),
-                    None,
-                    serde_json::json!({
-                        "results": tool_results.clone(),
-                    }),
-                ))?;
+            runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                agent_id.to_string(),
+                TranscriptEntryKind::ToolResults,
+                Some(round),
+                None,
+                serde_json::json!({
+                    "results": tool_results.clone(),
+                }),
+            ))?;
             let after_tool_results_interjections = runtime
                 .drain_operator_interjections(agent_id, round, "after_tool_results")
                 .await?;

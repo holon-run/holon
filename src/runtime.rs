@@ -83,7 +83,7 @@ use crate::{
         AgentModelState, AgentState, AgentStatus, AgentSummary, AuditEvent, AuthorityClass,
         BriefRecord, CallbackDeliveryMode, CallbackDeliveryPayload, CallbackDeliveryResult,
         CallbackIngressDisposition, CancelWaitingResult, ClosureDecision, ContinuationResolution,
-        ControlAction, ExecCommandBatchItemStatus, ExecCommandBatchResult,
+        ControlAction, DeliverySummaryRecord, ExecCommandBatchItemStatus, ExecCommandBatchResult,
         ExternalTriggerCapability, ExternalTriggerRecord, ExternalTriggerScope,
         ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
@@ -972,7 +972,7 @@ impl RuntimeHandle {
         if message.turn_id.is_none() {
             message.turn_id = Some(crate::ids::turn_id());
         }
-        self.inner.storage.append_message(&message)?;
+        self.persist_message_evidence(&message)?;
         self.inner.storage.append_queue_entry(&QueueEntryRecord {
             message_id: message.id.clone(),
             agent_id: message.agent_id.clone(),
@@ -1023,6 +1023,46 @@ impl RuntimeHandle {
         self.inner
             .storage
             .append_event(&AuditEvent::new(kind, data))
+    }
+
+    pub(crate) fn persist_message_evidence(&self, message: &MessageEnvelope) -> Result<()> {
+        self.inner.storage.append_message(message)?;
+        self.inner.runtime_db.evidence().append_message(message)
+    }
+
+    pub(crate) fn persist_transcript_evidence(&self, entry: &TranscriptEntry) -> Result<()> {
+        self.inner.storage.append_transcript_entry(entry)?;
+        self.inner
+            .runtime_db
+            .evidence()
+            .append_transcript_entry(entry)
+    }
+
+    pub(crate) fn persist_tool_execution_evidence(
+        &self,
+        record: &ToolExecutionRecord,
+    ) -> Result<()> {
+        self.inner.storage.append_tool_execution(record)?;
+        self.inner
+            .runtime_db
+            .evidence()
+            .append_tool_execution(record)
+    }
+
+    pub(crate) fn persist_brief_evidence(&self, brief: &BriefRecord) -> Result<()> {
+        self.inner.storage.append_brief(brief)?;
+        self.inner.runtime_db.evidence().append_brief(brief)
+    }
+
+    pub(crate) fn persist_delivery_summary_evidence(
+        &self,
+        record: &DeliverySummaryRecord,
+    ) -> Result<()> {
+        self.inner.storage.append_delivery_summary(record)?;
+        self.inner
+            .runtime_db
+            .evidence()
+            .append_delivery_summary(record)
     }
 
     pub async fn run(self) -> Result<()> {

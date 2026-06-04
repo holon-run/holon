@@ -84,7 +84,7 @@ impl RuntimeHandle {
                 bound_brief.turn_id = guard.state.current_turn_id.clone();
             }
         }
-        self.inner.storage.append_brief(&bound_brief)?;
+        self.persist_brief_evidence(&bound_brief)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "brief_created",
             to_json_value(&bound_brief),

@@ -7,14 +7,17 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use serde::Serialize;
 
 use crate::types::{
-    CallbackDeliveryMode, ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus,
-    TaskRecord, TaskStatus, WorkItemRecord, WorkItemState,
+    AuditEvent, BriefRecord, CallbackDeliveryMode, DeliverySummaryRecord, ExternalTriggerRecord,
+    ExternalTriggerScope, ExternalTriggerStatus, MessageEnvelope, TaskRecord, TaskStatus,
+    ToolExecutionRecord, TranscriptEntry, WorkItemRecord, WorkItemState,
 };
 
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
 const TASK_PAYLOAD_ARRAY_LIMIT: usize = 64;
+const EVIDENCE_PREVIEW_LIMIT: usize = 2048;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeDb {
@@ -32,6 +35,63 @@ pub struct TaskRepository<'a> {
 
 pub struct ExternalTriggerRepository<'a> {
     db: &'a RuntimeDb,
+}
+
+pub struct EvidenceRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct AuditEventSink<'a> {
+    db: &'a RuntimeDb,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceKind {
+    Message,
+    TranscriptEntry,
+    ToolExecution,
+    ModelRequest,
+    ModelResponse,
+    Brief,
+    DeliverySummary,
+    ArtifactMetadata,
+}
+
+impl EvidenceKind {
+    fn table_name(self) -> &'static str {
+        match self {
+            Self::Message => "messages",
+            Self::TranscriptEntry => "transcript_entries",
+            Self::ToolExecution => "tool_executions",
+            Self::ModelRequest => "model_requests",
+            Self::ModelResponse => "model_responses",
+            Self::Brief => "briefs",
+            Self::DeliverySummary => "delivery_summaries",
+            Self::ArtifactMetadata => "artifact_metadata",
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct EvidenceQuery<'a> {
+    pub agent_id: Option<&'a str>,
+    pub turn_id: Option<&'a str>,
+    pub message_id: Option<&'a str>,
+    pub task_id: Option<&'a str>,
+    pub work_item_id: Option<&'a str>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvidenceRow {
+    pub evidence_id: String,
+    pub agent_id: String,
+    pub turn_id: Option<String>,
+    pub message_id: Option<String>,
+    pub task_id: Option<String>,
+    pub work_item_id: Option<String>,
+    pub created_at: String,
+    pub preview: Option<String>,
 }
 
 impl WorkItemRepository<'_> {
@@ -328,6 +388,214 @@ impl TaskRepository<'_> {
     }
 }
 
+impl EvidenceRepository<'_> {
+    pub fn import_legacy(
+        &self,
+        messages: Vec<serde_json::Value>,
+        transcript_entries: Vec<TranscriptEntry>,
+        tool_executions: Vec<ToolExecutionRecord>,
+        briefs: Vec<BriefRecord>,
+        delivery_summaries: Vec<DeliverySummaryRecord>,
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            let domain = read_storage_domain(tx, "evidence")?;
+            if domain.as_ref().is_some_and(|domain| {
+                domain.import_status == "complete"
+                    && matches!(domain.canonical_source.as_str(), "db" | "jsonl+db-index")
+            }) {
+                return Ok(());
+            }
+
+            upsert_storage_domain(tx, "evidence", "importing", "jsonl", None)?;
+            let mut imported_messages = 0_u64;
+            let mut dropped_messages = 0_u64;
+            for raw_message in messages {
+                match normalize_legacy_message_value(raw_message)? {
+                    Some(message) => {
+                        insert_message_evidence_tx(tx, &message)?;
+                        imported_messages += 1;
+                    }
+                    None => dropped_messages += 1,
+                }
+            }
+            for entry in &transcript_entries {
+                insert_transcript_evidence_tx(tx, entry)?;
+            }
+            for record in &tool_executions {
+                insert_tool_evidence_tx(tx, record)?;
+            }
+            for brief in &briefs {
+                insert_brief_evidence_tx(tx, brief)?;
+            }
+            for summary in &delivery_summaries {
+                insert_delivery_summary_evidence_tx(tx, summary)?;
+            }
+            upsert_storage_domain(
+                tx,
+                "evidence",
+                "complete",
+                "jsonl+db-index",
+                Some(serde_json::json!({
+                    "imported_messages": imported_messages,
+                    "dropped_messages": dropped_messages,
+                    "imported_transcript_entries": transcript_entries.len(),
+                    "imported_tool_executions": tool_executions.len(),
+                    "imported_briefs": briefs.len(),
+                    "imported_delivery_summaries": delivery_summaries.len(),
+                })),
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
+        self.db
+            .transaction(|tx| insert_message_evidence_tx(tx, message))
+    }
+
+    pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
+        self.db
+            .transaction(|tx| insert_transcript_evidence_tx(tx, entry))
+    }
+
+    pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| insert_tool_evidence_tx(tx, record))
+    }
+
+    pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| insert_brief_evidence_tx(tx, brief))
+    }
+
+    pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| insert_delivery_summary_evidence_tx(tx, record))
+    }
+
+    pub fn query(&self, kind: EvidenceKind, query: EvidenceQuery<'_>) -> Result<Vec<EvidenceRow>> {
+        if query.limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut clauses = Vec::new();
+        let mut params = Vec::<String>::new();
+        push_optional_clause(&mut clauses, &mut params, "agent_id", query.agent_id);
+        push_optional_clause(&mut clauses, &mut params, "turn_id", query.turn_id);
+        push_optional_clause(&mut clauses, &mut params, "message_id", query.message_id);
+        push_optional_clause(&mut clauses, &mut params, "task_id", query.task_id);
+        push_optional_clause(
+            &mut clauses,
+            &mut params,
+            "work_item_id",
+            query.work_item_id,
+        );
+        let where_clause = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", clauses.join(" AND "))
+        };
+        let limit = i64::try_from(query.limit).unwrap_or(i64::MAX);
+        let sql = format!(
+            "SELECT evidence_id, agent_id, turn_id, message_id, task_id, work_item_id, created_at, preview
+             FROM {}{}
+             ORDER BY created_at DESC, evidence_id ASC
+             LIMIT {}",
+            kind.table_name(),
+            where_clause,
+            limit
+        );
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+            Ok(EvidenceRow {
+                evidence_id: row.get(0)?,
+                agent_id: row.get(1)?,
+                turn_id: row.get(2)?,
+                message_id: row.get(3)?,
+                task_id: row.get(4)?,
+                work_item_id: row.get(5)?,
+                created_at: row.get(6)?,
+                preview: row.get(7)?,
+            })
+        })?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+}
+
+impl AuditEventSink<'_> {
+    pub fn append(&self, agent_id: Option<&str>, event: &AuditEvent) -> Result<()> {
+        self.db
+            .transaction(|tx| insert_audit_event_tx(tx, agent_id, event))
+    }
+
+    pub fn import_legacy(&self, agent_id: Option<&str>, events: Vec<AuditEvent>) -> Result<()> {
+        self.db.transaction(|tx| {
+            let domain = read_storage_domain(tx, "audit_events")?;
+            if domain.as_ref().is_some_and(|domain| {
+                domain.import_status == "complete"
+                    && matches!(domain.canonical_source.as_str(), "db" | "jsonl+db-index")
+            }) {
+                return Ok(());
+            }
+            upsert_storage_domain(tx, "audit_events", "importing", "jsonl", None)?;
+            for event in &events {
+                insert_audit_event_tx(tx, agent_id, event)?;
+            }
+            upsert_storage_domain(
+                tx,
+                "audit_events",
+                "complete",
+                "jsonl+db-index",
+                Some(serde_json::json!({ "imported_records": events.len() })),
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn page_after(
+        &self,
+        agent_id: Option<&str>,
+        after_event_seq: u64,
+        limit: usize,
+    ) -> Result<Vec<AuditEvent>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut sql =
+            String::from("SELECT data_json FROM audit_events WHERE COALESCE(event_seq, 0) > ?1");
+        if agent_id.is_some() {
+            sql.push_str(" AND agent_id = ?2");
+        }
+        sql.push_str(" ORDER BY event_seq ASC, created_at ASC LIMIT ");
+        sql.push_str(&limit.to_string());
+        let mut statement = connection.prepare(&sql)?;
+        if let Some(agent_id) = agent_id {
+            let after_event_seq = i64::try_from(after_event_seq)
+                .context("audit event cursor exceeds SQLite integer range")?;
+            let rows = statement.query_map(params![after_event_seq, agent_id], |row| {
+                row.get::<_, String>(0)
+            })?;
+            rows.map(|row| {
+                let payload = row?;
+                serde_json::from_str(&payload).map_err(Into::into)
+            })
+            .collect()
+        } else {
+            let after_event_seq = i64::try_from(after_event_seq)
+                .context("audit event cursor exceeds SQLite integer range")?;
+            let rows =
+                statement.query_map(params![after_event_seq], |row| row.get::<_, String>(0))?;
+            rows.map(|row| {
+                let payload = row?;
+                serde_json::from_str(&payload).map_err(Into::into)
+            })
+            .collect()
+        }
+    }
+}
+
 #[derive(Debug)]
 struct StorageDomainState {
     import_status: String,
@@ -382,6 +650,275 @@ fn upsert_storage_domain(
         ],
     )?;
     Ok(())
+}
+
+#[derive(Debug)]
+struct EvidenceInsert<'a> {
+    table: &'static str,
+    evidence_id: &'a str,
+    agent_id: &'a str,
+    turn_id: Option<&'a str>,
+    message_id: Option<&'a str>,
+    task_id: Option<&'a str>,
+    work_item_id: Option<&'a str>,
+    created_at: DateTime<Utc>,
+    kind: String,
+    preview: Option<String>,
+    payload_json: String,
+}
+
+fn insert_evidence_tx(tx: &Transaction<'_>, evidence: EvidenceInsert<'_>) -> Result<()> {
+    let sql = format!(
+        "INSERT INTO {} (
+            evidence_id, agent_id, turn_id, message_id, task_id, work_item_id,
+            created_at, kind, content_ref, content_hash, preview, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(evidence_id) DO NOTHING",
+        evidence.table
+    );
+    tx.execute(
+        &sql,
+        params![
+            evidence.evidence_id,
+            evidence.agent_id,
+            evidence.turn_id,
+            evidence.message_id,
+            evidence.task_id,
+            evidence.work_item_id,
+            timestamp(evidence.created_at),
+            evidence.kind,
+            Option::<String>::None,
+            Option::<String>::None,
+            evidence.preview,
+            evidence.payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_message_evidence_tx(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<()> {
+    insert_evidence_tx(
+        tx,
+        EvidenceInsert {
+            table: EvidenceKind::Message.table_name(),
+            evidence_id: &message.id,
+            agent_id: &message.agent_id,
+            turn_id: message.turn_id.as_deref(),
+            message_id: Some(&message.id),
+            task_id: message.task_id.as_deref(),
+            work_item_id: message.work_item_id.as_deref(),
+            created_at: message.created_at,
+            kind: enum_string(&message.kind)?,
+            preview: evidence_preview(&message.body),
+            payload_json: bounded_payload_json(message)?,
+        },
+    )
+}
+
+fn insert_transcript_evidence_tx(tx: &Transaction<'_>, entry: &TranscriptEntry) -> Result<()> {
+    let turn_id = entry
+        .data
+        .get("turn_id")
+        .and_then(serde_json::Value::as_str);
+    let task_id = entry
+        .data
+        .get("task_id")
+        .and_then(serde_json::Value::as_str);
+    let work_item_id = entry
+        .data
+        .get("work_item_id")
+        .and_then(serde_json::Value::as_str);
+    insert_evidence_tx(
+        tx,
+        EvidenceInsert {
+            table: EvidenceKind::TranscriptEntry.table_name(),
+            evidence_id: &entry.id,
+            agent_id: &entry.agent_id,
+            turn_id,
+            message_id: entry.related_message_id.as_deref(),
+            task_id,
+            work_item_id,
+            created_at: entry.created_at,
+            kind: enum_string(&entry.kind)?,
+            preview: evidence_preview(&entry.data),
+            payload_json: bounded_payload_json(entry)?,
+        },
+    )
+}
+
+fn insert_tool_evidence_tx(tx: &Transaction<'_>, record: &ToolExecutionRecord) -> Result<()> {
+    insert_evidence_tx(
+        tx,
+        EvidenceInsert {
+            table: EvidenceKind::ToolExecution.table_name(),
+            evidence_id: &record.id,
+            agent_id: &record.agent_id,
+            turn_id: record.turn_id.as_deref(),
+            message_id: None,
+            task_id: None,
+            work_item_id: record.work_item_id.as_deref(),
+            created_at: record.created_at,
+            kind: record.tool_name.clone(),
+            preview: Some(truncate_evidence_string(&record.summary)),
+            payload_json: bounded_payload_json(record)?,
+        },
+    )
+}
+
+fn insert_brief_evidence_tx(tx: &Transaction<'_>, brief: &BriefRecord) -> Result<()> {
+    insert_evidence_tx(
+        tx,
+        EvidenceInsert {
+            table: EvidenceKind::Brief.table_name(),
+            evidence_id: &brief.id,
+            agent_id: &brief.agent_id,
+            turn_id: brief.turn_id.as_deref(),
+            message_id: brief.related_message_id.as_deref(),
+            task_id: brief.related_task_id.as_deref(),
+            work_item_id: brief.work_item_id.as_deref(),
+            created_at: brief.created_at,
+            kind: enum_string(&brief.kind)?,
+            preview: Some(truncate_evidence_string(&brief.text)),
+            payload_json: bounded_payload_json(brief)?,
+        },
+    )
+}
+
+fn insert_delivery_summary_evidence_tx(
+    tx: &Transaction<'_>,
+    record: &DeliverySummaryRecord,
+) -> Result<()> {
+    insert_evidence_tx(
+        tx,
+        EvidenceInsert {
+            table: EvidenceKind::DeliverySummary.table_name(),
+            evidence_id: &record.id,
+            agent_id: &record.agent_id,
+            turn_id: record.turn_id.as_deref(),
+            message_id: None,
+            task_id: None,
+            work_item_id: Some(&record.work_item_id),
+            created_at: record.created_at,
+            kind: "delivery_summary".to_string(),
+            preview: Some(truncate_evidence_string(&record.text)),
+            payload_json: bounded_payload_json(record)?,
+        },
+    )
+}
+
+fn insert_audit_event_tx(
+    tx: &Transaction<'_>,
+    agent_id: Option<&str>,
+    event: &AuditEvent,
+) -> Result<()> {
+    let event_seq = i64::try_from(event.event_seq)
+        .context("audit event sequence exceeds SQLite integer range")?;
+    tx.execute(
+        "INSERT INTO audit_events (
+            audit_event_id, event_seq, agent_id, kind, created_at, data_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(audit_event_id) DO NOTHING",
+        params![
+            event.id,
+            event_seq,
+            agent_id,
+            event.kind,
+            timestamp(event.created_at),
+            serde_json::to_string(event)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn normalize_legacy_message_value(
+    mut raw_message: serde_json::Value,
+) -> Result<Option<MessageEnvelope>> {
+    let Some(object) = raw_message.as_object_mut() else {
+        return Ok(None);
+    };
+    let has_turn_id = object
+        .get("turn_id")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    if !has_turn_id {
+        let Some(turn_index) = object.get("turn_index").and_then(serde_json::Value::as_u64) else {
+            return Ok(None);
+        };
+        object.insert(
+            "turn_id".to_string(),
+            serde_json::Value::String(format!("legacy-turn-{turn_index}")),
+        );
+    }
+    serde_json::from_value(raw_message)
+        .map(Some)
+        .map_err(Into::into)
+}
+
+fn push_optional_clause(
+    clauses: &mut Vec<String>,
+    params: &mut Vec<String>,
+    column: &str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value {
+        params.push(value.to_string());
+        clauses.push(format!("{column} = ?{}", params.len()));
+    }
+}
+
+fn bounded_payload_json<T: Serialize>(value: &T) -> Result<String> {
+    let mut payload = serde_json::to_value(value)?;
+    bound_json_value(&mut payload);
+    serde_json::to_string(&payload).map_err(Into::into)
+}
+
+fn evidence_preview(value: &impl Serialize) -> Option<String> {
+    serde_json::to_string(value)
+        .ok()
+        .map(|value| truncate_evidence_string(&value))
+}
+
+fn bound_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) if text.len() > EVIDENCE_PREVIEW_LIMIT => {
+            truncate_string_in_place(text, EVIDENCE_PREVIEW_LIMIT);
+        }
+        serde_json::Value::Array(items) => {
+            if items.len() > TASK_PAYLOAD_ARRAY_LIMIT {
+                items.truncate(TASK_PAYLOAD_ARRAY_LIMIT);
+            }
+            for item in items {
+                bound_json_value(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for value in map.values_mut() {
+                bound_json_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn truncate_evidence_string(value: &str) -> String {
+    let mut truncated = value.to_string();
+    if truncated.len() > EVIDENCE_PREVIEW_LIMIT {
+        truncate_string_in_place(&mut truncated, EVIDENCE_PREVIEW_LIMIT);
+    }
+    truncated
+}
+
+fn truncate_string_in_place(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    let boundary = value
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= max_bytes)
+        .last()
+        .unwrap_or(0);
+    value.truncate(boundary);
 }
 
 fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerRecord) -> Result<()> {
@@ -946,6 +1483,203 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_external_triggers_active_default_agent
   WHERE status = 'active';
 "#,
     },
+    Migration {
+        version: 5,
+        name: "evidence_indexing_and_audit_sink",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS messages (
+  evidence_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  message_id TEXT,
+  task_id TEXT,
+  work_item_id TEXT,
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_ref TEXT,
+  content_hash TEXT,
+  preview TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS transcript_entries (
+  evidence_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  message_id TEXT,
+  task_id TEXT,
+  work_item_id TEXT,
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_ref TEXT,
+  content_hash TEXT,
+  preview TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tool_executions (
+  evidence_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  message_id TEXT,
+  task_id TEXT,
+  work_item_id TEXT,
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_ref TEXT,
+  content_hash TEXT,
+  preview TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_requests (
+  evidence_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  message_id TEXT,
+  task_id TEXT,
+  work_item_id TEXT,
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_ref TEXT,
+  content_hash TEXT,
+  preview TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_responses (
+  evidence_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  message_id TEXT,
+  task_id TEXT,
+  work_item_id TEXT,
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_ref TEXT,
+  content_hash TEXT,
+  preview TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS briefs (
+  evidence_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  message_id TEXT,
+  task_id TEXT,
+  work_item_id TEXT,
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_ref TEXT,
+  content_hash TEXT,
+  preview TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS delivery_summaries (
+  evidence_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  message_id TEXT,
+  task_id TEXT,
+  work_item_id TEXT,
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_ref TEXT,
+  content_hash TEXT,
+  preview TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS artifact_metadata (
+  evidence_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  message_id TEXT,
+  task_id TEXT,
+  work_item_id TEXT,
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_ref TEXT,
+  content_hash TEXT,
+  preview TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_agent_turn
+  ON messages(agent_id, turn_id);
+CREATE INDEX IF NOT EXISTS idx_messages_message
+  ON messages(message_id);
+CREATE INDEX IF NOT EXISTS idx_messages_task
+  ON messages(task_id);
+CREATE INDEX IF NOT EXISTS idx_messages_work_item
+  ON messages(work_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_transcript_entries_agent_turn
+  ON transcript_entries(agent_id, turn_id);
+CREATE INDEX IF NOT EXISTS idx_transcript_entries_message
+  ON transcript_entries(message_id);
+CREATE INDEX IF NOT EXISTS idx_transcript_entries_task
+  ON transcript_entries(task_id);
+CREATE INDEX IF NOT EXISTS idx_transcript_entries_work_item
+  ON transcript_entries(work_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_tool_executions_agent_turn
+  ON tool_executions(agent_id, turn_id);
+CREATE INDEX IF NOT EXISTS idx_tool_executions_message
+  ON tool_executions(message_id);
+CREATE INDEX IF NOT EXISTS idx_tool_executions_task
+  ON tool_executions(task_id);
+CREATE INDEX IF NOT EXISTS idx_tool_executions_work_item
+  ON tool_executions(work_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_model_requests_agent_turn
+  ON model_requests(agent_id, turn_id);
+CREATE INDEX IF NOT EXISTS idx_model_requests_message
+  ON model_requests(message_id);
+CREATE INDEX IF NOT EXISTS idx_model_requests_task
+  ON model_requests(task_id);
+CREATE INDEX IF NOT EXISTS idx_model_requests_work_item
+  ON model_requests(work_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_model_responses_agent_turn
+  ON model_responses(agent_id, turn_id);
+CREATE INDEX IF NOT EXISTS idx_model_responses_message
+  ON model_responses(message_id);
+CREATE INDEX IF NOT EXISTS idx_model_responses_task
+  ON model_responses(task_id);
+CREATE INDEX IF NOT EXISTS idx_model_responses_work_item
+  ON model_responses(work_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_briefs_agent_turn
+  ON briefs(agent_id, turn_id);
+CREATE INDEX IF NOT EXISTS idx_briefs_message
+  ON briefs(message_id);
+CREATE INDEX IF NOT EXISTS idx_briefs_task
+  ON briefs(task_id);
+CREATE INDEX IF NOT EXISTS idx_briefs_work_item
+  ON briefs(work_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_summaries_agent_turn
+  ON delivery_summaries(agent_id, turn_id);
+CREATE INDEX IF NOT EXISTS idx_delivery_summaries_message
+  ON delivery_summaries(message_id);
+CREATE INDEX IF NOT EXISTS idx_delivery_summaries_task
+  ON delivery_summaries(task_id);
+CREATE INDEX IF NOT EXISTS idx_delivery_summaries_work_item
+  ON delivery_summaries(work_item_id);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_metadata_agent_turn
+  ON artifact_metadata(agent_id, turn_id);
+CREATE INDEX IF NOT EXISTS idx_artifact_metadata_message
+  ON artifact_metadata(message_id);
+CREATE INDEX IF NOT EXISTS idx_artifact_metadata_task
+  ON artifact_metadata(task_id);
+CREATE INDEX IF NOT EXISTS idx_artifact_metadata_work_item
+  ON artifact_metadata(work_item_id);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -1003,6 +1737,14 @@ impl RuntimeDb {
 
     pub fn external_triggers(&self) -> ExternalTriggerRepository<'_> {
         ExternalTriggerRepository { db: self }
+    }
+
+    pub fn evidence(&self) -> EvidenceRepository<'_> {
+        EvidenceRepository { db: self }
+    }
+
+    pub fn audit_events(&self) -> AuditEventSink<'_> {
+        AuditEventSink { db: self }
     }
 
     pub fn migrate(&self) -> Result<()> {
@@ -1294,7 +2036,7 @@ mod tests {
         let connection = db.connection()?;
 
         let version = db.current_schema_version()?;
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         for table in [
             "schema_migrations",
             "storage_domains",
@@ -1303,6 +2045,14 @@ mod tests {
             "work_items",
             "tasks",
             "external_triggers",
+            "messages",
+            "transcript_entries",
+            "tool_executions",
+            "model_requests",
+            "model_responses",
+            "briefs",
+            "delivery_summaries",
+            "artifact_metadata",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -1326,8 +2076,8 @@ mod tests {
             connection.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
                 row.get(0)
             })?;
-        assert_eq!(count, 4);
-        assert_eq!(current_schema_version(&connection)?, 4);
+        assert_eq!(count, 5);
+        assert_eq!(current_schema_version(&connection)?, 5);
         Ok(())
     }
 
@@ -1445,7 +2195,7 @@ mod tests {
         let temp_db = test_support::TempRuntimeDb::new()?;
         assert!(temp_db.db.path().ends_with("state/runtime.sqlite"));
         assert!(temp_db.db.lock_path().ends_with("state/runtime.lock"));
-        assert_eq!(temp_db.db.current_schema_version()?, 4);
+        assert_eq!(temp_db.db.current_schema_version()?, 5);
         Ok(())
     }
 

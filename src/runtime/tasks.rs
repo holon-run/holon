@@ -2530,9 +2530,7 @@ impl RuntimeHandle {
             Some(evidence.clone()),
         );
         delivery_summary.turn_id = current_turn_id.clone();
-        self.inner
-            .storage
-            .append_delivery_summary(&delivery_summary)?;
+        self.persist_delivery_summary_evidence(&delivery_summary)?;
         let mut brief =
             BriefRecord::new(agent_id.clone(), BriefKind::Result, report_text, None, None);
         brief.work_item_id = Some(record.id.clone());

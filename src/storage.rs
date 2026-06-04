@@ -12,17 +12,20 @@ use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
-use crate::types::{
-    AgentIdentityRecord, AgentPostureProjection, AgentSchedulingPosture, AgentState, AgentStatus,
-    AuditEvent, BriefRecord, ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord,
-    ExternalWaitRecoverability, MessageEnvelope, OperatorDeliveryRecord,
-    OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, QueueEntryStatus,
-    TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
-    TranscriptEntry, TurnRecord, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
-    WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WakeSource,
-    WorkItemDelegationRecord, WorkItemDelegationState, WorkItemReadiness, WorkItemRecord,
-    WorkItemSchedulingState, WorkItemState, WorkingMemoryDelta, WorkspaceEntry,
-    WorkspaceOccupancyRecord,
+use crate::{
+    runtime_db::RuntimeDb,
+    types::{
+        AgentIdentityRecord, AgentPostureProjection, AgentSchedulingPosture, AgentState,
+        AgentStatus, AuditEvent, BriefRecord, ContextEpisodeRecord, DeliverySummaryRecord,
+        ExternalTriggerRecord, ExternalWaitRecoverability, MessageEnvelope, OperatorDeliveryRecord,
+        OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, QueueEntryStatus,
+        TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
+        TranscriptEntry, TurnRecord, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
+        WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WakeSource,
+        WorkItemDelegationRecord, WorkItemDelegationState, WorkItemReadiness, WorkItemRecord,
+        WorkItemSchedulingState, WorkItemState, WorkingMemoryDelta, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
+    },
 };
 
 const RUNTIME_DIR: &str = ".holon";
@@ -190,6 +193,13 @@ pub struct AppStorage {
     event_seq_counter: Arc<Mutex<u64>>,
     message_seq_counter: Arc<Mutex<u64>>,
     transcript_seq_counter: Arc<Mutex<u64>>,
+    audit_event_index: Arc<Mutex<Option<AuditEventIndexSink>>>,
+}
+
+#[derive(Debug, Clone)]
+struct AuditEventIndexSink {
+    runtime_db: RuntimeDb,
+    agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,8 +272,25 @@ impl AppStorage {
             event_seq_counter: Arc::new(Mutex::new(event_seq_counter)),
             message_seq_counter: Arc::new(Mutex::new(message_seq_counter)),
             transcript_seq_counter: Arc::new(Mutex::new(transcript_seq_counter)),
+            audit_event_index: Arc::new(Mutex::new(None)),
             data_dir,
         })
+    }
+
+    pub(crate) fn enable_audit_event_index(
+        &self,
+        runtime_db: RuntimeDb,
+        agent_id: Option<String>,
+    ) -> Result<()> {
+        let mut guard = self
+            .audit_event_index
+            .lock()
+            .map_err(|_| anyhow::anyhow!("audit event index mutex poisoned"))?;
+        *guard = Some(AuditEventIndexSink {
+            runtime_db,
+            agent_id,
+        });
+        Ok(())
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -321,6 +348,16 @@ impl AppStorage {
         bytes.extend_from_slice(line.as_bytes());
         bytes.push(b'\n');
         append_jsonl_bytes(&self.events_path, &bytes)?;
+        if let Some(sink) = self
+            .audit_event_index
+            .lock()
+            .map_err(|_| anyhow::anyhow!("audit event index mutex poisoned"))?
+            .clone()
+        {
+            sink.runtime_db
+                .audit_events()
+                .append(sink.agent_id.as_deref(), &event)?;
+        }
         Ok(())
     }
 
@@ -645,6 +682,10 @@ impl AppStorage {
     }
 
     pub fn read_all_messages(&self) -> Result<Vec<MessageEnvelope>> {
+        read_recent_jsonl(&self.messages_path, usize::MAX)
+    }
+
+    pub fn read_all_message_values(&self) -> Result<Vec<Value>> {
         read_recent_jsonl(&self.messages_path, usize::MAX)
     }
 
@@ -2157,6 +2198,42 @@ mod tests {
             .unwrap();
         let events = reopened.read_recent_events(10).unwrap();
         assert_eq!(events.last().map(|event| event.event_seq), Some(3));
+    }
+
+    #[test]
+    fn storage_indexes_live_audit_events_when_sink_is_enabled() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        runtime_db
+            .audit_events()
+            .import_legacy(
+                Some("agent-test"),
+                storage.read_recent_events(usize::MAX).unwrap(),
+            )
+            .unwrap();
+        storage
+            .enable_audit_event_index(runtime_db.clone(), Some("agent-test".to_string()))
+            .unwrap();
+
+        storage
+            .append_event(&AuditEvent::new(
+                "live_event",
+                serde_json::json!({ "source": "storage" }),
+            ))
+            .unwrap();
+
+        let indexed = runtime_db
+            .audit_events()
+            .page_after(Some("agent-test"), 0, 10)
+            .unwrap();
+        assert_eq!(indexed.len(), 1);
+        assert_eq!(indexed[0].kind, "live_event");
+        assert_eq!(indexed[0].event_seq, 1);
     }
 
     #[test]

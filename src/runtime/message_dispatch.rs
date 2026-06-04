@@ -211,30 +211,28 @@ impl RuntimeHandle {
     }
 
     pub(super) fn record_incoming_transcript_entry(&self, message: &MessageEnvelope) -> Result<()> {
-        self.inner
-            .storage
-            .append_transcript_entry(&TranscriptEntry::new(
-                message.agent_id.clone(),
-                TranscriptEntryKind::IncomingMessage,
-                None,
-                Some(message.id.clone()),
-                serde_json::json!({
-                    "kind": message.kind,
-                    "origin": message.origin,
-                    "authority_class": message.authority_class,
-                    "delivery_surface": message.delivery_surface,
-                    "admission_context": message.admission_context,
-                    "trigger_kind": message.trigger_kind,
-                    "work_item_id": message.work_item_id.clone(),
-                    "task_id": message.task_id.clone(),
-                    "source_refs": message.source_refs.clone(),
-                    "priority": message.priority,
-                    "body": message.body,
-                    "metadata": message.metadata,
-                    "correlation_id": message.correlation_id,
-                    "causation_id": message.causation_id,
-                }),
-            ))
+        self.persist_transcript_evidence(&TranscriptEntry::new(
+            message.agent_id.clone(),
+            TranscriptEntryKind::IncomingMessage,
+            None,
+            Some(message.id.clone()),
+            serde_json::json!({
+                "kind": message.kind,
+                "origin": message.origin,
+                "authority_class": message.authority_class,
+                "delivery_surface": message.delivery_surface,
+                "admission_context": message.admission_context,
+                "trigger_kind": message.trigger_kind,
+                "work_item_id": message.work_item_id.clone(),
+                "task_id": message.task_id.clone(),
+                "source_refs": message.source_refs.clone(),
+                "priority": message.priority,
+                "body": message.body,
+                "metadata": message.metadata,
+                "correlation_id": message.correlation_id,
+                "causation_id": message.causation_id,
+            }),
+        ))
     }
 }
 
