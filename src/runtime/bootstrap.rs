@@ -321,6 +321,16 @@ impl RuntimeHandle {
         runtime_db
             .external_triggers()
             .import_legacy(storage.read_recent_external_triggers(usize::MAX)?)?;
+        runtime_db.evidence().import_legacy(
+            storage.read_all_message_values()?,
+            storage.read_all_transcript()?,
+            storage.read_recent_tool_executions(usize::MAX)?,
+            storage.read_recent_briefs(usize::MAX)?,
+            storage.read_recent_delivery_summaries(usize::MAX)?,
+        )?;
+        runtime_db
+            .audit_events()
+            .import_legacy(Some(&state.id), storage.read_recent_events(usize::MAX)?)?;
 
         let resolved_context_config = if provider_reconfig.is_some() {
             model_catalog

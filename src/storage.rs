@@ -648,6 +648,10 @@ impl AppStorage {
         read_recent_jsonl(&self.messages_path, usize::MAX)
     }
 
+    pub fn read_all_message_values(&self) -> Result<Vec<Value>> {
+        read_recent_jsonl(&self.messages_path, usize::MAX)
+    }
+
     pub fn read_recent_tasks(&self, limit: usize) -> Result<Vec<TaskRecord>> {
         read_recent_jsonl(&self.tasks_path, limit)
     }
