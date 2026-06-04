@@ -318,6 +318,9 @@ impl RuntimeHandle {
         runtime_db
             .tasks()
             .import_legacy(storage.read_recent_tasks(usize::MAX)?)?;
+        runtime_db
+            .external_triggers()
+            .import_legacy(storage.read_recent_external_triggers(usize::MAX)?)?;
 
         let resolved_context_config = if provider_reconfig.is_some() {
             model_catalog

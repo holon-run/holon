@@ -37,10 +37,9 @@ use crate::{
         AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
         AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus,
         AgentSummary, AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome,
-        ExternalTriggerRecord, ExternalTriggerStatus, OperatorNotificationRecord,
-        RuntimeFailureSummary, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
-        TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        ExternalTriggerRecord, OperatorNotificationRecord, RuntimeFailureSummary,
+        SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskRecord, TaskStatus,
+        TranscriptEntry, TranscriptEntryKind, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -177,6 +176,7 @@ impl RuntimeHost {
         };
         host.ensure_default_agent_identity()?;
         host.converge_private_child_identities()?;
+        host.import_legacy_external_triggers()?;
         Ok(host)
     }
 
@@ -543,6 +543,22 @@ impl RuntimeHost {
         self.inner.registry.agent_identity_records()
     }
 
+    fn import_legacy_external_triggers(&self) -> Result<()> {
+        let mut records = Vec::new();
+        for identity in self
+            .agent_identity_records()?
+            .into_iter()
+            .filter(|record| record.status == AgentRegistryStatus::Active)
+        {
+            let storage = AppStorage::new(self.agent_data_dir(&identity.agent_id))?;
+            records.extend(storage.read_recent_external_triggers(usize::MAX)?);
+        }
+        self.inner
+            .runtime_db
+            .external_triggers()
+            .import_legacy(records)
+    }
+
     fn append_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
         self.inner.registry.append_agent_identity(record)
     }
@@ -761,19 +777,13 @@ impl RuntimeHost {
         callback_token: &str,
     ) -> Result<Option<(String, ExternalTriggerRecord)>> {
         let token_hash = hash_callback_token(callback_token);
-        for agent_id in self.known_agent_ids().await? {
-            let storage = AppStorage::new(self.agent_data_dir(&agent_id))?;
-            if let Some(descriptor) =
-                storage
-                    .latest_external_triggers()?
-                    .into_iter()
-                    .find(|record| {
-                        record.token_hash == token_hash
-                            && record.status == ExternalTriggerStatus::Active
-                    })
-            {
-                return Ok(Some((agent_id, descriptor)));
-            }
+        if let Some(descriptor) = self
+            .inner
+            .runtime_db
+            .external_triggers()
+            .active_by_token_hash(&token_hash)?
+        {
+            return Ok(Some((descriptor.target_agent_id.clone(), descriptor)));
         }
         Ok(None)
     }
@@ -1214,22 +1224,6 @@ impl RuntimeHost {
 
     fn validate_agent_id(&self, agent_id: &str) -> Result<()> {
         self.inner.registry.validate_agent_id(agent_id)
-    }
-
-    async fn known_agent_ids(&self) -> Result<Vec<String>> {
-        let mut ids = {
-            let agents = self.inner.agents.read().await;
-            agents.keys().cloned().collect::<Vec<_>>()
-        };
-        ids.extend(
-            self.agent_identity_records()?
-                .into_iter()
-                .filter(|record| record.status == AgentRegistryStatus::Active)
-                .map(|record| record.agent_id),
-        );
-        ids.sort();
-        ids.dedup();
-        Ok(ids)
     }
 
     fn runtime_context_config(&self) -> ContextConfig {

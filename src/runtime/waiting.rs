@@ -628,11 +628,9 @@ impl RuntimeHandle {
         let agent_id = self.agent_id().await?;
         let mut records = self
             .inner
-            .storage
-            .latest_external_triggers()?
-            .into_iter()
-            .filter(|record| record.target_agent_id == agent_id)
-            .collect::<Vec<_>>();
+            .runtime_db
+            .external_triggers()
+            .latest_for_agent(&agent_id)?;
         records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
         Ok(records)
     }

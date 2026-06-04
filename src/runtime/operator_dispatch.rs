@@ -21,8 +21,14 @@ impl RuntimeHandle {
         self.persist_brief(&ack).await?;
         let context_build_started = std::time::Instant::now();
         let identity = self.agent_identity_view().await?;
-        self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+        let default_external_ingress = self
+            .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
             .await?;
+        let default_external_ingress = self
+            .inner
+            .runtime_db
+            .external_triggers()
+            .latest(&default_external_ingress.external_trigger_id)?;
         let context_config = self.current_context_config().await;
 
         let built = {
@@ -44,7 +50,7 @@ impl RuntimeHandle {
             );
             let loaded_agents_md = self.loaded_agents_md_for_state(&state)?;
             let skills = self.skills_runtime_view_for_state(&state, &identity)?;
-            build_effective_prompt(
+            build_effective_prompt_with_default_external_ingress(
                 &self.inner.storage,
                 &state,
                 &execution,
@@ -57,6 +63,7 @@ impl RuntimeHandle {
                 &skills,
                 &prompt_tools,
                 continuation_resolution,
+                default_external_ingress.as_ref(),
             )?
         };
         let context_build_ms = context_build_started.elapsed().as_millis() as u64;
@@ -198,14 +205,20 @@ impl RuntimeHandle {
         let continuation = ContinuationTrigger::from_message(&message, None)
             .map(|trigger| resolve_continuation(&prior_closure, &trigger, None));
         let identity = self.agent_identity_view().await?;
-        self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+        let default_external_ingress = self
+            .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
             .await?;
+        let default_external_ingress = self
+            .inner
+            .runtime_db
+            .external_triggers()
+            .latest(&default_external_ingress.external_trigger_id)?;
         let (provider, available_tools, _, _) = self.provider_tool_selection(&identity).await?;
         let prompt_tools = provider.prompt_tool_specs(&available_tools);
         let execution = self.execution_snapshot().await?;
         let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
         let skills = self.skills_runtime_view_for_state(&agent, &identity)?;
-        build_effective_prompt(
+        build_effective_prompt_with_default_external_ingress(
             &self.inner.storage,
             &agent,
             &execution,
@@ -218,6 +231,7 @@ impl RuntimeHandle {
             &skills,
             &prompt_tools,
             continuation.as_ref(),
+            default_external_ingress.as_ref(),
         )
     }
 

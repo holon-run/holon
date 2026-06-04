@@ -16,14 +16,14 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    context::{build_context, BuiltContext, ContextConfig},
+    context::{build_context_with_default_external_ingress, BuiltContext, ContextConfig},
     storage::AppStorage,
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::ToolSpec,
     types::{
         AgentIdentityView, AgentKind, AgentState, AgentsMdKind, AgentsMdSource,
-        ContinuationResolution, LoadedAgentsMd, MessageBody, MessageEnvelope, MessageOrigin,
-        SkillsRuntimeView,
+        ContinuationResolution, ExternalTriggerRecord, LoadedAgentsMd, MessageBody,
+        MessageEnvelope, MessageOrigin, SkillsRuntimeView,
     },
 };
 
@@ -274,7 +274,39 @@ pub fn build_effective_prompt(
     available_tools: &[ToolSpec],
     continuation: Option<&ContinuationResolution>,
 ) -> Result<EffectivePrompt> {
-    let built_context = build_context(
+    build_effective_prompt_with_default_external_ingress(
+        storage,
+        session,
+        execution,
+        current_message,
+        config,
+        workspace_root,
+        agent_home,
+        identity,
+        loaded_agents_md,
+        skills,
+        available_tools,
+        continuation,
+        None,
+    )
+}
+
+pub fn build_effective_prompt_with_default_external_ingress(
+    storage: &AppStorage,
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    current_message: &MessageEnvelope,
+    config: &ContextConfig,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    loaded_agents_md: LoadedAgentsMd,
+    skills: &SkillsRuntimeView,
+    available_tools: &[ToolSpec],
+    continuation: Option<&ContinuationResolution>,
+    default_external_ingress: Option<&ExternalTriggerRecord>,
+) -> Result<EffectivePrompt> {
+    let built_context = build_context_with_default_external_ingress(
         storage,
         session,
         execution,
@@ -282,6 +314,7 @@ pub fn build_effective_prompt(
         current_message,
         continuation,
         config,
+        default_external_ingress,
     )?;
     let system_sections = build_system_sections(
         identity,
