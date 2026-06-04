@@ -350,7 +350,14 @@ Examples:
 - `ambiguous_context`: hunk context matches multiple locations; include more
   surrounding context
 - `duplicate_file_patch`: the same normalized file path appears in more than
-  one file patch; merge hunks into a single file patch
+  one add, delete, rename, or otherwise unsupported duplicate file patch
+- `conflicting_duplicate_file_patch`: duplicate modify patches for the same
+  normalized file path touch overlapping original hunk locations
+
+Plain modify patches for the same normalized file path may be merged
+automatically when their hunks touch distinct original locations. Duplicate
+add/delete/rename patches and overlapping duplicate modify hunks still fail
+before any workspace writes.
 
 Hunk count mismatches should not fail the patch when context matching succeeds.
 They should be recorded as advisory diagnostics in the canonical result.
