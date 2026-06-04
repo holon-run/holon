@@ -298,27 +298,25 @@ impl RuntimeHandle {
         if let Some(terminal) = terminal {
             self.persist_turn_record(&terminal).await?;
         }
-        self.inner
-            .storage
-            .append_transcript_entry(&TranscriptEntry::new(
-                message.agent_id.clone(),
-                TranscriptEntryKind::RuntimeFailure,
-                None,
-                Some(message.id.clone()),
-                serde_json::json!({
-                    "kind": message.kind,
-                    "origin": message.origin,
-                    "authority_class": message.authority_class,
-                    "delivery_surface": message.delivery_surface,
-                    "admission_context": message.admission_context,
-                    "error": error.to_string(),
-                    "error_chain": error_chain,
-                    "text": failure_text,
-                    "failure_artifact": failure_artifact.clone(),
-                    "token_usage": token_usage,
-                    "provider_attempt_timeline": attempt_timeline,
-                }),
-            ))?;
+        self.persist_transcript_evidence(&TranscriptEntry::new(
+            message.agent_id.clone(),
+            TranscriptEntryKind::RuntimeFailure,
+            None,
+            Some(message.id.clone()),
+            serde_json::json!({
+                "kind": message.kind,
+                "origin": message.origin,
+                "authority_class": message.authority_class,
+                "delivery_surface": message.delivery_surface,
+                "admission_context": message.admission_context,
+                "error": error.to_string(),
+                "error_chain": error_chain,
+                "text": failure_text,
+                "failure_artifact": failure_artifact.clone(),
+                "token_usage": token_usage,
+                "provider_attempt_timeline": attempt_timeline,
+            }),
+        ))?;
         {
             let mut guard = self.inner.agent.lock().await;
             guard.state.last_runtime_failure = Some(RuntimeFailureSummary {

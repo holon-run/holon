@@ -274,15 +274,13 @@ impl RuntimeHandle {
         let effective_prompt = self
             .build_subagent_prompt_for_workspace(agent_id, prompt, authority_class, execution)
             .await?;
-        self.inner
-            .storage
-            .append_transcript_entry(&TranscriptEntry::new(
-                agent_id.to_string(),
-                TranscriptEntryKind::SubagentPrompt,
-                None,
-                None,
-                prompt_metadata,
-            ))?;
+        self.persist_transcript_evidence(&TranscriptEntry::new(
+            agent_id.to_string(),
+            TranscriptEntryKind::SubagentPrompt,
+            None,
+            None,
+            prompt_metadata,
+        ))?;
         let response = self
             .current_provider()
             .await
@@ -307,23 +305,21 @@ impl RuntimeHandle {
             self.inner.storage.write_agent(&guard.state)?;
         }
 
-        self.inner
-            .storage
-            .append_transcript_entry(&TranscriptEntry {
-                stop_reason: response.stop_reason.clone(),
-                input_tokens: Some(response.input_tokens),
-                output_tokens: Some(response.output_tokens),
-                ..TranscriptEntry::new(
-                    agent_id.to_string(),
-                    TranscriptEntryKind::SubagentAssistantRound,
-                    Some(1),
-                    None,
-                    serde_json::json!({
-                        "blocks": response.blocks,
-                        "metadata": assistant_metadata,
-                    }),
-                )
-            })?;
+        self.persist_transcript_evidence(&TranscriptEntry {
+            stop_reason: response.stop_reason.clone(),
+            input_tokens: Some(response.input_tokens),
+            output_tokens: Some(response.output_tokens),
+            ..TranscriptEntry::new(
+                agent_id.to_string(),
+                TranscriptEntryKind::SubagentAssistantRound,
+                Some(1),
+                None,
+                serde_json::json!({
+                    "blocks": response.blocks,
+                    "metadata": assistant_metadata,
+                }),
+            )
+        })?;
 
         let text = sanitize_subagent_result(
             &response

@@ -400,7 +400,8 @@ impl EvidenceRepository<'_> {
         self.db.transaction(|tx| {
             let domain = read_storage_domain(tx, "evidence")?;
             if domain.as_ref().is_some_and(|domain| {
-                domain.import_status == "complete" && domain.canonical_source == "db"
+                domain.import_status == "complete"
+                    && matches!(domain.canonical_source.as_str(), "db" | "jsonl+db-index")
             }) {
                 return Ok(());
             }
@@ -433,7 +434,7 @@ impl EvidenceRepository<'_> {
                 tx,
                 "evidence",
                 "complete",
-                "db",
+                "jsonl+db-index",
                 Some(serde_json::json!({
                     "imported_messages": imported_messages,
                     "dropped_messages": dropped_messages,
@@ -531,7 +532,8 @@ impl AuditEventSink<'_> {
         self.db.transaction(|tx| {
             let domain = read_storage_domain(tx, "audit_events")?;
             if domain.as_ref().is_some_and(|domain| {
-                domain.import_status == "complete" && domain.canonical_source == "db"
+                domain.import_status == "complete"
+                    && matches!(domain.canonical_source.as_str(), "db" | "jsonl+db-index")
             }) {
                 return Ok(());
             }
@@ -543,7 +545,7 @@ impl AuditEventSink<'_> {
                 tx,
                 "audit_events",
                 "complete",
-                "db",
+                "jsonl+db-index",
                 Some(serde_json::json!({ "imported_records": events.len() })),
             )?;
             Ok(())
@@ -570,7 +572,9 @@ impl AuditEventSink<'_> {
         sql.push_str(&limit.to_string());
         let mut statement = connection.prepare(&sql)?;
         if let Some(agent_id) = agent_id {
-            let rows = statement.query_map(params![after_event_seq as i64, agent_id], |row| {
+            let after_event_seq = i64::try_from(after_event_seq)
+                .context("audit event cursor exceeds SQLite integer range")?;
+            let rows = statement.query_map(params![after_event_seq, agent_id], |row| {
                 row.get::<_, String>(0)
             })?;
             rows.map(|row| {
@@ -579,9 +583,10 @@ impl AuditEventSink<'_> {
             })
             .collect()
         } else {
-            let rows = statement.query_map(params![after_event_seq as i64], |row| {
-                row.get::<_, String>(0)
-            })?;
+            let after_event_seq = i64::try_from(after_event_seq)
+                .context("audit event cursor exceeds SQLite integer range")?;
+            let rows =
+                statement.query_map(params![after_event_seq], |row| row.get::<_, String>(0))?;
             rows.map(|row| {
                 let payload = row?;
                 serde_json::from_str(&payload).map_err(Into::into)
@@ -668,18 +673,7 @@ fn insert_evidence_tx(tx: &Transaction<'_>, evidence: EvidenceInsert<'_>) -> Res
             evidence_id, agent_id, turn_id, message_id, task_id, work_item_id,
             created_at, kind, content_ref, content_hash, preview, payload_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-         ON CONFLICT(evidence_id) DO UPDATE SET
-            agent_id = excluded.agent_id,
-            turn_id = excluded.turn_id,
-            message_id = excluded.message_id,
-            task_id = excluded.task_id,
-            work_item_id = excluded.work_item_id,
-            created_at = excluded.created_at,
-            kind = excluded.kind,
-            content_ref = excluded.content_ref,
-            content_hash = excluded.content_hash,
-            preview = excluded.preview,
-            payload_json = excluded.payload_json",
+         ON CONFLICT(evidence_id) DO NOTHING",
         evidence.table
     );
     tx.execute(
@@ -817,19 +811,16 @@ fn insert_audit_event_tx(
     agent_id: Option<&str>,
     event: &AuditEvent,
 ) -> Result<()> {
+    let event_seq = i64::try_from(event.event_seq)
+        .context("audit event sequence exceeds SQLite integer range")?;
     tx.execute(
         "INSERT INTO audit_events (
             audit_event_id, event_seq, agent_id, kind, created_at, data_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(audit_event_id) DO UPDATE SET
-            event_seq = excluded.event_seq,
-            agent_id = excluded.agent_id,
-            kind = excluded.kind,
-            created_at = excluded.created_at,
-            data_json = excluded.data_json",
+         ON CONFLICT(audit_event_id) DO NOTHING",
         params![
             event.id,
-            event.event_seq as i64,
+            event_seq,
             agent_id,
             event.kind,
             timestamp(event.created_at),
@@ -890,7 +881,7 @@ fn evidence_preview(value: &impl Serialize) -> Option<String> {
 fn bound_json_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::String(text) if text.len() > EVIDENCE_PREVIEW_LIMIT => {
-            text.truncate(EVIDENCE_PREVIEW_LIMIT);
+            truncate_string_in_place(text, EVIDENCE_PREVIEW_LIMIT);
         }
         serde_json::Value::Array(items) => {
             if items.len() > TASK_PAYLOAD_ARRAY_LIMIT {
@@ -912,9 +903,22 @@ fn bound_json_value(value: &mut serde_json::Value) {
 fn truncate_evidence_string(value: &str) -> String {
     let mut truncated = value.to_string();
     if truncated.len() > EVIDENCE_PREVIEW_LIMIT {
-        truncated.truncate(EVIDENCE_PREVIEW_LIMIT);
+        truncate_string_in_place(&mut truncated, EVIDENCE_PREVIEW_LIMIT);
     }
     truncated
+}
+
+fn truncate_string_in_place(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+    let boundary = value
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= max_bytes)
+        .last()
+        .unwrap_or(0);
+    value.truncate(boundary);
 }
 
 fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerRecord) -> Result<()> {
