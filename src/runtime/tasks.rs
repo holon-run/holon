@@ -2107,6 +2107,7 @@ impl RuntimeHandle {
             .active_workspace_entry
             .map(|entry| entry.workspace_id)
             .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
+        self.inner.runtime_db.work_items().upsert(&record, false)?;
         self.inner.storage.append_work_item(&record)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_written",
@@ -2135,7 +2136,7 @@ impl RuntimeHandle {
         let agent_id = self.agent_id().await?;
         let current_id = self.agent_state().await?.current_work_item_id;
         let previous = match current_id.as_deref() {
-            Some(id) => self.inner.storage.latest_work_item(id)?,
+            Some(id) => self.inner.runtime_db.work_items().latest(id)?,
             None => None,
         };
         let record = self.validate_owned_work_item(&agent_id, &work_item_id)?;
@@ -2179,6 +2180,10 @@ impl RuntimeHandle {
             guard.state.current_turn_work_item_id = Some(record.id.clone());
             self.inner.storage.write_agent(&guard.state)?;
         }
+        self.inner
+            .runtime_db
+            .work_items()
+            .set_current_focus(&agent_id, Some(&record.id))?;
         let transition = WorkItemFocusTransition {
             previous_work_item_id: current_id.clone(),
             current_work_item_id: record.id.clone(),
@@ -2299,6 +2304,12 @@ impl RuntimeHandle {
                 &mut record,
             )?;
             record.revision = existing.revision + 1;
+            let current_focus = self.agent_state().await?.current_work_item_id.as_deref()
+                == Some(record.id.as_str());
+            self.inner
+                .runtime_db
+                .work_items()
+                .upsert(&record, current_focus)?;
             self.inner.storage.append_work_item(&record)?;
             if plan_artifact_changed && record.plan_artifact != existing.plan_artifact {
                 self.inner.storage.append_event(&AuditEvent::new(
@@ -2362,6 +2373,12 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &mut record,
         )?;
+        let current_focus =
+            self.agent_state().await?.current_work_item_id.as_deref() == Some(record.id.as_str());
+        self.inner
+            .runtime_db
+            .work_items()
+            .upsert(&record, current_focus)?;
         self.inner.storage.append_work_item(&record)?;
         if plan_artifact_changed {
             self.inner.storage.append_event(&AuditEvent::new(
@@ -2409,6 +2426,7 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &mut record,
         )?;
+        self.inner.runtime_db.work_items().upsert(&record, false)?;
         self.inner.storage.append_work_item(&record)?;
         if plan_artifact_changed {
             self.inner.storage.append_event(&AuditEvent::new(
@@ -2496,6 +2514,7 @@ impl RuntimeHandle {
             updated_at: Utc::now(),
             ..existing
         };
+        self.inner.runtime_db.work_items().upsert(&record, false)?;
         self.inner.storage.append_work_item(&record)?;
         let evidence = serde_json::json!({
             "source": "same_round_complete_work_item",
@@ -2579,8 +2598,9 @@ impl RuntimeHandle {
     ) -> Result<WorkItemRecord> {
         let record = self
             .inner
-            .storage
-            .latest_work_item(work_item_id)?
+            .runtime_db
+            .work_items()
+            .latest(work_item_id)?
             .ok_or_else(|| anyhow!("unknown work item {}", work_item_id))?;
         if record.agent_id != agent_id {
             return Err(anyhow!(
@@ -2615,6 +2635,12 @@ impl RuntimeHandle {
             self.inner.storage.write_agent(&guard.state)?;
             release_current || release_turn
         };
+        if released {
+            self.inner
+                .runtime_db
+                .work_items()
+                .set_current_focus(agent_id, None)?;
+        }
         if released {
             self.inner.storage.append_event(&AuditEvent::new(
                 "work_item_focus_released",

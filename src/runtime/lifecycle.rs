@@ -110,6 +110,12 @@ impl RuntimeHandle {
                 turn_id: current_turn_id,
                 ..refreshed
             };
+            let current_focus = self.agent_state().await?.current_work_item_id.as_deref()
+                == Some(record.id.as_str());
+            self.inner
+                .runtime_db
+                .work_items()
+                .upsert(&record, current_focus)?;
             self.inner.storage.append_work_item(&record)?;
             if plan_artifact_changed {
                 self.inner.storage.append_event(&AuditEvent::new(
@@ -526,7 +532,7 @@ impl RuntimeHandle {
     }
 
     pub async fn latest_work_items(&self) -> Result<Vec<crate::types::WorkItemRecord>> {
-        self.inner.storage.latest_work_items()
+        self.inner.runtime_db.work_items().latest_all()
     }
 
     pub async fn latest_work_items_for_agent(
@@ -535,15 +541,16 @@ impl RuntimeHandle {
         limit: usize,
     ) -> Result<Vec<crate::types::WorkItemRecord>> {
         self.inner
-            .storage
-            .latest_work_items_for_agent(agent_id, limit)
+            .runtime_db
+            .work_items()
+            .latest_for_agent(agent_id, limit)
     }
 
     pub async fn latest_work_item(
         &self,
         work_item_id: &str,
     ) -> Result<Option<crate::types::WorkItemRecord>> {
-        self.inner.storage.latest_work_item(work_item_id)
+        self.inner.runtime_db.work_items().latest(work_item_id)
     }
 
     pub async fn search_memory(

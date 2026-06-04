@@ -1506,17 +1506,6 @@ async fn update_work_item_can_refine_objective() {
 async fn update_work_item_materializes_and_clears_legacy_inline_plan() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(StubProvider::new("done")),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-
     let mut legacy = WorkItemRecord::new("default", "Migrate inline plan", WorkItemState::Open);
     legacy.id = "legacy-plan-item".into();
     legacy.legacy_inline_plan = Some("Keep this legacy plan body in the artifact.".into());
@@ -1527,12 +1516,24 @@ async fn update_work_item_materializes_and_clears_legacy_inline_plan() {
         .join(".holon")
         .join("ledger")
         .join("work_items.jsonl");
+    std::fs::create_dir_all(work_items_path.parent().unwrap()).unwrap();
     let mut work_items_file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&work_items_path)
         .unwrap();
     writeln!(work_items_file, "{}", legacy_json).unwrap();
+
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
 
     let updated = runtime
         .update_work_item_fields(
@@ -1570,13 +1571,21 @@ async fn update_work_item_materializes_and_clears_legacy_inline_plan() {
         WorkItemRecord::new("default", "Keep existing artifact", WorkItemState::Open);
     legacy_with_artifact.id = "legacy-plan-item-with-artifact".into();
     legacy_with_artifact.legacy_inline_plan = Some("Stale inline plan body.".into());
-    let mut legacy_with_artifact_json = serde_json::to_value(&legacy_with_artifact).unwrap();
-    legacy_with_artifact_json["plan"] = serde_json::json!("Stale inline plan body.");
-    writeln!(work_items_file, "{}", legacy_with_artifact_json).unwrap();
     let existing_plan_path =
         crate::work_item_plan::plan_path(runtime.agent_home().as_path(), &legacy_with_artifact.id);
     std::fs::create_dir_all(existing_plan_path.parent().unwrap()).unwrap();
     std::fs::write(&existing_plan_path, "Existing artifact body.").unwrap();
+    crate::work_item_plan::refresh_plan_artifact_metadata(
+        runtime.agent_home().as_path(),
+        &mut legacy_with_artifact,
+    )
+    .unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .work_items()
+        .upsert(&legacy_with_artifact, false)
+        .unwrap();
 
     let updated_with_artifact = runtime
         .update_work_item_fields(

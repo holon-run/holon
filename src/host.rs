@@ -1260,6 +1260,7 @@ impl RuntimeHost {
                 provider.clone(),
                 self.config().default_agent_id.clone(),
                 self.runtime_context_config(),
+                self.inner.runtime_db.clone(),
                 self.bridge(),
                 RuntimeModelCatalog::from_config(self.config()),
             )?
@@ -1272,6 +1273,7 @@ impl RuntimeHost {
                 self.config().clone(),
                 self.config().default_agent_id.clone(),
                 self.runtime_context_config(),
+                self.inner.runtime_db.clone(),
                 self.bridge(),
             )?
         };
@@ -2327,6 +2329,7 @@ mod tests {
             fixture.config.clone(),
             fixture.config.default_agent_id.clone(),
             host.runtime_context_config(),
+            host.runtime_db().clone(),
             bridge,
         )
         .unwrap();

@@ -15,6 +15,7 @@ use crate::{
     model_discovery::{discovery_cache_path, load_discovery_cache_at},
     provider::{build_provider_from_model_chain, resolved_model_availability, AgentProvider},
     queue::RuntimeQueue,
+    runtime_db::RuntimeDb,
     storage::AppStorage,
     system::{LocalSystem, WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
@@ -61,6 +62,7 @@ impl RuntimeHandle {
             crate::web::WebConfig::default(),
             None,
             None,
+            None,
         )
     }
 
@@ -72,6 +74,7 @@ impl RuntimeHandle {
         provider: Arc<dyn AgentProvider>,
         default_agent_id: String,
         context_config: ContextConfig,
+        runtime_db: RuntimeDb,
         host_bridge: RuntimeHostBridge,
         model_catalog: RuntimeModelCatalog,
     ) -> Result<Self> {
@@ -91,6 +94,7 @@ impl RuntimeHandle {
             crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
             crate::web::WebConfig::default(),
             None,
+            Some(runtime_db),
             Some(host_bridge),
         )
     }
@@ -103,6 +107,7 @@ impl RuntimeHandle {
         config: AppConfig,
         default_agent_id: String,
         context_config: ContextConfig,
+        runtime_db: RuntimeDb,
         host_bridge: RuntimeHostBridge,
     ) -> Result<Self> {
         let model_catalog = RuntimeModelCatalog::from_config(&config);
@@ -131,6 +136,7 @@ impl RuntimeHandle {
             config.max_tool_output_tokens as u64,
             config.web_config.clone(),
             Some(ProviderReconfigurator { config }),
+            Some(runtime_db),
             Some(host_bridge),
         )
     }
@@ -150,10 +156,18 @@ impl RuntimeHandle {
         max_tool_output_tokens: u64,
         web_config: crate::web::WebConfig,
         provider_reconfig: Option<ProviderReconfigurator>,
+        runtime_db: Option<RuntimeDb>,
         host_bridge: Option<RuntimeHostBridge>,
     ) -> Result<Self> {
         let mut provider = provider;
         let storage = AppStorage::new(data_dir)?;
+        let runtime_db = match runtime_db {
+            Some(runtime_db) => runtime_db,
+            None => RuntimeDb::open_and_migrate(
+                storage.runtime_dir().join("state/runtime.sqlite"),
+                storage.runtime_dir().join("state/runtime.lock"),
+            )?,
+        };
         let agent_id = agent_id.into();
         let initial_workspace = initial_workspace.into();
         let initial_workspace_entry = match &initial_workspace {
@@ -294,6 +308,13 @@ impl RuntimeHandle {
             provider = build_provider_from_model_chain(&provider_config, &chain)?;
         }
         storage.write_agent(&state)?;
+        let mut legacy_work_items = storage.read_recent_work_items(usize::MAX)?;
+        for record in &mut legacy_work_items {
+            crate::work_item_plan::refresh_plan_artifact_metadata(storage.data_dir(), record)?;
+        }
+        runtime_db
+            .work_items()
+            .import_legacy(legacy_work_items, state.current_work_item_id.as_deref())?;
 
         let resolved_context_config = if provider_reconfig.is_some() {
             model_catalog
@@ -311,6 +332,7 @@ impl RuntimeHandle {
                 }),
                 notify: Notify::new(),
                 storage,
+                runtime_db,
                 provider: RwLock::new(provider),
                 provider_reconfig,
                 model_catalog,
