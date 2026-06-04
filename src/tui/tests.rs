@@ -706,6 +706,22 @@ fn statusbar_view_model_prefers_overlay_hint_over_transient_status() {
 }
 
 #[test]
+fn statusbar_view_model_prefers_transient_status_over_vim_hint() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+    app.status_line = "Loaded older events".into();
+
+    let view_model = StatusbarViewModel::from_app(&app, false);
+
+    assert!(view_model.status_line.contains("Loaded older events"));
+    assert!(!view_model.status_line.contains("VIM NORMAL"));
+}
+
+#[test]
 fn build_chat_text_includes_structured_operator_messages() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
@@ -1866,6 +1882,50 @@ async fn vim_page_scroll_clears_pending_normal_command() {
     assert_eq!(app.composer.as_str(), "first\nsecond");
     assert_eq!(app.vim_pending_command, Some('d'));
     assert_eq!(app.chat_scroll.effective_scroll(12), 2);
+}
+
+#[tokio::test]
+async fn vim_mode_preserves_empty_composer_help_shortcut() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+    app.vim_pending_command = Some('d');
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+
+    assert!(matches!(app.overlay, OverlayState::HelpView { scroll: 0 }));
+    assert_eq!(app.vim_pending_command, None);
+    assert!(app.composer.is_empty());
+}
+
+#[tokio::test]
+async fn vim_mode_preserves_empty_composer_history_shortcuts() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.input_history = vec!["first".into(), "second".into()];
+    app.composer_edit_mode = ComposerEditMode::VimNormal;
+    app.vim_pending_command = Some('d');
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.composer.as_str(), "second");
+    assert_eq!(app.history_index, Some(1));
+    assert_eq!(app.vim_pending_command, None);
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.composer.is_empty());
+    assert_eq!(app.history_index, None);
 }
 
 #[tokio::test]

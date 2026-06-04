@@ -1214,23 +1214,11 @@ impl TuiApp {
             return Ok(());
         }
 
-        if self.composer_edit_mode != ComposerEditMode::Default {
-            match key.code {
-                KeyCode::Char('?') if self.composer.is_empty() => {
-                    self.overlay = OverlayState::HelpView { scroll: 0 };
-                    return Ok(());
-                }
-                KeyCode::Up if self.history_index.is_some() || self.composer.is_empty() => {
-                    self.navigate_history(-1);
-                    return Ok(());
-                }
-                KeyCode::Down if self.history_index.is_some() || self.composer.is_empty() => {
-                    self.navigate_history(1);
-                    return Ok(());
-                }
-                _ => {}
-            }
+        if self.handle_main_shortcut_key(key) {
+            return Ok(());
+        }
 
+        if self.composer_edit_mode != ComposerEditMode::Default {
             return self.handle_vim_composer_key(key).await;
         }
 
@@ -1299,6 +1287,31 @@ impl TuiApp {
         }
 
         Ok(())
+    }
+
+    fn handle_main_shortcut_key(&mut self, key: KeyEvent) -> bool {
+        match resolve_key(KeyContext::Main, key) {
+            TuiKeyAction::OpenHelp if self.composer.is_empty() => {
+                self.vim_pending_command = None;
+                self.overlay = OverlayState::HelpView { scroll: 0 };
+                true
+            }
+            TuiKeyAction::HistoryPrevious
+                if self.history_index.is_some() || self.composer.is_empty() =>
+            {
+                self.vim_pending_command = None;
+                self.navigate_history(-1);
+                true
+            }
+            TuiKeyAction::HistoryNext
+                if self.history_index.is_some() || self.composer.is_empty() =>
+            {
+                self.vim_pending_command = None;
+                self.navigate_history(1);
+                true
+            }
+            _ => false,
+        }
     }
 
     async fn handle_vim_composer_key(&mut self, key: KeyEvent) -> Result<()> {

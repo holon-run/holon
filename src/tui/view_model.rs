@@ -142,10 +142,10 @@ fn statusbar_detail(app: &TuiApp, slash_visible: bool) -> String {
     let status_line = app.status_line.trim();
     let detail = overlay_hint(app, slash_visible)
         .map(ToString::to_string)
-        .or_else(|| composer_edit_hint(app).map(ToString::to_string))
         .or_else(|| (!status_line.is_empty()).then(|| status_line.to_string()))
         .or_else(|| app.connection_detail().map(ToString::to_string))
         .or_else(|| active_tasks_hint(app))
+        .or_else(|| composer_edit_hint(app).map(ToString::to_string))
         .unwrap_or_else(|| "Type / for commands · /help for shortcuts".into());
     format!("{} · {}", app.connection_label(), detail)
 }

@@ -23,6 +23,11 @@ Vim mode should make the TUI more comfortable for operators who already use
 modal terminal tools such as Codex, Claude Code, Vim, or Neovim, without making
 Holon's TUI harder for default users.
 
+## Related documents
+
+- [TUI Command Surface](./tui-command-surface.md)
+- [Implementation decision 058: TUI Vim Composer Mode](../implementation-decisions/058-tui-vim-composer-mode.md)
+
 ## Problem
 
 The current TUI composer supports direct text input and readline-style editing
