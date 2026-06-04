@@ -114,7 +114,7 @@ impl RuntimeDb {
                 Ok(value)
             }
             Err(error) => {
-                transaction.rollback()?;
+                let _ = transaction.rollback();
                 Err(error)
             }
         }
@@ -133,6 +133,15 @@ impl RuntimeDb {
         }
         let mut connection = self.connection()?;
         ensure_migration_table(&connection)?;
+        let current_version = current_schema_version(&connection)?;
+        let max_known_version = max_known_migration_version();
+        if current_version > max_known_version {
+            bail!(
+                "runtime db schema version {} is newer than this binary supports ({})",
+                current_version,
+                max_known_version
+            );
+        }
         for migration in MIGRATIONS {
             apply_migration(&mut connection, migration)?;
         }
@@ -258,6 +267,14 @@ fn current_schema_version(connection: &Connection) -> Result<i64> {
         |row| row.get(0),
     )?;
     Ok(version)
+}
+
+fn max_known_migration_version() -> i64 {
+    MIGRATIONS
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(unix)]
@@ -412,6 +429,29 @@ mod tests {
 
         let error = RuntimeDb::open_and_migrate(&db_path, &lock_path).unwrap_err();
         assert!(error.to_string().contains("name mismatch"));
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_db_migration_rejects_newer_schema_version() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let connection = open_connection(&db_path)?;
+            ensure_migration_table(&connection)?;
+            connection.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+                (
+                    max_known_migration_version() + 1,
+                    "future_test",
+                    Utc::now().to_rfc3339(),
+                ),
+            )?;
+        }
+
+        let error = RuntimeDb::open_and_migrate(&db_path, &lock_path).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("newer than this binary supports"));
         Ok(())
     }
 
