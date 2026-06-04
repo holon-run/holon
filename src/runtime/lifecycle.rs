@@ -73,7 +73,7 @@ impl RuntimeHandle {
         };
 
         let closure = self.current_closure_decision().await?;
-        let Some(latest) = self.inner.storage.latest_work_item(&work_item_id)? else {
+        let Some(latest) = self.inner.runtime_db.work_items().latest(&work_item_id)? else {
             self.inner.storage.append_event(&AuditEvent::new(
                 "work_item_turn_end_commit_skipped",
                 serde_json::json!({

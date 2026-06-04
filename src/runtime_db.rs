@@ -96,6 +96,7 @@ impl WorkItemRepository<'_> {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
             "SELECT payload_json
@@ -104,9 +105,7 @@ impl WorkItemRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, work_item_id ASC
              LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![agent_id, limit as i64], |row| {
-            row.get::<_, String>(0)
-        })?;
+        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
         rows.map(|row| decode_work_item_payload(&row?)).collect()
     }
 
