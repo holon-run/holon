@@ -748,7 +748,7 @@ pub async fn state_snapshot_bounds_large_projection_fields() -> Result<()> {
     let runtime = host.default_runtime().await?;
     let now = chrono::Utc::now();
 
-    runtime.storage().append_task(&TaskRecord {
+    let task = TaskRecord {
         id: "large-task".into(),
         agent_id: "default".into(),
         kind: TaskKind::CommandTask,
@@ -764,7 +764,9 @@ pub async fn state_snapshot_bounds_large_projection_fields() -> Result<()> {
             "lines": (0..120).collect::<Vec<_>>()
         })),
         recovery: None,
-    })?;
+    };
+    runtime.storage().append_task(&task)?;
+    host.runtime_db().tasks().upsert(&task)?;
     let snapshot: serde_json::Value = reqwest::Client::new()
         .get(format!("{base}/agents/default/state"))
         .send()
