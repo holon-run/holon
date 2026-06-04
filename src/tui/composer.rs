@@ -26,6 +26,10 @@ impl ComposerState {
         self.cursor = 0;
     }
 
+    pub(super) fn is_cursor_at_end(&self) -> bool {
+        self.cursor >= self.text.len()
+    }
+
     pub(super) fn insert_char(&mut self, ch: char) {
         self.text.insert(self.cursor, ch);
         self.cursor += ch.len_utf8();
@@ -105,6 +109,17 @@ impl ComposerState {
             self.text.drain(self.cursor..end);
         }
     }
+
+    pub(super) fn clamp_cursor_to_normal_position(&mut self) {
+        if self.text.is_empty() {
+            self.cursor = 0;
+        } else if self.cursor >= self.text.len() {
+            self.cursor = self
+                .previous_boundary(self.text.len())
+                .unwrap_or(self.text.len());
+        }
+    }
+
     pub(super) fn move_to_start(&mut self) {
         self.cursor = 0;
     }
@@ -121,6 +136,11 @@ impl ComposerState {
         }
     }
 
+    pub(super) fn delete_to_line_end(&mut self) {
+        let end = self.current_line_end();
+        self.text.drain(self.cursor..end);
+    }
+
     pub(super) fn delete_to_start(&mut self) {
         let start = self.current_line_start();
         self.text.drain(start..self.cursor);
@@ -131,6 +151,122 @@ impl ComposerState {
         let start = self.find_word_start();
         self.text.drain(start..self.cursor);
         self.cursor = start;
+    }
+
+    pub(super) fn move_word_forward(&mut self) {
+        let chars = self.char_ranges();
+        let Some(mut index) = chars
+            .iter()
+            .position(|(start, end, _)| self.cursor >= *start && self.cursor < *end)
+            .or_else(|| chars.iter().position(|(start, _, _)| *start >= self.cursor))
+        else {
+            self.cursor = self.text.len();
+            return;
+        };
+
+        if !chars[index].2.is_whitespace() {
+            while index < chars.len() && !chars[index].2.is_whitespace() {
+                index += 1;
+            }
+        }
+        while index < chars.len() && chars[index].2.is_whitespace() {
+            index += 1;
+        }
+
+        self.cursor = chars
+            .get(index)
+            .map(|(start, _, _)| *start)
+            .unwrap_or(self.text.len());
+        self.clamp_cursor_to_normal_position();
+    }
+
+    pub(super) fn move_word_backward(&mut self) {
+        let chars = self.char_ranges();
+        let Some(mut index) = chars.iter().rposition(|(start, _, _)| *start < self.cursor) else {
+            self.cursor = 0;
+            return;
+        };
+
+        while index > 0 && chars[index].2.is_whitespace() {
+            index -= 1;
+        }
+        while index > 0 && !chars[index - 1].2.is_whitespace() {
+            index -= 1;
+        }
+        self.cursor = chars[index].0;
+    }
+
+    pub(super) fn move_word_end(&mut self) {
+        let chars = self.char_ranges();
+        let Some(mut index) = chars
+            .iter()
+            .position(|(start, end, _)| self.cursor >= *start && self.cursor < *end)
+            .or_else(|| chars.iter().position(|(start, _, _)| *start >= self.cursor))
+        else {
+            self.clamp_cursor_to_normal_position();
+            return;
+        };
+
+        while index < chars.len() && chars[index].2.is_whitespace() {
+            index += 1;
+        }
+        if index >= chars.len() {
+            self.clamp_cursor_to_normal_position();
+            return;
+        }
+        while index + 1 < chars.len() && !chars[index + 1].2.is_whitespace() {
+            index += 1;
+        }
+        self.cursor = chars[index].0;
+    }
+
+    pub(super) fn delete_current_line(&mut self) {
+        if self.text.is_empty() {
+            return;
+        }
+
+        let start = self.current_line_start();
+        let line_end = self.current_line_end();
+        if line_end < self.text.len() {
+            self.text.drain(start..line_end + 1);
+            self.cursor = start.min(self.text.len());
+        } else if start > 0 {
+            self.text.drain(start - 1..line_end);
+            self.cursor = (start - 1).min(self.text.len());
+        } else {
+            self.clear();
+        }
+        self.clamp_cursor_to_normal_position();
+    }
+
+    pub(super) fn open_line_below(&mut self) {
+        self.cursor = self.current_line_end();
+        self.insert_char('\n');
+    }
+
+    pub(super) fn open_line_above(&mut self) {
+        self.cursor = self.current_line_start();
+        self.insert_char('\n');
+        self.move_left();
+    }
+
+    pub(super) fn delete_word_forward(&mut self) {
+        if self.cursor >= self.text.len() {
+            return;
+        }
+
+        let end = self
+            .text
+            .char_indices()
+            .skip_while(|(index, _)| *index < self.cursor)
+            .skip(1)
+            .find_map(|(index, ch)| {
+                let current = self.text[self.cursor..].chars().next().unwrap_or(ch);
+                (current.is_whitespace() != ch.is_whitespace()).then_some(index)
+            })
+            .unwrap_or(self.text.len());
+        self.text.drain(self.cursor..end);
+        self.clamp_cursor_to_normal_position();
     }
 
     fn find_word_start(&self) -> usize {
@@ -171,14 +307,14 @@ impl ComposerState {
             .map(|ch| from + ch.len_utf8())
     }
 
-    fn current_line_start(&self) -> usize {
+    pub(super) fn current_line_start(&self) -> usize {
         self.text[..self.cursor]
             .rfind('\n')
             .map(|index| index + 1)
             .unwrap_or(0)
     }
 
-    fn current_line_end(&self) -> usize {
+    pub(super) fn current_line_end(&self) -> usize {
         self.text[self.cursor..]
             .find('\n')
             .map(|index| self.cursor + index)
@@ -200,6 +336,13 @@ impl ComposerState {
             index = line_start + offset + ch.len_utf8();
         }
         index
+    }
+
+    fn char_ranges(&self) -> Vec<(usize, usize, char)> {
+        self.text
+            .char_indices()
+            .map(|(start, ch)| (start, start + ch.len_utf8(), ch))
+            .collect()
     }
 }
 
@@ -395,4 +538,56 @@ fn delete_word_handles_tabs_and_newlines() {
     // Should delete "there" and stop at whitespace
     assert_eq!(composer.as_str(), "hello\tworld\n");
     assert_eq!(composer.cursor(), 12);
+}
+
+#[test]
+fn vim_word_motions_respect_utf8_boundaries() {
+    let mut composer = ComposerState::from("你 好 world");
+    composer.move_to_start();
+
+    composer.move_word_forward();
+    assert_eq!(composer.cursor(), "你 ".len());
+
+    composer.move_word_forward();
+    assert_eq!(composer.cursor(), "你 好 ".len());
+
+    composer.move_word_end();
+    assert_eq!(composer.cursor(), "你 好 worl".len());
+
+    composer.move_word_backward();
+    assert_eq!(composer.cursor(), "你 好 ".len());
+}
+
+#[test]
+fn vim_line_and_word_edits_stay_inside_current_line() {
+    let mut composer = ComposerState::from("alpha beta\ngamma");
+    composer.move_to_start();
+    for _ in 0..6 {
+        composer.move_right();
+    }
+
+    composer.delete_word_forward();
+    assert_eq!(composer.as_str(), "alpha \ngamma");
+
+    composer.insert_str("beta");
+    composer.move_home();
+    composer.delete_to_line_end();
+    assert_eq!(composer.as_str(), "\ngamma");
+
+    composer.delete_current_line();
+    assert_eq!(composer.as_str(), "gamma");
+}
+
+#[test]
+fn vim_open_line_above_and_below_place_cursor_on_new_line() {
+    let mut composer = ComposerState::from("alpha\nbeta");
+    composer.move_to_start();
+    composer.open_line_above();
+    assert_eq!(composer.as_str(), "\nalpha\nbeta");
+    assert_eq!(composer.cursor(), 0);
+
+    composer.move_to_end();
+    composer.open_line_below();
+    assert_eq!(composer.as_str(), "\nalpha\nbeta\n");
+    assert_eq!(composer.cursor(), "\nalpha\nbeta\n".len());
 }

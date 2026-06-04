@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::types::{AgentStatus, AgentSummary, WaitingReason, AGENT_HOME_WORKSPACE_ID};
 
 use super::{
+    app::ComposerEditMode,
     keymap::{status_hint, KeyContext},
     overlay::OverlayState,
     TuiApp,
@@ -141,6 +142,7 @@ fn statusbar_detail(app: &TuiApp, slash_visible: bool) -> String {
     let status_line = app.status_line.trim();
     let detail = overlay_hint(app, slash_visible)
         .map(ToString::to_string)
+        .or_else(|| composer_edit_hint(app).map(ToString::to_string))
         .or_else(|| (!status_line.is_empty()).then(|| status_line.to_string()))
         .or_else(|| app.connection_detail().map(ToString::to_string))
         .or_else(|| active_tasks_hint(app))
@@ -166,6 +168,14 @@ fn overlay_hint(app: &TuiApp, slash_visible: bool) -> Option<&'static str> {
         OverlayState::DebugPromptInput { .. } => KeyContext::DebugPromptInput,
     };
     Some(status_hint(context, false))
+}
+
+fn composer_edit_hint(app: &TuiApp) -> Option<&'static str> {
+    match app.composer_edit_mode {
+        ComposerEditMode::Default => None,
+        ComposerEditMode::VimInsert => Some("VIM INSERT · Esc normal · Enter submit"),
+        ComposerEditMode::VimNormal => Some("VIM NORMAL · i/a insert · Enter submit · /vim off"),
+    }
 }
 
 fn active_tasks_hint(app: &TuiApp) -> Option<String> {

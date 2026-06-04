@@ -1,8 +1,9 @@
 use super::*;
+use crate::tui::app::ComposerEditMode;
 use crate::tui::keymap::{
     resolve_key, ComposerAction, KeyContext, ScrollAction, SlashMenuAction, TuiKeyAction,
 };
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlashCommand {
@@ -22,6 +23,7 @@ enum SlashCommand {
     Skills,
     SkillInstall,
     SkillUninstall,
+    Vim,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +91,7 @@ pub(super) struct SlashCommandSpec {
 
 const DISPLAY_MODE_ARGS: &[&str] = &["info", "verbose", "debug", "3", "4", "5"];
 
-const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
+const SLASH_COMMAND_SPECS: [SlashCommandSpec; 17] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
@@ -199,6 +201,15 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 16] = [
         command: SlashCommand::Abort,
     },
     SlashCommandSpec {
+        name: "/vim",
+        description: "toggle vim composer editing",
+        usage: "/vim",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Runtime,
+        arg_rule: SlashArgRule::None,
+        command: SlashCommand::Vim,
+    },
+    SlashCommandSpec {
         name: "/agent",
         description: "switch or control an agent",
         usage: "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]",
@@ -244,6 +255,8 @@ pub(super) fn slash_help_lines() -> Vec<String> {
         "Slash Commands".to_string(),
         "  Type / to browse commands; non-command /text is sent as chat.".to_string(),
         "  Prefix with // to send text that starts with a single slash.".to_string(),
+        "  /vim toggles composer vim mode: Esc normal, i/a insert, h/j/k/l move, dd delete line."
+            .to_string(),
     ];
     let categories = [
         SlashCommandCategory::Navigation,
@@ -677,6 +690,18 @@ impl TuiApp {
             SlashCommand::ClearStatus => {
                 self.overlay = OverlayState::None;
                 self.status_line.clear();
+            }
+            SlashCommand::Vim => {
+                self.overlay = OverlayState::None;
+                self.vim_pending_command = None;
+                self.vim_undo_snapshot = None;
+                if self.composer_edit_mode == ComposerEditMode::Default {
+                    self.composer_edit_mode = ComposerEditMode::VimNormal;
+                    self.status_line.clear();
+                } else {
+                    self.composer_edit_mode = ComposerEditMode::Default;
+                    self.status_line = "Vim composer mode disabled".into();
+                }
             }
             SlashCommand::DebugPrompt => {
                 self.overlay = OverlayState::DebugPromptInput {
@@ -1168,8 +1193,29 @@ impl TuiApp {
     }
 
     async fn handle_main_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.composer_edit_mode == ComposerEditMode::VimInsert
+            && key.code == KeyCode::Esc
+            && key.modifiers.is_empty()
+        {
+            return self.handle_vim_composer_key(key).await;
+        }
+
         if self.handle_slash_menu_key(key).await? {
             return Ok(());
+        }
+
+        if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+            if self.composer_edit_mode == ComposerEditMode::VimNormal {
+                self.vim_pending_command = None;
+            }
+            self.chat_scroll
+                .scroll_with_key(key.code, self.chat_max_scroll);
+            self.maybe_begin_load_older_events();
+            return Ok(());
+        }
+
+        if self.composer_edit_mode != ComposerEditMode::Default {
+            return self.handle_vim_composer_key(key).await;
         }
 
         match resolve_key(KeyContext::Main, key) {
@@ -1237,6 +1283,201 @@ impl TuiApp {
         }
 
         Ok(())
+    }
+
+    async fn handle_vim_composer_key(&mut self, key: KeyEvent) -> Result<()> {
+        match self.composer_edit_mode {
+            ComposerEditMode::Default => Ok(()),
+            ComposerEditMode::VimInsert => self.handle_vim_insert_key(key).await,
+            ComposerEditMode::VimNormal => self.handle_vim_normal_key(key).await,
+        }
+    }
+
+    async fn handle_vim_insert_key(&mut self, key: KeyEvent) -> Result<()> {
+        if key.code == KeyCode::Esc && key.modifiers.is_empty() {
+            self.enter_vim_normal_mode();
+            return Ok(());
+        }
+
+        let before = self.composer.as_str().to_string();
+        let action = if key.code == KeyCode::Enter
+            && key.modifiers.is_empty()
+            && self.should_treat_enter_as_paste_newline(key)
+        {
+            TuiKeyAction::Composer(ComposerAction::InsertNewline)
+        } else {
+            resolve_key(KeyContext::Composer, key)
+        };
+
+        match apply_composer_key_action(action, &mut self.composer) {
+            Some(BufferAction::Submit) => {
+                self.reset_composer_key_burst();
+                self.submit_prompt_buffer().await?;
+            }
+            Some(BufferAction::Cancel) => {
+                self.enter_vim_normal_mode();
+            }
+            None => {
+                let changed = before != self.composer.as_str();
+                if changed {
+                    self.record_composer_key_edit(action);
+                }
+                self.sync_slash_menu_after_edit(changed);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_vim_normal_key(&mut self, key: KeyEvent) -> Result<()> {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Ok(());
+        }
+
+        match key.code {
+            KeyCode::Enter => {
+                self.vim_pending_command = None;
+                if !self.composer.as_str().trim().is_empty() {
+                    self.submit_prompt_buffer().await?;
+                }
+            }
+            KeyCode::Esc => {
+                self.vim_pending_command = None;
+            }
+            KeyCode::Left => self.vim_move(|composer| composer.move_left()),
+            KeyCode::Right => self.vim_move(|composer| composer.move_right()),
+            KeyCode::Up => self.vim_move(|composer| composer.move_up()),
+            KeyCode::Down => self.vim_move(|composer| composer.move_down()),
+            KeyCode::Char('/') => {
+                self.vim_pending_command = None;
+                self.save_vim_undo_snapshot();
+                self.enter_vim_insert_mode();
+                let before = self.composer.as_str().to_string();
+                self.composer.insert_char('/');
+                self.sync_slash_menu_after_edit(before != self.composer.as_str());
+            }
+            KeyCode::Char(ch) => self.handle_vim_normal_char(ch),
+            _ => {
+                self.vim_pending_command = None;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_vim_normal_char(&mut self, ch: char) {
+        if let Some(pending) = self.vim_pending_command.take() {
+            let before = self.composer.as_str().to_string();
+            match (pending, ch) {
+                ('d', 'd') => {
+                    self.save_vim_undo_snapshot();
+                    self.composer.delete_current_line();
+                }
+                ('c', 'w') => {
+                    self.save_vim_undo_snapshot();
+                    self.composer.delete_word_forward();
+                    self.enter_vim_insert_mode();
+                }
+                _ => self.handle_vim_normal_char_without_pending(ch),
+            }
+            self.sync_slash_menu_after_edit(before != self.composer.as_str());
+            return;
+        }
+
+        self.handle_vim_normal_char_without_pending(ch);
+    }
+
+    fn handle_vim_normal_char_without_pending(&mut self, ch: char) {
+        match ch {
+            'h' => self.vim_move(|composer| composer.move_left()),
+            'j' => self.vim_move(|composer| composer.move_down()),
+            'k' => self.vim_move(|composer| composer.move_up()),
+            'l' => self.vim_move(|composer| composer.move_right()),
+            '0' => self.vim_move(|composer| composer.move_home()),
+            '$' => self.vim_move(|composer| composer.move_end()),
+            'w' => self.vim_move(|composer| composer.move_word_forward()),
+            'b' => self.vim_move(|composer| composer.move_word_backward()),
+            'e' => self.vim_move(|composer| composer.move_word_end()),
+            'i' => {
+                self.save_vim_undo_snapshot();
+                self.enter_vim_insert_mode();
+            }
+            'a' => {
+                self.save_vim_undo_snapshot();
+                self.composer.move_right();
+                self.enter_vim_insert_mode();
+            }
+            'A' => {
+                self.save_vim_undo_snapshot();
+                self.composer.move_end();
+                self.enter_vim_insert_mode();
+            }
+            'o' => {
+                self.save_vim_undo_snapshot();
+                self.composer.open_line_below();
+                self.enter_vim_insert_mode();
+                self.sync_slash_menu_after_edit(true);
+            }
+            'O' => {
+                self.save_vim_undo_snapshot();
+                self.composer.open_line_above();
+                self.enter_vim_insert_mode();
+                self.sync_slash_menu_after_edit(true);
+            }
+            'x' => {
+                self.save_vim_undo_snapshot();
+                self.composer.delete();
+                self.composer.clamp_cursor_to_normal_position();
+                self.sync_slash_menu_after_edit(true);
+            }
+            'D' => {
+                self.save_vim_undo_snapshot();
+                self.composer.delete_to_line_end();
+                self.composer.clamp_cursor_to_normal_position();
+                self.sync_slash_menu_after_edit(true);
+            }
+            'C' => {
+                self.save_vim_undo_snapshot();
+                self.composer.delete_to_line_end();
+                self.enter_vim_insert_mode();
+                self.sync_slash_menu_after_edit(true);
+            }
+            'u' => {
+                if let Some(snapshot) = self.vim_undo_snapshot.take() {
+                    self.composer = snapshot;
+                    self.composer.clamp_cursor_to_normal_position();
+                    self.sync_slash_menu_after_edit(true);
+                }
+            }
+            'd' | 'c' => {
+                self.vim_pending_command = Some(ch);
+            }
+            _ => {}
+        }
+    }
+
+    fn vim_move(&mut self, action: impl FnOnce(&mut ComposerState)) {
+        self.vim_pending_command = None;
+        action(&mut self.composer);
+        self.composer.clamp_cursor_to_normal_position();
+    }
+
+    fn save_vim_undo_snapshot(&mut self) {
+        self.vim_undo_snapshot = Some(self.composer.clone());
+    }
+
+    fn enter_vim_insert_mode(&mut self) {
+        self.composer_edit_mode = ComposerEditMode::VimInsert;
+        self.vim_pending_command = None;
+    }
+
+    fn enter_vim_normal_mode(&mut self) {
+        self.composer_edit_mode = ComposerEditMode::VimNormal;
+        self.vim_pending_command = None;
+        if !self.composer.is_empty() && self.composer.is_cursor_at_end() {
+            self.composer.move_left();
+        }
+        self.composer.clamp_cursor_to_normal_position();
     }
 
     async fn handle_slash_menu_key(&mut self, key: KeyEvent) -> Result<bool> {
@@ -1717,6 +1958,10 @@ mod tests {
             Some(ComposerSubmission::Slash(SlashCommand::Abort, vec![]))
         );
         assert_eq!(
+            parse_composer_submission("/vim").unwrap(),
+            Some(ComposerSubmission::Slash(SlashCommand::Vim, vec![]))
+        );
+        assert_eq!(
             parse_composer_submission("/agent start").unwrap(),
             Some(ComposerSubmission::Slash(
                 SlashCommand::Agent,
@@ -1917,6 +2162,7 @@ mod tests {
             "/debug-prompt",
             "/display <info|verbose|debug|3|4|5>",
             "/abort",
+            "/vim",
             "/agent switch <agent-id>|create <name>|start [agent-id]|stop [agent-id]",
             "/skills",
             "/skill-install <name>",

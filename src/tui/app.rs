@@ -7,6 +7,13 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ComposerEditMode {
+    Default,
+    VimInsert,
+    VimNormal,
+}
+
 pub(super) struct TuiApp {
     pub(super) client: LocalClient,
     pub(super) agents: Vec<AgentSummary>,
@@ -39,6 +46,9 @@ pub(super) struct TuiApp {
     pub(super) composer_key_burst_started_at: Option<Instant>,
     pub(super) composer_key_burst_last_at: Option<Instant>,
     pub(super) composer_key_burst_len: usize,
+    pub(super) composer_edit_mode: ComposerEditMode,
+    pub(super) vim_undo_snapshot: Option<ComposerState>,
+    pub(super) vim_pending_command: Option<char>,
     pub(super) slash_menu_selected: usize,
     pub(super) slash_menu_dismissed_for: Option<String>,
     pub(super) overlay: OverlayState,
@@ -93,6 +103,9 @@ impl TuiApp {
             composer_key_burst_started_at: None,
             composer_key_burst_last_at: None,
             composer_key_burst_len: 0,
+            composer_edit_mode: ComposerEditMode::Default,
+            vim_undo_snapshot: None,
+            vim_pending_command: None,
             slash_menu_selected: 0,
             slash_menu_dismissed_for: None,
             overlay: OverlayState::None,
