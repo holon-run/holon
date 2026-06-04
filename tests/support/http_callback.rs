@@ -39,7 +39,7 @@ use super::{
     attach_default_workspace, callback_path, callback_token, connect_addr, git, init_git_repo,
     spawn_delivery_callback, spawn_server, spawn_server_for_host, spawn_server_with_config,
     spawn_server_with_runtime_config, tempdir, test_config, test_config_with_paths, wait_until,
-    DeliveryCallbackRecord,
+    wait_until_async, DeliveryCallbackRecord,
 };
 
 pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
@@ -88,16 +88,20 @@ pub async fn callback_enqueue_message_repeats_until_cancelled() -> Result<()> {
         .await?;
     assert!(second.status().is_success());
 
-    wait_until(|| {
-        let messages = runtime.storage().read_recent_messages(20)?;
-        let descriptors = runtime.storage().latest_external_triggers()?;
-        Ok(messages
-            .iter()
-            .all(|message| message.kind != MessageKind::CallbackEvent)
-            && descriptors
-                .first()
-                .map(|item| item.delivery_count == 2)
-                .unwrap_or(false))
+    let runtime_for_wait = runtime.clone();
+    wait_until_async(move || {
+        let runtime = runtime_for_wait.clone();
+        async move {
+            let messages = runtime.storage().read_recent_messages(20)?;
+            let descriptors = runtime.latest_external_triggers().await?;
+            Ok(messages
+                .iter()
+                .all(|message| message.kind != MessageKind::CallbackEvent)
+                && descriptors
+                    .first()
+                    .map(|item| item.delivery_count == 2)
+                    .unwrap_or(false))
+        }
     })
     .await?;
 
@@ -443,12 +447,16 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
     assert_eq!(first_payload["delivery_mode"], "wake_hint");
     assert_eq!(first_payload["disposition"], "triggered");
 
-    wait_until(|| {
-        let descriptors = runtime.storage().latest_external_triggers()?;
-        Ok(descriptors
-            .first()
-            .map(|item| item.delivery_count == 1)
-            .unwrap_or(false))
+    let runtime_for_wait = runtime.clone();
+    wait_until_async(move || {
+        let runtime = runtime_for_wait.clone();
+        async move {
+            let descriptors = runtime.latest_external_triggers().await?;
+            Ok(descriptors
+                .first()
+                .map(|item| item.delivery_count == 1)
+                .unwrap_or(false))
+        }
     })
     .await?;
 
@@ -489,16 +497,20 @@ pub async fn callback_enqueue_rejects_stopped_public_agent_after_restart() -> Re
         .unwrap_or_default()
         .contains("start first"));
 
-    wait_until(|| {
-        let messages = runtime2.storage().read_recent_messages(20)?;
-        let descriptors = runtime2.storage().latest_external_triggers()?;
-        Ok(messages
-            .iter()
-            .all(|message| message.kind != MessageKind::CallbackEvent)
-            && descriptors
-                .first()
-                .map(|item| item.delivery_count == 1)
-                .unwrap_or(false))
+    let runtime_for_wait = runtime2.clone();
+    wait_until_async(move || {
+        let runtime = runtime_for_wait.clone();
+        async move {
+            let messages = runtime.storage().read_recent_messages(20)?;
+            let descriptors = runtime.latest_external_triggers().await?;
+            Ok(messages
+                .iter()
+                .all(|message| message.kind != MessageKind::CallbackEvent)
+                && descriptors
+                    .first()
+                    .map(|item| item.delivery_count == 1)
+                    .unwrap_or(false))
+        }
     })
     .await?;
 

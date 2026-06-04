@@ -47,9 +47,14 @@ impl RuntimeHandle {
             .runtime_db
             .external_triggers()
             .active_default_for_agent(&agent_id)?
-            .filter(|descriptor| descriptor.trigger_url.is_some())
         {
-            return capability_from_record(&descriptor);
+            if descriptor.trigger_url.is_some() {
+                return capability_from_record(&descriptor);
+            }
+            let mut revoked = descriptor;
+            revoked.status = ExternalTriggerStatus::Revoked;
+            revoked.revoked_at = Some(now);
+            self.inner.runtime_db.external_triggers().upsert(&revoked)?;
         }
 
         let external_trigger_id = crate::ids::external_trigger_id();
@@ -245,20 +250,11 @@ impl RuntimeHandle {
         &self,
         waiting_intent_id: &str,
     ) -> Result<ExternalTriggerRecord> {
-        let agent_id = self.agent_id().await?;
         let descriptor = self
             .latest_external_triggers()
             .await?
             .into_iter()
             .find(|record| record.waiting_intent_id.as_deref() == Some(waiting_intent_id))
-            .or_else(|| {
-                self.inner
-                    .runtime_db
-                    .external_triggers()
-                    .active_default_for_agent(&agent_id)
-                    .ok()
-                    .flatten()
-            })
             .ok_or_else(|| {
                 anyhow!(
                     "external trigger for waiting intent {} not found",

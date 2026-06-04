@@ -406,7 +406,22 @@ fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerReco
             last_delivered_at = excluded.last_delivered_at,
             delivery_count = excluded.delivery_count,
             payload_json = excluded.payload_json
-         WHERE excluded.delivery_count >= external_triggers.delivery_count",
+         WHERE excluded.delivery_count > external_triggers.delivery_count
+            OR (
+                excluded.delivery_count = external_triggers.delivery_count
+                AND COALESCE(excluded.last_delivered_at, '') > COALESCE(external_triggers.last_delivered_at, '')
+            )
+            OR (
+                excluded.delivery_count = external_triggers.delivery_count
+                AND COALESCE(excluded.last_delivered_at, '') = COALESCE(external_triggers.last_delivered_at, '')
+                AND COALESCE(excluded.revoked_at, '') > COALESCE(external_triggers.revoked_at, '')
+            )
+            OR (
+                excluded.delivery_count = external_triggers.delivery_count
+                AND COALESCE(excluded.last_delivered_at, '') = COALESCE(external_triggers.last_delivered_at, '')
+                AND COALESCE(excluded.revoked_at, '') = COALESCE(external_triggers.revoked_at, '')
+                AND excluded.created_at >= external_triggers.created_at
+            )",
         params![
             record.external_trigger_id,
             record.target_agent_id,
@@ -1497,6 +1512,34 @@ mod tests {
             .expect("active trigger by token");
         assert_eq!(by_token.delivery_count, 2);
         assert_eq!(by_token.last_delivered_at, trigger.last_delivered_at);
+        Ok(())
+    }
+
+    #[test]
+    fn external_trigger_upsert_does_not_revert_newer_revocation() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.external_triggers().import_legacy(Vec::new())?;
+        let active = external_trigger_record(
+            "trigger-active",
+            "agent-a",
+            ExternalTriggerStatus::Active,
+            0,
+        );
+        db.external_triggers().upsert(&active)?;
+
+        let mut revoked = active.clone();
+        revoked.status = ExternalTriggerStatus::Revoked;
+        revoked.revoked_at = Some(active.created_at + chrono::Duration::seconds(30));
+        db.external_triggers().upsert(&revoked)?;
+        db.external_triggers().upsert(&active)?;
+
+        let latest = db
+            .external_triggers()
+            .latest("trigger-active")?
+            .expect("latest trigger");
+        assert_eq!(latest.status, ExternalTriggerStatus::Revoked);
+        assert_eq!(latest.revoked_at, revoked.revoked_at);
         Ok(())
     }
 

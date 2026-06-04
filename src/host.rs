@@ -550,7 +550,11 @@ impl RuntimeHost {
             .into_iter()
             .filter(|record| record.status == AgentRegistryStatus::Active)
         {
-            let storage = AppStorage::new(self.agent_data_dir(&identity.agent_id))?;
+            let agent_home = self.agent_data_dir(&identity.agent_id);
+            if !agent_home.exists() {
+                continue;
+            }
+            let storage = AppStorage::new(agent_home)?;
             records.extend(storage.read_recent_external_triggers(usize::MAX)?);
         }
         self.inner
