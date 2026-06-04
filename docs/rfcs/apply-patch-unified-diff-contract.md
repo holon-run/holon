@@ -250,7 +250,10 @@ The apply layer should:
 - apply all hunks for a file atomically
 - write all files atomically for the whole tool call when practical
 - treat hunk line counts as advisory when context matching succeeds
-- reject duplicate file patches for the same normalized path
+- merge duplicate plain modify patches for the same normalized path only when
+  their hunks touch distinct original locations
+- reject duplicate add/delete/rename patches and conflicting duplicate modify
+  hunks for the same normalized path
 
 This keeps the model-facing format standard while preserving agent-friendly
 robustness. Models can write familiar unified diff headers, but small line
@@ -349,8 +352,15 @@ Examples:
 - `context_not_found`: hunk context does not match the current file
 - `ambiguous_context`: hunk context matches multiple locations; include more
   surrounding context
-- `duplicate_file_patch`: the same normalized file path appears in more than
-  one file patch; merge hunks into a single file patch
+- `duplicate_file_patch`: multiple file patches for the same normalized path
+  use add, delete, rename, or another unsupported duplicate operation
+- `conflicting_duplicate_file_patch`: duplicate modify patches for the same
+  normalized file path touch overlapping original hunk locations
+
+Plain modify patches for the same normalized file path may be merged
+automatically when their hunks touch distinct original locations. Duplicate
+add/delete/rename patches and overlapping duplicate modify hunks still fail
+before any workspace writes.
 
 Hunk count mismatches should not fail the patch when context matching succeeds.
 They should be recorded as advisory diagnostics in the canonical result.
@@ -418,7 +428,10 @@ Implementation should include:
 - Common mode metadata is accepted and ignored. V1 does not execute chmod or
   other metadata mutations.
 - Multiple hunks for the same file are allowed inside one file patch. Multiple
-  file patches for the same normalized path are rejected.
+  plain modify patches for the same normalized path may be merged when their
+  hunks touch distinct original locations; duplicate add/delete/rename patches
+  and conflicting duplicate modify hunks for the same normalized path are
+  rejected.
 - Rename-only operations require `diff --git` plus `rename from` and
   `rename to`.
 - `similarity index` and `index` are accepted and ignored.
