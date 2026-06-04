@@ -64,6 +64,7 @@ use crate::{
         ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
     },
     queue::RuntimeQueue,
+    runtime_db::RuntimeDb,
     skills::{
         find_skill_by_entrypoint, find_skill_by_script_path, load_skills_runtime_view,
         SkillVisibility,
@@ -222,6 +223,7 @@ struct RuntimeInner {
     agent: Mutex<RuntimeAgent>,
     notify: Notify,
     storage: AppStorage,
+    runtime_db: RuntimeDb,
     provider: RwLock<Arc<dyn AgentProvider>>,
     provider_reconfig: Option<ProviderReconfigurator>,
     model_catalog: RuntimeModelCatalog,

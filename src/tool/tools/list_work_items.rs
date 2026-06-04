@@ -82,7 +82,10 @@ pub(crate) async fn execute(
     let filter = args.filter.unwrap_or(ListWorkItemsFilter::All);
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let context = query_context(runtime).await?;
-    let mut records = runtime.latest_work_items().await?;
+    let agent_id = runtime.agent_state().await?.id;
+    let mut records = runtime
+        .latest_work_items_for_agent(&agent_id, usize::MAX)
+        .await?;
     records.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     let all_wait_conditions = active_wait_conditions_by_work_item(runtime, &records)?;
     let matching = records

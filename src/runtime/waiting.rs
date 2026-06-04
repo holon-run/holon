@@ -250,6 +250,12 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &mut record,
         )?;
+        let current_focus =
+            self.agent_state().await?.current_work_item_id.as_deref() == Some(record.id.as_str());
+        self.inner
+            .runtime_db
+            .work_items()
+            .upsert(&record, current_focus)?;
         self.inner.storage.append_work_item(&record)?;
         if plan_artifact_changed {
             self.inner.storage.append_event(&AuditEvent::new(
@@ -278,7 +284,7 @@ impl RuntimeHandle {
         let Some(work_item_id) = condition.work_item_id.as_deref() else {
             return Ok(());
         };
-        let Some(existing) = self.inner.storage.latest_work_item(work_item_id)? else {
+        let Some(existing) = self.inner.runtime_db.work_items().latest(work_item_id)? else {
             return Ok(());
         };
         if existing.state != WorkItemState::Open {
@@ -299,6 +305,12 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &mut record,
         )?;
+        let current_focus =
+            self.agent_state().await?.current_work_item_id.as_deref() == Some(record.id.as_str());
+        self.inner
+            .runtime_db
+            .work_items()
+            .upsert(&record, current_focus)?;
         self.inner.storage.append_work_item(&record)?;
         if plan_artifact_changed {
             self.inner.storage.append_event(&AuditEvent::new(

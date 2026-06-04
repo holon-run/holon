@@ -903,24 +903,34 @@ mod tests {
     fn add_queued_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
         let mut record = WorkItemRecord::new("default", target, WorkItemState::Open);
         record.id = id.to_string();
+        persist_test_work_item(test_runtime, &record, false);
+        record
+    }
+
+    fn persist_test_work_item(
+        test_runtime: &TestRuntime,
+        record: &WorkItemRecord,
+        current_focus: bool,
+    ) {
+        test_runtime
+            .runtime
+            .inner
+            .runtime_db
+            .work_items()
+            .upsert(record, current_focus)
+            .unwrap();
         test_runtime
             .runtime
             .inner
             .storage
-            .append_work_item(&record)
+            .append_work_item(record)
             .unwrap();
-        record
     }
 
     fn add_current_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
         let mut record = WorkItemRecord::new("default", target, WorkItemState::Open);
         record.id = id.to_string();
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_work_item(&record)
-            .unwrap();
+        persist_test_work_item(test_runtime, &record, true);
         let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
         guard.state.current_work_item_id = Some(record.id.clone());
         test_runtime
@@ -940,12 +950,7 @@ mod tests {
         let mut updated = record.clone();
         updated.blocked_by = Some(blocked_by.to_string());
         updated.updated_at = chrono::Utc::now();
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_work_item(&updated)
-            .unwrap();
+        persist_test_work_item(test_runtime, &updated, false);
         updated
     }
 
@@ -959,12 +964,7 @@ mod tests {
         updated.recheck_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
         updated.recheck_consumed_at = None;
         updated.updated_at = chrono::Utc::now();
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .append_work_item(&updated)
-            .unwrap();
+        persist_test_work_item(test_runtime, &updated, false);
         updated
     }
 
@@ -972,8 +972,9 @@ mod tests {
         test_runtime
             .runtime
             .inner
-            .storage
-            .latest_work_item(id)
+            .runtime_db
+            .work_items()
+            .latest(id)
             .unwrap()
             .expect("work item should exist")
     }

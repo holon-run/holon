@@ -1,16 +1,261 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension, Transaction};
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
+
+use crate::types::{WorkItemRecord, WorkItemState};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeDb {
     path: PathBuf,
     lock_path: PathBuf,
+}
+
+pub struct WorkItemRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+impl WorkItemRepository<'_> {
+    pub fn import_legacy(
+        &self,
+        records: Vec<WorkItemRecord>,
+        current_work_item_id: Option<&str>,
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            let domain = read_storage_domain(tx, "work_items")?;
+            if domain.as_ref().is_some_and(|domain| {
+                domain.import_status == "complete" && domain.canonical_source == "db"
+            }) {
+                return Ok(());
+            }
+
+            upsert_storage_domain(tx, "work_items", "importing", "jsonl", None)?;
+            let mut latest = BTreeMap::<String, WorkItemRecord>::new();
+            for record in records {
+                let should_replace = latest
+                    .get(&record.id)
+                    .is_none_or(|existing| newer_work_item_record(&record, existing));
+                if should_replace {
+                    latest.insert(record.id.clone(), record);
+                }
+            }
+            for record in latest.values() {
+                upsert_work_item_tx(tx, record, current_work_item_id == Some(record.id.as_str()))?;
+            }
+            upsert_storage_domain(
+                tx,
+                "work_items",
+                "complete",
+                "db",
+                Some(serde_json::json!({ "imported_records": latest.len() })),
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert(&self, record: &WorkItemRecord, current_focus: bool) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_work_item_tx(tx, record, current_focus))
+    }
+
+    pub fn set_current_focus(&self, agent_id: &str, work_item_id: Option<&str>) -> Result<()> {
+        self.db.transaction(|tx| {
+            tx.execute(
+                "UPDATE work_items SET current_focus = 0 WHERE agent_id = ?1 AND current_focus != 0",
+                [agent_id],
+            )?;
+            if let Some(work_item_id) = work_item_id {
+                tx.execute(
+                    "UPDATE work_items SET current_focus = 1 WHERE agent_id = ?1 AND work_item_id = ?2",
+                    params![agent_id, work_item_id],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn latest(&self, work_item_id: &str) -> Result<Option<WorkItemRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
+                [work_item_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_work_item_payload(&payload))
+            .transpose()
+    }
+
+    pub fn latest_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<WorkItemRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM work_items
+             WHERE agent_id = ?1
+             ORDER BY updated_at DESC, created_at DESC, work_item_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_work_item_payload(&row?)).collect()
+    }
+
+    pub fn latest_all(&self) -> Result<Vec<WorkItemRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM work_items
+             ORDER BY updated_at DESC, created_at DESC, work_item_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_work_item_payload(&row?)).collect()
+    }
+}
+
+#[derive(Debug)]
+struct StorageDomainState {
+    import_status: String,
+    canonical_source: String,
+}
+
+fn read_storage_domain(tx: &Transaction<'_>, domain: &str) -> Result<Option<StorageDomainState>> {
+    tx.query_row(
+        "SELECT import_status, canonical_source FROM storage_domains WHERE domain = ?1",
+        [domain],
+        |row| {
+            Ok(StorageDomainState {
+                import_status: row.get(0)?,
+                canonical_source: row.get(1)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn upsert_storage_domain(
+    tx: &Transaction<'_>,
+    domain: &str,
+    import_status: &str,
+    canonical_source: &str,
+    checkpoint: Option<serde_json::Value>,
+) -> Result<()> {
+    let now = timestamp(Utc::now());
+    let imported_at = (import_status == "complete").then(|| now.clone());
+    let checkpoint = checkpoint.map(|value| value.to_string());
+    tx.execute(
+        "INSERT INTO storage_domains (
+            domain, schema_version, import_status, canonical_source,
+            source_checkpoint_json, imported_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(domain) DO UPDATE SET
+            schema_version = excluded.schema_version,
+            import_status = excluded.import_status,
+            canonical_source = excluded.canonical_source,
+            source_checkpoint_json = excluded.source_checkpoint_json,
+            imported_at = excluded.imported_at,
+            updated_at = excluded.updated_at",
+        params![
+            domain,
+            max_known_migration_version(),
+            import_status,
+            canonical_source,
+            checkpoint,
+            imported_at,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_work_item_tx(
+    tx: &Transaction<'_>,
+    record: &WorkItemRecord,
+    current_focus: bool,
+) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let state = enum_string(&record.state)?;
+    let plan_status = enum_string(&record.plan_status)?;
+    let readiness = enum_string(&record.readiness())?;
+    let completed_at =
+        (record.state == WorkItemState::Completed).then(|| timestamp(record.updated_at));
+    let plan_artifact_path = record
+        .plan_artifact
+        .as_ref()
+        .map(|artifact| artifact.path.display().to_string());
+    tx.execute(
+        "INSERT INTO work_items (
+            work_item_id, agent_id, state, objective, plan_status, readiness,
+            revision, current_focus, created_at, updated_at, completed_at,
+            plan_artifact_path, last_turn_id, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         ON CONFLICT(work_item_id) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            state = excluded.state,
+            objective = excluded.objective,
+            plan_status = excluded.plan_status,
+            readiness = excluded.readiness,
+            revision = excluded.revision,
+            current_focus = excluded.current_focus,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            completed_at = excluded.completed_at,
+            plan_artifact_path = excluded.plan_artifact_path,
+            last_turn_id = excluded.last_turn_id,
+            payload_json = excluded.payload_json
+         WHERE excluded.revision >= work_items.revision",
+        params![
+            record.id,
+            record.agent_id,
+            state,
+            record.objective,
+            plan_status,
+            readiness,
+            record.revision as i64,
+            i64::from(current_focus),
+            timestamp(record.created_at),
+            timestamp(record.updated_at),
+            completed_at,
+            plan_artifact_path,
+            record.turn_id,
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn newer_work_item_record(candidate: &WorkItemRecord, existing: &WorkItemRecord) -> bool {
+    candidate
+        .revision
+        .cmp(&existing.revision)
+        .then_with(|| candidate.updated_at.cmp(&existing.updated_at))
+        .then_with(|| candidate.created_at.cmp(&existing.created_at))
+        .is_gt()
+}
+
+fn decode_work_item_payload(payload: &str) -> Result<WorkItemRecord> {
+    serde_json::from_str(payload).context("decoding work item payload from runtime db")
+}
+
+fn enum_string<T: serde::Serialize>(value: &T) -> Result<String> {
+    let value = serde_json::to_value(value)?;
+    value
+        .as_str()
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow!("expected enum to serialize as string"))
+}
+
+fn timestamp(value: DateTime<Utc>) -> String {
+    value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 #[derive(Debug)]
@@ -26,10 +271,11 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "runtime_db_foundation",
-    sql: r#"
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "runtime_db_foundation",
+        sql: r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
@@ -78,7 +324,45 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_agent_created
 CREATE INDEX IF NOT EXISTS idx_audit_events_event_seq
   ON audit_events(event_seq);
 "#,
-}];
+    },
+    Migration {
+        version: 2,
+        name: "work_items_current_state",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS work_items (
+  work_item_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  objective TEXT NOT NULL,
+  plan_status TEXT,
+  readiness TEXT,
+  revision INTEGER NOT NULL,
+  current_focus INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  plan_artifact_path TEXT,
+  last_turn_id TEXT,
+  last_message_id TEXT,
+  causation_id TEXT,
+  correlation_id TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_items_agent
+  ON work_items(agent_id);
+
+CREATE INDEX IF NOT EXISTS idx_work_items_state
+  ON work_items(state);
+
+CREATE INDEX IF NOT EXISTS idx_work_items_readiness
+  ON work_items(readiness);
+
+CREATE INDEX IF NOT EXISTS idx_work_items_current_focus
+  ON work_items(agent_id, current_focus);
+"#,
+    },
+];
 
 impl RuntimeDb {
     pub fn open_and_migrate(
@@ -123,6 +407,10 @@ impl RuntimeDb {
     pub fn current_schema_version(&self) -> Result<i64> {
         let connection = self.connection()?;
         current_schema_version(&connection)
+    }
+
+    pub fn work_items(&self) -> WorkItemRepository<'_> {
+        WorkItemRepository { db: self }
     }
 
     pub fn migrate(&self) -> Result<()> {
@@ -367,12 +655,13 @@ mod tests {
         let connection = db.connection()?;
 
         let version = db.current_schema_version()?;
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
         for table in [
             "schema_migrations",
             "storage_domains",
             "agents",
             "audit_events",
+            "work_items",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -396,8 +685,8 @@ mod tests {
             connection.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
                 row.get(0)
             })?;
-        assert_eq!(count, 1);
-        assert_eq!(current_schema_version(&connection)?, 1);
+        assert_eq!(count, 2);
+        assert_eq!(current_schema_version(&connection)?, 2);
         Ok(())
     }
 
@@ -515,7 +804,87 @@ mod tests {
         let temp_db = test_support::TempRuntimeDb::new()?;
         assert!(temp_db.db.path().ends_with("state/runtime.sqlite"));
         assert!(temp_db.db.lock_path().ends_with("state/runtime.lock"));
-        assert_eq!(temp_db.db.current_schema_version()?, 1);
+        assert_eq!(temp_db.db.current_schema_version()?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_import_is_idempotent_and_preserves_latest_revision() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut older = WorkItemRecord::new("agent-a", "older objective", WorkItemState::Open);
+        older.id = "work-test".into();
+        older.revision = 1;
+        older.updated_at = older.created_at;
+        let mut newer = older.clone();
+        newer.objective = "newer objective".into();
+        newer.revision = 3;
+        newer.updated_at = older.updated_at + chrono::Duration::seconds(10);
+
+        db.work_items()
+            .import_legacy(vec![older.clone(), newer.clone()], Some("work-test"))?;
+        db.work_items()
+            .import_legacy(vec![older.clone(), newer.clone()], Some("work-test"))?;
+
+        let imported = db
+            .work_items()
+            .latest("work-test")?
+            .expect("work item imported");
+        assert_eq!(imported.revision, 3);
+        assert_eq!(imported.objective, "newer objective");
+        let connection = db.connection()?;
+        let rows: i64 =
+            connection.query_row("SELECT COUNT(*) FROM work_items", [], |row| row.get(0))?;
+        assert_eq!(rows, 1);
+        let current_focus: i64 = connection.query_row(
+            "SELECT current_focus FROM work_items WHERE work_item_id = 'work-test'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(current_focus, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_upsert_rejects_revision_rollback() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.work_items().import_legacy(Vec::new(), None)?;
+        let mut current = WorkItemRecord::new("agent-a", "current", WorkItemState::Open);
+        current.id = "work-revision".into();
+        current.revision = 5;
+        db.work_items().upsert(&current, false)?;
+
+        let mut stale = current.clone();
+        stale.objective = "stale".into();
+        stale.revision = 4;
+        stale.updated_at = current.updated_at + chrono::Duration::seconds(10);
+        db.work_items().upsert(&stale, false)?;
+
+        let persisted = db
+            .work_items()
+            .latest("work-revision")?
+            .expect("work item persisted");
+        assert_eq!(persisted.revision, 5);
+        assert_eq!(persisted.objective, "current");
+        Ok(())
+    }
+
+    #[test]
+    fn work_item_listing_is_partitioned_by_agent() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.work_items().import_legacy(Vec::new(), None)?;
+        let mut first = WorkItemRecord::new("agent-a", "first", WorkItemState::Open);
+        first.id = "work-first".into();
+        let mut second = WorkItemRecord::new("agent-b", "second", WorkItemState::Open);
+        second.id = "work-second".into();
+        db.work_items().upsert(&first, false)?;
+        db.work_items().upsert(&second, false)?;
+
+        let agent_items = db.work_items().latest_for_agent("agent-a", 20)?;
+        assert_eq!(agent_items.len(), 1);
+        assert_eq!(agent_items[0].id, "work-first");
         Ok(())
     }
 
