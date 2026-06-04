@@ -105,6 +105,26 @@ If a domain import fails, it must not mark `canonical_source = db`. A later
 startup should be able to retry without duplicating state rows or moving a row
 backward to an older revision.
 
+## Current cutover posture
+
+After the first current-state domain migrations, JSONL files are still present,
+but their role is explicit per domain:
+
+| Domain | DB posture | JSONL posture |
+| --- | --- | --- |
+| `work_items` | `canonical_source = db`; runtime reads current state from the `work_items` table. | Legacy compatibility/export mirror only. `work_items.jsonl` must not be replayed as current state after DB import completes. |
+| `tasks` | `canonical_source = db`; runtime task queries use the `tasks` table. | Legacy compatibility/export mirror only. `tasks.jsonl` remains a historical stream, not a recovery source after cutover. |
+| `external_triggers` | `canonical_source = db`; active trigger lookup and token routing use `external_triggers`. | Legacy compatibility/export mirror only. |
+| `evidence` | `canonical_source = jsonl+db-index`; DB tables index bounded evidence previews and query keys. | `messages.jsonl`, `transcript.jsonl`, `tools.jsonl`, `briefs.jsonl`, and `delivery_summaries.jsonl` remain the import/source streams for large evidence content. |
+| `audit_events` | `canonical_source = jsonl+db-index`; `audit_events` is the query/index sink. | `events.jsonl` remains the live audit mirror and cursor compatibility stream. |
+
+Startup validates this posture through `storage_domains` instead of table
+existence. A missing row, failed import, non-`complete` import status, or
+unexpected `canonical_source` is reported as a cutover diagnostic. Import
+failures leave a `failed` domain row with an error checkpoint so the next
+startup has a clear retry path rather than silently rolling back to an unknown
+state.
+
 ## PR sequence
 
 ### PR 1: Runtime database foundation
