@@ -315,6 +315,9 @@ impl RuntimeHandle {
         runtime_db
             .work_items()
             .import_legacy(legacy_work_items, state.current_work_item_id.as_deref())?;
+        runtime_db
+            .tasks()
+            .import_legacy(storage.read_recent_tasks(usize::MAX)?)?;
 
         let resolved_context_config = if provider_reconfig.is_some() {
             model_catalog

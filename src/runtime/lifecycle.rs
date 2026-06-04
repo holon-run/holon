@@ -469,8 +469,9 @@ impl RuntimeHandle {
     pub async fn active_tasks(&self, limit: usize) -> Result<Vec<TaskRecord>> {
         let agent_id = self.agent_id().await?;
         self.inner
-            .storage
-            .latest_active_task_records_for_agent(&agent_id, limit)
+            .runtime_db
+            .tasks()
+            .active_for_agent(&agent_id, limit)
     }
 
     pub async fn recent_transcript(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {

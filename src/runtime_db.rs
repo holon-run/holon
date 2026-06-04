@@ -8,7 +8,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
-use crate::types::{WorkItemRecord, WorkItemState};
+use crate::types::{TaskRecord, TaskStatus, WorkItemRecord, WorkItemState};
+
+const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
+const TASK_PAYLOAD_ARRAY_LIMIT: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeDb {
@@ -17,6 +20,10 @@ pub struct RuntimeDb {
 }
 
 pub struct WorkItemRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct TaskRepository<'a> {
     db: &'a RuntimeDb,
 }
 
@@ -118,6 +125,105 @@ impl WorkItemRepository<'_> {
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.map(|row| decode_work_item_payload(&row?)).collect()
+    }
+}
+
+impl TaskRepository<'_> {
+    pub fn import_legacy(&self, records: Vec<TaskRecord>) -> Result<()> {
+        self.db.transaction(|tx| {
+            let domain = read_storage_domain(tx, "tasks")?;
+            if domain.as_ref().is_some_and(|domain| {
+                domain.import_status == "complete" && domain.canonical_source == "db"
+            }) {
+                return Ok(());
+            }
+
+            upsert_storage_domain(tx, "tasks", "importing", "jsonl", None)?;
+            let latest = reduce_task_records(records);
+            for record in latest.values() {
+                upsert_task_tx(tx, record)?;
+            }
+            let active_records = latest
+                .values()
+                .filter(|record| is_active_task_status(&record.status))
+                .count();
+            upsert_storage_domain(
+                tx,
+                "tasks",
+                "complete",
+                "db",
+                Some(serde_json::json!({
+                    "imported_records": latest.len(),
+                    "active_records": active_records,
+                })),
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert(&self, record: &TaskRecord) -> Result<()> {
+        self.db.transaction(|tx| upsert_task_tx(tx, record))
+    }
+
+    pub fn latest(&self, task_id: &str) -> Result<Option<TaskRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json FROM tasks WHERE task_id = ?1",
+                [task_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_task_payload(&payload))
+            .transpose()
+    }
+
+    pub fn latest_all(&self) -> Result<Vec<TaskRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM tasks
+             ORDER BY updated_at DESC, created_at DESC, task_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_task_payload(&row?)).collect()
+    }
+
+    pub fn latest_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TaskRecord>> {
+        self.query_for_agent(agent_id, "owner_agent_id = ?1", [agent_id], limit)
+    }
+
+    pub fn active_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TaskRecord>> {
+        self.query_for_agent(
+            agent_id,
+            "owner_agent_id = ?1 AND status IN ('queued', 'running', 'cancelling')",
+            [agent_id],
+            limit,
+        )
+    }
+
+    fn query_for_agent(
+        &self,
+        _agent_id: &str,
+        where_clause: &str,
+        params: [&str; 1],
+        limit: usize,
+    ) -> Result<Vec<TaskRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let sql = format!(
+            "SELECT payload_json
+             FROM tasks
+             WHERE {where_clause}
+             ORDER BY updated_at DESC, created_at DESC, task_id ASC
+             LIMIT {limit}",
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_task_payload(&row?)).collect()
     }
 }
 
@@ -233,6 +339,73 @@ fn upsert_work_item_tx(
     Ok(())
 }
 
+fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
+    let kind = record.kind.as_str();
+    let status = enum_string(&record.status)?;
+    let child_agent_id = task_detail_string(&record.detail, "child_agent_id");
+    let parent_agent_id = child_agent_id.as_ref().map(|_| record.agent_id.clone());
+    let input_target = task_detail_string(&record.detail, "input_target");
+    let wait_policy = enum_string(&record.wait_policy())?;
+    let output_path = task_detail_string(&record.detail, "output_path");
+    let result_summary = task_detail_string(&record.detail, "output_summary")
+        .map(|summary| truncate_task_payload_string(&summary));
+    let exit_status = task_detail_i64(&record.detail, "exit_status");
+    let terminal_reentry = i64::from(record.terminal_reentry());
+    let completed_at =
+        is_terminal_task_status(&record.status).then(|| timestamp(record.updated_at));
+    let payload_json = serde_json::to_string(&slim_task_record_for_payload(record))?;
+    tx.execute(
+        "INSERT INTO tasks (
+            task_id, owner_agent_id, parent_agent_id, child_agent_id, kind, status,
+            summary, input_target, wait_policy, output_path, result_summary,
+            exit_status, terminal_reentry, revision, created_at, updated_at,
+            completed_at, last_message_id, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+         ON CONFLICT(task_id) DO UPDATE SET
+            owner_agent_id = excluded.owner_agent_id,
+            parent_agent_id = excluded.parent_agent_id,
+            child_agent_id = excluded.child_agent_id,
+            kind = excluded.kind,
+            status = excluded.status,
+            summary = excluded.summary,
+            input_target = excluded.input_target,
+            wait_policy = excluded.wait_policy,
+            output_path = excluded.output_path,
+            result_summary = excluded.result_summary,
+            exit_status = excluded.exit_status,
+            terminal_reentry = excluded.terminal_reentry,
+            revision = excluded.revision,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            completed_at = excluded.completed_at,
+            last_message_id = excluded.last_message_id,
+            payload_json = excluded.payload_json
+         WHERE excluded.revision >= tasks.revision",
+        params![
+            record.id,
+            record.agent_id,
+            parent_agent_id,
+            child_agent_id,
+            kind,
+            status,
+            record.summary,
+            input_target,
+            wait_policy,
+            output_path,
+            result_summary,
+            exit_status,
+            terminal_reentry,
+            task_revision(record),
+            timestamp(record.created_at),
+            timestamp(record.updated_at),
+            completed_at,
+            record.parent_message_id,
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
 fn newer_work_item_record(candidate: &WorkItemRecord, existing: &WorkItemRecord) -> bool {
     candidate
         .revision
@@ -242,8 +415,84 @@ fn newer_work_item_record(candidate: &WorkItemRecord, existing: &WorkItemRecord)
         .is_gt()
 }
 
+fn reduce_task_records(records: Vec<TaskRecord>) -> BTreeMap<String, TaskRecord> {
+    let mut latest = BTreeMap::<String, TaskRecord>::new();
+    for record in records {
+        if let Some(previous) = latest.get(&record.id) {
+            let mut merged = record.clone();
+            if merged.summary.is_none() {
+                merged.summary = previous.summary.clone();
+            }
+            if merged.detail.is_none() {
+                merged.detail = previous.detail.clone();
+            }
+            if merged.recovery.is_none() {
+                merged.recovery = previous.recovery.clone();
+            }
+            if newer_task_record(&merged, previous) {
+                latest.insert(record.id.clone(), merged);
+            }
+        } else {
+            latest.insert(record.id.clone(), record);
+        }
+    }
+    latest
+}
+
+fn slim_task_record_for_payload(record: &TaskRecord) -> TaskRecord {
+    let mut slim = record.clone();
+    slim.detail = slim.detail.as_ref().map(slim_task_detail_value);
+    slim
+}
+
+fn slim_task_detail_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut slim = serde_json::Map::new();
+            for (key, value) in map {
+                if key == "initial_output" {
+                    continue;
+                }
+                slim.insert(key.clone(), slim_task_detail_value(value));
+            }
+            serde_json::Value::Object(slim)
+        }
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .iter()
+                .take(TASK_PAYLOAD_ARRAY_LIMIT)
+                .map(slim_task_detail_value)
+                .collect(),
+        ),
+        serde_json::Value::String(value) => {
+            serde_json::Value::String(truncate_task_payload_string(value))
+        }
+        _ => value.clone(),
+    }
+}
+
+fn truncate_task_payload_string(value: &str) -> String {
+    value.chars().take(TASK_PAYLOAD_STRING_LIMIT).collect()
+}
+
+fn newer_task_record(candidate: &TaskRecord, existing: &TaskRecord) -> bool {
+    task_revision(candidate)
+        .cmp(&task_revision(existing))
+        .then_with(|| candidate.updated_at.cmp(&existing.updated_at))
+        .then_with(|| candidate.created_at.cmp(&existing.created_at))
+        .is_gt()
+}
+
+fn task_revision(record: &TaskRecord) -> i64 {
+    record.updated_at.timestamp_millis()
+}
+
 fn decode_work_item_payload(payload: &str) -> Result<WorkItemRecord> {
     serde_json::from_str(payload).context("decoding work item payload from runtime db")
+}
+
+fn decode_task_payload(payload: &str) -> Result<TaskRecord> {
+    serde_json::from_str(payload).context("decoding task payload from runtime db")
 }
 
 fn enum_string<T: serde::Serialize>(value: &T) -> Result<String> {
@@ -252,6 +501,38 @@ fn enum_string<T: serde::Serialize>(value: &T) -> Result<String> {
         .as_str()
         .map(ToString::to_string)
         .ok_or_else(|| anyhow!("expected enum to serialize as string"))
+}
+
+fn task_detail_string(detail: &Option<serde_json::Value>, key: &str) -> Option<String> {
+    detail
+        .as_ref()
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
+fn task_detail_i64(detail: &Option<serde_json::Value>, key: &str) -> Option<i64> {
+    detail
+        .as_ref()
+        .and_then(|value| value.get(key))
+        .and_then(|value| value.as_i64())
+}
+
+fn is_active_task_status(status: &TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
+    )
+}
+
+fn is_terminal_task_status(status: &TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Completed
+            | TaskStatus::Failed
+            | TaskStatus::Cancelled
+            | TaskStatus::Interrupted
+    )
 }
 
 fn timestamp(value: DateTime<Utc>) -> String {
@@ -362,6 +643,51 @@ CREATE INDEX IF NOT EXISTS idx_work_items_current_focus
   ON work_items(agent_id, current_focus);
 "#,
     },
+    Migration {
+        version: 3,
+        name: "tasks_current_state",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS tasks (
+  task_id TEXT PRIMARY KEY,
+  owner_agent_id TEXT NOT NULL,
+  parent_agent_id TEXT,
+  child_agent_id TEXT,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  summary TEXT,
+  input_target TEXT,
+  wait_policy TEXT,
+  output_path TEXT,
+  result_summary TEXT,
+  exit_status INTEGER,
+  terminal_reentry INTEGER NOT NULL DEFAULT 0,
+  revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  last_turn_id TEXT,
+  last_message_id TEXT,
+  causation_id TEXT,
+  correlation_id TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_owner_agent
+  ON tasks(owner_agent_id);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_parent_agent
+  ON tasks(parent_agent_id);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_child_agent
+  ON tasks(child_agent_id);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status
+  ON tasks(status);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_owner_active
+  ON tasks(owner_agent_id, status, updated_at);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -411,6 +737,10 @@ impl RuntimeDb {
 
     pub fn work_items(&self) -> WorkItemRepository<'_> {
         WorkItemRepository { db: self }
+    }
+
+    pub fn tasks(&self) -> TaskRepository<'_> {
+        TaskRepository { db: self }
     }
 
     pub fn migrate(&self) -> Result<()> {
@@ -648,6 +978,30 @@ mod tests {
         Ok((temp_dir, db_path, lock_path))
     }
 
+    fn task_record(id: &str, agent_id: &str, status: TaskStatus, offset: i64) -> TaskRecord {
+        let created_at = Utc::now();
+        TaskRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            kind: crate::types::TaskKind::CommandTask,
+            status,
+            created_at,
+            updated_at: created_at + chrono::Duration::seconds(offset),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some(id.into()),
+            detail: Some(serde_json::json!({
+                "cmd": "printf test",
+                "output_path": format!("/tmp/{id}.log"),
+                "output_summary": format!("{id} summary"),
+                "exit_status": 0,
+                "accepts_input": true,
+                "input_target": "stdin",
+            })),
+            recovery: None,
+        }
+    }
+
     #[test]
     fn runtime_db_fresh_migration_creates_foundation_schema() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
@@ -655,13 +1009,14 @@ mod tests {
         let connection = db.connection()?;
 
         let version = db.current_schema_version()?;
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         for table in [
             "schema_migrations",
             "storage_domains",
             "agents",
             "audit_events",
             "work_items",
+            "tasks",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -685,8 +1040,8 @@ mod tests {
             connection.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
                 row.get(0)
             })?;
-        assert_eq!(count, 2);
-        assert_eq!(current_schema_version(&connection)?, 2);
+        assert_eq!(count, 3);
+        assert_eq!(current_schema_version(&connection)?, 3);
         Ok(())
     }
 
@@ -804,7 +1159,7 @@ mod tests {
         let temp_db = test_support::TempRuntimeDb::new()?;
         assert!(temp_db.db.path().ends_with("state/runtime.sqlite"));
         assert!(temp_db.db.lock_path().ends_with("state/runtime.lock"));
-        assert_eq!(temp_db.db.current_schema_version()?, 2);
+        assert_eq!(temp_db.db.current_schema_version()?, 3);
         Ok(())
     }
 
@@ -885,6 +1240,165 @@ mod tests {
         let agent_items = db.work_items().latest_for_agent("agent-a", 20)?;
         assert_eq!(agent_items.len(), 1);
         assert_eq!(agent_items[0].id, "work-first");
+        Ok(())
+    }
+
+    #[test]
+    fn task_import_is_idempotent_and_preserves_latest_lifecycle_state() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let queued = task_record("task-import", "agent-a", TaskStatus::Queued, 0);
+        let completed = task_record("task-import", "agent-a", TaskStatus::Completed, 10);
+
+        db.tasks()
+            .import_legacy(vec![queued.clone(), completed.clone()])?;
+        db.tasks().import_legacy(vec![queued, completed])?;
+
+        let imported = db.tasks().latest("task-import")?.expect("task imported");
+        assert_eq!(imported.status, TaskStatus::Completed);
+        assert_eq!(
+            imported
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("output_path"))
+                .and_then(serde_json::Value::as_str),
+            Some("/tmp/task-import.log")
+        );
+        let connection = db.connection()?;
+        let rows: i64 = connection.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
+        assert_eq!(rows, 1);
+        let terminal_rows: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status = 'completed' AND completed_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(terminal_rows, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn task_import_merges_legacy_metadata_when_latest_update_is_sparse() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let queued = task_record("task-sparse", "agent-a", TaskStatus::Queued, 0);
+        let mut completed = task_record("task-sparse", "agent-a", TaskStatus::Completed, 10);
+        completed.summary = None;
+        completed.detail = None;
+        completed.recovery = None;
+
+        db.tasks().import_legacy(vec![queued, completed])?;
+
+        let imported = db.tasks().latest("task-sparse")?.expect("task imported");
+        assert_eq!(imported.status, TaskStatus::Completed);
+        assert_eq!(imported.summary.as_deref(), Some("task-sparse"));
+        assert_eq!(
+            imported
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("output_path"))
+                .and_then(serde_json::Value::as_str),
+            Some("/tmp/task-sparse.log")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn task_parent_agent_column_is_only_set_for_child_agent_tasks() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let command = task_record("task-command", "agent-a", TaskStatus::Running, 0);
+        let mut child = task_record("task-child", "agent-a", TaskStatus::Running, 1);
+        child.detail = Some(serde_json::json!({
+            "child_agent_id": "child-a",
+            "input_target": "child_followup",
+        }));
+
+        db.tasks().upsert(&command)?;
+        db.tasks().upsert(&child)?;
+
+        let connection = db.connection()?;
+        let command_parent: Option<String> = connection.query_row(
+            "SELECT parent_agent_id FROM tasks WHERE task_id = 'task-command'",
+            [],
+            |row| row.get(0),
+        )?;
+        let child_parent: Option<String> = connection.query_row(
+            "SELECT parent_agent_id FROM tasks WHERE task_id = 'task-child'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(command_parent, None);
+        assert_eq!(child_parent.as_deref(), Some("agent-a"));
+        Ok(())
+    }
+
+    #[test]
+    fn task_payload_json_slimguards_large_preview_fields() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut task = task_record("task-large", "agent-a", TaskStatus::Running, 0);
+        task.detail = Some(serde_json::json!({
+            "output_path": "/tmp/task-large.log",
+            "initial_output": "i".repeat(TASK_PAYLOAD_STRING_LIMIT + 10),
+            "output_summary": "s".repeat(TASK_PAYLOAD_STRING_LIMIT + 10),
+            "lines": (0..(TASK_PAYLOAD_ARRAY_LIMIT + 10)).collect::<Vec<_>>(),
+        }));
+
+        db.tasks().upsert(&task)?;
+
+        let connection = db.connection()?;
+        let (payload_json, result_summary): (String, Option<String>) = connection.query_row(
+            "SELECT payload_json, result_summary FROM tasks WHERE task_id = 'task-large'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let payload: serde_json::Value = serde_json::from_str(&payload_json)?;
+        let detail = &payload["detail"];
+        assert!(detail.get("initial_output").is_none());
+        assert_eq!(
+            detail["output_summary"].as_str().expect("summary").len(),
+            TASK_PAYLOAD_STRING_LIMIT
+        );
+        assert_eq!(
+            detail["lines"].as_array().expect("lines").len(),
+            TASK_PAYLOAD_ARRAY_LIMIT
+        );
+        assert_eq!(
+            result_summary.expect("result summary").len(),
+            TASK_PAYLOAD_STRING_LIMIT
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn task_active_listing_is_partitioned_by_agent_and_excludes_terminal() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.tasks().import_legacy(Vec::new())?;
+        db.tasks().upsert(&task_record(
+            "agent-a-running",
+            "agent-a",
+            TaskStatus::Running,
+            1,
+        ))?;
+        db.tasks().upsert(&task_record(
+            "agent-a-completed",
+            "agent-a",
+            TaskStatus::Completed,
+            2,
+        ))?;
+        db.tasks().upsert(&task_record(
+            "agent-b-running",
+            "agent-b",
+            TaskStatus::Running,
+            3,
+        ))?;
+
+        let active = db.tasks().active_for_agent("agent-a", 20)?;
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, "agent-a-running");
+        let all_agent_a = db.tasks().latest_for_agent("agent-a", 20)?;
+        assert_eq!(all_agent_a.len(), 2);
         Ok(())
     }
 
