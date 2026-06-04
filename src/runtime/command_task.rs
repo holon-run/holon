@@ -1765,6 +1765,7 @@ mod tests {
             false,
         );
         runtime.inner.storage.append_task(&task).unwrap();
+        runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
 
         let result = runtime.task_input(&task.id, "hello\n").await.unwrap();
 

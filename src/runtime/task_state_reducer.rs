@@ -4,19 +4,19 @@ pub(super) fn is_terminal_task_status(status: &TaskStatus) -> bool {
     scheduler::is_terminal_task_status(status)
 }
 
-pub(super) fn should_ignore_task_update(storage: &AppStorage, task: &TaskRecord) -> Result<bool> {
-    let Some(latest) = storage.latest_task_record(&task.id)? else {
-        return Ok(false);
+pub(super) fn should_ignore_task_update(latest: Option<TaskRecord>, task: &TaskRecord) -> bool {
+    let Some(latest) = latest else {
+        return false;
     };
 
     if is_terminal_task_status(&latest.status)
         && is_terminal_task_status(&task.status)
         && latest.status != task.status
     {
-        return Ok(true);
+        return true;
     }
 
-    Ok(task_status_phase(&latest.status) > task_status_phase(&task.status))
+    task_status_phase(&latest.status) > task_status_phase(&task.status)
 }
 
 fn task_status_phase(status: &TaskStatus) -> u8 {
@@ -45,10 +45,11 @@ impl<'a> TaskTransition<'a> {
 impl RuntimeHandle {
     pub(super) async fn apply_task_transition(&self, transition: TaskTransition<'_>) -> Result<()> {
         let task = transition.task;
-        if should_ignore_task_update(&self.inner.storage, task)? {
+        if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, task) {
             return Ok(());
         }
 
+        self.inner.runtime_db.tasks().upsert(task)?;
         self.inner.storage.append_task(task)?;
         {
             let mut guard = self.inner.agent.lock().await;
@@ -86,7 +87,7 @@ impl RuntimeHandle {
         model_reentry: bool,
         continuation_resolution: Option<&ContinuationResolution>,
     ) -> Result<()> {
-        if should_ignore_task_update(&self.inner.storage, &task)? {
+        if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, &task) {
             return Ok(());
         }
         self.persist_task_transition(&task, "task_result_received")
@@ -244,8 +245,9 @@ mod tests {
             .append_task(&task("task-1", TaskStatus::Completed, true))
             .unwrap();
 
+        let latest = storage.latest_task_record("task-1").unwrap();
         let stale = task("task-1", TaskStatus::Running, true);
-        assert!(should_ignore_task_update(&storage, &stale).unwrap());
+        assert!(should_ignore_task_update(latest, &stale));
     }
 
     #[test]
@@ -256,8 +258,9 @@ mod tests {
             .append_task(&task("task-1", TaskStatus::Completed, true))
             .unwrap();
 
+        let latest = storage.latest_task_record("task-1").unwrap();
         let late_terminal = task("task-1", TaskStatus::Failed, true);
-        assert!(should_ignore_task_update(&storage, &late_terminal).unwrap());
+        assert!(should_ignore_task_update(latest, &late_terminal));
     }
 
     #[test]
@@ -268,8 +271,9 @@ mod tests {
             .append_task(&task("task-1", TaskStatus::Failed, true))
             .unwrap();
 
+        let latest = storage.latest_task_record("task-1").unwrap();
         let repeated_terminal = task("task-1", TaskStatus::Failed, true);
-        assert!(!should_ignore_task_update(&storage, &repeated_terminal).unwrap());
+        assert!(!should_ignore_task_update(latest, &repeated_terminal));
     }
 
     #[test]
@@ -280,8 +284,9 @@ mod tests {
             .append_task(&task("task-1", TaskStatus::Cancelling, true))
             .unwrap();
 
+        let latest = storage.latest_task_record("task-1").unwrap();
         let stale = task("task-1", TaskStatus::Running, true);
-        assert!(should_ignore_task_update(&storage, &stale).unwrap());
+        assert!(should_ignore_task_update(latest, &stale));
     }
 
     #[test]

@@ -1294,7 +1294,7 @@ impl RuntimeHandle {
     }
 
     pub async fn latest_task_records(&self) -> Result<Vec<TaskRecord>> {
-        let mut tasks = self.inner.storage.latest_task_records()?;
+        let mut tasks = self.inner.runtime_db.tasks().latest_all()?;
         tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(tasks)
     }
@@ -1310,8 +1310,9 @@ impl RuntimeHandle {
     ) -> Result<Vec<TaskListEntry>> {
         Ok(self
             .inner
-            .storage
-            .latest_active_task_records_for_agent(agent_id, usize::MAX)?
+            .runtime_db
+            .tasks()
+            .active_for_agent(agent_id, usize::MAX)?
             .into_iter()
             .map(|task| {
                 let wait_policy = task.wait_policy();
@@ -1440,12 +1441,7 @@ impl RuntimeHandle {
     }
 
     pub async fn task_record(&self, task_id: &str) -> Result<Option<TaskRecord>> {
-        Ok(self
-            .inner
-            .storage
-            .latest_task_records()?
-            .into_iter()
-            .find(|task| task.id == task_id))
+        self.inner.runtime_db.tasks().latest(task_id)
     }
 
     pub async fn task_status_snapshot(&self, task_id: &str) -> Result<TaskStatusSnapshot> {

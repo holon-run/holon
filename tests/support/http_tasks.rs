@@ -198,18 +198,15 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
         recovery: None,
     };
 
-    runtime
-        .storage()
-        .append_task(&task("task-terminal", TaskStatus::Queued, 0))?;
-    runtime
-        .storage()
-        .append_task(&task("task-running", TaskStatus::Running, 1))?;
-    runtime
-        .storage()
-        .append_task(&task("task-terminal", TaskStatus::Completed, 2))?;
-    runtime
-        .storage()
-        .append_task(&task("task-cancelling", TaskStatus::Cancelling, 3))?;
+    for task in [
+        task("task-terminal", TaskStatus::Queued, 0),
+        task("task-running", TaskStatus::Running, 1),
+        task("task-terminal", TaskStatus::Completed, 2),
+        task("task-cancelling", TaskStatus::Cancelling, 3),
+    ] {
+        runtime.storage().append_task(&task)?;
+        host.runtime_db().tasks().upsert(&task)?;
+    }
 
     let tasks: serde_json::Value = client
         .get(format!("{base}/agents/default/tasks"))

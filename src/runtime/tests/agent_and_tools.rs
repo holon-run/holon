@@ -795,6 +795,7 @@ async fn cancelling_task_ignores_late_running_status_update() {
         recovery: None,
     };
     runtime.storage().append_task(&task).unwrap();
+    runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
 
     let stale_running = TaskRecord {
         status: TaskStatus::Running,
@@ -828,48 +829,47 @@ async fn latest_task_list_entries_return_compact_projection() {
         context_config(),
     )
     .unwrap();
-    runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: "task-list-1".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: Some("watch logs".into()),
-            detail: Some(serde_json::json!({
-                "wait_policy": "blocking",
-                "cmd": "tail -f app.log",
-                "cmd_digest": crate::tool::helpers::command_digest("tail -f app.log"),
-                "workdir": "/tmp/workspace",
-                "shell": "/bin/bash",
-                "login": false,
-                "output_path": "/tmp/output.log",
-                "output_summary": "large output summary should not appear in TaskList",
-                "tty": false,
-                "promoted_from_exec_command": false,
-            })),
-            recovery: Some(TaskRecoverySpec::CommandTask {
-                summary: "watch logs".into(),
-                spec: crate::types::CommandTaskSpec {
-                    cmd: "tail -f app.log".into(),
-                    workdir: None,
-                    shell: None,
-                    login: true,
-                    tty: false,
-                    yield_time_ms: 100,
-                    max_output_tokens: None,
-                    accepts_input: false,
-                    terminal_reentry: true,
-                },
-                authority_class: AuthorityClass::OperatorInstruction,
-                promoted_from_exec_command: false,
-            }),
-        })
-        .unwrap();
+    let task = TaskRecord {
+        id: "task-list-1".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Running,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: None,
+        summary: Some("watch logs".into()),
+        detail: Some(serde_json::json!({
+            "wait_policy": "blocking",
+            "cmd": "tail -f app.log",
+            "cmd_digest": crate::tool::helpers::command_digest("tail -f app.log"),
+            "workdir": "/tmp/workspace",
+            "shell": "/bin/bash",
+            "login": false,
+            "output_path": "/tmp/output.log",
+            "output_summary": "large output summary should not appear in TaskList",
+            "tty": false,
+            "promoted_from_exec_command": false,
+        })),
+        recovery: Some(TaskRecoverySpec::CommandTask {
+            summary: "watch logs".into(),
+            spec: crate::types::CommandTaskSpec {
+                cmd: "tail -f app.log".into(),
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 100,
+                max_output_tokens: None,
+                accepts_input: false,
+                terminal_reentry: true,
+            },
+            authority_class: AuthorityClass::OperatorInstruction,
+            promoted_from_exec_command: false,
+        }),
+    };
+    runtime.storage().append_task(&task).unwrap();
+    runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
 
     let entries = runtime.latest_task_list_entries().await.unwrap();
     assert_eq!(entries.len(), 1);
@@ -912,99 +912,118 @@ async fn latest_task_list_entries_filters_to_active_statuses_only() {
     )
     .unwrap();
 
+    let active_task = TaskRecord {
+        id: "task-active-1".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Running,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: None,
+        summary: Some("active task".into()),
+        detail: Some(serde_json::json!({
+            "task_status": "running",
+            "wait_policy": "background"
+        })),
+        recovery: None,
+    };
+    runtime.storage().append_task(&active_task).unwrap();
     runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: "task-active-1".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: Some("active task".into()),
-            detail: Some(serde_json::json!({
-                "task_status": "running",
-                "wait_policy": "background"
-            })),
-            recovery: None,
-        })
+        .inner
+        .runtime_db
+        .tasks()
+        .upsert(&active_task)
         .unwrap();
 
+    let historical_running = TaskRecord {
+        id: "task-historical".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Running,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: None,
+        summary: Some("historical active".into()),
+        detail: Some(serde_json::json!({
+            "task_status": "running",
+            "wait_policy": "background"
+        })),
+        recovery: None,
+    };
+    runtime.storage().append_task(&historical_running).unwrap();
     runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: "task-historical".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: Some("historical active".into()),
-            detail: Some(serde_json::json!({
-                "task_status": "running",
-                "wait_policy": "background"
-            })),
-            recovery: None,
-        })
+        .inner
+        .runtime_db
+        .tasks()
+        .upsert(&historical_running)
         .unwrap();
 
+    let historical_completed = TaskRecord {
+        id: "task-historical".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: None,
+        summary: Some("historical active".into()),
+        detail: Some(serde_json::json!({
+            "task_status": "completed",
+            "wait_policy": "background"
+        })),
+        recovery: Some(TaskRecoverySpec::CommandTask {
+            summary: "historical active".into(),
+            spec: crate::types::CommandTaskSpec {
+                cmd: "true".into(),
+                workdir: None,
+                shell: None,
+                login: true,
+                tty: false,
+                yield_time_ms: 100,
+                max_output_tokens: None,
+                accepts_input: false,
+                terminal_reentry: true,
+            },
+            authority_class: AuthorityClass::OperatorInstruction,
+            promoted_from_exec_command: false,
+        }),
+    };
     runtime
         .storage()
-        .append_task(&TaskRecord {
-            id: "task-historical".into(),
-            agent_id: "default".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Completed,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: Some("historical active".into()),
-            detail: Some(serde_json::json!({
-                "task_status": "completed",
-                "wait_policy": "background"
-            })),
-            recovery: Some(TaskRecoverySpec::CommandTask {
-                summary: "historical active".into(),
-                spec: crate::types::CommandTaskSpec {
-                    cmd: "true".into(),
-                    workdir: None,
-                    shell: None,
-                    login: true,
-                    tty: false,
-                    yield_time_ms: 100,
-                    max_output_tokens: None,
-                    accepts_input: false,
-                    terminal_reentry: true,
-                },
-                authority_class: AuthorityClass::OperatorInstruction,
-                promoted_from_exec_command: false,
-            }),
-        })
+        .append_task(&historical_completed)
+        .unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .tasks()
+        .upsert(&historical_completed)
         .unwrap();
 
+    let other_agent_task = TaskRecord {
+        id: "other-agent-task".into(),
+        agent_id: "other".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Running,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: None,
+        summary: Some("other agent".into()),
+        detail: Some(serde_json::json!({
+            "task_status": "running",
+            "wait_policy": "background"
+        })),
+        recovery: None,
+    };
+    runtime.storage().append_task(&other_agent_task).unwrap();
     runtime
-        .storage()
-        .append_task(&TaskRecord {
-            id: "other-agent-task".into(),
-            agent_id: "other".into(),
-            kind: TaskKind::CommandTask,
-            status: TaskStatus::Running,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            parent_message_id: None,
-            work_item_id: None,
-            summary: Some("other agent".into()),
-            detail: Some(serde_json::json!({
-                "task_status": "running",
-                "wait_policy": "background"
-            })),
-            recovery: None,
-        })
+        .inner
+        .runtime_db
+        .tasks()
+        .upsert(&other_agent_task)
         .unwrap();
 
     let entries = runtime
