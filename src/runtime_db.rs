@@ -1391,7 +1391,24 @@ fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
          WHERE excluded.fire_count > timers.fire_count
             OR (
                 excluded.fire_count = timers.fire_count
-                AND excluded.updated_at >= timers.updated_at
+                AND (
+                    CASE excluded.status
+                        WHEN 'active' THEN 0
+                        WHEN 'cancelled' THEN 1
+                        WHEN 'completed' THEN 2
+                        ELSE 0
+                    END
+                    > CASE timers.status
+                        WHEN 'active' THEN 0
+                        WHEN 'cancelled' THEN 1
+                        WHEN 'completed' THEN 2
+                        ELSE 0
+                    END
+                    OR (
+                        excluded.status = timers.status
+                        AND excluded.updated_at >= timers.updated_at
+                    )
+                )
             )",
         params![
             record.id,
@@ -1504,10 +1521,21 @@ fn newer_timer_record(candidate: &TimerRecord, existing: &TimerRecord) -> bool {
     candidate
         .fire_count
         .cmp(&existing.fire_count)
+        .then_with(|| {
+            timer_status_rank(&candidate.status).cmp(&timer_status_rank(&existing.status))
+        })
         .then_with(|| timer_updated_at(candidate).cmp(&timer_updated_at(existing)))
         .then_with(|| candidate.created_at.cmp(&existing.created_at))
         .then_with(|| candidate.id.cmp(&existing.id))
         .is_gt()
+}
+
+fn timer_status_rank(status: &TimerStatus) -> u8 {
+    match status {
+        TimerStatus::Active => 0,
+        TimerStatus::Cancelled => 1,
+        TimerStatus::Completed => 2,
+    }
 }
 
 fn timer_updated_at(record: &TimerRecord) -> DateTime<Utc> {
