@@ -623,9 +623,24 @@ fn upsert_storage_domain(
     canonical_source: &str,
     checkpoint: Option<serde_json::Value>,
 ) -> Result<()> {
+    upsert_storage_domain_checkpoint_json(
+        tx,
+        domain,
+        import_status,
+        canonical_source,
+        checkpoint.map(|value| value.to_string()),
+    )
+}
+
+fn upsert_storage_domain_checkpoint_json(
+    tx: &Transaction<'_>,
+    domain: &str,
+    import_status: &str,
+    canonical_source: &str,
+    checkpoint_json: Option<String>,
+) -> Result<()> {
     let now = timestamp(Utc::now());
     let imported_at = (import_status == "complete").then(|| now.clone());
-    let checkpoint = checkpoint.map(|value| value.to_string());
     tx.execute(
         "INSERT INTO storage_domains (
             domain, schema_version, import_status, canonical_source,
@@ -643,7 +658,7 @@ fn upsert_storage_domain(
             max_known_migration_version(),
             import_status,
             canonical_source,
-            checkpoint,
+            checkpoint_json,
             imported_at,
             now
         ],
@@ -1881,7 +1896,21 @@ impl RuntimeDb {
         import: impl FnOnce(&Transaction<'_>) -> Result<serde_json::Value>,
     ) -> Result<()> {
         self.transaction(|tx| {
-            upsert_storage_domain(tx, domain, "importing", importing_source, None)
+            let existing_checkpoint = tx
+                .query_row(
+                    "SELECT source_checkpoint_json FROM storage_domains WHERE domain = ?1",
+                    [domain],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+            upsert_storage_domain_checkpoint_json(
+                tx,
+                domain,
+                "importing",
+                importing_source,
+                existing_checkpoint,
+            )
         })?;
         let result = self.transaction(|tx| {
             let checkpoint = import(tx)?;
@@ -2372,8 +2401,15 @@ mod tests {
             .as_deref()
             .is_some_and(|checkpoint| checkpoint.contains("restart runtime to retry")));
 
-        db.evidence()
-            .import_legacy(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())?;
+        db.run_storage_domain_import("evidence", "jsonl", "jsonl+db-index", |tx| {
+            let checkpoint: Option<String> = tx.query_row(
+                "SELECT source_checkpoint_json FROM storage_domains WHERE domain = 'evidence'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(checkpoint, failed.source_checkpoint_json);
+            Ok(serde_json::json!({ "imported_records": 0 }))
+        })?;
         let complete = db
             .storage_domain("evidence")?
             .expect("complete storage domain row");
