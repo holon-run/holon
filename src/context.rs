@@ -1769,10 +1769,6 @@ fn render_turn_record_projection(
                 .and_then(|trigger| trigger.message_id.as_ref())
                 .and_then(|id| messages.iter().find(|message| message.id == *id))
         });
-    let Some(trigger_message) = trigger_message else {
-        return None;
-    };
-
     let mut lines = vec![format!(
         "- Turn {}:",
         if record.turn_index != 0 {
@@ -1782,33 +1778,53 @@ fn render_turn_record_projection(
         }
     )];
     lines.push(format!("  - turn_id: {}", sanitize_inline(&record.turn_id)));
-    lines.push(format!(
-        "  - trigger: {}",
-        turn_trigger_label(trigger_message)
-    ));
+    if let Some(trigger_message) = trigger_message {
+        lines.push(format!(
+            "  - trigger: {}",
+            turn_trigger_label(trigger_message)
+        ));
+    } else if let Some(trigger) = &record.trigger {
+        lines.push(format!(
+            "  - trigger: {} (message not in recent window)",
+            turn_trigger_summary_label(trigger)
+        ));
+    } else {
+        lines.push("  - trigger: unavailable in recent message window".to_string());
+    }
     if let Some(continuation) = continuation {
         lines.push(format!(
             "  - continues input: {}",
             trigger_message
-                .message_seq
-                .map(|seq| format!("message_seq {seq}"))
-                .unwrap_or_else(|| trigger_message.id.clone())
+                .and_then(|message| message.message_seq.map(|seq| format!("message_seq {seq}")))
+                .or_else(|| {
+                    trigger_message
+                        .map(|message| message.id.clone())
+                        .or_else(|| {
+                            record
+                                .trigger
+                                .as_ref()
+                                .and_then(|trigger| trigger.message_id.clone())
+                        })
+                })
+                .unwrap_or_else(|| record.turn_id.clone())
         ));
         lines.push(format!(
             "  - continuation trigger: {}",
             turn_trigger_label(continuation)
         ));
     }
-    if is_trusted_operator_input(trigger_message) {
-        lines.push(format!(
-            "  - operator asked: {}",
-            sanitize_inline(&body_preview(&trigger_message.body))
-        ));
-    } else {
-        lines.push(format!(
-            "  - input: {}",
-            sanitize_inline(&body_preview(&trigger_message.body))
-        ));
+    if let Some(trigger_message) = trigger_message {
+        if is_trusted_operator_input(trigger_message) {
+            lines.push(format!(
+                "  - operator asked: {}",
+                sanitize_inline(&body_preview(&trigger_message.body))
+            ));
+        } else {
+            lines.push(format!(
+                "  - input: {}",
+                sanitize_inline(&body_preview(&trigger_message.body))
+            ));
+        }
     }
 
     let related_briefs = record
@@ -2024,6 +2040,30 @@ fn turn_trigger_label(message: &MessageEnvelope) -> &'static str {
         return "trusted operator input";
     }
     runtime_continuation_label(message)
+}
+
+fn turn_trigger_summary_label(trigger: &crate::types::TurnTriggerSummary) -> &'static str {
+    if matches!(trigger.authority_class, AuthorityClass::OperatorInstruction) {
+        return "trusted operator input";
+    }
+    match trigger.trigger_kind {
+        Some(ContinuationTriggerKind::TaskResult) => "a task-result continuation",
+        Some(ContinuationTriggerKind::ExternalEvent) => "an external-event continuation",
+        Some(ContinuationTriggerKind::TimerFire) => "a timer continuation",
+        Some(ContinuationTriggerKind::InternalFollowup) => "an internal-followup continuation",
+        Some(ContinuationTriggerKind::SystemTick) => "a runtime system-tick continuation",
+        Some(ContinuationTriggerKind::OperatorInput) => "operator-triggered input",
+        None => match trigger.kind {
+            MessageKind::TaskResult | MessageKind::TaskStatus => "a task-result continuation",
+            MessageKind::CallbackEvent | MessageKind::WebhookEvent | MessageKind::ChannelEvent => {
+                "an external-event continuation"
+            }
+            MessageKind::TimerTick => "a timer continuation",
+            MessageKind::InternalFollowup => "an internal-followup continuation",
+            MessageKind::SystemTick => "a runtime system-tick continuation",
+            _ => "runtime-originated input",
+        },
+    }
 }
 
 fn sanitize_inline(value: &str) -> String {
@@ -2597,6 +2637,80 @@ mod tests {
         assert!(recent_turns.contains("- Turn turn_index 1:"));
         assert!(recent_turns.contains("  - turn_id: turn-db-context"));
         assert!(recent_turns.contains("Rendered from DB turn record."));
+    }
+
+    #[test]
+    fn recent_turns_keeps_db_turn_when_trigger_message_is_outside_window() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Rendered without trigger hydration.",
+            Some("missing-trigger-message".into()),
+            None,
+        );
+        brief.id = "brief-missing-trigger".into();
+        brief.turn_id = Some("turn-missing-trigger".into());
+        storage.append_brief(&brief).unwrap();
+
+        let mut turn = TurnRecord::new("default", "turn-missing-trigger", 2);
+        turn.input_message_ids = vec!["missing-trigger-message".into()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary {
+            message_id: Some("missing-trigger-message".into()),
+            kind: MessageKind::OperatorPrompt,
+            origin: MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            authority_class: AuthorityClass::OperatorInstruction,
+            priority: Priority::Normal,
+            trigger_kind: None,
+            task_id: None,
+        });
+        storage.append_turn(&turn).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue.".into(),
+            },
+        );
+        let context = build_context(
+            &storage,
+            &AgentState::new("default"),
+            &execution_snapshot_for(&AgentState::new("default")),
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig::default(),
+        )
+        .unwrap();
+        let recent_turns = context
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section")
+            .content
+            .clone();
+        assert!(recent_turns.contains("- Turn turn_index 2:"));
+        assert!(recent_turns.contains("message not in recent window"));
+        assert!(recent_turns.contains("Rendered without trigger hydration."));
     }
 
     #[test]

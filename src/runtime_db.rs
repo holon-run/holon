@@ -1603,6 +1603,7 @@ fn derive_turn_records_from_legacy_evidence(
             let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
                 TurnRecord::new(&message.agent_id, &turn_key.turn_id, turn_key.turn_index)
             });
+            reinforce_turn_index(record, &turn_key);
             record.created_at = record.created_at.min(message.created_at);
             record.input_message_ids.push(message.id.clone());
             if record.trigger.is_none() {
@@ -1621,6 +1622,7 @@ fn derive_turn_records_from_legacy_evidence(
         let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
             TurnRecord::new(&tool.agent_id, &turn_key.turn_id, turn_key.turn_index)
         });
+        reinforce_turn_index(record, &turn_key);
         record.created_at = record.created_at.min(tool.created_at);
         record.tool_execution_ids.push(tool.id.clone());
         if record.current_work_item_id.is_none() {
@@ -1637,6 +1639,7 @@ fn derive_turn_records_from_legacy_evidence(
         let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
             TurnRecord::new(&brief.agent_id, &turn_key.turn_id, turn_key.turn_index)
         });
+        reinforce_turn_index(record, &turn_key);
         record.created_at = record.created_at.min(brief.created_at);
         record.produced_brief_ids.push(brief.id.clone());
         if record.current_work_item_id.is_none() {
@@ -1653,6 +1656,7 @@ fn derive_turn_records_from_legacy_evidence(
         let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
             TurnRecord::new(&summary.agent_id, &turn_key.turn_id, turn_key.turn_index)
         });
+        reinforce_turn_index(record, &turn_key);
         record.created_at = record.created_at.min(summary.created_at);
         record.delivery_summary_ids.push(summary.id.clone());
         record
@@ -1701,6 +1705,12 @@ struct DerivedTurnKey {
     turn_index: u64,
 }
 
+fn reinforce_turn_index(record: &mut TurnRecord, turn_key: &DerivedTurnKey) {
+    if record.turn_index == 0 && turn_key.turn_index != 0 {
+        record.turn_index = turn_key.turn_index;
+    }
+}
+
 fn turn_key_from_message(message: &MessageEnvelope) -> DerivedTurnKey {
     if let Some(turn_id) = message
         .turn_id
@@ -1709,7 +1719,7 @@ fn turn_key_from_message(message: &MessageEnvelope) -> DerivedTurnKey {
     {
         return DerivedTurnKey {
             turn_id: turn_id.trim().to_string(),
-            turn_index: message.message_seq.unwrap_or_default(),
+            turn_index: 0,
         };
     }
     let turn_index = message.message_seq.unwrap_or_default();
@@ -3350,6 +3360,7 @@ mod tests {
         );
         message.id = "msg-1".into();
         message.message_seq = Some(7);
+        message.turn_id = Some("turn-a".into());
         let mut brief = BriefRecord::new(
             "agent-a",
             crate::types::BriefKind::Result,
@@ -3358,13 +3369,14 @@ mod tests {
             None,
         );
         brief.id = "brief-1".into();
+        brief.turn_id = Some("turn-a".into());
         brief.turn_index = Some(7);
         let tool = ToolExecutionRecord {
             id: "tool-1".into(),
             agent_id: "agent-a".into(),
             work_item_id: Some("work-1".into()),
             turn_index: 7,
-            turn_id: None,
+            turn_id: Some("turn-a".into()),
             tool_name: "ExecCommand".into(),
             created_at: Utc::now(),
             completed_at: Some(Utc::now()),
@@ -3387,7 +3399,7 @@ mod tests {
 
         let records = db.turn_records().recent_for_agent("agent-a", 10)?;
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].turn_id, "legacy-turn-7");
+        assert_eq!(records[0].turn_id, "turn-a");
         assert_eq!(records[0].turn_index, 7);
         assert_eq!(records[0].input_message_ids, vec!["msg-1"]);
         assert_eq!(records[0].produced_brief_ids, vec!["brief-1"]);

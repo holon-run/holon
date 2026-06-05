@@ -577,18 +577,23 @@ fn prepare_runtime_storage(
             .timers()
             .import_legacy(storage.read_recent_timers(usize::MAX)?)?;
     }
-    if !storage_domain_complete(&runtime_db, "turn_records")? {
+    let turn_records_complete = storage_domain_complete(&runtime_db, "turn_records")?;
+    let evidence_complete = storage_domain_complete(&runtime_db, "evidence")?;
+    let legacy_messages =
+        (!turn_records_complete || !evidence_complete).then(|| storage.read_all_message_values());
+    let legacy_messages = legacy_messages.transpose()?;
+    if !turn_records_complete {
         runtime_db.turn_records().import_legacy(
-            storage.read_all_message_values()?,
+            legacy_messages.clone().unwrap_or_default(),
             storage.read_recent_tool_executions(usize::MAX)?,
             storage.read_recent_briefs(usize::MAX)?,
             storage.read_recent_delivery_summaries(usize::MAX)?,
             storage.read_recent_wait_conditions(usize::MAX)?,
         )?;
     }
-    if !storage_domain_complete(&runtime_db, "evidence")? {
+    if !evidence_complete {
         runtime_db.evidence().import_legacy(
-            storage.read_all_message_values()?,
+            legacy_messages.unwrap_or_default(),
             storage.read_all_transcript()?,
             storage.read_recent_tool_executions(usize::MAX)?,
             storage.read_recent_briefs(usize::MAX)?,
