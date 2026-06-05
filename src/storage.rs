@@ -194,6 +194,7 @@ pub struct AppStorage {
     message_seq_counter: Arc<Mutex<u64>>,
     transcript_seq_counter: Arc<Mutex<u64>>,
     audit_event_index: Arc<Mutex<Option<AuditEventIndexSink>>>,
+    scheduler_control_plane_db: Arc<Mutex<Option<RuntimeDb>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +274,7 @@ impl AppStorage {
             message_seq_counter: Arc::new(Mutex::new(message_seq_counter)),
             transcript_seq_counter: Arc::new(Mutex::new(transcript_seq_counter)),
             audit_event_index: Arc::new(Mutex::new(None)),
+            scheduler_control_plane_db: Arc::new(Mutex::new(None)),
             data_dir,
         })
     }
@@ -291,6 +293,23 @@ impl AppStorage {
             agent_id,
         });
         Ok(())
+    }
+
+    pub(crate) fn enable_scheduler_control_plane_db(&self, runtime_db: RuntimeDb) -> Result<()> {
+        let mut guard = self
+            .scheduler_control_plane_db
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler control-plane db mutex poisoned"))?;
+        *guard = Some(runtime_db);
+        Ok(())
+    }
+
+    fn scheduler_control_plane_db(&self) -> Result<Option<RuntimeDb>> {
+        Ok(self
+            .scheduler_control_plane_db
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler control-plane db mutex poisoned"))?
+            .clone())
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -401,6 +420,9 @@ impl AppStorage {
     }
 
     pub fn append_timer(&self, timer: &TimerRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.timers().upsert(timer)?;
+        }
         self.append_jsonl(&self.timers_path, timer)
     }
 
@@ -436,6 +458,9 @@ impl AppStorage {
     }
 
     pub fn append_queue_entry(&self, record: &QueueEntryRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.queue_entries().upsert(record)?;
+        }
         self.append_jsonl(&self.queue_entries_path, record)
     }
 
@@ -456,6 +481,9 @@ impl AppStorage {
             .append_mutex
             .lock()
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.wait_conditions().upsert(&wait_condition)?;
+        }
         append_jsonl_bytes(&self.waiting_intents_path, &waiting_intent_bytes)?;
         append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)?;
         if let Some(event) = event.as_ref() {
@@ -472,6 +500,9 @@ impl AppStorage {
             .append_mutex
             .lock()
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.wait_conditions().upsert(record)?;
+        }
         append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)?;
         if let Some(event) = event.as_ref() {
             self.append_event_with_append_mutex_held(event)?;
@@ -712,6 +743,9 @@ impl AppStorage {
     }
 
     pub fn read_recent_timers(&self, limit: usize) -> Result<Vec<TimerRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.timers().recent(limit);
+        }
         read_recent_jsonl(&self.timers_path, limit)
     }
 
@@ -736,10 +770,18 @@ impl AppStorage {
     }
 
     pub fn read_recent_wait_conditions(&self, limit: usize) -> Result<Vec<WaitConditionRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            let mut records = runtime_db.wait_conditions().latest_all()?;
+            records.truncate(limit);
+            return Ok(records);
+        }
         read_recent_jsonl(&self.wait_conditions_path, limit)
     }
 
     pub fn read_recent_queue_entries(&self, limit: usize) -> Result<Vec<QueueEntryRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.queue_entries().recent(limit);
+        }
         read_recent_jsonl(&self.queue_entries_path, limit)
     }
 
@@ -1470,6 +1512,9 @@ impl AppStorage {
     }
 
     pub fn latest_timer_record(&self, timer_id: &str) -> Result<Option<TimerRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.timers().latest(timer_id);
+        }
         read_latest_jsonl_matching(&self.timers_path, |record: &TimerRecord| {
             record.id == timer_id
         })
@@ -2234,6 +2279,113 @@ mod tests {
         assert_eq!(indexed.len(), 1);
         assert_eq!(indexed[0].kind, "live_event");
         assert_eq!(indexed[0].event_seq, 1);
+    }
+
+    #[test]
+    fn scheduler_control_plane_storage_uses_runtime_db_after_cutover() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        runtime_db
+            .wait_conditions()
+            .import_legacy(Vec::new())
+            .unwrap();
+        runtime_db
+            .queue_entries()
+            .import_legacy(Vec::new())
+            .unwrap();
+        runtime_db.timers().import_legacy(Vec::new()).unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+
+        let now = Utc::now();
+        let wait_condition = WaitConditionRecord {
+            id: "wait-1".into(),
+            agent_id: "default".into(),
+            work_item_id: Some("work-1".into()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("pr-1".into()),
+            waiting_for: "checks passed".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-1".into()),
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        };
+        let queue_entry = QueueEntryRecord {
+            message_id: "msg-1".into(),
+            agent_id: "default".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        let timer = TimerRecord {
+            id: "timer-1".into(),
+            agent_id: "default".into(),
+            created_at: now,
+            duration_ms: 1000,
+            interval_ms: None,
+            repeat: false,
+            status: crate::types::TimerStatus::Active,
+            summary: Some("wake later".into()),
+            next_fire_at: Some(now + chrono::Duration::seconds(1)),
+            last_fired_at: None,
+            fire_count: 0,
+        };
+
+        storage.append_wait_condition(&wait_condition).unwrap();
+        storage.append_queue_entry(&queue_entry).unwrap();
+        storage.append_timer(&timer).unwrap();
+
+        assert!(fs::read_to_string(&storage.wait_conditions_path)
+            .unwrap()
+            .contains("\"wait-1\""));
+        assert!(fs::read_to_string(&storage.queue_entries_path)
+            .unwrap()
+            .contains("\"msg-1\""));
+        assert!(fs::read_to_string(&storage.timers_path)
+            .unwrap()
+            .contains("\"timer-1\""));
+
+        fs::write(
+            &storage.wait_conditions_path,
+            "{jsonl compat ignored after db cutover}\n",
+        )
+        .unwrap();
+        fs::write(
+            &storage.queue_entries_path,
+            "{jsonl compat ignored after db cutover}\n",
+        )
+        .unwrap();
+        fs::write(
+            &storage.timers_path,
+            "{jsonl compat ignored after db cutover}\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            storage.latest_wait_conditions().unwrap(),
+            vec![wait_condition]
+        );
+        assert_eq!(storage.latest_queue_entries().unwrap(), vec![queue_entry]);
+        assert_eq!(
+            storage.latest_timer_record("timer-1").unwrap(),
+            Some(timer.clone())
+        );
+        assert_eq!(storage.latest_timer_records().unwrap(), vec![timer]);
     }
 
     #[test]

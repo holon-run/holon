@@ -11,8 +11,9 @@ use serde::Serialize;
 
 use crate::types::{
     AuditEvent, BriefRecord, CallbackDeliveryMode, DeliverySummaryRecord, ExternalTriggerRecord,
-    ExternalTriggerScope, ExternalTriggerStatus, MessageEnvelope, TaskRecord, TaskStatus,
-    ToolExecutionRecord, TranscriptEntry, WorkItemRecord, WorkItemState,
+    ExternalTriggerScope, ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord,
+    QueueEntryStatus, TaskRecord, TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord,
+    TranscriptEntry, WaitConditionRecord, WorkItemRecord, WorkItemState,
 };
 
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
@@ -34,6 +35,18 @@ pub struct TaskRepository<'a> {
 }
 
 pub struct ExternalTriggerRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct WaitConditionRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct QueueEntryRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct TimerRepository<'a> {
     db: &'a RuntimeDb,
 }
 
@@ -396,6 +409,169 @@ impl TaskRepository<'_> {
         let mut statement = connection.prepare(&sql)?;
         let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
         rows.map(|row| decode_task_payload(&row?)).collect()
+    }
+}
+
+impl WaitConditionRepository<'_> {
+    pub fn import_legacy(&self, records: Vec<WaitConditionRecord>) -> Result<()> {
+        if self
+            .db
+            .storage_domain_is_complete("wait_conditions", "db")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("wait_conditions", "jsonl", "db", |tx| {
+                let latest = reduce_wait_condition_records(records);
+                for record in latest.values() {
+                    upsert_wait_condition_tx(tx, record)?;
+                }
+                Ok(serde_json::json!({ "imported_records": latest.len() }))
+            })
+    }
+
+    pub fn upsert(&self, record: &WaitConditionRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_wait_condition_tx(tx, record))
+    }
+
+    pub fn latest_all(&self) -> Result<Vec<WaitConditionRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM wait_conditions
+             ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_wait_condition_payload(&row?))
+            .collect()
+    }
+
+    pub fn active_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM wait_conditions
+             WHERE agent_id = ?1 AND status = 'active'
+             ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
+        )?;
+        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_wait_condition_payload(&row?))
+            .collect()
+    }
+}
+
+impl QueueEntryRepository<'_> {
+    pub fn import_legacy(&self, records: Vec<QueueEntryRecord>) -> Result<()> {
+        if self.db.storage_domain_is_complete("queue_entries", "db")? {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("queue_entries", "jsonl", "db", |tx| {
+                let latest = reduce_queue_entry_records(records);
+                for record in latest.values() {
+                    upsert_queue_entry_tx(tx, record)?;
+                }
+                Ok(serde_json::json!({ "imported_records": latest.len() }))
+            })
+    }
+
+    pub fn upsert(&self, record: &QueueEntryRecord) -> Result<()> {
+        self.db.transaction(|tx| upsert_queue_entry_tx(tx, record))
+    }
+
+    pub fn latest_all(&self) -> Result<Vec<QueueEntryRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM queue_entries
+             ORDER BY updated_at DESC, created_at DESC, message_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_queue_entry_payload(&row?)).collect()
+    }
+
+    pub fn recent(&self, limit: usize) -> Result<Vec<QueueEntryRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM queue_entries
+             ORDER BY updated_at DESC, created_at DESC, message_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_queue_entry_payload(&row?)).collect()
+    }
+}
+
+impl TimerRepository<'_> {
+    pub fn import_legacy(&self, records: Vec<TimerRecord>) -> Result<()> {
+        if self.db.storage_domain_is_complete("timers", "db")? {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("timers", "jsonl", "db", |tx| {
+                let latest = reduce_timer_records(records);
+                for record in latest.values() {
+                    upsert_timer_tx(tx, record)?;
+                }
+                let active_records = latest
+                    .values()
+                    .filter(|record| record.status == TimerStatus::Active)
+                    .count();
+                Ok(serde_json::json!({
+                    "imported_records": latest.len(),
+                    "active_records": active_records,
+                }))
+            })
+    }
+
+    pub fn upsert(&self, record: &TimerRecord) -> Result<()> {
+        self.db.transaction(|tx| upsert_timer_tx(tx, record))
+    }
+
+    pub fn latest(&self, timer_id: &str) -> Result<Option<TimerRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json FROM timers WHERE timer_id = ?1",
+                [timer_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_timer_payload(&payload))
+            .transpose()
+    }
+
+    pub fn latest_all(&self) -> Result<Vec<TimerRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM timers
+             ORDER BY created_at DESC, timer_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_timer_payload(&row?)).collect()
+    }
+
+    pub fn recent(&self, limit: usize) -> Result<Vec<TimerRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM timers
+             ORDER BY created_at DESC, timer_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_timer_payload(&row?)).collect()
     }
 }
 
@@ -1113,6 +1289,129 @@ fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
     Ok(())
 }
 
+fn upsert_wait_condition_tx(tx: &Transaction<'_>, record: &WaitConditionRecord) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let status = enum_string(&record.status)?;
+    let kind = enum_string(&record.kind)?;
+    tx.execute(
+        "INSERT INTO wait_conditions (
+            wait_condition_id, agent_id, work_item_id, status, kind, source,
+            subject_ref, waiting_for, created_at, updated_at, expires_at,
+            resolved_at, cancelled_at, last_turn_id, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+         ON CONFLICT(wait_condition_id) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            work_item_id = excluded.work_item_id,
+            status = excluded.status,
+            kind = excluded.kind,
+            source = excluded.source,
+            subject_ref = excluded.subject_ref,
+            waiting_for = excluded.waiting_for,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            expires_at = excluded.expires_at,
+            resolved_at = excluded.resolved_at,
+            cancelled_at = excluded.cancelled_at,
+            last_turn_id = excluded.last_turn_id,
+            payload_json = excluded.payload_json
+         WHERE excluded.updated_at >= wait_conditions.updated_at",
+        params![
+            record.id,
+            record.agent_id,
+            record.work_item_id,
+            status,
+            kind,
+            record.source,
+            record.subject_ref,
+            record.waiting_for,
+            timestamp(record.created_at),
+            timestamp(record.updated_at),
+            record.expires_at.map(timestamp),
+            record.resolved_at.map(timestamp),
+            record.cancelled_at.map(timestamp),
+            record.turn_id,
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_queue_entry_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let priority = enum_string(&record.priority)?;
+    let status = enum_string(&record.status)?;
+    tx.execute(
+        "INSERT INTO queue_entries (
+            message_id, agent_id, priority, status, created_at, updated_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(message_id) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            priority = excluded.priority,
+            status = excluded.status,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            payload_json = excluded.payload_json
+         WHERE excluded.updated_at >= queue_entries.updated_at",
+        params![
+            record.message_id,
+            record.agent_id,
+            priority,
+            status,
+            timestamp(record.created_at),
+            timestamp(record.updated_at),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let status = enum_string(&record.status)?;
+    let updated_at = timer_updated_at(record);
+    tx.execute(
+        "INSERT INTO timers (
+            timer_id, agent_id, status, summary, created_at, duration_ms,
+            interval_ms, repeat, next_fire_at, last_fired_at, fire_count,
+            updated_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(timer_id) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            status = excluded.status,
+            summary = excluded.summary,
+            created_at = excluded.created_at,
+            duration_ms = excluded.duration_ms,
+            interval_ms = excluded.interval_ms,
+            repeat = excluded.repeat,
+            next_fire_at = excluded.next_fire_at,
+            last_fired_at = excluded.last_fired_at,
+            fire_count = excluded.fire_count,
+            updated_at = excluded.updated_at,
+            payload_json = excluded.payload_json
+         WHERE excluded.fire_count > timers.fire_count
+            OR (
+                excluded.fire_count = timers.fire_count
+                AND excluded.updated_at >= timers.updated_at
+            )",
+        params![
+            record.id,
+            record.agent_id,
+            status,
+            record.summary,
+            timestamp(record.created_at),
+            record.duration_ms as i64,
+            record.interval_ms.map(|value| value as i64),
+            i64::from(record.repeat),
+            record.next_fire_at.map(timestamp),
+            record.last_fired_at.map(timestamp),
+            record.fire_count as i64,
+            timestamp(updated_at),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
 fn newer_work_item_record(candidate: &WorkItemRecord, existing: &WorkItemRecord) -> bool {
     candidate
         .revision
@@ -1120,6 +1419,102 @@ fn newer_work_item_record(candidate: &WorkItemRecord, existing: &WorkItemRecord)
         .then_with(|| candidate.updated_at.cmp(&existing.updated_at))
         .then_with(|| candidate.created_at.cmp(&existing.created_at))
         .is_gt()
+}
+
+fn reduce_wait_condition_records(
+    records: Vec<WaitConditionRecord>,
+) -> BTreeMap<String, WaitConditionRecord> {
+    let mut latest = BTreeMap::<String, WaitConditionRecord>::new();
+    for record in records {
+        if latest
+            .get(&record.id)
+            .is_none_or(|existing| newer_wait_condition_record(&record, existing))
+        {
+            latest.insert(record.id.clone(), record);
+        }
+    }
+    latest
+}
+
+fn newer_wait_condition_record(
+    candidate: &WaitConditionRecord,
+    existing: &WaitConditionRecord,
+) -> bool {
+    candidate
+        .updated_at
+        .cmp(&existing.updated_at)
+        .then_with(|| candidate.created_at.cmp(&existing.created_at))
+        .then_with(|| candidate.id.cmp(&existing.id))
+        .is_gt()
+}
+
+fn reduce_queue_entry_records(
+    records: Vec<QueueEntryRecord>,
+) -> BTreeMap<String, QueueEntryRecord> {
+    let mut latest = BTreeMap::<String, QueueEntryRecord>::new();
+    for record in records {
+        if latest
+            .get(&record.message_id)
+            .is_none_or(|existing| newer_queue_entry_record(&record, existing))
+        {
+            latest.insert(record.message_id.clone(), record);
+        }
+    }
+    latest
+}
+
+fn newer_queue_entry_record(candidate: &QueueEntryRecord, existing: &QueueEntryRecord) -> bool {
+    candidate
+        .updated_at
+        .cmp(&existing.updated_at)
+        .then_with(|| candidate.created_at.cmp(&existing.created_at))
+        .then_with(|| {
+            queue_entry_status_rank(&candidate.status)
+                .cmp(&queue_entry_status_rank(&existing.status))
+        })
+        .then_with(|| candidate.message_id.cmp(&existing.message_id))
+        .is_gt()
+}
+
+fn queue_entry_status_rank(status: &QueueEntryStatus) -> u8 {
+    match status {
+        QueueEntryStatus::Queued => 0,
+        QueueEntryStatus::Dequeued => 1,
+        QueueEntryStatus::Interjected => 2,
+        QueueEntryStatus::Processed => 3,
+        QueueEntryStatus::Dropped => 4,
+        QueueEntryStatus::Aborted => 5,
+    }
+}
+
+fn reduce_timer_records(records: Vec<TimerRecord>) -> BTreeMap<String, TimerRecord> {
+    let mut latest = BTreeMap::<String, TimerRecord>::new();
+    for record in records {
+        if latest
+            .get(&record.id)
+            .is_none_or(|existing| newer_timer_record(&record, existing))
+        {
+            latest.insert(record.id.clone(), record);
+        }
+    }
+    latest
+}
+
+fn newer_timer_record(candidate: &TimerRecord, existing: &TimerRecord) -> bool {
+    candidate
+        .fire_count
+        .cmp(&existing.fire_count)
+        .then_with(|| timer_updated_at(candidate).cmp(&timer_updated_at(existing)))
+        .then_with(|| candidate.created_at.cmp(&existing.created_at))
+        .then_with(|| candidate.id.cmp(&existing.id))
+        .is_gt()
+}
+
+fn timer_updated_at(record: &TimerRecord) -> DateTime<Utc> {
+    record
+        .last_fired_at
+        .or(record.next_fire_at)
+        .unwrap_or(record.created_at)
 }
 
 fn reduce_external_trigger_records(
@@ -1273,6 +1668,18 @@ fn decode_external_trigger_payload(payload: &str) -> Result<ExternalTriggerRecor
 
 fn decode_task_payload(payload: &str) -> Result<TaskRecord> {
     serde_json::from_str(payload).context("decoding task payload from runtime db")
+}
+
+fn decode_wait_condition_payload(payload: &str) -> Result<WaitConditionRecord> {
+    serde_json::from_str(payload).context("decoding wait condition payload from runtime db")
+}
+
+fn decode_queue_entry_payload(payload: &str) -> Result<QueueEntryRecord> {
+    serde_json::from_str(payload).context("decoding queue entry payload from runtime db")
+}
+
+fn decode_timer_payload(payload: &str) -> Result<TimerRecord> {
+    serde_json::from_str(payload).context("decoding timer payload from runtime db")
 }
 
 fn enum_string<T: serde::Serialize>(value: &T) -> Result<String> {
@@ -1694,6 +2101,70 @@ CREATE INDEX IF NOT EXISTS idx_artifact_metadata_work_item
   ON artifact_metadata(work_item_id);
 "#,
     },
+    Migration {
+        version: 6,
+        name: "scheduler_control_plane_current_state",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS wait_conditions (
+  wait_condition_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  work_item_id TEXT,
+  status TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  source TEXT,
+  subject_ref TEXT,
+  waiting_for TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT,
+  resolved_at TEXT,
+  cancelled_at TEXT,
+  last_turn_id TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS queue_entries (
+  message_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS timers (
+  timer_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  summary TEXT,
+  created_at TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  interval_ms INTEGER,
+  repeat INTEGER NOT NULL DEFAULT 0,
+  next_fire_at TEXT,
+  last_fired_at TEXT,
+  fire_count INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_wait_conditions_agent_status
+  ON wait_conditions(agent_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_wait_conditions_work_item_status
+  ON wait_conditions(work_item_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_wait_conditions_subject
+  ON wait_conditions(kind, subject_ref);
+
+CREATE INDEX IF NOT EXISTS idx_queue_entries_agent_status
+  ON queue_entries(agent_id, status, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_timers_agent_status
+  ON timers(agent_id, status, next_fire_at);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -1753,6 +2224,18 @@ impl RuntimeDb {
         ExternalTriggerRepository { db: self }
     }
 
+    pub fn wait_conditions(&self) -> WaitConditionRepository<'_> {
+        WaitConditionRepository { db: self }
+    }
+
+    pub fn queue_entries(&self) -> QueueEntryRepository<'_> {
+        QueueEntryRepository { db: self }
+    }
+
+    pub fn timers(&self) -> TimerRepository<'_> {
+        TimerRepository { db: self }
+    }
+
     pub fn evidence(&self) -> EvidenceRepository<'_> {
         EvidenceRepository { db: self }
     }
@@ -1775,6 +2258,21 @@ impl RuntimeDb {
             },
             ExpectedStorageDomain {
                 domain: "external_triggers",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+            },
+            ExpectedStorageDomain {
+                domain: "wait_conditions",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+            },
+            ExpectedStorageDomain {
+                domain: "queue_entries",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+            },
+            ExpectedStorageDomain {
+                domain: "timers",
                 canonical_source: "db",
                 legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
             },
@@ -2219,7 +2717,7 @@ mod tests {
         let connection = db.connection()?;
 
         let version = db.current_schema_version()?;
-        assert_eq!(version, 5);
+        assert_eq!(version, max_known_migration_version());
         for table in [
             "schema_migrations",
             "storage_domains",
@@ -2236,6 +2734,9 @@ mod tests {
             "briefs",
             "delivery_summaries",
             "artifact_metadata",
+            "wait_conditions",
+            "queue_entries",
+            "timers",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -2259,8 +2760,11 @@ mod tests {
             connection.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
                 row.get(0)
             })?;
-        assert_eq!(count, 5);
-        assert_eq!(current_schema_version(&connection)?, 5);
+        assert_eq!(count, max_known_migration_version());
+        assert_eq!(
+            current_schema_version(&connection)?,
+            max_known_migration_version()
+        );
         Ok(())
     }
 
@@ -2462,7 +2966,10 @@ mod tests {
         let temp_db = test_support::TempRuntimeDb::new()?;
         assert!(temp_db.db.path().ends_with("state/runtime.sqlite"));
         assert!(temp_db.db.lock_path().ends_with("state/runtime.lock"));
-        assert_eq!(temp_db.db.current_schema_version()?, 5);
+        assert_eq!(
+            temp_db.db.current_schema_version()?,
+            max_known_migration_version()
+        );
         Ok(())
     }
 

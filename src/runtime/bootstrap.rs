@@ -321,6 +321,15 @@ impl RuntimeHandle {
         runtime_db
             .external_triggers()
             .import_legacy(storage.read_recent_external_triggers(usize::MAX)?)?;
+        runtime_db
+            .wait_conditions()
+            .import_legacy(storage.read_recent_wait_conditions(usize::MAX)?)?;
+        runtime_db
+            .queue_entries()
+            .import_legacy(storage.read_recent_queue_entries(usize::MAX)?)?;
+        runtime_db
+            .timers()
+            .import_legacy(storage.read_recent_timers(usize::MAX)?)?;
         runtime_db.evidence().import_legacy(
             storage.read_all_message_values()?,
             storage.read_all_transcript()?,
@@ -335,6 +344,7 @@ impl RuntimeHandle {
             crate::runtime_db::RuntimeDb::expected_storage_domains(),
         )?;
         storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
+        storage.enable_scheduler_control_plane_db(runtime_db.clone())?;
 
         let resolved_context_config = if provider_reconfig.is_some() {
             model_catalog
