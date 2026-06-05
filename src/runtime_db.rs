@@ -11,9 +11,9 @@ use serde::Serialize;
 
 use crate::types::{
     AuditEvent, BriefRecord, CallbackDeliveryMode, DeliverySummaryRecord, ExternalTriggerRecord,
-    ExternalTriggerScope, ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord,
-    QueueEntryStatus, TaskRecord, TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord,
-    TranscriptEntry, WaitConditionRecord, WorkItemRecord, WorkItemState,
+    ExternalTriggerScope, ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord, TaskRecord,
+    TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
+    WaitConditionRecord, WorkItemRecord, WorkItemState,
 };
 
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
@@ -488,11 +488,11 @@ impl QueueEntryRepository<'_> {
         }
         self.db
             .run_storage_domain_import("queue_entries", "jsonl", "db", |tx| {
-                let latest = reduce_queue_entry_records(records);
-                for record in latest.values() {
-                    upsert_queue_entry_tx(tx, record)?;
+                let imported_records = records.len();
+                for record in records {
+                    upsert_queue_entry_tx(tx, &record)?;
                 }
-                Ok(serde_json::json!({ "imported_records": latest.len() }))
+                Ok(serde_json::json!({ "imported_records": imported_records }))
             })
     }
 
@@ -1372,7 +1372,7 @@ fn upsert_queue_entry_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Res
         "INSERT INTO queue_entries (
             message_id, agent_id, priority, status, created_at, updated_at, payload_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(message_id) DO UPDATE SET
+         ON CONFLICT(message_id, status) DO UPDATE SET
             agent_id = excluded.agent_id,
             priority = excluded.priority,
             status = excluded.status,
@@ -1491,45 +1491,6 @@ fn newer_wait_condition_record(
         .then_with(|| candidate.created_at.cmp(&existing.created_at))
         .then_with(|| candidate.id.cmp(&existing.id))
         .is_gt()
-}
-
-fn reduce_queue_entry_records(
-    records: Vec<QueueEntryRecord>,
-) -> BTreeMap<String, QueueEntryRecord> {
-    let mut latest = BTreeMap::<String, QueueEntryRecord>::new();
-    for record in records {
-        if latest
-            .get(&record.message_id)
-            .is_none_or(|existing| newer_queue_entry_record(&record, existing))
-        {
-            latest.insert(record.message_id.clone(), record);
-        }
-    }
-    latest
-}
-
-fn newer_queue_entry_record(candidate: &QueueEntryRecord, existing: &QueueEntryRecord) -> bool {
-    candidate
-        .updated_at
-        .cmp(&existing.updated_at)
-        .then_with(|| candidate.created_at.cmp(&existing.created_at))
-        .then_with(|| {
-            queue_entry_status_rank(&candidate.status)
-                .cmp(&queue_entry_status_rank(&existing.status))
-        })
-        .then_with(|| candidate.message_id.cmp(&existing.message_id))
-        .is_gt()
-}
-
-fn queue_entry_status_rank(status: &QueueEntryStatus) -> u8 {
-    match status {
-        QueueEntryStatus::Queued => 0,
-        QueueEntryStatus::Dequeued => 1,
-        QueueEntryStatus::Interjected => 2,
-        QueueEntryStatus::Processed => 3,
-        QueueEntryStatus::Dropped => 4,
-        QueueEntryStatus::Aborted => 5,
-    }
 }
 
 fn reduce_timer_records(records: Vec<TimerRecord>) -> BTreeMap<String, TimerRecord> {
@@ -2180,13 +2141,14 @@ CREATE TABLE IF NOT EXISTS wait_conditions (
 );
 
 CREATE TABLE IF NOT EXISTS queue_entries (
-  message_id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
   priority TEXT NOT NULL,
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  payload_json TEXT NOT NULL
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (message_id, status)
 );
 
 CREATE TABLE IF NOT EXISTS timers (
@@ -2219,6 +2181,35 @@ CREATE INDEX IF NOT EXISTS idx_queue_entries_agent_status
 
 CREATE INDEX IF NOT EXISTS idx_timers_agent_status
   ON timers(agent_id, status, next_fire_at);
+"#,
+    },
+    Migration {
+        version: 7,
+        name: "queue_entries_preserve_lifecycle_history",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS queue_entries_v2 (
+  message_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (message_id, status)
+);
+
+INSERT OR REPLACE INTO queue_entries_v2 (
+  message_id, agent_id, priority, status, created_at, updated_at, payload_json
+)
+SELECT message_id, agent_id, priority, status, created_at, updated_at, payload_json
+FROM queue_entries;
+
+DROP TABLE queue_entries;
+
+ALTER TABLE queue_entries_v2 RENAME TO queue_entries;
+
+CREATE INDEX IF NOT EXISTS idx_queue_entries_agent_status
+  ON queue_entries(agent_id, status, updated_at);
 "#,
     },
 ];
@@ -2831,10 +2822,17 @@ mod tests {
         let connection = open_connection(&db_path)?;
         connection.execute(
             "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
-            (7_i64, "future_test", Utc::now().to_rfc3339()),
+            (
+                max_known_migration_version() + 1,
+                "future_test",
+                Utc::now().to_rfc3339(),
+            ),
         )?;
 
-        assert_eq!(current_schema_version(&connection)?, 7);
+        assert_eq!(
+            current_schema_version(&connection)?,
+            max_known_migration_version() + 1
+        );
         Ok(())
     }
 
