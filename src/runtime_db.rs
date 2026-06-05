@@ -447,6 +447,26 @@ impl WaitConditionRepository<'_> {
             .collect()
     }
 
+    pub fn recent(&self, limit: usize) -> Result<Vec<WaitConditionRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM wait_conditions
+             ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+        let mut records: Vec<_> = rows
+            .map(|row| decode_wait_condition_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
+    }
+
     pub fn active_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
@@ -504,7 +524,11 @@ impl QueueEntryRepository<'_> {
              LIMIT ?1",
         )?;
         let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_queue_entry_payload(&row?)).collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_queue_entry_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 }
 
@@ -552,7 +576,7 @@ impl TimerRepository<'_> {
         let mut statement = connection.prepare(
             "SELECT payload_json
              FROM timers
-             ORDER BY created_at DESC, timer_id ASC",
+             ORDER BY updated_at DESC, created_at DESC, timer_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.map(|row| decode_timer_payload(&row?)).collect()
@@ -567,11 +591,15 @@ impl TimerRepository<'_> {
         let mut statement = connection.prepare(
             "SELECT payload_json
              FROM timers
-             ORDER BY created_at DESC, timer_id ASC
+             ORDER BY updated_at DESC, created_at DESC, timer_id ASC
              LIMIT ?1",
         )?;
         let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_timer_payload(&row?)).collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_timer_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 }
 

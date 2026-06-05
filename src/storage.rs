@@ -771,9 +771,7 @@ impl AppStorage {
 
     pub fn read_recent_wait_conditions(&self, limit: usize) -> Result<Vec<WaitConditionRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            let mut records = runtime_db.wait_conditions().latest_all()?;
-            records.truncate(limit);
-            return Ok(records);
+            return runtime_db.wait_conditions().recent(limit);
         }
         read_recent_jsonl(&self.wait_conditions_path, limit)
     }
@@ -2350,6 +2348,37 @@ mod tests {
         storage.append_queue_entry(&queue_entry).unwrap();
         storage.append_timer(&timer).unwrap();
 
+        let mut later_wait_condition = wait_condition.clone();
+        later_wait_condition.id = "wait-2".into();
+        later_wait_condition.updated_at = now + chrono::Duration::seconds(1);
+        let mut latest_wait_condition = wait_condition.clone();
+        latest_wait_condition.id = "wait-3".into();
+        latest_wait_condition.updated_at = now + chrono::Duration::seconds(2);
+        storage
+            .append_wait_condition(&later_wait_condition)
+            .unwrap();
+        storage
+            .append_wait_condition(&latest_wait_condition)
+            .unwrap();
+
+        let mut later_queue_entry = queue_entry.clone();
+        later_queue_entry.message_id = "msg-2".into();
+        later_queue_entry.updated_at = now + chrono::Duration::seconds(1);
+        let mut latest_queue_entry = queue_entry.clone();
+        latest_queue_entry.message_id = "msg-3".into();
+        latest_queue_entry.updated_at = now + chrono::Duration::seconds(2);
+        storage.append_queue_entry(&later_queue_entry).unwrap();
+        storage.append_queue_entry(&latest_queue_entry).unwrap();
+
+        let mut later_timer = timer.clone();
+        later_timer.id = "timer-2".into();
+        later_timer.next_fire_at = Some(now + chrono::Duration::seconds(2));
+        let mut latest_timer = timer.clone();
+        latest_timer.id = "timer-3".into();
+        latest_timer.next_fire_at = Some(now + chrono::Duration::seconds(3));
+        storage.append_timer(&later_timer).unwrap();
+        storage.append_timer(&latest_timer).unwrap();
+
         assert!(fs::read_to_string(&storage.wait_conditions_path)
             .unwrap()
             .contains("\"wait-1\""));
@@ -2378,14 +2407,51 @@ mod tests {
 
         assert_eq!(
             storage.latest_wait_conditions().unwrap(),
-            vec![wait_condition]
+            vec![
+                wait_condition.clone(),
+                later_wait_condition,
+                latest_wait_condition
+            ]
         );
-        assert_eq!(storage.latest_queue_entries().unwrap(), vec![queue_entry]);
+        assert_eq!(
+            storage.latest_queue_entries().unwrap(),
+            vec![queue_entry.clone(), later_queue_entry, latest_queue_entry]
+        );
         assert_eq!(
             storage.latest_timer_record("timer-1").unwrap(),
             Some(timer.clone())
         );
-        assert_eq!(storage.latest_timer_records().unwrap(), vec![timer]);
+        assert_eq!(
+            storage.latest_timer_records().unwrap(),
+            vec![timer, later_timer, latest_timer]
+        );
+        assert_eq!(
+            storage
+                .read_recent_wait_conditions(2)
+                .unwrap()
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>(),
+            vec!["wait-2", "wait-3"]
+        );
+        assert_eq!(
+            storage
+                .read_recent_queue_entries(2)
+                .unwrap()
+                .into_iter()
+                .map(|record| record.message_id)
+                .collect::<Vec<_>>(),
+            vec!["msg-2", "msg-3"]
+        );
+        assert_eq!(
+            storage
+                .read_recent_timers(2)
+                .unwrap()
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>(),
+            vec!["timer-2", "timer-3"]
+        );
     }
 
     #[test]
