@@ -1,16 +1,17 @@
 use super::lifecycle::{
     effective_config_mismatch_summary, probe_runtime, runtime_status_matches_metadata,
-    should_retry_startup_stability_probe, wait_for_startup_stability_with_probe, ProbeRuntime,
+    set_prepare_runtime_before_server_hook, should_retry_startup_stability_probe,
+    wait_for_startup_stability_with_probe, ProbeRuntime,
 };
 use super::state::{
     persist_last_runtime_failure, DAEMON_LOG_TAIL_LINE_CHAR_LIMIT, DAEMON_LOG_TAIL_READ_BYTE_LIMIT,
 };
 use super::{
     clear_persisted_daemon_lifecycle_failures, config_fingerprint, daemon_log_hint, daemon_logs,
-    daemon_paths, daemon_status, daemon_stop, ensure_serve_preflight, load_last_runtime_failure,
-    persist_daemon_lifecycle_failure, runtime_activity_summary, DaemonLifecycleState,
-    RuntimeActivityState, RuntimeConfigSurface, RuntimeControlAuthMode, RuntimeServiceMetadata,
-    RuntimeStartupSurface, RuntimeStatusResponse,
+    daemon_paths, daemon_start, daemon_status, daemon_stop, ensure_serve_preflight,
+    load_last_runtime_failure, persist_daemon_lifecycle_failure, prepare_runtime_before_server,
+    runtime_activity_summary, DaemonLifecycleState, RuntimeActivityState, RuntimeConfigSurface,
+    RuntimeControlAuthMode, RuntimeServiceMetadata, RuntimeStartupSurface, RuntimeStatusResponse,
 };
 use crate::config::{provider_registry_for_tests, AppConfig, ModelRef, ProviderId};
 use crate::{
@@ -19,8 +20,32 @@ use crate::{
     types::{AuthorityClass, CommandTaskSpec, RuntimeFailurePhase, RuntimeFailureSummary},
 };
 use chrono::Utc;
-use std::{fs, process::Command, sync::Arc};
+use std::{
+    fs,
+    process::Command,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 use tempfile::tempdir;
+
+static PREPARE_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct PrepareHookGuard;
+
+impl Drop for PrepareHookGuard {
+    fn drop(&mut self) {
+        set_prepare_runtime_before_server_hook(None);
+    }
+}
+
+fn set_prepare_hook(
+    hook: impl Fn(&AppConfig) -> anyhow::Result<()> + Send + Sync + 'static,
+) -> PrepareHookGuard {
+    set_prepare_runtime_before_server_hook(Some(Box::new(hook)));
+    PrepareHookGuard
+}
 
 fn test_config() -> AppConfig {
     let home = tempdir().unwrap();
@@ -549,6 +574,57 @@ async fn serve_preflight_cleans_dead_pid_and_leftover_socket_state() {
     assert!(!paths.pid_path.exists());
     assert!(!paths.metadata_path.exists());
     assert!(!paths.socket_path.exists());
+}
+
+#[test]
+fn daemon_start_runs_preparation_before_readiness_timeout_window() {
+    let _guard = PREPARE_HOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let config = test_config();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let hook_calls = calls.clone();
+    let _hook_guard = set_prepare_hook(move |_config| {
+        hook_calls.fetch_add(1, Ordering::SeqCst);
+        anyhow::bail!("test preparation domain failed")
+    });
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let err = runtime
+        .block_on(daemon_start(&config, &[], None))
+        .unwrap_err()
+        .to_string();
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(err.contains("pre-server runtime preparation failed"));
+    assert!(!err.contains("timed out waiting for runtime"));
+    assert!(!daemon_paths(&config).log_path.exists());
+}
+
+#[test]
+fn pre_server_preparation_failure_is_retryable() {
+    let _guard = PREPARE_HOOK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let config = test_config();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let hook_attempts = attempts.clone();
+    let _hook_guard = set_prepare_hook(move |_config| {
+        let attempt = hook_attempts.fetch_add(1, Ordering::SeqCst);
+        if attempt == 0 {
+            anyhow::bail!("test storage domain incomplete")
+        }
+        Ok(())
+    });
+
+    let first = prepare_runtime_before_server(&config)
+        .unwrap_err()
+        .to_string();
+    let second = prepare_runtime_before_server(&config);
+
+    assert!(first.contains("pre-server runtime preparation failed"));
+    second.unwrap();
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
 
 #[cfg(unix)]

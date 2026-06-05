@@ -2425,7 +2425,11 @@ impl RuntimeDb {
         )
     }
 
-    fn storage_domain_is_complete(&self, domain: &str, canonical_source: &str) -> Result<bool> {
+    pub(crate) fn storage_domain_is_complete(
+        &self,
+        domain: &str,
+        canonical_source: &str,
+    ) -> Result<bool> {
         let connection = self.connection()?;
         let Some(snapshot) = read_storage_domain_connection(&connection, domain)? else {
             return Ok(false);

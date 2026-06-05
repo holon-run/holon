@@ -24,7 +24,8 @@ use holon::{
     },
     daemon::{
         daemon_logs, daemon_restart, daemon_start, daemon_status, daemon_stop,
-        ensure_serve_preflight, RuntimeServiceHandle,
+        ensure_serve_preflight, prepare_runtime_before_server, RuntimeServiceHandle,
+        PRE_SERVER_PREPARED_ENV,
     },
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
@@ -614,6 +615,9 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         apply_nofile_limit_policy(DEFAULT_NOFILE_TARGET).startup_summary()
     );
     ensure_serve_preflight(&config).await?;
+    if std::env::var_os(PRE_SERVER_PREPARED_ENV).is_none() {
+        prepare_runtime_before_server(&config)?;
+    }
 
     let host = RuntimeHost::new(config.clone())?;
     host.default_runtime().await?;

@@ -149,6 +149,17 @@ async fn apply_spawn_model_resolution(
 }
 
 impl RuntimeHost {
+    pub fn prepare_runtime_storage(config: &AppConfig) -> Result<()> {
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+        RuntimeHandle::prepare_runtime_storage(
+            config.default_agent_id.clone(),
+            config.agent_root_dir().join(&config.default_agent_id),
+            InitialWorkspaceBinding::Detached,
+            runtime_db,
+        )
+    }
+
     pub fn new(config: AppConfig) -> Result<Self> {
         let _ = build_provider_from_config(&config)?;
         Self::new_inner(config, None)
