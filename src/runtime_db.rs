@@ -45,6 +45,43 @@ pub struct AuditEventSink<'a> {
     db: &'a RuntimeDb,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageDomainSnapshot {
+    pub domain: String,
+    pub schema_version: i64,
+    pub import_status: String,
+    pub canonical_source: String,
+    pub source_checkpoint_json: Option<String>,
+    pub imported_at: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyJsonlPosture {
+    Disabled,
+    CompatExport,
+    AuditMirror,
+    ImportSource,
+}
+
+impl LegacyJsonlPosture {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::CompatExport => "compat_export",
+            Self::AuditMirror => "audit_mirror",
+            Self::ImportSource => "import_source",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpectedStorageDomain {
+    pub domain: &'static str,
+    pub canonical_source: &'static str,
+    pub legacy_jsonl_posture: LegacyJsonlPosture,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceKind {
     Message,
@@ -100,36 +137,29 @@ impl WorkItemRepository<'_> {
         records: Vec<WorkItemRecord>,
         current_work_item_id: Option<&str>,
     ) -> Result<()> {
-        self.db.transaction(|tx| {
-            let domain = read_storage_domain(tx, "work_items")?;
-            if domain.as_ref().is_some_and(|domain| {
-                domain.import_status == "complete" && domain.canonical_source == "db"
-            }) {
-                return Ok(());
-            }
-
-            upsert_storage_domain(tx, "work_items", "importing", "jsonl", None)?;
-            let mut latest = BTreeMap::<String, WorkItemRecord>::new();
-            for record in records {
-                let should_replace = latest
-                    .get(&record.id)
-                    .is_none_or(|existing| newer_work_item_record(&record, existing));
-                if should_replace {
-                    latest.insert(record.id.clone(), record);
+        if self.db.storage_domain_is_complete("work_items", "db")? {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("work_items", "jsonl", "db", |tx| {
+                let mut latest = BTreeMap::<String, WorkItemRecord>::new();
+                for record in records {
+                    let should_replace = latest
+                        .get(&record.id)
+                        .is_none_or(|existing| newer_work_item_record(&record, existing));
+                    if should_replace {
+                        latest.insert(record.id.clone(), record);
+                    }
                 }
-            }
-            for record in latest.values() {
-                upsert_work_item_tx(tx, record, current_work_item_id == Some(record.id.as_str()))?;
-            }
-            upsert_storage_domain(
-                tx,
-                "work_items",
-                "complete",
-                "db",
-                Some(serde_json::json!({ "imported_records": latest.len() })),
-            )?;
-            Ok(())
-        })
+                for record in latest.values() {
+                    upsert_work_item_tx(
+                        tx,
+                        record,
+                        current_work_item_id == Some(record.id.as_str()),
+                    )?;
+                }
+                Ok(serde_json::json!({ "imported_records": latest.len() }))
+            })
     }
 
     pub fn upsert(&self, record: &WorkItemRecord, current_focus: bool) -> Result<()> {
@@ -197,28 +227,20 @@ impl WorkItemRepository<'_> {
 
 impl ExternalTriggerRepository<'_> {
     pub fn import_legacy(&self, records: Vec<ExternalTriggerRecord>) -> Result<()> {
-        self.db.transaction(|tx| {
-            let domain = read_storage_domain(tx, "external_triggers")?;
-            if domain.as_ref().is_some_and(|domain| {
-                domain.import_status == "complete" && domain.canonical_source == "db"
-            }) {
-                return Ok(());
-            }
-
-            upsert_storage_domain(tx, "external_triggers", "importing", "jsonl", None)?;
-            let latest = reduce_external_trigger_records(records);
-            for record in latest.values() {
-                upsert_external_trigger_tx(tx, record)?;
-            }
-            upsert_storage_domain(
-                tx,
-                "external_triggers",
-                "complete",
-                "db",
-                Some(serde_json::json!({ "imported_records": latest.len() })),
-            )?;
-            Ok(())
-        })
+        if self
+            .db
+            .storage_domain_is_complete("external_triggers", "db")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("external_triggers", "jsonl", "db", |tx| {
+                let latest = reduce_external_trigger_records(records);
+                for record in latest.values() {
+                    upsert_external_trigger_tx(tx, record)?;
+                }
+                Ok(serde_json::json!({ "imported_records": latest.len() }))
+            })
     }
 
     pub fn upsert(&self, record: &ExternalTriggerRecord) -> Result<()> {
@@ -291,35 +313,24 @@ impl ExternalTriggerRepository<'_> {
 
 impl TaskRepository<'_> {
     pub fn import_legacy(&self, records: Vec<TaskRecord>) -> Result<()> {
-        self.db.transaction(|tx| {
-            let domain = read_storage_domain(tx, "tasks")?;
-            if domain.as_ref().is_some_and(|domain| {
-                domain.import_status == "complete" && domain.canonical_source == "db"
-            }) {
-                return Ok(());
-            }
-
-            upsert_storage_domain(tx, "tasks", "importing", "jsonl", None)?;
-            let latest = reduce_task_records(records);
-            for record in latest.values() {
-                upsert_task_tx(tx, record)?;
-            }
-            let active_records = latest
-                .values()
-                .filter(|record| is_active_task_status(&record.status))
-                .count();
-            upsert_storage_domain(
-                tx,
-                "tasks",
-                "complete",
-                "db",
-                Some(serde_json::json!({
+        if self.db.storage_domain_is_complete("tasks", "db")? {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("tasks", "jsonl", "db", |tx| {
+                let latest = reduce_task_records(records);
+                for record in latest.values() {
+                    upsert_task_tx(tx, record)?;
+                }
+                let active_records = latest
+                    .values()
+                    .filter(|record| is_active_task_status(&record.status))
+                    .count();
+                Ok(serde_json::json!({
                     "imported_records": latest.len(),
                     "active_records": active_records,
-                })),
-            )?;
-            Ok(())
-        })
+                }))
+            })
     }
 
     pub fn upsert(&self, record: &TaskRecord) -> Result<()> {
@@ -397,55 +408,46 @@ impl EvidenceRepository<'_> {
         briefs: Vec<BriefRecord>,
         delivery_summaries: Vec<DeliverySummaryRecord>,
     ) -> Result<()> {
-        self.db.transaction(|tx| {
-            let domain = read_storage_domain(tx, "evidence")?;
-            if domain.as_ref().is_some_and(|domain| {
-                domain.import_status == "complete"
-                    && matches!(domain.canonical_source.as_str(), "db" | "jsonl+db-index")
-            }) {
-                return Ok(());
-            }
-
-            upsert_storage_domain(tx, "evidence", "importing", "jsonl", None)?;
-            let mut imported_messages = 0_u64;
-            let mut dropped_messages = 0_u64;
-            for raw_message in messages {
-                match normalize_legacy_message_value(raw_message)? {
-                    Some(message) => {
-                        insert_message_evidence_tx(tx, &message)?;
-                        imported_messages += 1;
+        if self
+            .db
+            .storage_domain_is_complete("evidence", "jsonl+db-index")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("evidence", "jsonl", "jsonl+db-index", |tx| {
+                let mut imported_messages = 0_u64;
+                let mut dropped_messages = 0_u64;
+                for raw_message in messages {
+                    match normalize_legacy_message_value(raw_message)? {
+                        Some(message) => {
+                            insert_message_evidence_tx(tx, &message)?;
+                            imported_messages += 1;
+                        }
+                        None => dropped_messages += 1,
                     }
-                    None => dropped_messages += 1,
                 }
-            }
-            for entry in &transcript_entries {
-                insert_transcript_evidence_tx(tx, entry)?;
-            }
-            for record in &tool_executions {
-                insert_tool_evidence_tx(tx, record)?;
-            }
-            for brief in &briefs {
-                insert_brief_evidence_tx(tx, brief)?;
-            }
-            for summary in &delivery_summaries {
-                insert_delivery_summary_evidence_tx(tx, summary)?;
-            }
-            upsert_storage_domain(
-                tx,
-                "evidence",
-                "complete",
-                "jsonl+db-index",
-                Some(serde_json::json!({
+                for entry in &transcript_entries {
+                    insert_transcript_evidence_tx(tx, entry)?;
+                }
+                for record in &tool_executions {
+                    insert_tool_evidence_tx(tx, record)?;
+                }
+                for brief in &briefs {
+                    insert_brief_evidence_tx(tx, brief)?;
+                }
+                for summary in &delivery_summaries {
+                    insert_delivery_summary_evidence_tx(tx, summary)?;
+                }
+                Ok(serde_json::json!({
                     "imported_messages": imported_messages,
                     "dropped_messages": dropped_messages,
                     "imported_transcript_entries": transcript_entries.len(),
                     "imported_tool_executions": tool_executions.len(),
                     "imported_briefs": briefs.len(),
                     "imported_delivery_summaries": delivery_summaries.len(),
-                })),
-            )?;
-            Ok(())
-        })
+                }))
+            })
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
@@ -529,27 +531,19 @@ impl AuditEventSink<'_> {
     }
 
     pub fn import_legacy(&self, agent_id: Option<&str>, events: Vec<AuditEvent>) -> Result<()> {
-        self.db.transaction(|tx| {
-            let domain = read_storage_domain(tx, "audit_events")?;
-            if domain.as_ref().is_some_and(|domain| {
-                domain.import_status == "complete"
-                    && matches!(domain.canonical_source.as_str(), "db" | "jsonl+db-index")
-            }) {
-                return Ok(());
-            }
-            upsert_storage_domain(tx, "audit_events", "importing", "jsonl", None)?;
-            for event in &events {
-                insert_audit_event_tx(tx, agent_id, event)?;
-            }
-            upsert_storage_domain(
-                tx,
-                "audit_events",
-                "complete",
-                "jsonl+db-index",
-                Some(serde_json::json!({ "imported_records": events.len() })),
-            )?;
-            Ok(())
-        })
+        if self
+            .db
+            .storage_domain_is_complete("audit_events", "jsonl+db-index")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("audit_events", "jsonl", "jsonl+db-index", |tx| {
+                for event in &events {
+                    insert_audit_event_tx(tx, agent_id, event)?;
+                }
+                Ok(serde_json::json!({ "imported_records": events.len() }))
+            })
     }
 
     pub fn page_after(
@@ -596,25 +590,30 @@ impl AuditEventSink<'_> {
     }
 }
 
-#[derive(Debug)]
-struct StorageDomainState {
-    import_status: String,
-    canonical_source: String,
-}
-
-fn read_storage_domain(tx: &Transaction<'_>, domain: &str) -> Result<Option<StorageDomainState>> {
-    tx.query_row(
-        "SELECT import_status, canonical_source FROM storage_domains WHERE domain = ?1",
-        [domain],
-        |row| {
-            Ok(StorageDomainState {
-                import_status: row.get(0)?,
-                canonical_source: row.get(1)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(Into::into)
+fn read_storage_domain_connection(
+    connection: &Connection,
+    domain: &str,
+) -> Result<Option<StorageDomainSnapshot>> {
+    connection
+        .query_row(
+            "SELECT domain, schema_version, import_status, canonical_source,
+                    source_checkpoint_json, imported_at, updated_at
+             FROM storage_domains WHERE domain = ?1",
+            [domain],
+            |row| {
+                Ok(StorageDomainSnapshot {
+                    domain: row.get(0)?,
+                    schema_version: row.get(1)?,
+                    import_status: row.get(2)?,
+                    canonical_source: row.get(3)?,
+                    source_checkpoint_json: row.get(4)?,
+                    imported_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
 }
 
 fn upsert_storage_domain(
@@ -624,9 +623,24 @@ fn upsert_storage_domain(
     canonical_source: &str,
     checkpoint: Option<serde_json::Value>,
 ) -> Result<()> {
+    upsert_storage_domain_checkpoint_json(
+        tx,
+        domain,
+        import_status,
+        canonical_source,
+        checkpoint.map(|value| value.to_string()),
+    )
+}
+
+fn upsert_storage_domain_checkpoint_json(
+    tx: &Transaction<'_>,
+    domain: &str,
+    import_status: &str,
+    canonical_source: &str,
+    checkpoint_json: Option<String>,
+) -> Result<()> {
     let now = timestamp(Utc::now());
     let imported_at = (import_status == "complete").then(|| now.clone());
-    let checkpoint = checkpoint.map(|value| value.to_string());
     tx.execute(
         "INSERT INTO storage_domains (
             domain, schema_version, import_status, canonical_source,
@@ -644,7 +658,7 @@ fn upsert_storage_domain(
             max_known_migration_version(),
             import_status,
             canonical_source,
-            checkpoint,
+            checkpoint_json,
             imported_at,
             now
         ],
@@ -1747,6 +1761,175 @@ impl RuntimeDb {
         AuditEventSink { db: self }
     }
 
+    pub const fn expected_storage_domains() -> &'static [ExpectedStorageDomain] {
+        &[
+            ExpectedStorageDomain {
+                domain: "work_items",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+            },
+            ExpectedStorageDomain {
+                domain: "tasks",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+            },
+            ExpectedStorageDomain {
+                domain: "external_triggers",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+            },
+            ExpectedStorageDomain {
+                domain: "evidence",
+                canonical_source: "jsonl+db-index",
+                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+            },
+            ExpectedStorageDomain {
+                domain: "audit_events",
+                canonical_source: "jsonl+db-index",
+                legacy_jsonl_posture: LegacyJsonlPosture::AuditMirror,
+            },
+        ]
+    }
+
+    pub fn storage_domain(&self, domain: &str) -> Result<Option<StorageDomainSnapshot>> {
+        let connection = self.connection()?;
+        read_storage_domain_connection(&connection, domain)
+    }
+
+    pub fn storage_domains(&self) -> Result<Vec<StorageDomainSnapshot>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT domain, schema_version, import_status, canonical_source,
+                    source_checkpoint_json, imported_at, updated_at
+             FROM storage_domains
+             ORDER BY domain ASC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(StorageDomainSnapshot {
+                domain: row.get(0)?,
+                schema_version: row.get(1)?,
+                import_status: row.get(2)?,
+                canonical_source: row.get(3)?,
+                source_checkpoint_json: row.get(4)?,
+                imported_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
+    pub fn diagnose_cutover(&self, expected: &[ExpectedStorageDomain]) -> Result<Vec<String>> {
+        let connection = self.connection()?;
+        let mut diagnostics = Vec::new();
+        let current_version = current_schema_version(&connection)?;
+        let max_known_version = max_known_migration_version();
+        if current_version < max_known_version {
+            diagnostics.push(format!(
+                "missing runtime db migration: schema_migrations is at {current_version}, expected {max_known_version}"
+            ));
+        }
+        for expected_domain in expected {
+            match read_storage_domain_connection(&connection, expected_domain.domain)? {
+                None => diagnostics.push(format!(
+                    "storage domain {} is missing; expected canonical_source={} legacy_jsonl_posture={}",
+                    expected_domain.domain,
+                    expected_domain.canonical_source,
+                    expected_domain.legacy_jsonl_posture.as_str()
+                )),
+                Some(snapshot) => {
+                    if snapshot.import_status == "failed" {
+                        diagnostics.push(format!(
+                            "storage domain {} import failed: {}",
+                            snapshot.domain,
+                            snapshot
+                                .source_checkpoint_json
+                                .as_deref()
+                                .unwrap_or("no failure checkpoint recorded")
+                        ));
+                    } else if snapshot.import_status != "complete" {
+                        diagnostics.push(format!(
+                            "storage domain {} import is {}; expected complete",
+                            snapshot.domain, snapshot.import_status
+                        ));
+                    }
+                    if snapshot.canonical_source != expected_domain.canonical_source {
+                        diagnostics.push(format!(
+                            "storage domain {} has canonical_source={}; expected {}",
+                            snapshot.domain,
+                            snapshot.canonical_source,
+                            expected_domain.canonical_source
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(diagnostics)
+    }
+
+    pub fn validate_expected_storage_domains(
+        &self,
+        expected: &[ExpectedStorageDomain],
+    ) -> Result<()> {
+        let diagnostics = self.diagnose_cutover(expected)?;
+        if diagnostics.is_empty() {
+            return Ok(());
+        }
+        bail!(
+            "runtime db cutover diagnostics failed:\n{}",
+            diagnostics.join("\n")
+        )
+    }
+
+    fn storage_domain_is_complete(&self, domain: &str, canonical_source: &str) -> Result<bool> {
+        let connection = self.connection()?;
+        let Some(snapshot) = read_storage_domain_connection(&connection, domain)? else {
+            return Ok(false);
+        };
+        Ok(snapshot.import_status == "complete" && snapshot.canonical_source == canonical_source)
+    }
+
+    fn run_storage_domain_import(
+        &self,
+        domain: &'static str,
+        importing_source: &'static str,
+        complete_source: &'static str,
+        import: impl FnOnce(&Transaction<'_>) -> Result<serde_json::Value>,
+    ) -> Result<()> {
+        self.transaction(|tx| {
+            let existing_checkpoint = tx
+                .query_row(
+                    "SELECT source_checkpoint_json FROM storage_domains WHERE domain = ?1",
+                    [domain],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+            upsert_storage_domain_checkpoint_json(
+                tx,
+                domain,
+                "importing",
+                importing_source,
+                existing_checkpoint,
+            )
+        })?;
+        let result = self.transaction(|tx| {
+            let checkpoint = import(tx)?;
+            upsert_storage_domain(tx, domain, "complete", complete_source, Some(checkpoint))?;
+            Ok(())
+        });
+        if let Err(error) = result {
+            let checkpoint = serde_json::json!({
+                "error": error.to_string(),
+                "retry": "restart runtime to retry legacy import",
+            });
+            self.transaction(|tx| {
+                upsert_storage_domain(tx, domain, "failed", importing_source, Some(checkpoint))
+            })?;
+            return Err(error).with_context(|| format!("importing legacy storage domain {domain}"));
+        }
+        Ok(())
+    }
+
     pub fn migrate(&self) -> Result<()> {
         let _lock = RuntimeDbLock::lock(&self.lock_path)?;
         if let Some(parent) = self.path.parent() {
@@ -2187,6 +2370,90 @@ mod tests {
         let count: i64 =
             connection.query_row("SELECT COUNT(*) FROM storage_domains", [], |row| row.get(0))?;
         assert_eq!(count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn storage_domain_import_failure_is_visible_and_retryable() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+
+        let error = db
+            .evidence()
+            .import_legacy(
+                vec![serde_json::json!({ "turn_index": 1 })],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("importing legacy storage domain evidence"));
+        let failed = db
+            .storage_domain("evidence")?
+            .expect("failed storage domain row");
+        assert_eq!(failed.import_status, "failed");
+        assert_eq!(failed.canonical_source, "jsonl");
+        assert!(failed
+            .source_checkpoint_json
+            .as_deref()
+            .is_some_and(|checkpoint| checkpoint.contains("restart runtime to retry")));
+
+        db.run_storage_domain_import("evidence", "jsonl", "jsonl+db-index", |tx| {
+            let checkpoint: Option<String> = tx.query_row(
+                "SELECT source_checkpoint_json FROM storage_domains WHERE domain = 'evidence'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(checkpoint, failed.source_checkpoint_json);
+            Ok(serde_json::json!({ "imported_records": 0 }))
+        })?;
+        let complete = db
+            .storage_domain("evidence")?
+            .expect("complete storage domain row");
+        assert_eq!(complete.import_status, "complete");
+        assert_eq!(complete.canonical_source, "jsonl+db-index");
+        Ok(())
+    }
+
+    #[test]
+    fn cutover_diagnostics_detect_missing_failed_and_mixed_sources() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+
+        let missing = db.diagnose_cutover(RuntimeDb::expected_storage_domains())?;
+        assert!(missing
+            .iter()
+            .any(|diagnostic| diagnostic.contains("storage domain work_items is missing")));
+
+        db.transaction(|tx| {
+            upsert_storage_domain(tx, "work_items", "complete", "jsonl", None)?;
+            upsert_storage_domain(
+                tx,
+                "tasks",
+                "failed",
+                "jsonl",
+                Some(serde_json::json!({ "error": "forced failure" })),
+            )?;
+            upsert_storage_domain(tx, "external_triggers", "complete", "db", None)?;
+            upsert_storage_domain(tx, "evidence", "complete", "jsonl+db-index", None)?;
+            upsert_storage_domain(tx, "audit_events", "complete", "jsonl+db-index", None)?;
+            Ok(())
+        })?;
+
+        let diagnostics = db.diagnose_cutover(RuntimeDb::expected_storage_domains())?;
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains("storage domain work_items has canonical_source=jsonl")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.contains("storage domain tasks import failed")
+                && diagnostic.contains("forced failure")
+        }));
+        assert!(db
+            .validate_expected_storage_domains(RuntimeDb::expected_storage_domains())
+            .is_err());
         Ok(())
     }
 

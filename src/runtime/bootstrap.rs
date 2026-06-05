@@ -331,6 +331,9 @@ impl RuntimeHandle {
         runtime_db
             .audit_events()
             .import_legacy(Some(&state.id), storage.read_recent_events(usize::MAX)?)?;
+        runtime_db.validate_expected_storage_domains(
+            crate::runtime_db::RuntimeDb::expected_storage_domains(),
+        )?;
         storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
 
         let resolved_context_config = if provider_reconfig.is_some() {
