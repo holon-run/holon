@@ -13,7 +13,7 @@ use crate::{
         ContextEpisodeRecord, ContinuationClass, ContinuationResolution, ContinuationTriggerKind,
         ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView,
-        TodoItemState, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind,
+        TodoItemState, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TurnRecord,
         WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WorkItemRecord,
         WorkingMemoryDelta, WorkingMemorySnapshot,
     },
@@ -107,6 +107,7 @@ pub fn build_context_with_default_external_ingress(
     let continuation_anchor_messages = storage.read_all_messages()?;
     let briefs = storage.read_recent_briefs(config.recent_briefs)?;
     let tools = storage.read_recent_tool_executions(config.recent_messages)?;
+    let turn_records = storage.read_recent_turns(config.recent_messages)?;
     let transcript = storage.read_recent_transcript(config.recent_messages)?;
     let active_waiting_intents = storage
         .latest_waiting_intents()?
@@ -369,6 +370,7 @@ pub fn build_context_with_default_external_ingress(
     }
 
     if let Some(content) = render_recent_turns_with_budget(
+        &turn_records,
         &messages,
         &briefs,
         &tools,
@@ -1627,6 +1629,7 @@ fn render_recent_briefs_with_budget(briefs: &[BriefRecord], budget: usize) -> Op
 }
 
 fn render_recent_turns_with_budget(
+    turn_records: &[TurnRecord],
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
     tools: &[ToolExecutionRecord],
@@ -1634,6 +1637,18 @@ fn render_recent_turns_with_budget(
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
+    if let Some(rendered) = render_turn_records_with_budget(
+        turn_records,
+        messages,
+        briefs,
+        tools,
+        current_message,
+        current_work_item,
+        budget,
+    ) {
+        return Some(rendered);
+    }
+
     let latest_operator_for_continuation = (!is_trusted_operator_input(current_message))
         .then(|| latest_trusted_operator_input(messages, current_message))
         .flatten();
@@ -1670,6 +1685,216 @@ fn render_recent_turns_with_budget(
     }
 
     render_budgeted_lines("Recent turns:", rendered_turns, budget)
+}
+
+fn render_turn_records_with_budget(
+    turn_records: &[TurnRecord],
+    messages: &[MessageEnvelope],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    current_message: &MessageEnvelope,
+    current_work_item: Option<&WorkItemRecord>,
+    budget: usize,
+) -> Option<String> {
+    if turn_records.is_empty() {
+        return None;
+    }
+
+    let latest_operator_for_continuation = (!is_trusted_operator_input(current_message))
+        .then(|| latest_trusted_operator_input(messages, current_message))
+        .flatten();
+    let continuation_turn_id = latest_operator_for_continuation
+        .and_then(|operator| {
+            turn_records
+                .iter()
+                .find(|record| turn_record_matches_message(record, operator))
+        })
+        .map(|record| record.turn_id.as_str());
+
+    let mut rendered_turns = turn_records
+        .iter()
+        .filter(|record| continuation_turn_id.is_none_or(|turn_id| record.turn_id != turn_id))
+        .filter_map(|record| render_turn_record_projection(record, messages, briefs, tools, None))
+        .collect::<Vec<_>>();
+
+    if let Some(operator) = latest_operator_for_continuation {
+        if let Some(record) = turn_records
+            .iter()
+            .find(|record| turn_record_matches_message(record, operator))
+        {
+            if let Some(rendered) = render_current_continuation_turn_record_projection(
+                record,
+                current_message,
+                operator,
+                messages,
+                briefs,
+                tools,
+                current_work_item,
+            ) {
+                rendered_turns.push(rendered);
+            }
+        } else {
+            rendered_turns.push(render_current_continuation_turn_projection(
+                current_message,
+                operator,
+                briefs,
+                tools,
+                current_work_item,
+            ));
+        }
+    }
+
+    if rendered_turns.is_empty() {
+        return None;
+    }
+
+    render_budgeted_lines("Recent turns:", rendered_turns, budget)
+}
+
+fn render_turn_record_projection(
+    record: &TurnRecord,
+    messages: &[MessageEnvelope],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    continuation: Option<&MessageEnvelope>,
+) -> Option<String> {
+    let trigger_message = record
+        .input_message_ids
+        .iter()
+        .find_map(|id| messages.iter().find(|message| message.id == *id))
+        .or_else(|| {
+            record
+                .trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_ref())
+                .and_then(|id| messages.iter().find(|message| message.id == *id))
+        });
+    let mut lines = vec![format!(
+        "- Turn {}:",
+        if record.turn_index != 0 {
+            format!("turn_index {}", record.turn_index)
+        } else {
+            record.turn_id.clone()
+        }
+    )];
+    lines.push(format!("  - turn_id: {}", sanitize_inline(&record.turn_id)));
+    if let Some(trigger_message) = trigger_message {
+        lines.push(format!(
+            "  - trigger: {}",
+            turn_trigger_label(trigger_message)
+        ));
+    } else if let Some(trigger) = &record.trigger {
+        lines.push(format!(
+            "  - trigger: {} (message not in recent window)",
+            turn_trigger_summary_label(trigger)
+        ));
+    } else {
+        lines.push("  - trigger: unavailable in recent message window".to_string());
+    }
+    if let Some(continuation) = continuation {
+        lines.push(format!(
+            "  - continues input: {}",
+            trigger_message
+                .and_then(|message| message.message_seq.map(|seq| format!("message_seq {seq}")))
+                .or_else(|| {
+                    trigger_message
+                        .map(|message| message.id.clone())
+                        .or_else(|| {
+                            record
+                                .trigger
+                                .as_ref()
+                                .and_then(|trigger| trigger.message_id.clone())
+                        })
+                })
+                .unwrap_or_else(|| record.turn_id.clone())
+        ));
+        lines.push(format!(
+            "  - continuation trigger: {}",
+            turn_trigger_label(continuation)
+        ));
+    }
+    if let Some(trigger_message) = trigger_message {
+        if is_trusted_operator_input(trigger_message) {
+            lines.push(format!(
+                "  - operator asked: {}",
+                sanitize_inline(&body_preview(&trigger_message.body))
+            ));
+        } else {
+            lines.push(format!(
+                "  - input: {}",
+                sanitize_inline(&body_preview(&trigger_message.body))
+            ));
+        }
+    }
+
+    let related_briefs = record
+        .produced_brief_ids
+        .iter()
+        .filter_map(|id| briefs.iter().find(|brief| brief.id == *id))
+        .map(|brief| {
+            format!(
+                "    - {:?}: {}",
+                brief.kind,
+                sanitize_inline(&truncate_text(&brief.text, 160))
+            )
+        })
+        .collect::<Vec<_>>();
+    if !related_briefs.is_empty() {
+        lines.push("  - produced briefs:".to_string());
+        lines.extend(related_briefs);
+    }
+
+    let related_tools = record
+        .tool_execution_ids
+        .iter()
+        .filter_map(|id| tools.iter().find(|tool| tool.id == *id))
+        .map(render_recent_tool_execution)
+        .collect::<Vec<_>>();
+    if !related_tools.is_empty() {
+        lines.push("  - tool executions:".to_string());
+        lines.extend(related_tools.into_iter().map(|tool| format!("    {tool}")));
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn render_current_continuation_turn_record_projection(
+    record: &TurnRecord,
+    current_message: &MessageEnvelope,
+    operator: &MessageEnvelope,
+    messages: &[MessageEnvelope],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    current_work_item: Option<&WorkItemRecord>,
+) -> Option<String> {
+    let mut rendered =
+        render_turn_record_projection(record, messages, briefs, tools, Some(current_message))?;
+    let mut lines = vec![
+        format!(
+            "  - current relation: {}",
+            runtime_continuation_label(current_message)
+        ),
+        format!(
+            "  - current input: {}",
+            sanitize_inline(&body_preview(&current_message.body))
+        ),
+    ];
+    if let Some(work_item) = current_work_item {
+        lines.push(format!(
+            "  - current work item: {} :: {}",
+            sanitize_inline(&work_item.id),
+            sanitize_inline(&truncate_text(&work_item.objective, 160))
+        ));
+    }
+    if !turn_record_matches_message(record, operator) {
+        lines.push(format!(
+            "  - continues input id: {}",
+            sanitize_inline(&operator.id)
+        ));
+    }
+    rendered.push('\n');
+    rendered.push_str(&lines.join("\n"));
+    Some(rendered)
 }
 
 fn render_turn_projection(
@@ -1770,6 +1995,19 @@ fn render_current_continuation_turn_projection(
     rendered
 }
 
+fn turn_record_matches_message(record: &TurnRecord, message: &MessageEnvelope) -> bool {
+    message
+        .turn_id
+        .as_deref()
+        .is_some_and(|turn_id| !turn_id.trim().is_empty() && turn_id.trim() == record.turn_id)
+        || record.input_message_ids.iter().any(|id| id == &message.id)
+        || record
+            .trigger
+            .as_ref()
+            .and_then(|trigger| trigger.message_id.as_ref())
+            .is_some_and(|id| id == &message.id)
+}
+
 fn brief_matches_message(brief: &BriefRecord, message: &MessageEnvelope) -> bool {
     match (&brief.turn_id, &message.turn_id) {
         (Some(brief_turn_id), Some(message_turn_id))
@@ -1802,6 +2040,30 @@ fn turn_trigger_label(message: &MessageEnvelope) -> &'static str {
         return "trusted operator input";
     }
     runtime_continuation_label(message)
+}
+
+fn turn_trigger_summary_label(trigger: &crate::types::TurnTriggerSummary) -> &'static str {
+    if matches!(trigger.authority_class, AuthorityClass::OperatorInstruction) {
+        return "trusted operator input";
+    }
+    match trigger.trigger_kind {
+        Some(ContinuationTriggerKind::TaskResult) => "a task-result continuation",
+        Some(ContinuationTriggerKind::ExternalEvent) => "an external-event continuation",
+        Some(ContinuationTriggerKind::TimerFire) => "a timer continuation",
+        Some(ContinuationTriggerKind::InternalFollowup) => "an internal-followup continuation",
+        Some(ContinuationTriggerKind::SystemTick) => "a runtime system-tick continuation",
+        Some(ContinuationTriggerKind::OperatorInput) => "operator-triggered input",
+        None => match trigger.kind {
+            MessageKind::TaskResult | MessageKind::TaskStatus => "a task-result continuation",
+            MessageKind::CallbackEvent | MessageKind::WebhookEvent | MessageKind::ChannelEvent => {
+                "an external-event continuation"
+            }
+            MessageKind::TimerTick => "a timer continuation",
+            MessageKind::InternalFollowup => "an internal-followup continuation",
+            MessageKind::SystemTick => "a runtime system-tick continuation",
+            _ => "runtime-originated input",
+        },
+    }
 }
 
 fn sanitize_inline(value: &str) -> String {
@@ -2255,6 +2517,7 @@ mod tests {
 
     use crate::{
         prompt::build_effective_prompt,
+        runtime_db::RuntimeDb,
         storage::AppStorage,
         types::{
             AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
@@ -2297,6 +2560,157 @@ mod tests {
             ..ContextConfig::default()
         };
         assert_eq!(ceiling.turn_projection_budget(), 64_000);
+    }
+
+    #[test]
+    fn recent_turns_prefers_db_turn_records_when_available() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        let mut operator = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Use the database turn spine.".into(),
+            },
+        );
+        operator.turn_id = Some("turn-db-context".into());
+        storage.append_message(&operator).unwrap();
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Rendered from DB turn record.",
+            Some(operator.id.clone()),
+            None,
+        );
+        brief.id = "brief-db-context".into();
+        brief.turn_id = Some("turn-db-context".into());
+        storage.append_brief(&brief).unwrap();
+        let mut turn = TurnRecord::new("default", "turn-db-context", 1);
+        turn.input_message_ids = vec![operator.id.clone()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&operator));
+        storage.append_turn(&turn).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue.".into(),
+            },
+        );
+        let context = build_context(
+            &storage,
+            &AgentState::new("default"),
+            &execution_snapshot_for(&AgentState::new("default")),
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig::default(),
+        )
+        .unwrap();
+        let recent_turns = context
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section")
+            .content
+            .clone();
+        assert!(recent_turns.contains("- Turn turn_index 1:"));
+        assert!(recent_turns.contains("  - turn_id: turn-db-context"));
+        assert!(recent_turns.contains("Rendered from DB turn record."));
+    }
+
+    #[test]
+    fn recent_turns_keeps_db_turn_when_trigger_message_is_outside_window() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Rendered without trigger hydration.",
+            Some("missing-trigger-message".into()),
+            None,
+        );
+        brief.id = "brief-missing-trigger".into();
+        brief.turn_id = Some("turn-missing-trigger".into());
+        storage.append_brief(&brief).unwrap();
+
+        let mut turn = TurnRecord::new("default", "turn-missing-trigger", 2);
+        turn.input_message_ids = vec!["missing-trigger-message".into()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary {
+            message_id: Some("missing-trigger-message".into()),
+            kind: MessageKind::OperatorPrompt,
+            origin: MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            authority_class: AuthorityClass::OperatorInstruction,
+            priority: Priority::Normal,
+            trigger_kind: None,
+            task_id: None,
+        });
+        storage.append_turn(&turn).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue.".into(),
+            },
+        );
+        let context = build_context(
+            &storage,
+            &AgentState::new("default"),
+            &execution_snapshot_for(&AgentState::new("default")),
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig::default(),
+        )
+        .unwrap();
+        let recent_turns = context
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section")
+            .content
+            .clone();
+        assert!(recent_turns.contains("- Turn turn_index 2:"));
+        assert!(recent_turns.contains("message not in recent window"));
+        assert!(recent_turns.contains("Rendered without trigger hydration."));
     }
 
     #[test]

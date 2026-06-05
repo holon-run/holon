@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::types::{
     AuditEvent, BriefRecord, CallbackDeliveryMode, DeliverySummaryRecord, ExternalTriggerRecord,
     ExternalTriggerScope, ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord, TaskRecord,
-    TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
+    TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry, TurnRecord,
     WaitConditionRecord, WorkItemRecord, WorkItemState,
 };
 
@@ -47,6 +47,10 @@ pub struct QueueEntryRepository<'a> {
 }
 
 pub struct TimerRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct TurnRecordRepository<'a> {
     db: &'a RuntimeDb,
 }
 
@@ -603,6 +607,84 @@ impl TimerRepository<'_> {
     }
 }
 
+impl TurnRecordRepository<'_> {
+    pub fn import_legacy(
+        &self,
+        messages: Vec<serde_json::Value>,
+        tool_executions: Vec<ToolExecutionRecord>,
+        briefs: Vec<BriefRecord>,
+        delivery_summaries: Vec<DeliverySummaryRecord>,
+        wait_conditions: Vec<WaitConditionRecord>,
+    ) -> Result<()> {
+        if self.db.storage_domain_is_complete("turn_records", "db")? {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("turn_records", "jsonl-derived", "db", |tx| {
+                let records = derive_turn_records_from_legacy_evidence(
+                    messages,
+                    tool_executions,
+                    briefs,
+                    delivery_summaries,
+                    wait_conditions,
+                )?;
+                for record in &records {
+                    upsert_turn_record_tx(tx, record)?;
+                }
+                Ok(serde_json::json!({
+                    "imported_records": records.len(),
+                    "source": "legacy evidence jsonl",
+                    "ignored": "turns.jsonl"
+                }))
+            })
+    }
+
+    pub fn upsert(&self, record: &TurnRecord) -> Result<()> {
+        self.db.transaction(|tx| upsert_turn_record_tx(tx, record))
+    }
+
+    pub fn recent_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TurnRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM turn_records
+             WHERE agent_id = ?1
+             ORDER BY turn_index DESC, created_at DESC, turn_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+        let mut records = rows
+            .map(|row| decode_turn_record_payload(&row?))
+            .collect::<Result<Vec<_>>>()?;
+        records.reverse();
+        Ok(records)
+    }
+
+    pub fn recent(&self, limit: usize) -> Result<Vec<TurnRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM turn_records
+             ORDER BY turn_index DESC, created_at DESC, turn_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+        let mut records = rows
+            .map(|row| decode_turn_record_payload(&row?))
+            .collect::<Result<Vec<_>>>()?;
+        records.reverse();
+        Ok(records)
+    }
+}
+
 impl EvidenceRepository<'_> {
     pub fn import_legacy(
         &self,
@@ -1059,7 +1141,11 @@ fn normalize_legacy_message_value(
         .and_then(serde_json::Value::as_str)
         .is_some_and(|value| !value.trim().is_empty());
     if !has_turn_id {
-        let Some(turn_index) = object.get("turn_index").and_then(serde_json::Value::as_u64) else {
+        let Some(turn_index) = object
+            .get("turn_index")
+            .or_else(|| object.get("message_seq"))
+            .and_then(serde_json::Value::as_u64)
+        else {
             return Ok(None);
         };
         object.insert(
@@ -1457,6 +1543,205 @@ fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
     Ok(())
 }
 
+fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let terminal_kind = record
+        .terminal
+        .as_ref()
+        .map(|terminal| enum_string(&terminal.kind))
+        .transpose()?;
+    let completed_at = record
+        .terminal
+        .as_ref()
+        .map(|terminal| timestamp(terminal.completed_at));
+    tx.execute(
+        "INSERT INTO turn_records (
+            turn_id, turn_index, agent_id, run_id, current_work_item_id,
+            trigger_message_id, terminal_kind, created_at, completed_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(turn_id) DO UPDATE SET
+            turn_index = excluded.turn_index,
+            agent_id = excluded.agent_id,
+            run_id = excluded.run_id,
+            current_work_item_id = excluded.current_work_item_id,
+            trigger_message_id = excluded.trigger_message_id,
+            terminal_kind = excluded.terminal_kind,
+            created_at = excluded.created_at,
+            completed_at = excluded.completed_at,
+            payload_json = excluded.payload_json
+         WHERE COALESCE(excluded.completed_at, excluded.created_at) >= COALESCE(turn_records.completed_at, turn_records.created_at)",
+        params![
+            record.turn_id,
+            record.turn_index as i64,
+            record.agent_id,
+            record.run_id,
+            record.current_work_item_id,
+            record
+                .trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_deref()),
+            terminal_kind,
+            timestamp(record.created_at),
+            completed_at,
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn derive_turn_records_from_legacy_evidence(
+    messages: Vec<serde_json::Value>,
+    tool_executions: Vec<ToolExecutionRecord>,
+    briefs: Vec<BriefRecord>,
+    delivery_summaries: Vec<DeliverySummaryRecord>,
+    wait_conditions: Vec<WaitConditionRecord>,
+) -> Result<Vec<TurnRecord>> {
+    let mut records = BTreeMap::<String, TurnRecord>::new();
+    for raw_message in messages {
+        if let Some(message) = normalize_legacy_message_value(raw_message)? {
+            let turn_key = turn_key_from_message(&message);
+            let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
+                TurnRecord::new(&message.agent_id, &turn_key.turn_id, turn_key.turn_index)
+            });
+            reinforce_turn_index(record, &turn_key);
+            record.created_at = record.created_at.min(message.created_at);
+            record.input_message_ids.push(message.id.clone());
+            if record.trigger.is_none() {
+                record.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+            }
+            if record.current_work_item_id.is_none() {
+                record.current_work_item_id = message.work_item_id.clone();
+            }
+        }
+    }
+    for tool in tool_executions {
+        let Some(turn_key) = turn_key_from_optional(tool.turn_id.as_deref(), tool.turn_index)
+        else {
+            continue;
+        };
+        let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
+            TurnRecord::new(&tool.agent_id, &turn_key.turn_id, turn_key.turn_index)
+        });
+        reinforce_turn_index(record, &turn_key);
+        record.created_at = record.created_at.min(tool.created_at);
+        record.tool_execution_ids.push(tool.id.clone());
+        if record.current_work_item_id.is_none() {
+            record.current_work_item_id = tool.work_item_id.clone();
+        }
+    }
+    for brief in briefs {
+        let Some(turn_key) = turn_key_from_optional(
+            brief.turn_id.as_deref(),
+            brief.turn_index.unwrap_or_default(),
+        ) else {
+            continue;
+        };
+        let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
+            TurnRecord::new(&brief.agent_id, &turn_key.turn_id, turn_key.turn_index)
+        });
+        reinforce_turn_index(record, &turn_key);
+        record.created_at = record.created_at.min(brief.created_at);
+        record.produced_brief_ids.push(brief.id.clone());
+        if record.current_work_item_id.is_none() {
+            record.current_work_item_id = brief.work_item_id.clone();
+        }
+    }
+    for summary in delivery_summaries {
+        let Some(turn_key) = turn_key_from_optional(
+            summary.turn_id.as_deref(),
+            summary.source_turn_index.unwrap_or_default(),
+        ) else {
+            continue;
+        };
+        let record = records.entry(turn_key.turn_id.clone()).or_insert_with(|| {
+            TurnRecord::new(&summary.agent_id, &turn_key.turn_id, turn_key.turn_index)
+        });
+        reinforce_turn_index(record, &turn_key);
+        record.created_at = record.created_at.min(summary.created_at);
+        record.delivery_summary_ids.push(summary.id.clone());
+        record
+            .completed_work_item_ids
+            .push(summary.work_item_id.clone());
+        if record.current_work_item_id.is_none() {
+            record.current_work_item_id = Some(summary.work_item_id.clone());
+        }
+    }
+    for condition in wait_conditions {
+        let Some(turn_id) = condition
+            .turn_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            continue;
+        };
+        let record = records
+            .entry(turn_id.trim().to_string())
+            .or_insert_with(|| TurnRecord::new(&condition.agent_id, turn_id.trim(), 0));
+        record.created_at = record.created_at.min(condition.created_at);
+        record.waiting_condition_ids.push(condition.id.clone());
+        if record.current_work_item_id.is_none() {
+            record.current_work_item_id = condition.work_item_id.clone();
+        }
+    }
+    for record in records.values_mut() {
+        record.input_message_ids.sort();
+        record.input_message_ids.dedup();
+        record.tool_execution_ids.sort();
+        record.tool_execution_ids.dedup();
+        record.produced_brief_ids.sort();
+        record.produced_brief_ids.dedup();
+        record.delivery_summary_ids.sort();
+        record.delivery_summary_ids.dedup();
+        record.completed_work_item_ids.sort();
+        record.completed_work_item_ids.dedup();
+        record.waiting_condition_ids.sort();
+        record.waiting_condition_ids.dedup();
+    }
+    Ok(records.into_values().collect())
+}
+
+struct DerivedTurnKey {
+    turn_id: String,
+    turn_index: u64,
+}
+
+fn reinforce_turn_index(record: &mut TurnRecord, turn_key: &DerivedTurnKey) {
+    if record.turn_index == 0 && turn_key.turn_index != 0 {
+        record.turn_index = turn_key.turn_index;
+    }
+}
+
+fn turn_key_from_message(message: &MessageEnvelope) -> DerivedTurnKey {
+    if let Some(turn_id) = message
+        .turn_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return DerivedTurnKey {
+            turn_id: turn_id.trim().to_string(),
+            turn_index: 0,
+        };
+    }
+    let turn_index = message.message_seq.unwrap_or_default();
+    DerivedTurnKey {
+        turn_id: format!("legacy-turn-{turn_index}"),
+        turn_index,
+    }
+}
+
+fn turn_key_from_optional(turn_id: Option<&str>, turn_index: u64) -> Option<DerivedTurnKey> {
+    if let Some(turn_id) = turn_id.filter(|value| !value.trim().is_empty()) {
+        return Some(DerivedTurnKey {
+            turn_id: turn_id.trim().to_string(),
+            turn_index,
+        });
+    }
+    (turn_index != 0).then(|| DerivedTurnKey {
+        turn_id: format!("legacy-turn-{turn_index}"),
+        turn_index,
+    })
+}
+
 fn newer_work_item_record(candidate: &WorkItemRecord, existing: &WorkItemRecord) -> bool {
     candidate
         .revision
@@ -1697,6 +1982,10 @@ fn decode_queue_entry_payload(payload: &str) -> Result<QueueEntryRecord> {
 
 fn decode_timer_payload(payload: &str) -> Result<TimerRecord> {
     serde_json::from_str(payload).context("decoding timer payload from runtime db")
+}
+
+fn decode_turn_record_payload(payload: &str) -> Result<TurnRecord> {
+    serde_json::from_str(payload).context("decoding turn record payload from runtime db")
 }
 
 fn enum_string<T: serde::Serialize>(value: &T) -> Result<String> {
@@ -2212,6 +2501,30 @@ CREATE INDEX IF NOT EXISTS idx_queue_entries_agent_status
   ON queue_entries(agent_id, status, updated_at);
 "#,
     },
+    Migration {
+        version: 8,
+        name: "turn_records_spine",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS turn_records (
+  turn_id TEXT PRIMARY KEY,
+  turn_index INTEGER NOT NULL,
+  agent_id TEXT NOT NULL,
+  run_id TEXT,
+  current_work_item_id TEXT,
+  trigger_message_id TEXT,
+  terminal_kind TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_turn_records_agent_recent
+  ON turn_records(agent_id, turn_index, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_turn_records_work_item
+  ON turn_records(current_work_item_id);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -2283,6 +2596,10 @@ impl RuntimeDb {
         TimerRepository { db: self }
     }
 
+    pub fn turn_records(&self) -> TurnRecordRepository<'_> {
+        TurnRecordRepository { db: self }
+    }
+
     pub fn evidence(&self) -> EvidenceRepository<'_> {
         EvidenceRepository { db: self }
     }
@@ -2322,6 +2639,11 @@ impl RuntimeDb {
                 domain: "timers",
                 canonical_source: "db",
                 legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+            },
+            ExpectedStorageDomain {
+                domain: "turn_records",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::Disabled,
             },
             ExpectedStorageDomain {
                 domain: "evidence",
@@ -2788,6 +3110,7 @@ mod tests {
             "wait_conditions",
             "queue_entries",
             "timers",
+            "turn_records",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -3016,6 +3339,80 @@ mod tests {
         assert!(db
             .validate_expected_storage_domains(RuntimeDb::expected_storage_domains())
             .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn turn_record_repository_imports_legacy_evidence_without_turns_jsonl() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut message = MessageEnvelope::new(
+            "agent-a",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "derive a turn record".into(),
+            },
+        );
+        message.id = "msg-1".into();
+        message.message_seq = Some(7);
+        message.turn_id = Some("turn-a".into());
+        let mut brief = BriefRecord::new(
+            "agent-a",
+            crate::types::BriefKind::Result,
+            "derived result",
+            Some("msg-1".into()),
+            None,
+        );
+        brief.id = "brief-1".into();
+        brief.turn_id = Some("turn-a".into());
+        brief.turn_index = Some(7);
+        let tool = ToolExecutionRecord {
+            id: "tool-1".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: Some("work-1".into()),
+            turn_index: 7,
+            turn_id: Some("turn-a".into()),
+            tool_name: "ExecCommand".into(),
+            created_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            duration_ms: 1,
+            authority_class: crate::types::AuthorityClass::RuntimeInstruction,
+            status: crate::types::ToolExecutionStatus::Success,
+            input: serde_json::json!({ "cmd": "true" }),
+            output: serde_json::json!({ "exit": 0 }),
+            summary: "Run command: true".into(),
+            invocation_surface: None,
+        };
+
+        db.turn_records().import_legacy(
+            vec![serde_json::to_value(&message)?],
+            vec![tool],
+            vec![brief],
+            Vec::new(),
+            Vec::new(),
+        )?;
+
+        let records = db.turn_records().recent_for_agent("agent-a", 10)?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].turn_id, "turn-a");
+        assert_eq!(records[0].turn_index, 7);
+        assert_eq!(records[0].input_message_ids, vec!["msg-1"]);
+        assert_eq!(records[0].produced_brief_ids, vec!["brief-1"]);
+        assert_eq!(records[0].tool_execution_ids, vec!["tool-1"]);
+        assert_eq!(records[0].current_work_item_id.as_deref(), Some("work-1"));
+        let domain = db
+            .storage_domain("turn_records")?
+            .expect("turn_records domain");
+        assert_eq!(domain.canonical_source, "db");
+        assert!(domain
+            .source_checkpoint_json
+            .as_deref()
+            .is_some_and(|checkpoint| checkpoint.contains("turns.jsonl")));
         Ok(())
     }
 
