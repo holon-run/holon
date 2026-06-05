@@ -33,6 +33,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const START_STABILITY_WINDOW: Duration = Duration::from_secs(2);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+pub const PRE_SERVER_PREPARED_ENV: &str = "HOLON_PRE_SERVER_RUNTIME_PREPARED";
 const UNIX_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[cfg(test)]
@@ -190,6 +191,7 @@ pub async fn daemon_start(
     if let Some(token) = control_token_env {
         command.env("HOLON_CONTROL_TOKEN", token);
     }
+    command.env(PRE_SERVER_PREPARED_ENV, "1");
     let mut child = command.spawn().context("failed to spawn 'holon serve'")?;
 
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;

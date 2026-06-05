@@ -543,38 +543,54 @@ fn prepare_runtime_storage(
         },
     );
     storage.write_agent(&state)?;
-    let mut legacy_work_items = storage.read_recent_work_items(usize::MAX)?;
-    for record in &mut legacy_work_items {
-        crate::work_item_plan::refresh_plan_artifact_metadata(storage.data_dir(), record)?;
+    if !storage_domain_complete(&runtime_db, "work_items")? {
+        let mut legacy_work_items = storage.read_recent_work_items(usize::MAX)?;
+        for record in &mut legacy_work_items {
+            crate::work_item_plan::refresh_plan_artifact_metadata(storage.data_dir(), record)?;
+        }
+        runtime_db
+            .work_items()
+            .import_legacy(legacy_work_items, state.current_work_item_id.as_deref())?;
     }
-    runtime_db
-        .work_items()
-        .import_legacy(legacy_work_items, state.current_work_item_id.as_deref())?;
-    runtime_db
-        .tasks()
-        .import_legacy(storage.read_recent_tasks(usize::MAX)?)?;
-    runtime_db
-        .external_triggers()
-        .import_legacy(storage.read_recent_external_triggers(usize::MAX)?)?;
-    runtime_db
-        .wait_conditions()
-        .import_legacy(storage.read_recent_wait_conditions(usize::MAX)?)?;
-    runtime_db
-        .queue_entries()
-        .import_legacy(storage.read_recent_queue_entries(usize::MAX)?)?;
-    runtime_db
-        .timers()
-        .import_legacy(storage.read_recent_timers(usize::MAX)?)?;
-    runtime_db.evidence().import_legacy(
-        storage.read_all_message_values()?,
-        storage.read_all_transcript()?,
-        storage.read_recent_tool_executions(usize::MAX)?,
-        storage.read_recent_briefs(usize::MAX)?,
-        storage.read_recent_delivery_summaries(usize::MAX)?,
-    )?;
-    runtime_db
-        .audit_events()
-        .import_legacy(Some(&state.id), storage.read_recent_events(usize::MAX)?)?;
+    if !storage_domain_complete(&runtime_db, "tasks")? {
+        runtime_db
+            .tasks()
+            .import_legacy(storage.read_recent_tasks(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "external_triggers")? {
+        runtime_db
+            .external_triggers()
+            .import_legacy(storage.read_recent_external_triggers(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "wait_conditions")? {
+        runtime_db
+            .wait_conditions()
+            .import_legacy(storage.read_recent_wait_conditions(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "queue_entries")? {
+        runtime_db
+            .queue_entries()
+            .import_legacy(storage.read_recent_queue_entries(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "timers")? {
+        runtime_db
+            .timers()
+            .import_legacy(storage.read_recent_timers(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "evidence")? {
+        runtime_db.evidence().import_legacy(
+            storage.read_all_message_values()?,
+            storage.read_all_transcript()?,
+            storage.read_recent_tool_executions(usize::MAX)?,
+            storage.read_recent_briefs(usize::MAX)?,
+            storage.read_recent_delivery_summaries(usize::MAX)?,
+        )?;
+    }
+    if !storage_domain_complete(&runtime_db, "audit_events")? {
+        runtime_db
+            .audit_events()
+            .import_legacy(Some(&state.id), storage.read_recent_events(usize::MAX)?)?;
+    }
     runtime_db.validate_expected_storage_domains(
         crate::runtime_db::RuntimeDb::expected_storage_domains(),
     )?;
@@ -589,4 +605,12 @@ fn prepare_runtime_storage(
         active_tasks: snapshot.active_tasks,
         active_timers: snapshot.active_timers,
     })
+}
+
+fn storage_domain_complete(runtime_db: &RuntimeDb, domain: &str) -> Result<bool> {
+    let expected = RuntimeDb::expected_storage_domains()
+        .iter()
+        .find(|expected| expected.domain == domain)
+        .ok_or_else(|| anyhow!("unknown runtime storage domain {domain}"))?;
+    runtime_db.storage_domain_is_complete(expected.domain, expected.canonical_source)
 }

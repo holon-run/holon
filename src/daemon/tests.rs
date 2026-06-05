@@ -32,6 +32,21 @@ use tempfile::tempdir;
 
 static PREPARE_HOOK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+struct PrepareHookGuard;
+
+impl Drop for PrepareHookGuard {
+    fn drop(&mut self) {
+        set_prepare_runtime_before_server_hook(None);
+    }
+}
+
+fn set_prepare_hook(
+    hook: impl Fn(&AppConfig) -> anyhow::Result<()> + Send + Sync + 'static,
+) -> PrepareHookGuard {
+    set_prepare_runtime_before_server_hook(Some(Box::new(hook)));
+    PrepareHookGuard
+}
+
 fn test_config() -> AppConfig {
     let home = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -569,17 +584,16 @@ fn daemon_start_runs_preparation_before_readiness_timeout_window() {
     let config = test_config();
     let calls = Arc::new(AtomicUsize::new(0));
     let hook_calls = calls.clone();
-    set_prepare_runtime_before_server_hook(Some(Box::new(move |_config| {
+    let _hook_guard = set_prepare_hook(move |_config| {
         hook_calls.fetch_add(1, Ordering::SeqCst);
         anyhow::bail!("test preparation domain failed")
-    })));
+    });
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let err = runtime
         .block_on(daemon_start(&config, &[], None))
         .unwrap_err()
         .to_string();
-    set_prepare_runtime_before_server_hook(None);
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(err.contains("pre-server runtime preparation failed"));
@@ -595,19 +609,18 @@ fn pre_server_preparation_failure_is_retryable() {
     let config = test_config();
     let attempts = Arc::new(AtomicUsize::new(0));
     let hook_attempts = attempts.clone();
-    set_prepare_runtime_before_server_hook(Some(Box::new(move |_config| {
+    let _hook_guard = set_prepare_hook(move |_config| {
         let attempt = hook_attempts.fetch_add(1, Ordering::SeqCst);
         if attempt == 0 {
             anyhow::bail!("test storage domain incomplete")
         }
         Ok(())
-    })));
+    });
 
     let first = prepare_runtime_before_server(&config)
         .unwrap_err()
         .to_string();
     let second = prepare_runtime_before_server(&config);
-    set_prepare_runtime_before_server_hook(None);
 
     assert!(first.contains("pre-server runtime preparation failed"));
     second.unwrap();
