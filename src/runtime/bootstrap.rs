@@ -577,6 +577,15 @@ fn prepare_runtime_storage(
             .timers()
             .import_legacy(storage.read_recent_timers(usize::MAX)?)?;
     }
+    if !storage_domain_complete(&runtime_db, "turn_records")? {
+        runtime_db.turn_records().import_legacy(
+            storage.read_all_message_values()?,
+            storage.read_recent_tool_executions(usize::MAX)?,
+            storage.read_recent_briefs(usize::MAX)?,
+            storage.read_recent_delivery_summaries(usize::MAX)?,
+            storage.read_recent_wait_conditions(usize::MAX)?,
+        )?;
+    }
     if !storage_domain_complete(&runtime_db, "evidence")? {
         runtime_db.evidence().import_legacy(
             storage.read_all_message_values()?,

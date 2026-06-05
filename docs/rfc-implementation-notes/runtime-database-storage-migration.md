@@ -115,6 +115,7 @@ but their role is explicit per domain:
 | `work_items` | `canonical_source = db`; runtime reads current state from the `work_items` table. | Legacy compatibility/export mirror only. `work_items.jsonl` must not be replayed as current state after DB import completes. |
 | `tasks` | `canonical_source = db`; runtime task queries use the `tasks` table. | Legacy compatibility/export mirror only. `tasks.jsonl` remains a historical stream, not a recovery source after cutover. |
 | `external_triggers` | `canonical_source = db`; active trigger lookup and token routing use `external_triggers`. | Legacy compatibility/export mirror only. |
+| `turn_records` | `canonical_source = db`; recent context reads the turn spine from the `turn_records` table. | Disabled as a compatibility input. Legacy import derives turn records from published evidence JSONL and ignores the unpublished `turns.jsonl` experiment. |
 | `evidence` | `canonical_source = jsonl+db-index`; DB tables index bounded evidence previews and query keys. | `messages.jsonl`, `transcript.jsonl`, `tools.jsonl`, `briefs.jsonl`, and `delivery_summaries.jsonl` remain the import/source streams for large evidence content. |
 | `audit_events` | `canonical_source = jsonl+db-index`; `audit_events` is the query/index sink. | `events.jsonl` remains the live audit mirror and cursor compatibility stream. |
 
@@ -455,6 +456,10 @@ Scope:
   - `briefs`;
   - `delivery_summaries`;
   - `artifact_metadata`.
+- Add a `turn_records` spine table as DB canonical after the evidence import
+  surface is stable. Import legacy turn records by deriving them from published
+  evidence JSONL (`messages`, `tools`, `briefs`, delivery summaries, waits)
+  rather than by reading the unpublished `turns.jsonl` experiment.
 - Store large payloads through `content_ref`, `content_hash`, `preview`, and
   `payload_json`.
 - Add `EvidenceRepository` and `AuditEventSink`.

@@ -438,6 +438,10 @@ impl AppStorage {
     }
 
     pub fn append_turn(&self, record: &TurnRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.turn_records().upsert(record)?;
+            return Ok(());
+        }
         self.append_jsonl(&self.turns_path, record)
     }
 
@@ -754,6 +758,9 @@ impl AppStorage {
     }
 
     pub fn read_recent_turns(&self, limit: usize) -> Result<Vec<TurnRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.turn_records().recent(limit);
+        }
         read_recent_jsonl(&self.turns_path, limit)
     }
 
@@ -2484,6 +2491,36 @@ mod tests {
         assert_eq!(
             turns[0].terminal.as_ref().map(|terminal| terminal.kind),
             Some(crate::types::TurnTerminalKind::Completed)
+        );
+    }
+
+    #[test]
+    fn append_turn_uses_runtime_db_after_cutover_without_turns_jsonl() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+        let record = TurnRecord::new("default", "turn-db", 9);
+
+        storage.append_turn(&record).unwrap();
+
+        assert!(!storage.ledger_dir().join("turns.jsonl").exists());
+        let turns = storage.read_recent_turns(10).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].turn_id, "turn-db");
+        assert_eq!(
+            runtime_db
+                .turn_records()
+                .recent_for_agent("default", 10)
+                .unwrap()
+                .len(),
+            1
         );
     }
 
