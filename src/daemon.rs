@@ -7,7 +7,7 @@ mod tests;
 
 pub use lifecycle::{
     daemon_restart, daemon_start, daemon_status, daemon_stop, ensure_serve_preflight,
-    graceful_runtime_shutdown,
+    graceful_runtime_shutdown, prepare_runtime_before_server,
 };
 pub(crate) use service::runtime_activity_message;
 pub use service::{

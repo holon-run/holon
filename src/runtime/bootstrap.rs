@@ -36,6 +36,16 @@ pub(super) struct ProviderReconfigurator {
 }
 
 impl RuntimeHandle {
+    pub(crate) fn prepare_runtime_storage(
+        agent_id: impl Into<String>,
+        data_dir: PathBuf,
+        initial_workspace: impl Into<InitialWorkspaceBinding>,
+        runtime_db: RuntimeDb,
+    ) -> Result<()> {
+        let _ = prepare_runtime_storage(agent_id, data_dir, initial_workspace, Some(runtime_db))?;
+        Ok(())
+    }
+
     pub fn new(
         agent_id: impl Into<String>,
         data_dir: PathBuf,
@@ -160,141 +170,14 @@ impl RuntimeHandle {
         host_bridge: Option<RuntimeHostBridge>,
     ) -> Result<Self> {
         let mut provider = provider;
-        let storage = AppStorage::new(data_dir)?;
-        let runtime_db = match runtime_db {
-            Some(runtime_db) => runtime_db,
-            None => RuntimeDb::open_and_migrate(
-                storage.runtime_dir().join("state/runtime.sqlite"),
-                storage.runtime_dir().join("state/runtime.lock"),
-            )?,
-        };
-        let agent_id = agent_id.into();
-        let initial_workspace = initial_workspace.into();
-        let initial_workspace_entry = match &initial_workspace {
-            InitialWorkspaceBinding::Entry(entry) => Some(entry.clone()),
-            InitialWorkspaceBinding::Anchor(anchor) => Some(crate::types::WorkspaceEntry::new(
-                crate::ids::workspace_id(),
-                anchor.clone(),
-                anchor
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(ToString::to_string),
-            )),
-            InitialWorkspaceBinding::Detached => Some(workspace::agent_home_workspace_entry(
-                storage.data_dir(),
-                &agent_id,
-            )),
-        };
-
-        if let Some(workspace) = initial_workspace_entry.as_ref() {
-            let known = storage.latest_workspace_entries()?;
-            if !known
-                .iter()
-                .any(|entry| entry.workspace_id == workspace.workspace_id)
-            {
-                storage.append_workspace_entry(workspace)?;
-            }
-        }
-
-        let snapshot = storage.recovery_snapshot()?;
-        let mut queue = RuntimeQueue::default();
-        for message in &snapshot.replay_messages {
-            queue.push(message.clone());
-        }
-        let recovered_agent = snapshot.agent;
-        let recovered_from_storage = recovered_agent.is_some();
-        let mut state = recovered_agent.unwrap_or_else(|| AgentState::new(agent_id.clone()));
-
-        if state.attached_workspaces.is_empty() {
-            if let Some(workspace) = initial_workspace_entry.as_ref() {
-                let should_seed_initial_binding = !recovered_from_storage
-                    || state
-                        .active_workspace_entry
-                        .as_ref()
-                        .is_some_and(|entry| entry.workspace_id == workspace.workspace_id);
-                if should_seed_initial_binding {
-                    state
-                        .attached_workspaces
-                        .push(workspace.workspace_id.clone());
-                }
-            }
-        }
-
-        if state.active_workspace_entry.is_none() {
-            if let Some(workspace) = initial_workspace_entry.as_ref() {
-                state.active_workspace_entry = Some(ActiveWorkspaceEntry {
-                    workspace_id: workspace.workspace_id.clone(),
-                    workspace_anchor: workspace.workspace_anchor.clone(),
-                    execution_root_id: workspace::build_execution_root_id(
-                        &workspace.workspace_id,
-                        WorkspaceProjectionKind::CanonicalRoot,
-                        &workspace.workspace_anchor,
-                    )?,
-                    execution_root: workspace.workspace_anchor.clone(),
-                    projection_kind: WorkspaceProjectionKind::CanonicalRoot,
-                    access_mode: WorkspaceAccessMode::ExclusiveWrite,
-                    cwd: workspace.workspace_anchor.clone(),
-                    occupancy_id: None,
-                    projection_metadata: None,
-                });
-            }
-        }
-
-        if state
-            .worktree_session
-            .as_ref()
-            .is_some_and(|worktree| !worktree.worktree_path.exists())
-        {
-            storage.append_event(&AuditEvent::new(
-                "recovery_cleared_missing_worktree_session",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "worktree_path": state
-                        .worktree_session
-                        .as_ref()
-                        .map(|w| w.worktree_path.display().to_string()),
-                    "reason": "worktree_path_does_not_exist"
-                }),
-            ))?;
-            state.worktree_session = None;
-            if state.active_workspace_entry.as_ref().is_some_and(|entry| {
-                entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot
-            }) {
-                let data_dir = storage.data_dir();
-                let workspace_entry = workspace::agent_home_workspace_entry(&data_dir, &agent_id);
-                let kind = WorkspaceProjectionKind::CanonicalRoot;
-                state.active_workspace_entry = Some(ActiveWorkspaceEntry {
-                    workspace_id: workspace_entry.workspace_id.clone(),
-                    workspace_anchor: workspace_entry.workspace_anchor.clone(),
-                    execution_root_id: workspace::build_execution_root_id(
-                        &workspace_entry.workspace_id,
-                        kind,
-                        &workspace_entry.workspace_anchor,
-                    )?,
-                    execution_root: workspace_entry.workspace_anchor.clone(),
-                    projection_kind: kind,
-                    access_mode: WorkspaceAccessMode::ExclusiveWrite,
-                    cwd: workspace_entry.workspace_anchor.clone(),
-                    occupancy_id: None,
-                    projection_metadata: None,
-                });
-            }
-        }
-
-        state
-            .active_skills
-            .retain(|skill| matches!(skill.activation_state, SkillActivationState::SessionActive));
-        for skill in &mut state.active_skills {
-            skill.activation_source = SkillActivationSource::Restored;
-        }
-        state.pending = queue.len();
-        state.total_message_count = storage.count_messages().unwrap_or_default();
-        scheduler_executor::apply_bootstrap_recovered_projection(
-            &mut state,
-            scheduler_executor::BootstrapRecoveryFacts {
-                queued_messages: queue.len(),
-            },
-        );
+        let PreparedRuntimeStorage {
+            storage,
+            runtime_db,
+            state,
+            queue,
+            active_tasks,
+            active_timers,
+        } = prepare_runtime_storage(agent_id, data_dir, initial_workspace, runtime_db)?;
 
         if let Some(reconfig) = provider_reconfig.as_ref() {
             let chain = model_catalog.provider_chain_for_turn(
@@ -307,45 +190,6 @@ impl RuntimeHandle {
                 .runtime_max_output_tokens;
             provider = build_provider_from_model_chain(&provider_config, &chain)?;
         }
-        storage.write_agent(&state)?;
-        let mut legacy_work_items = storage.read_recent_work_items(usize::MAX)?;
-        for record in &mut legacy_work_items {
-            crate::work_item_plan::refresh_plan_artifact_metadata(storage.data_dir(), record)?;
-        }
-        runtime_db
-            .work_items()
-            .import_legacy(legacy_work_items, state.current_work_item_id.as_deref())?;
-        runtime_db
-            .tasks()
-            .import_legacy(storage.read_recent_tasks(usize::MAX)?)?;
-        runtime_db
-            .external_triggers()
-            .import_legacy(storage.read_recent_external_triggers(usize::MAX)?)?;
-        runtime_db
-            .wait_conditions()
-            .import_legacy(storage.read_recent_wait_conditions(usize::MAX)?)?;
-        runtime_db
-            .queue_entries()
-            .import_legacy(storage.read_recent_queue_entries(usize::MAX)?)?;
-        runtime_db
-            .timers()
-            .import_legacy(storage.read_recent_timers(usize::MAX)?)?;
-        runtime_db.evidence().import_legacy(
-            storage.read_all_message_values()?,
-            storage.read_all_transcript()?,
-            storage.read_recent_tool_executions(usize::MAX)?,
-            storage.read_recent_briefs(usize::MAX)?,
-            storage.read_recent_delivery_summaries(usize::MAX)?,
-        )?;
-        runtime_db
-            .audit_events()
-            .import_legacy(Some(&state.id), storage.read_recent_events(usize::MAX)?)?;
-        runtime_db.validate_expected_storage_domains(
-            crate::runtime_db::RuntimeDb::expected_storage_domains(),
-        )?;
-        storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
-        storage.enable_scheduler_control_plane_db(runtime_db.clone())?;
-
         let resolved_context_config = if provider_reconfig.is_some() {
             model_catalog
                 .resolved_context_config(&base_context_config, state.model_override.as_ref())
@@ -379,8 +223,8 @@ impl RuntimeHandle {
                 default_agent_id,
                 host_bridge,
                 task_handles: Mutex::new(HashMap::new()),
-                recovered_tasks: Mutex::new(Some(snapshot.active_tasks)),
-                recovered_timers: Mutex::new(Some(snapshot.active_timers)),
+                recovered_tasks: Mutex::new(Some(active_tasks)),
+                recovered_timers: Mutex::new(Some(active_timers)),
                 suppress_next_continue_active_tick: Mutex::new(false),
                 shutdown_requested: AtomicBool::new(false),
             }),
@@ -544,4 +388,205 @@ impl RuntimeHandle {
             .as_ref()
             .map(|reconfig| reconfig.config.clone())
     }
+}
+
+struct PreparedRuntimeStorage {
+    storage: AppStorage,
+    runtime_db: RuntimeDb,
+    state: AgentState,
+    queue: RuntimeQueue,
+    active_tasks: Vec<crate::types::TaskRecord>,
+    active_timers: Vec<crate::types::TimerRecord>,
+}
+
+fn prepare_runtime_storage(
+    agent_id: impl Into<String>,
+    data_dir: PathBuf,
+    initial_workspace: impl Into<InitialWorkspaceBinding>,
+    runtime_db: Option<RuntimeDb>,
+) -> Result<PreparedRuntimeStorage> {
+    let storage = AppStorage::new(data_dir)?;
+    let runtime_db = match runtime_db {
+        Some(runtime_db) => runtime_db,
+        None => RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )?,
+    };
+    let agent_id = agent_id.into();
+    let initial_workspace = initial_workspace.into();
+    let initial_workspace_entry = match &initial_workspace {
+        InitialWorkspaceBinding::Entry(entry) => Some(entry.clone()),
+        InitialWorkspaceBinding::Anchor(anchor) => Some(crate::types::WorkspaceEntry::new(
+            crate::ids::workspace_id(),
+            anchor.clone(),
+            anchor
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(ToString::to_string),
+        )),
+        InitialWorkspaceBinding::Detached => Some(workspace::agent_home_workspace_entry(
+            storage.data_dir(),
+            &agent_id,
+        )),
+    };
+
+    if let Some(workspace) = initial_workspace_entry.as_ref() {
+        let known = storage.latest_workspace_entries()?;
+        if !known
+            .iter()
+            .any(|entry| entry.workspace_id == workspace.workspace_id)
+        {
+            storage.append_workspace_entry(workspace)?;
+        }
+    }
+
+    let snapshot = storage.recovery_snapshot()?;
+    let mut queue = RuntimeQueue::default();
+    for message in &snapshot.replay_messages {
+        queue.push(message.clone());
+    }
+    let recovered_agent = snapshot.agent;
+    let recovered_from_storage = recovered_agent.is_some();
+    let mut state = recovered_agent.unwrap_or_else(|| AgentState::new(agent_id.clone()));
+
+    if state.attached_workspaces.is_empty() {
+        if let Some(workspace) = initial_workspace_entry.as_ref() {
+            let should_seed_initial_binding = !recovered_from_storage
+                || state
+                    .active_workspace_entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.workspace_id == workspace.workspace_id);
+            if should_seed_initial_binding {
+                state
+                    .attached_workspaces
+                    .push(workspace.workspace_id.clone());
+            }
+        }
+    }
+
+    if state.active_workspace_entry.is_none() {
+        if let Some(workspace) = initial_workspace_entry.as_ref() {
+            state.active_workspace_entry = Some(ActiveWorkspaceEntry {
+                workspace_id: workspace.workspace_id.clone(),
+                workspace_anchor: workspace.workspace_anchor.clone(),
+                execution_root_id: workspace::build_execution_root_id(
+                    &workspace.workspace_id,
+                    WorkspaceProjectionKind::CanonicalRoot,
+                    &workspace.workspace_anchor,
+                )?,
+                execution_root: workspace.workspace_anchor.clone(),
+                projection_kind: WorkspaceProjectionKind::CanonicalRoot,
+                access_mode: WorkspaceAccessMode::ExclusiveWrite,
+                cwd: workspace.workspace_anchor.clone(),
+                occupancy_id: None,
+                projection_metadata: None,
+            });
+        }
+    }
+
+    if state
+        .worktree_session
+        .as_ref()
+        .is_some_and(|worktree| !worktree.worktree_path.exists())
+    {
+        storage.append_event(&AuditEvent::new(
+            "recovery_cleared_missing_worktree_session",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "worktree_path": state
+                    .worktree_session
+                    .as_ref()
+                    .map(|w| w.worktree_path.display().to_string()),
+                "reason": "worktree_path_does_not_exist"
+            }),
+        ))?;
+        state.worktree_session = None;
+        if state
+            .active_workspace_entry
+            .as_ref()
+            .is_some_and(|entry| entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot)
+        {
+            let data_dir = storage.data_dir();
+            let workspace_entry = workspace::agent_home_workspace_entry(&data_dir, &agent_id);
+            let kind = WorkspaceProjectionKind::CanonicalRoot;
+            state.active_workspace_entry = Some(ActiveWorkspaceEntry {
+                workspace_id: workspace_entry.workspace_id.clone(),
+                workspace_anchor: workspace_entry.workspace_anchor.clone(),
+                execution_root_id: workspace::build_execution_root_id(
+                    &workspace_entry.workspace_id,
+                    kind,
+                    &workspace_entry.workspace_anchor,
+                )?,
+                execution_root: workspace_entry.workspace_anchor.clone(),
+                projection_kind: kind,
+                access_mode: WorkspaceAccessMode::ExclusiveWrite,
+                cwd: workspace_entry.workspace_anchor.clone(),
+                occupancy_id: None,
+                projection_metadata: None,
+            });
+        }
+    }
+
+    state
+        .active_skills
+        .retain(|skill| matches!(skill.activation_state, SkillActivationState::SessionActive));
+    for skill in &mut state.active_skills {
+        skill.activation_source = SkillActivationSource::Restored;
+    }
+    state.pending = queue.len();
+    state.total_message_count = storage.count_messages().unwrap_or_default();
+    scheduler_executor::apply_bootstrap_recovered_projection(
+        &mut state,
+        scheduler_executor::BootstrapRecoveryFacts {
+            queued_messages: queue.len(),
+        },
+    );
+    storage.write_agent(&state)?;
+    let mut legacy_work_items = storage.read_recent_work_items(usize::MAX)?;
+    for record in &mut legacy_work_items {
+        crate::work_item_plan::refresh_plan_artifact_metadata(storage.data_dir(), record)?;
+    }
+    runtime_db
+        .work_items()
+        .import_legacy(legacy_work_items, state.current_work_item_id.as_deref())?;
+    runtime_db
+        .tasks()
+        .import_legacy(storage.read_recent_tasks(usize::MAX)?)?;
+    runtime_db
+        .external_triggers()
+        .import_legacy(storage.read_recent_external_triggers(usize::MAX)?)?;
+    runtime_db
+        .wait_conditions()
+        .import_legacy(storage.read_recent_wait_conditions(usize::MAX)?)?;
+    runtime_db
+        .queue_entries()
+        .import_legacy(storage.read_recent_queue_entries(usize::MAX)?)?;
+    runtime_db
+        .timers()
+        .import_legacy(storage.read_recent_timers(usize::MAX)?)?;
+    runtime_db.evidence().import_legacy(
+        storage.read_all_message_values()?,
+        storage.read_all_transcript()?,
+        storage.read_recent_tool_executions(usize::MAX)?,
+        storage.read_recent_briefs(usize::MAX)?,
+        storage.read_recent_delivery_summaries(usize::MAX)?,
+    )?;
+    runtime_db
+        .audit_events()
+        .import_legacy(Some(&state.id), storage.read_recent_events(usize::MAX)?)?;
+    runtime_db.validate_expected_storage_domains(
+        crate::runtime_db::RuntimeDb::expected_storage_domains(),
+    )?;
+    storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
+    storage.enable_scheduler_control_plane_db(runtime_db.clone())?;
+
+    Ok(PreparedRuntimeStorage {
+        storage,
+        runtime_db,
+        state,
+        queue,
+        active_tasks: snapshot.active_tasks,
+        active_timers: snapshot.active_timers,
+    })
 }

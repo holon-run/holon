@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use tracing::info;
 
 #[cfg(unix)]
 use std::{io::ErrorKind, os::unix::fs::FileTypeExt};
@@ -33,6 +34,11 @@ const START_STABILITY_WINDOW: Duration = Duration::from_secs(2);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const UNIX_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[cfg(test)]
+static PREPARE_RUNTIME_BEFORE_SERVER_HOOK: std::sync::Mutex<
+    Option<Box<dyn Fn(&AppConfig) -> Result<()> + Send + Sync>>,
+> = std::sync::Mutex::new(None);
 
 pub async fn daemon_status(config: &AppConfig) -> Result<DaemonStatusView> {
     let fingerprint = config_fingerprint(config)?;
@@ -162,6 +168,7 @@ pub async fn daemon_start(
     cleanup_daemon_state(config)?;
     fs::create_dir_all(config.run_dir())
         .with_context(|| format!("failed to create {}", config.run_dir().display()))?;
+    prepare_runtime_before_server(config)?;
 
     let log_path = daemon_paths(config).log_path;
     let log = fs::OpenOptions::new()
@@ -301,6 +308,39 @@ pub async fn daemon_start(
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+pub fn prepare_runtime_before_server(config: &AppConfig) -> Result<()> {
+    info!(
+        home_dir = %config.home_dir.display(),
+        "starting pre-server runtime preparation"
+    );
+    #[cfg(test)]
+    if let Some(hook) = PREPARE_RUNTIME_BEFORE_SERVER_HOOK.lock().unwrap().as_ref() {
+        hook(config).with_context(|| {
+            "pre-server runtime preparation failed; fix the reported storage domain error and retry"
+        })?;
+        info!(
+            home_dir = %config.home_dir.display(),
+            "finished pre-server runtime preparation"
+        );
+        return Ok(());
+    }
+    RuntimeHost::prepare_runtime_storage(config).with_context(|| {
+        "pre-server runtime preparation failed; fix the reported storage domain error and retry"
+    })?;
+    info!(
+        home_dir = %config.home_dir.display(),
+        "finished pre-server runtime preparation"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn set_prepare_runtime_before_server_hook(
+    hook: Option<Box<dyn Fn(&AppConfig) -> Result<()> + Send + Sync>>,
+) {
+    *PREPARE_RUNTIME_BEFORE_SERVER_HOOK.lock().unwrap() = hook;
 }
 
 pub async fn daemon_stop(config: &AppConfig) -> Result<DaemonLifecycleResult> {
