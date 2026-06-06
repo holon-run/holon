@@ -598,7 +598,14 @@ impl AppStorage {
     }
 
     pub fn mark_memory_index_dirty(&self) -> Result<()> {
-        let dirty_path = self.shared_indexes_dir().join("memory.dirty");
+        let agent_id = self
+            .read_agent()?
+            .map(|agent| agent.id)
+            .unwrap_or_else(|| "unknown".into());
+        let dirty_path = self.shared_indexes_dir().join(format!(
+            "memory.{}.dirty",
+            memory_index_agent_key(&agent_id)
+        ));
         if dirty_path.exists() {
             return Ok(());
         }
@@ -1745,6 +1752,19 @@ impl AppStorage {
     }
 }
 
+fn memory_index_agent_key(agent_id: &str) -> String {
+    agent_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn migrate_events_ledger(path: &Path) -> Result<u64> {
     if !path.exists() {
         return Ok(0);
@@ -2877,7 +2897,8 @@ mod tests {
     fn mark_memory_index_dirty_does_not_rewrite_existing_marker() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
-        let dirty_path = storage.indexes_dir().join("memory.dirty");
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let dirty_path = storage.indexes_dir().join("memory.default.dirty");
 
         storage.mark_memory_index_dirty().unwrap();
         fs::write(&dirty_path, b"already dirty").unwrap();

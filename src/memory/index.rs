@@ -142,7 +142,11 @@ fn ensure_memory_index_current(
 ) -> Result<MemoryIndex> {
     let index_file_exists = memory_index_path(storage).exists();
     let mut index = MemoryIndex::open(storage)?;
-    if !index_file_exists || memory_index_is_dirty(storage) || !index.has_any_documents()? {
+    let agent_id = storage_agent_id(storage);
+    if !index_file_exists
+        || memory_index_is_dirty(storage)
+        || !index.has_any_documents_for_agent(&agent_id)?
+    {
         index.rebuild(storage, active_workspace_id)?;
     } else {
         repair_known_markdown_sources(storage, &index)?;
@@ -197,15 +201,34 @@ fn known_memory_markdown_sources(storage: &AppStorage) -> Vec<KnownMemoryMarkdow
 }
 
 fn memory_index_is_dirty(storage: &AppStorage) -> bool {
-    storage.shared_indexes_dir().join(DIRTY_FILENAME).exists()
+    storage
+        .shared_indexes_dir()
+        .join(dirty_filename_for_agent(&storage_agent_id(storage)))
+        .exists()
 }
 
 fn clear_memory_index_dirty(storage: &AppStorage) -> Result<()> {
-    let path = storage.shared_indexes_dir().join(DIRTY_FILENAME);
+    let path = storage
+        .shared_indexes_dir()
+        .join(dirty_filename_for_agent(&storage_agent_id(storage)));
     if path.exists() {
         fs::remove_file(path)?;
     }
     Ok(())
+}
+
+fn dirty_filename_for_agent(agent_id: &str) -> String {
+    let agent_key: String = agent_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    DIRTY_FILENAME.replace(".dirty", &format!(".{agent_key}.dirty"))
 }
 
 struct MemoryIndex {
@@ -327,12 +350,12 @@ impl MemoryIndex {
         Ok(())
     }
 
-    fn has_any_documents(&self) -> Result<bool> {
-        let count: i64 =
-            self.connection
-                .query_row("SELECT COUNT(*) FROM memory_documents", [], |row| {
-                    row.get(0)
-                })?;
+    fn has_any_documents_for_agent(&self, agent_id: &str) -> Result<bool> {
+        let count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM memory_documents WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get(0),
+        )?;
         Ok(count > 0)
     }
 
@@ -1314,6 +1337,57 @@ mod tests {
     }
 
     #[test]
+    fn shared_memory_index_dirty_and_readiness_are_scoped_by_agent() {
+        let dir = tempdir().unwrap();
+        let agents_dir = dir.path().join("agents");
+        let alpha_home = agents_dir.join("alpha");
+        let beta_home = agents_dir.join("beta");
+        let alpha = AppStorage::new(&alpha_home).unwrap();
+        let beta = AppStorage::new(&beta_home).unwrap();
+        alpha.write_agent(&AgentState::new("alpha")).unwrap();
+        beta.write_agent(&AgentState::new("beta")).unwrap();
+        ensure_agent_home_layout(&alpha_home).unwrap();
+        ensure_agent_home_layout(&beta_home).unwrap();
+        fs::write(agent_memory_self_path(&alpha_home), "alpha initial slice").unwrap();
+        fs::write(agent_memory_self_path(&beta_home), "beta initial slice").unwrap();
+
+        rebuild_memory_index(&alpha, None).unwrap();
+        assert!(search_memory(&beta, "initial", 10, None, true)
+            .unwrap()
+            .iter()
+            .any(|result| result.agent_id == "beta"
+                && result.source_ref == "agent_memory:self"
+                && result.snippet.contains("beta initial slice")));
+
+        beta.append_brief(&brief_with_workspace(
+            "beta",
+            BriefKind::Result,
+            "beta fresh dirty marker remains scoped",
+            "ws-beta",
+        ))
+        .unwrap();
+        fs::write(
+            agent_memory_self_path(&alpha_home),
+            "alpha rebuild should not clear beta dirty marker",
+        )
+        .unwrap();
+        alpha.mark_memory_index_dirty().unwrap();
+
+        assert!(search_memory(&alpha, "rebuild", 10, None, true)
+            .unwrap()
+            .iter()
+            .any(|result| result.agent_id == "alpha"
+                && result.source_ref == "agent_memory:self"
+                && result.snippet.contains("alpha rebuild")));
+        assert!(search_memory(&beta, "fresh", 10, Some("ws-beta"), true)
+            .unwrap()
+            .iter()
+            .any(|result| result.agent_id == "beta"
+                && result.kind == "brief"
+                && result.snippet.contains("fresh dirty marker")));
+    }
+
+    #[test]
     fn memory_get_returns_exact_markdown_and_runtime_source_content() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
@@ -1623,7 +1697,11 @@ mod tests {
             .unwrap();
 
         let _ = fs::remove_file(memory_index_path(&storage));
-        let _ = fs::remove_file(storage.indexes_dir().join(DIRTY_FILENAME));
+        let _ = fs::remove_file(
+            storage
+                .shared_indexes_dir()
+                .join(dirty_filename_for_agent("default")),
+        );
 
         let results = search_memory(&storage, "existing", 10, Some("ws-existing"), false).unwrap();
         assert!(results.iter().any(|result| result.kind == "brief"));
