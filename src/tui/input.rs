@@ -11,6 +11,7 @@ enum SlashCommand {
     Agents,
     Events,
     Model,
+    Onboard,
     Tasks,
     Transcript,
     State,
@@ -91,7 +92,7 @@ pub(super) struct SlashCommandSpec {
 
 const DISPLAY_MODE_ARGS: &[&str] = &["info", "verbose", "debug", "3", "4", "5"];
 
-const SLASH_COMMAND_SPECS: [SlashCommandSpec; 17] = [
+const SLASH_COMMAND_SPECS: [SlashCommandSpec; 18] = [
     SlashCommandSpec {
         name: "/help",
         description: "show slash command help",
@@ -127,6 +128,15 @@ const SLASH_COMMAND_SPECS: [SlashCommandSpec; 17] = [
         category: SlashCommandCategory::Agent,
         arg_rule: SlashArgRule::None,
         command: SlashCommand::Model,
+    },
+    SlashCommandSpec {
+        name: "/onboard",
+        description: "configure runtime default model through daemon config",
+        usage: "/onboard",
+        arg_hint: SlashArgHint::None,
+        category: SlashCommandCategory::Runtime,
+        arg_rule: SlashArgRule::None,
+        command: SlashCommand::Onboard,
     },
     SlashCommandSpec {
         name: "/tasks",
@@ -660,6 +670,7 @@ impl TuiApp {
                 self.status_line = "Opened raw events overlay".into();
             }
             SlashCommand::Model => {
+                self.onboarding_model_picker = false;
                 self.begin_load_models();
                 self.overlay = OverlayState::ModelPicker {
                     provider: None,
@@ -667,6 +678,16 @@ impl TuiApp {
                     selected: 0,
                 };
                 self.status_line = "Opened model picker".into();
+            }
+            SlashCommand::Onboard => {
+                self.onboarding_model_picker = true;
+                self.begin_load_models();
+                self.overlay = OverlayState::ModelPicker {
+                    provider: None,
+                    filter: String::new(),
+                    selected: 0,
+                };
+                self.status_line = "Onboarding: choose a runtime default model. Credentials/login remain in `holon onboard`; supported changes are applied through daemon config.".into();
             }
             SlashCommand::Tasks => {
                 self.overlay = OverlayState::Tasks {
@@ -1000,6 +1021,8 @@ impl TuiApp {
                                 filter: String::new(),
                                 selected: 0,
                             };
+                        } else {
+                            self.onboarding_model_picker = false;
                         }
                     }
                     TuiKeyAction::OverlayAccept => {
@@ -1668,6 +1691,16 @@ impl TuiApp {
 
         match row.choice {
             crate::tui::model_picker::ModelPickerChoice::InheritDefault => {
+                if self.onboarding_model_picker {
+                    self.status_line =
+                        "Onboarding default model unchanged; choose a provider model to update model.default through daemon config".into();
+                    self.overlay = OverlayState::ModelPicker {
+                        provider: provider.map(str::to_string),
+                        filter: filter.to_string(),
+                        selected,
+                    };
+                    return Ok(());
+                }
                 self.client.clear_agent_model_override(&agent_id).await?;
                 self.status_line =
                     format!("Cleared model override for {agent_id}; inheriting runtime default");
@@ -1685,6 +1718,10 @@ impl TuiApp {
                 model,
                 supports_reasoning_effort,
             } => {
+                if self.onboarding_model_picker {
+                    self.apply_onboarding_default_model(&model).await?;
+                    return Ok(());
+                }
                 if supports_reasoning_effort {
                     self.overlay = OverlayState::ModelEffortPicker {
                         model,
@@ -1697,6 +1734,23 @@ impl TuiApp {
                 }
             }
         }
+        Ok(())
+    }
+
+    async fn apply_onboarding_default_model(&mut self, model: &str) -> Result<()> {
+        let response = self
+            .client
+            .update_runtime_config(&crate::http::RuntimeConfigUpdateRequest {
+                updates: vec![crate::http::RuntimeConfigUpdateEntry {
+                    key: "model.default".into(),
+                    value: Some(serde_json::Value::String(model.to_string())),
+                    unset: false,
+                }],
+            })
+            .await?;
+        self.status_line = onboarding_runtime_config_status(model, &response);
+        self.overlay = OverlayState::None;
+        self.onboarding_model_picker = false;
         Ok(())
     }
 
@@ -1789,6 +1843,31 @@ fn is_complete_slash_command_token(trimmed: &str) -> bool {
         return false;
     };
     slash_command_spec(token).is_some()
+}
+
+fn onboarding_runtime_config_status(
+    model: &str,
+    response: &crate::http::RuntimeConfigUpdateResponse,
+) -> String {
+    let Some(result) = response
+        .results
+        .iter()
+        .find(|result| result.key == "model.default")
+    else {
+        return format!(
+            "Onboarding requested model.default={model} via daemon config; daemon response omitted per-key result"
+        );
+    };
+    match result.effect {
+        crate::http::RuntimeConfigUpdateEffect::AcceptedRequiresRestart => format!(
+            "Onboarding set runtime default model to {model} via daemon config; restart/reload required: {}",
+            result.reason
+        ),
+        crate::http::RuntimeConfigUpdateEffect::Rejected => format!(
+            "Onboarding daemon config update rejected for model.default: {}",
+            result.reason
+        ),
+    }
 }
 
 fn slash_menu_enter_submission(buffer: &str, selected: SlashCommandSpec) -> String {
@@ -1916,7 +1995,7 @@ impl TuiApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_agent_slash_action, parse_composer_submission,
+        onboarding_runtime_config_status, parse_agent_slash_action, parse_composer_submission,
         should_treat_enter_as_paste_newline_state, slash_command_spec, slash_help_lines,
         slash_menu_enter_submission, slash_menu_specs, slash_prompt_lines, AgentSlashAction,
         ComposerSubmission, SlashCommand,
@@ -1973,6 +2052,10 @@ mod tests {
         assert_eq!(
             parse_composer_submission("/model").unwrap(),
             Some(ComposerSubmission::Slash(SlashCommand::Model, vec![]))
+        );
+        assert_eq!(
+            parse_composer_submission("/onboard").unwrap(),
+            Some(ComposerSubmission::Slash(SlashCommand::Onboard, vec![]))
         );
         assert_eq!(
             parse_composer_submission("/clear-status").unwrap(),
@@ -2183,6 +2266,7 @@ mod tests {
             "/agents",
             "/events",
             "/model",
+            "/onboard",
             "/tasks",
             "/transcript",
             "/state",
@@ -2199,5 +2283,60 @@ mod tests {
         ] {
             assert!(help.contains(command), "help missing {command}");
         }
+    }
+
+    #[test]
+    fn onboarding_runtime_config_status_reports_restart_and_rejection() {
+        let runtime_surface = crate::daemon::RuntimeConfigSurface {
+            model_default: "anthropic/claude-sonnet-4-6".into(),
+            model_fallbacks: Vec::new(),
+            model_catalog: Vec::new(),
+            unknown_model_fallback_configured: false,
+            runtime_max_output_tokens: 8192,
+            default_tool_output_tokens: 4096,
+            max_tool_output_tokens: 16384,
+            disable_provider_fallback: false,
+            providers: Vec::new(),
+        };
+        let accepted = crate::http::RuntimeConfigUpdateResponse {
+            ok: true,
+            changed: true,
+            config_file_path: "/tmp/config.json".into(),
+            results: vec![crate::http::RuntimeConfigUpdateResult {
+                key: "model.default".into(),
+                effect: crate::http::RuntimeConfigUpdateEffect::AcceptedRequiresRestart,
+                reason: "persisted; restart required".into(),
+            }],
+            runtime_surface: runtime_surface.clone(),
+        };
+        let status = onboarding_runtime_config_status("openai/gpt-5.4", &accepted);
+        assert!(status.contains("via daemon config"));
+        assert!(status.contains("restart/reload required"));
+
+        let rejected = crate::http::RuntimeConfigUpdateResponse {
+            ok: true,
+            changed: false,
+            config_file_path: "/tmp/config.json".into(),
+            results: vec![crate::http::RuntimeConfigUpdateResult {
+                key: "model.default".into(),
+                effect: crate::http::RuntimeConfigUpdateEffect::Rejected,
+                reason: "unsupported or startup-only config key".into(),
+            }],
+            runtime_surface: runtime_surface.clone(),
+        };
+        let status = onboarding_runtime_config_status("openai/gpt-5.4", &rejected);
+        assert!(status.contains("rejected"));
+        assert!(status.contains("unsupported"));
+
+        let omitted = crate::http::RuntimeConfigUpdateResponse {
+            ok: true,
+            changed: true,
+            config_file_path: "/tmp/config.json".into(),
+            results: Vec::new(),
+            runtime_surface,
+        };
+        let status = onboarding_runtime_config_status("openai/gpt-5.4", &omitted);
+        assert!(status.contains("requested"));
+        assert!(!status.contains("updated"));
     }
 }
