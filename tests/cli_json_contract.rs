@@ -54,6 +54,7 @@ fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
     let mut child = isolated_holon_command(home)
         .args(["serve", "--listen", "127.0.0.1:0"])
         .env("HOLON_PRE_SERVER_RUNTIME_PREPARED", "1")
+        .env("OPENAI_API_KEY", "test-openai-api-key")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
