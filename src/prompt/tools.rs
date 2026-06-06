@@ -6,6 +6,10 @@
 use super::{section, PromptSection, PromptStability};
 use crate::tool::ToolSpec;
 
+fn guidance(content: &'static str) -> String {
+    content.strip_suffix('\n').unwrap_or(content).to_string()
+}
+
 /// Build tool-specific prompt sections based on available tools.
 ///
 /// This function implements a registry pattern: each tool has an associated
@@ -25,7 +29,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_wait_for",
             PromptStability::Stable,
-            "Use WaitFor when progress is intentionally paused until a specific wake condition: `wake=task_result` with `resource` set to the task id, `wake=external` with `resource` set to the stable outside object such as a URL or `github:owner/repo#123`, or `wake=operator_input` when only the operator can unblock the work. Always provide a concrete `reason`. If a current open WorkItem is focused, WaitFor attaches the wait to that WorkItem, records the blocker for display, and yields the turn. If no WorkItem is focused, WaitFor records an agent-level wait. To wait on another WorkItem, PickWorkItem first. Do not use UpdateWorkItem blocked fields for new waits.".to_string(),
+            guidance(include_str!("tool_guidance/tool_wait_for.md")),
         ));
     }
     if names.contains(&"SpawnAgent") {
@@ -77,7 +81,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_work_item_write",
             PromptStability::Stable,
-            "Use WorkItem write tools only for durable work state, not as a scratchpad, not for transient current-turn steps, and not as a default planning tool. Use CreateWorkItem to create a new open objective only for genuinely separate work with an independent lifecycle and completion criteria; its optional plan seeds the AgentHome plan artifact. PickWorkItem makes an existing open item current. UpdateWorkItem refines objective, plan_status, and todo_list; edit plan_artifact.path directly for plan body changes instead of passing plan text to UpdateWorkItem. Use WaitFor, not UpdateWorkItem, for task, external, or operator waits. CompleteWorkItem only when the objective is actually complete. Reuse the current WorkItem whenever the underlying tracked objective is the same; continuous discussion, planning threads, candidate issue screening, option comparison, and incremental decisions should normally update one WorkItem rather than create another. Create a new WorkItem only when the operator asks for independent execution or the objective has an independent lifecycle. Do not create a new WorkItem just to refine, narrow, or switch candidates inside the same planning thread; if the current WorkItem is still the same underlying task, update its objective, plan_status, and todo_list with UpdateWorkItem and edit the plan artifact file as needed. If an old WorkItem should be replaced, complete it first or explicitly PickWorkItem for the intended item before creating genuinely independent work. Any cross-turn waiting, callback-driven continuation, or sleep-ready handoff should already be anchored in a current work item before the turn ends. For tracked work, maintain the plan as durable prose in plan_artifact.path and todo_list as a durable progress checklist, not disposable current-turn steps. Before nontrivial file mutation or other high-commitment action on tracked work, make sure the current work item has a durable plan and set plan_status=ready once the plan is stable. If task interpretation, scope, or acceptance changes, update objective or plan_status and edit the plan artifact before continuing. Update todo_list after material progress such as a code change, verification result, blocker discovery, or completed inspection objective. Work-item updates are coordination/bookkeeping and do not replace file mutation, verification, PR/issue updates, final delivery, or other artifact progress. If the current item remains open because progress is blocked, record the specific wait with WaitFor instead of silently widening exploration. Use WaitFor for durable WorkItem waiting state and agent-level external triggers for reusable ingress when an external system should wake the agent; use TaskOutput(block=true) only for a bounded current-turn output check, not as durable work-item dependency state. Before completing a WorkItem, audit whether the acceptance evidence is present and verification status is known. Complete explicitly when complete; completion is your confirmation and cancels active WorkItem waits; explicitly cancel external triggers only when revoking or rotating a capability. Write the operator-facing completion report as assistant text in the same round as the focused CompleteWorkItem call; after that tool succeeds, the runtime promotes that exact text as the canonical completion report.".to_string(),
+            guidance(include_str!("tool_guidance/tool_work_item_write.md")),
         ));
     }
     if names.contains(&"GetWorkItem") || names.contains(&"ListWorkItems") {
@@ -96,21 +100,21 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_task_control",
             PromptStability::Stable,
-            "Use TaskList as a short active-coordination view for queued, running, and cancelling tasks on the current agent. It is intentionally compact and only shows a digest such as id, kind, status, summary, updated_at, and wait_policy. TaskList excludes terminal tasks like completed, failed, cancelled, and interrupted, so use TaskStatus for historical or detailed lifecycle metadata; it returns a stable envelope with a compact `task` snapshot rather than raw output bytes or full internal task detail. Use TaskInput when a managed task explicitly needs continuation input. Command tasks accept stdin or tty input there only when they were created with interactive continuation enabled, and parent-supervised child handles accept bounded follow-up input on the same surface. Check TaskStatus before sending input so you can confirm the task kind, lifecycle state, and whether the command snapshot still advertises `accepts_input`; if the task is not currently accepting input, expect a structured rejection receipt instead of assuming transport failure. For child supervision handles, expect `input_target=child_followup` instead of stdin-style delivery. Use TaskOutput when you need a bounded output preview, artifact refs, or an explicit short synchronous check inside the current turn; its canonical result is `{ retrieval_status, task }`, but the command-family tool receipt shown back to the model is a compact text summary with task status, preview text, and artifact refs when present. Do not use TaskOutput polling as the default way to wait for a child agent or command task to finish; when you are simply waiting for completion, call WaitFor with wake=task_result and resource set to the task id. For command tasks specifically, TaskOutput keeps bounded `output_preview` plus path-only artifact refs for full output, while TaskStatus returns coordination metadata such as `output_path`, `result_summary`, `exit_status`, and `terminal_reentry`; terminal re-entry is not a scheduler blocking policy. Use TaskStop only when a task is clearly no longer useful, is blocking progress, or has become irrelevant; it returns a structured stop receipt with the updated task snapshot, and command task stop may first report `cancelling` before the final `cancelled` result arrives. In longer sessions with multiple subtasks: (1) use TaskList to see current active task status at a glance, (2) use TaskStatus to inspect lifecycle metadata before deciding what to do next, (3) use TaskInput only when a managed task truly needs follow-up input, (4) use TaskOutput only when you need bounded output inspection or an explicit current-turn check, (5) use WaitFor when waiting for task completion without immediate intervention, and (6) use TaskStop when explicit stop semantics are actually needed. These tools add value in multi-step coordination but should not be forced into simple single-turn tasks.".to_string(),
+            guidance(include_str!("tool_guidance/tool_task_control.md")),
         ));
     }
     if names.contains(&"ExecCommand") {
         sections.push(section(
             "tool_exec_command",
             PromptStability::Stable,
-            "Use ExecCommand as the primary repo-inspection and verification primitive. For code and docs, prefer shell-first inspection patterns such as `rg --files`, `rg -n`, `sed -n start,endp`, `head`, and `tail`. Startup input is only the command-start contract: `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `accepts_input`, `yield_time_ms`, and `max_output_tokens`. `workdir` is optional and usually should be omitted because Holon defaults it to the current workspace cwd. Only set `workdir` when you truly need a different directory, and then prefer a short relative path inside the workspace instead of copying a long absolute worktree path. `yield_time_ms` is optional and defaults to 10_000 ms; omit it unless you intentionally want a shorter or longer foreground wait window. Before setting `yield_time_ms`, ask whether you are deliberately trying to change when the command returns or becomes a background task; if not, omit it. Use ExecCommand for commands that may run long enough to need background task promotion, for commands with uncertain runtime, and for multiple independent long-running commands where each command needs its own task handle. Narrow commands before repeating broad scans, and do not dump large files with `cat` unless no smaller slice can answer the current question. Do not repeat the same read command or adjacent one-line slices when the current context already contains the needed evidence; refresh only the smallest relevant slice when diagnostics, formatter/script output, suspected external edits, or another concrete changed-state question requires it. After a successful command creates, rewrites, formats, or generates files, rely on the command receipt first instead of re-reading just to confirm the write happened; use focused verification or a targeted slice only when the next decision depends on exact final content. Keep command startup compact: prefer checked-in scripts, temp files, or path-based artifacts over huge inline heredocs when generating or transforming large content. When several short, bounded shell commands should run sequentially before the next decision and ExecCommandBatch is available, prefer it instead of shell separator scripts; otherwise keep one-off, long-running, or uncertain-runtime commands on ExecCommand.\n\nValid startup examples:\n- `{ \"cmd\": \"rg -n \\\"render_for_model\\\" src\" }`\n- `{ \"cmd\": \"sed -n '1,120p' src/runtime/turn.rs\", \"max_output_tokens\": 1200 }`\n- `{ \"cmd\": \"python -i\", \"tty\": true, \"accepts_input\": true }`\n\nInvalid startup shapes:\n- `{ \"command\": \"rg -n ...\" }` because the field is `cmd`, not `command`\n- `{ \"cmd\": \"cargo test\", \"status\": \"running\" }` because `status` is result/task metadata, not startup input\n- `{ \"cmd\": \"git status\", \"commentary\": \"checking repo\" }` because free-form commentary is not an ExecCommand field\n\nAfter a failed edit or verification command, inspect the relevant failure output once, then make one focused correction. Avoid repeated micro-commands that only move one line at a time or re-check the same nearby slice without new evidence.\n\nKeep startup, immediate result, and promoted-task semantics separate. ExecCommand keeps a structured canonical result with fields such as `disposition`, `exit_status`, bounded previews, truncation flags, artifact refs, and command cost diagnostics, but the command-family tool receipt shown back to the model is rendered as a readable text receipt instead of a raw JSON dump. Command output uses a bounded default budget and per-call `max_output_tokens` is only useful when the next decision truly needs more preview text; artifact refs remain the route for full output. If the command exceeds `yield_time_ms` (default 10_000 ms), Holon promotes it into a `command_task` and returns `disposition=promoted_to_task` plus `task_handle`, `initial_output_preview`, and `initial_output_truncated`. Those are result fields, not valid startup input. When output is truncated, refine the command instead of asking for more of the same wide dump. After promotion, pass `task_handle.task_id` to TaskOutput only when you need bounded output retrieval or an explicit current-turn check; for ordinary completion waiting, call WaitFor with wake=task_result and resource set to the task id. Use TaskStatus/TaskList for coordination metadata.".to_string(),
+            guidance(include_str!("tool_guidance/tool_exec_command.md")),
         ));
     }
     if names.contains(&"ExecCommandBatch") {
         sections.push(section(
             "tool_exec_command_batch",
             PromptStability::Stable,
-            "Use ExecCommandBatch when several short, bounded shell commands should run sequentially before the next decision and do not require interactive input, background task management, or command-task continuation. Each item uses restricted ExecCommand startup fields: `cmd`, optional `workdir`, `shell`, `login`, `yield_time_ms`, and `max_output_tokens`. Top-level `workdir`, `shell`, `login`, `yield_time_ms`, and `max_output_tokens` act as defaults for items that omit those fields; item values take precedence. Per-item `yield_time_ms` is optional and defaults to 30_000 ms when neither the item nor the top level sets it; omit it by default, and set it only when intentionally changing that item's foreground wait window. ExecCommandBatch does not promote timed-out items into managed command tasks; if a command may be long-running, has uncertain runtime, or may need cancellation/output supervision, call ExecCommand directly so it can promote to `command_task`. For multiple independent long-running commands, start separate ExecCommand calls so each receives its own task handle; do not hide them inside one batch or shell-level `&` unless you explicitly accept coarser observability, cancellation, output separation, and failure attribution. Do not pass `tty` or `accepts_input`; call ExecCommand directly for interactive commands. ExecCommandBatch runs items sequentially and returns one grouped receipt with per-item status, output previews, truncation flags, command previews, and errors. Use it instead of unstructured shell separator scripts when item boundaries matter, but keep each item command compact and artifact-oriented. Do not use it for edits, arbitrary nested tools, installs, or commands whose later items depend on earlier output unless you intentionally set `stop_on_error` for a bounded sequence. If an ExecCommand is promoted and you are simply waiting for completion rather than inspecting output, call WaitFor with `reason`, `wake=task_result`, and `resource=<task_id>` rather than polling.\n\nValid startup examples:\n- `{ \"items\": [{ \"cmd\": \"git status\" }] }`\n- `{ \"max_output_tokens\": 1200, \"items\": [{ \"cmd\": \"rg -n \\\"foo\\\" src\" }], \"stop_on_error\": true }`\n- `{ \"items\": [{ \"cmd\": \"sed -n '1,120p' src/lib.rs\" }, { \"cmd\": \"rg -n \\\"TODO\\\" src\" }], \"stop_on_error\": true }`\n\nInvalid startup shapes:\n- `{ \"cmd\": \"git status\" }` because top-level `cmd` is not valid for ExecCommandBatch; if this is a single command, use ExecCommand instead\n- `{ \"items\": [{ \"cmd\": \"python -i\", \"tty\": true }] }` because `tty` and `accepts_input` are ExecCommand-only interactive fields\n- `{ \"items\": [{ \"cmd\": \"cargo check --all-targets\" }] }` when the command may run long enough to need promotion; use ExecCommand for long or uncertain runtime".to_string(),
+            guidance(include_str!("tool_guidance/tool_exec_command_batch.md")),
         ));
     }
     if let Some(apply_patch_tool) = apply_patch_tool {
@@ -734,6 +738,56 @@ mod tests {
         assert!(sections.iter().any(|s| s.name == "tool_exec_command"));
         assert!(sections.iter().any(|s| s.name == "tool_apply_patch"));
         assert!(sections.iter().any(|s| s.name == "tool_file_mutation"));
+    }
+
+    #[test]
+    fn test_migrated_tool_guidance_sections_are_non_empty() {
+        let tools = vec![
+            ToolSpec {
+                name: "WaitFor".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+            ToolSpec {
+                name: "CreateWorkItem".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+            ToolSpec {
+                name: "TaskStatus".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+            ToolSpec {
+                name: "ExecCommand".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+            ToolSpec {
+                name: "ExecCommandBatch".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+        ];
+        let sections = tool_sections(&tools);
+        for name in [
+            "tool_wait_for",
+            "tool_work_item_write",
+            "tool_task_control",
+            "tool_exec_command",
+            "tool_exec_command_batch",
+        ] {
+            let section = sections
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("{name} section"));
+            assert!(!section.content.trim().is_empty());
+        }
     }
 
     #[test]
