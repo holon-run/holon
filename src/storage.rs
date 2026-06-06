@@ -396,6 +396,9 @@ impl AppStorage {
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.evidence().append_brief(brief)?;
+        }
         self.append_jsonl(&self.briefs_path, brief)?;
         self.mark_memory_index_dirty()
     }
@@ -417,11 +420,22 @@ impl AppStorage {
     }
 
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.tasks().upsert(task)?;
+        }
         self.append_jsonl(&self.tasks_path, task)?;
         self.mark_memory_index_dirty()
     }
 
     pub fn append_work_item(&self, record: &WorkItemRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            let current_focus = self
+                .read_agent()?
+                .and_then(|agent| agent.current_work_item_id)
+                .as_deref()
+                == Some(record.id.as_str());
+            runtime_db.work_items().upsert(record, current_focus)?;
+        }
         self.append_jsonl(&self.work_items_path, record)?;
         self.mark_memory_index_dirty()
     }
@@ -442,6 +456,9 @@ impl AppStorage {
     }
 
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.evidence().append_tool_execution(record)?;
+        }
         self.append_jsonl(&self.tools_path, record)?;
         if matches!(
             record.tool_name.as_str(),
