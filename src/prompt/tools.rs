@@ -7,7 +7,10 @@ use super::{section, PromptSection, PromptStability};
 use crate::tool::ToolSpec;
 
 fn guidance(content: &'static str) -> String {
-    content.strip_suffix('\n').unwrap_or(content).to_string()
+    content
+        .replace("\r\n", "\n")
+        .trim_end_matches('\n')
+        .to_string()
 }
 
 /// Build tool-specific prompt sections based on available tools.
@@ -788,6 +791,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} section"));
             assert!(!section.content.trim().is_empty());
         }
+    }
+
+    #[test]
+    fn test_guidance_normalizes_line_endings() {
+        assert_eq!(guidance("one\r\ntwo\r\n"), "one\ntwo");
+        assert_eq!(guidance("one\ntwo\n\n"), "one\ntwo");
     }
 
     #[test]
