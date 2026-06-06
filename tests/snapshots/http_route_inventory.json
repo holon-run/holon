@@ -400,6 +400,22 @@
   },
   {
     "method": "get",
+    "path": "/control/runtime/config",
+    "handler": "runtime_config",
+    "operation_id": "runtimeConfig",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/control/runtime/readiness",
     "handler": "runtime_readiness",
     "operation_id": "runtimeReadiness",
@@ -545,6 +561,22 @@
       }
     ],
     "request_schema": "UpdateWorkItemRequest",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "patch",
+    "path": "/control/runtime/config",
+    "handler": "runtime_config_update",
+    "operation_id": "runtimeConfigUpdate",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": "RuntimeConfigUpdateRequest",
     "request_strict": true,
     "response_content_types": [
       "application/json"

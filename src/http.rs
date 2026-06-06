@@ -43,7 +43,11 @@ use tokio::{net::UnixListener, sync::watch};
 use tower::ServiceExt;
 
 use crate::{
-    config::{ControlTransportKind, ModelRef},
+    config::{
+        credential_store_path, load_credential_store_at, load_persisted_config_at,
+        save_persisted_config_at, set_config_key, unset_config_key, ControlTransportKind,
+        HolonConfigFile, ModelRef,
+    },
     daemon::{
         graceful_runtime_shutdown, runtime_activity_summary, RuntimeConfigSurface,
         RuntimeServiceHandle,
@@ -266,6 +270,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/control/runtime/readiness", get(runtime_readiness))
         .route("/control/runtime/status", get(runtime_status))
+        .route("/control/runtime/config", get(runtime_config))
+        .route("/control/runtime/config", patch(runtime_config_update))
         .route("/control/runtime/shutdown", post(runtime_shutdown))
         .route(
             "/control/agents/{agent_id}/debug-prompt",
@@ -795,6 +801,181 @@ pub async fn runtime_readiness(
     Ok(Json(
         runtime_service.readiness_response(startup_surface, runtime_surface),
     ))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeConfigReadResponse {
+    pub ok: bool,
+    pub config_file_path: std::path::PathBuf,
+    pub runtime_surface: RuntimeConfigSurface,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigUpdateRequest {
+    pub updates: Vec<RuntimeConfigUpdateEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeConfigUpdateEntry {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+    #[serde(default)]
+    pub unset: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeConfigUpdateResponse {
+    pub ok: bool,
+    pub changed: bool,
+    pub config_file_path: std::path::PathBuf,
+    pub results: Vec<RuntimeConfigUpdateResult>,
+    pub runtime_surface: RuntimeConfigSurface,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeConfigUpdateResult {
+    pub key: String,
+    pub effect: RuntimeConfigUpdateEffect,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeConfigUpdateEffect {
+    AcceptedRequiresRestart,
+    Rejected,
+}
+
+pub async fn runtime_config(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let config = state.host.config();
+    Ok(Json(RuntimeConfigReadResponse {
+        ok: true,
+        config_file_path: config.config_file_path.clone(),
+        runtime_surface: RuntimeConfigSurface::new(config),
+    }))
+}
+
+pub async fn runtime_config_update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<RuntimeConfigUpdateRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let config = state.host.config();
+    let mut stored = load_persisted_config_at(&config.config_file_path).map_err(error_response)?;
+    let mut candidate = stored.clone();
+    let mut changed = false;
+    let mut results = Vec::new();
+
+    for update in request.updates {
+        if !is_runtime_mutable_config_key(&update.key) {
+            results.push(RuntimeConfigUpdateResult {
+                key: update.key,
+                effect: RuntimeConfigUpdateEffect::Rejected,
+                reason: "unsupported or startup-only config key".into(),
+            });
+            continue;
+        }
+
+        let result = if update.unset {
+            unset_config_key(&mut candidate, &update.key)
+        } else {
+            match update.value {
+                Some(value) => {
+                    set_config_key(&mut candidate, &update.key, &config_value_as_raw(value))
+                }
+                None => Err(anyhow!(
+                    "runtime config update for {} requires value or unset=true",
+                    update.key
+                )),
+            }
+        };
+
+        match result {
+            Ok(()) => {
+                changed = true;
+                results.push(RuntimeConfigUpdateResult {
+                    key: update.key,
+                    effect: RuntimeConfigUpdateEffect::AcceptedRequiresRestart,
+                    reason: "persisted in config.json; the running host keeps its current effective config until restart/reload support is added".into(),
+                });
+            }
+            Err(error) => results.push(RuntimeConfigUpdateResult {
+                key: update.key,
+                effect: RuntimeConfigUpdateEffect::Rejected,
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    if changed {
+        if let Err(error) = validate_runtime_config_candidate(config, &candidate) {
+            changed = false;
+            let reason = format!("updated config is invalid: {error}");
+            for result in &mut results {
+                if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+                    result.effect = RuntimeConfigUpdateEffect::Rejected;
+                    result.reason = reason.clone();
+                }
+            }
+        }
+    }
+
+    if changed {
+        stored = candidate;
+        save_persisted_config_at(&config.config_file_path, &stored).map_err(error_response)?;
+    }
+
+    Ok(Json(RuntimeConfigUpdateResponse {
+        ok: true,
+        changed,
+        config_file_path: config.config_file_path.clone(),
+        results,
+        runtime_surface: RuntimeConfigSurface::new(config),
+    }))
+}
+
+fn validate_runtime_config_candidate(
+    config: &crate::config::AppConfig,
+    candidate: &HolonConfigFile,
+) -> Result<()> {
+    let credentials = load_credential_store_at(&credential_store_path(&config.home_dir))?;
+    crate::web::materialize_web_config(&candidate.web, &credentials)?;
+    Ok(())
+}
+
+fn is_runtime_mutable_config_key(key: &str) -> bool {
+    matches!(
+        key,
+        "model.default"
+            | "model.fallbacks"
+            | "models.catalog"
+            | "model.unknown_fallback"
+            | "model.unknown_fallback.context_window_tokens"
+            | "model.unknown_fallback.effective_context_window_percent"
+            | "model.unknown_fallback.prompt_budget_estimated_tokens"
+            | "model.unknown_fallback.compaction_trigger_estimated_tokens"
+            | "model.unknown_fallback.compaction_keep_recent_estimated_tokens"
+            | "model.unknown_fallback.runtime_max_output_tokens"
+            | "runtime.max_output_tokens"
+            | "runtime.default_tool_output_tokens"
+            | "runtime.max_tool_output_tokens"
+            | "runtime.disable_provider_fallback"
+    ) || key.starts_with("web.")
+}
+
+fn config_value_as_raw(value: Value) -> String {
+    match value {
+        Value::String(value) => value,
+        other => other.to_string(),
+    }
 }
 
 fn runtime_surfaces(

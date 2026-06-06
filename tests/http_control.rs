@@ -30,6 +30,7 @@ http_async_tests!(
     daemon_shutdown_restart_preserves_public_agent_http_runnability,
     runtime_status_route_reports_runtime_metadata,
     runtime_readiness_route_omits_activity_summary,
+    runtime_config_route_reads_and_updates_persisted_runtime_config,
     runtime_status_route_reports_waiting_activity_summary,
     runtime_status_route_reports_last_runtime_failure_summary,
     runtime_shutdown_route_requests_shutdown,

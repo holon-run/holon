@@ -671,6 +671,273 @@
         "title": "PickWorkItemResponse",
         "type": "object"
       },
+      "RuntimeConfigReadResponse": {
+        "properties": {
+          "config_file_path": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "runtime_surface": {
+            "properties": {
+              "default_tool_output_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "disable_provider_fallback": {
+                "type": "boolean"
+              },
+              "max_tool_output_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "model_catalog": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "model_default": {
+                "type": "string"
+              },
+              "model_fallbacks": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "providers": {
+                "items": {
+                  "properties": {
+                    "base_url": {
+                      "type": "string"
+                    },
+                    "credential_configured": {
+                      "type": "boolean"
+                    },
+                    "credential_kind": {
+                      "type": "string"
+                    },
+                    "credential_source": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "transport": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "transport",
+                    "base_url",
+                    "credential_source",
+                    "credential_kind",
+                    "credential_configured"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "runtime_max_output_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_model_fallback_configured": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "model_default",
+              "model_fallbacks",
+              "model_catalog",
+              "unknown_model_fallback_configured",
+              "runtime_max_output_tokens",
+              "default_tool_output_tokens",
+              "max_tool_output_tokens",
+              "disable_provider_fallback",
+              "providers"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "ok",
+          "config_file_path",
+          "runtime_surface"
+        ],
+        "title": "RuntimeConfigReadResponse",
+        "type": "object"
+      },
+      "RuntimeConfigUpdateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "updates": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "unset": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "value": true
+              },
+              "required": [
+                "key"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "updates"
+        ],
+        "title": "RuntimeConfigUpdateRequest",
+        "type": "object"
+      },
+      "RuntimeConfigUpdateResponse": {
+        "properties": {
+          "changed": {
+            "type": "boolean"
+          },
+          "config_file_path": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "results": {
+            "items": {
+              "properties": {
+                "effect": {
+                  "enum": [
+                    "accepted_requires_restart",
+                    "rejected"
+                  ],
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "effect",
+                "reason"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "runtime_surface": {
+            "properties": {
+              "default_tool_output_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "disable_provider_fallback": {
+                "type": "boolean"
+              },
+              "max_tool_output_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "model_catalog": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "model_default": {
+                "type": "string"
+              },
+              "model_fallbacks": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "providers": {
+                "items": {
+                  "properties": {
+                    "base_url": {
+                      "type": "string"
+                    },
+                    "credential_configured": {
+                      "type": "boolean"
+                    },
+                    "credential_kind": {
+                      "type": "string"
+                    },
+                    "credential_source": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "transport": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "transport",
+                    "base_url",
+                    "credential_source",
+                    "credential_kind",
+                    "credential_configured"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "runtime_max_output_tokens": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_model_fallback_configured": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "model_default",
+              "model_fallbacks",
+              "model_catalog",
+              "unknown_model_fallback_configured",
+              "runtime_max_output_tokens",
+              "default_tool_output_tokens",
+              "max_tool_output_tokens",
+              "disable_provider_fallback",
+              "providers"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "ok",
+          "changed",
+          "config_file_path",
+          "results",
+          "runtime_surface"
+        ],
+        "title": "RuntimeConfigUpdateResponse",
+        "type": "object"
+      },
       "SetAgentModelRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -5487,6 +5754,110 @@
         "summary": "Exit workspace",
         "tags": [
           "control"
+        ]
+      }
+    },
+    "/control/runtime/config": {
+      "get": {
+        "description": "Return the daemon effective runtime configuration surface.",
+        "operationId": "runtimeConfig",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeConfigReadResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Runtime config",
+        "tags": [
+          "runtime"
+        ]
+      },
+      "patch": {
+        "description": "Persist runtime-mutable config updates and classify their effect as restart/reload-required or rejected.",
+        "operationId": "runtimeConfigUpdate",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeConfigUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeConfigUpdateResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Update runtime config",
+        "tags": [
+          "runtime"
         ]
       }
     },

@@ -137,6 +137,19 @@ Holon should keep mutation surfaces aligned with lifecycle class:
 
 These surfaces should not be collapsed into one generic `config` abstraction.
 
+The daemon control API exposes this split through:
+
+- `GET /control/runtime/config`, which returns the effective runtime
+  configuration surface for the running host
+- `PATCH /control/runtime/config`, which persists supported runtime-mutable
+  keys to `config.json` and returns a per-key effect classification
+
+Until live reload is implemented, supported persisted updates return
+`accepted_requires_restart`: the file-backed runtime config changes, while the
+current process keeps using its already-loaded effective configuration.
+Startup-only and unsupported keys are rejected with structured reasons instead
+of silently editing files.
+
 ## Status And Inspectability
 
 Holon should make the active source of truth inspectable:

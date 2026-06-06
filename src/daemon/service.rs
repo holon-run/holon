@@ -2,6 +2,7 @@ use std::{fs, path::PathBuf, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -73,7 +74,7 @@ impl From<ControlAuthMode> for RuntimeControlAuthMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeConfigSurface {
     pub model_default: String,
     pub model_fallbacks: Vec<String>,
@@ -86,7 +87,7 @@ pub struct RuntimeConfigSurface {
     pub providers: Vec<RuntimeProviderSummary>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeProviderSummary {
     pub id: String,
     pub transport: String,

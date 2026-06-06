@@ -8,7 +8,8 @@ use serde_json::{json, Value};
 use crate::{
     http::{
         CancelTimerRequest, CompleteWorkItemRequest, CreateTimerRequest, PickWorkItemRequest,
-        PickWorkItemResponse, UpdateWorkItemRequest,
+        PickWorkItemResponse, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
+        RuntimeConfigUpdateResponse, UpdateWorkItemRequest,
     },
     types::{
         TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult, TimerRecord,
@@ -103,6 +104,8 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/control/agents/{agent_id}/operator-ingress", "operatorIngress", "control", "Operator ingress", "Deliver an authenticated remote operator prompt.", Some("OperatorIngressRequest"), AuthKind::Control),
     route("get", "/control/runtime/readiness", "runtimeReadiness", "runtime", "Runtime readiness", "Return daemon readiness metadata.", None, AuthKind::Control),
     route("get", "/control/runtime/status", "runtimeStatus", "runtime", "Runtime status", "Return daemon status and runtime activity metadata.", None, AuthKind::Control),
+    route_with_response("get", "/control/runtime/config", "runtimeConfig", "runtime", "Runtime config", "Return the daemon effective runtime configuration surface.", None, "RuntimeConfigReadResponse", AuthKind::Control),
+    route_with_response("patch", "/control/runtime/config", "runtimeConfigUpdate", "runtime", "Update runtime config", "Persist runtime-mutable config updates and classify their effect as restart/reload-required or rejected.", Some("RuntimeConfigUpdateRequest"), "RuntimeConfigUpdateResponse", AuthKind::Control),
     route("post", "/control/runtime/shutdown", "runtimeShutdown", "runtime", "Runtime shutdown", "Request graceful runtime shutdown.", None, AuthKind::Control),
     route("post", "/control/agents/{agent_id}/debug-prompt", "debugPrompt", "control", "Debug prompt", "Render a diagnostic prompt preview.", Some("DebugPromptRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/wake", "controlWake", "control", "Wake agent", "Submit a trusted wake hint.", Some("ControlWakeRequest"), AuthKind::Control),
@@ -484,6 +487,18 @@ fn component_schemas() -> Value {
     schemas.insert(
         "PickWorkItemResponse".into(),
         component_schema::<PickWorkItemResponse>(),
+    );
+    schemas.insert(
+        "RuntimeConfigReadResponse".into(),
+        component_schema::<RuntimeConfigReadResponse>(),
+    );
+    schemas.insert(
+        "RuntimeConfigUpdateRequest".into(),
+        component_schema::<RuntimeConfigUpdateRequest>(),
+    );
+    schemas.insert(
+        "RuntimeConfigUpdateResponse".into(),
+        component_schema::<RuntimeConfigUpdateResponse>(),
     );
     schemas.insert(
         "PickWorkItemRequest".into(),

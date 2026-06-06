@@ -513,6 +513,48 @@ Reverts to the default model. Accepts an optional body:
 Returns daemon and runtime health info including configured models, control
 token status, and activity markers.
 
+**`GET /control/runtime/config`** — Runtime config
+
+Returns the daemon's current effective runtime configuration surface and the
+`config.json` path that backs persisted runtime-mutable settings.
+
+**`PATCH /control/runtime/config`** — Update runtime config
+
+Persists runtime-mutable config key updates and classifies each attempted
+change. The current implementation writes supported keys to `config.json` and
+returns `accepted_requires_restart` because the running host keeps its current
+effective config until live reload support exists. Startup-only or unsupported
+keys return `rejected` with a reason.
+
+```json
+{
+  "updates": [
+    { "key": "model.default", "value": "openai/gpt-4.1" },
+    { "key": "home_dir", "value": "/tmp/other-home" }
+  ]
+}
+```
+
+```json
+{
+  "ok": true,
+  "changed": true,
+  "results": [
+    {
+      "key": "model.default",
+      "effect": "accepted_requires_restart",
+      "reason": "persisted in config.json; the running host keeps its current effective config until restart/reload support is added"
+    },
+    {
+      "key": "home_dir",
+      "effect": "rejected",
+      "reason": "unsupported or startup-only config key"
+    }
+  ],
+  "runtime_surface": { "...": "..." }
+}
+```
+
 **`POST /control/runtime/shutdown`** — Graceful shutdown
 
 Shuts down the runtime and daemon gracefully.
