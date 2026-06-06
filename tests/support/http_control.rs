@@ -1158,17 +1158,35 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert!(update_response.status().is_success());
     let update_payload: serde_json::Value = update_response.json().await?;
     assert_eq!(update_payload["ok"], true);
-    assert_eq!(update_payload["changed"], true);
+    assert_eq!(update_payload["changed"], false);
     assert_eq!(update_payload["results"][0]["key"], "model.default");
-    assert_eq!(
-        update_payload["results"][0]["effect"],
-        "accepted_requires_restart"
-    );
+    assert_eq!(update_payload["results"][0]["effect"], "rejected");
     assert_eq!(update_payload["results"][1]["key"], "home_dir");
     assert_eq!(update_payload["results"][1]["effect"], "rejected");
     assert_eq!(
         update_payload["runtime_surface"]["model_default"],
         config.default_model.as_string()
+    );
+
+    let persisted = load_persisted_config_at(&config.config_file_path)?;
+    assert_eq!(persisted.model.default, None);
+
+    let valid_model_response = client
+        .patch(format!("http://{addr}/control/runtime/config"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "updates": [
+                { "key": "model.default", "value": "openai/gpt-4.1" }
+            ]
+        }))
+        .send()
+        .await?;
+    assert!(valid_model_response.status().is_success());
+    let valid_model_payload: serde_json::Value = valid_model_response.json().await?;
+    assert_eq!(valid_model_payload["changed"], true);
+    assert_eq!(
+        valid_model_payload["results"][0]["effect"],
+        "accepted_requires_restart"
     );
 
     let persisted = load_persisted_config_at(&config.config_file_path)?;

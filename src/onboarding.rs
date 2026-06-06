@@ -164,12 +164,19 @@ pub struct OnboardingSearchChoice {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnboardingApplySummary {
+    pub applied_via: String,
     pub provider: String,
     pub credential_profile: String,
     pub credential_kind: String,
     pub default_model: String,
     pub search: String,
     pub credential_written: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct OnboardingWizardSubmission {
+    pub draft: OnboardingWizardDraft,
+    pub credential_material: Option<String>,
 }
 
 pub fn onboarding_provider_choices(config: &AppConfig) -> Vec<OnboardingProviderChoice> {
@@ -463,6 +470,7 @@ pub fn apply_onboarding_wizard_draft(
     save_persisted_config_at(&config.config_file_path, &persisted)?;
 
     Ok(OnboardingApplySummary {
+        applied_via: "offline_store".into(),
         provider: draft.provider.as_str().into(),
         credential_profile: draft.credential_profile.clone(),
         credential_kind: draft.credential_kind.as_str().into(),
@@ -1270,6 +1278,7 @@ mod tests {
         let store = load_credential_store_at(&credential_store_path(&config.home_dir)).unwrap();
 
         assert_eq!(summary.provider, "openai");
+        assert_eq!(summary.applied_via, "offline_store");
         assert_eq!(summary.default_model, "openai/gpt-5.4");
         assert_eq!(summary.search, "Managed WebSearch: DuckDuckGo");
         assert!(summary.credential_written);

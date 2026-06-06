@@ -23,17 +23,16 @@ use crate::{
     auth::run_codex_oauth_login_profile_material,
     config::{AppConfig, CredentialKind, ModelRef, ProviderId},
     onboarding::{
-        apply_onboarding_wizard_draft, onboarding_model_choices, onboarding_provider_choices,
-        onboarding_search_choices, OnboardingApplySummary, OnboardingModelChoice,
-        OnboardingProviderChoice, OnboardingSearchChoice, OnboardingSearchSelection,
-        OnboardingWizardDraft,
+        onboarding_model_choices, onboarding_provider_choices, onboarding_search_choices,
+        OnboardingModelChoice, OnboardingProviderChoice, OnboardingSearchChoice,
+        OnboardingSearchSelection, OnboardingWizardDraft, OnboardingWizardSubmission,
     },
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DUCKDUCKGO_SEARCH_PROVIDER_ID: &str = "duckduckgo";
 
-pub fn run_onboarding_tui(config: AppConfig) -> Result<OnboardingApplySummary> {
+pub fn run_onboarding_tui(config: AppConfig) -> Result<OnboardingWizardSubmission> {
     let mut app = OnboardingTuiApp::new(&config);
     let mut guard = TerminalGuard::new();
     enable_raw_mode()?;
@@ -54,9 +53,10 @@ pub fn run_onboarding_tui(config: AppConfig) -> Result<OnboardingApplySummary> {
         if let Some(draft) = app.completed_draft.clone() {
             terminal.show_cursor()?;
             drop(guard);
-            let summary =
-                apply_onboarding_wizard_draft(&config, &draft, app.credential_material.clone())?;
-            return Ok(summary);
+            return Ok(OnboardingWizardSubmission {
+                draft,
+                credential_material: app.credential_material.clone(),
+            });
         }
         if event::poll(POLL_INTERVAL)? {
             if let Event::Key(key) = event::read()? {
