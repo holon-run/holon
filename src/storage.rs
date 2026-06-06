@@ -296,6 +296,25 @@ impl AppStorage {
     }
 
     pub(crate) fn enable_scheduler_control_plane_db(&self, runtime_db: RuntimeDb) -> Result<()> {
+        let agent_id = self.current_agent_id()?;
+        {
+            let mut counter = self
+                .message_seq_counter
+                .lock()
+                .map_err(|_| anyhow::anyhow!("message sequence counter mutex poisoned"))?;
+            *counter = (*counter).max(runtime_db.messages().max_message_seq(agent_id.as_deref())?);
+        }
+        {
+            let mut counter = self
+                .transcript_seq_counter
+                .lock()
+                .map_err(|_| anyhow::anyhow!("transcript sequence counter mutex poisoned"))?;
+            *counter = (*counter).max(
+                runtime_db
+                    .transcript_entries()
+                    .max_transcript_seq(agent_id.as_deref())?,
+            );
+        }
         let mut guard = self
             .scheduler_control_plane_db
             .lock()
@@ -310,6 +329,27 @@ impl AppStorage {
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduler control-plane db mutex poisoned"))?
             .clone())
+    }
+
+    fn current_agent_id(&self) -> Result<Option<String>> {
+        if let Some(agent) = self.read_agent()? {
+            return Ok(Some(agent.id));
+        }
+        let parent_is_agents_dir = self
+            .data_dir
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            == Some("agents");
+        if !parent_is_agents_dir {
+            return Ok(None);
+        }
+        Ok(self
+            .data_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .map(ToString::to_string))
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -415,6 +455,10 @@ impl AppStorage {
             .map_err(|_| anyhow::anyhow!("message sequence counter mutex poisoned"))?;
         *counter += 1;
         message.message_seq = Some(*counter);
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.messages().upsert(&message)?;
+            return Ok(());
+        }
         let bytes = jsonl_bytes(&message)?;
         append_jsonl_bytes(&self.messages_path, &bytes)
     }
@@ -489,6 +533,10 @@ impl AppStorage {
             .map_err(|_| anyhow::anyhow!("transcript sequence counter mutex poisoned"))?;
         *counter += 1;
         entry.transcript_seq = Some(*counter);
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.transcript_entries().upsert(&entry)?;
+            return Ok(());
+        }
         let bytes = jsonl_bytes(&entry)?;
         append_jsonl_bytes(&self.transcript_path, &bytes)
     }
@@ -743,6 +791,11 @@ impl AppStorage {
     }
 
     pub fn read_recent_messages(&self, limit: usize) -> Result<Vec<MessageEnvelope>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .messages()
+                .recent(self.current_agent_id()?.as_deref(), limit);
+        }
         read_recent_jsonl(&self.messages_path, limit)
     }
 
@@ -752,14 +805,29 @@ impl AppStorage {
     /// This is not equivalent to returning the first `limit` messages starting
     /// at `offset`; it preserves recent-message window semantics.
     pub fn read_messages_from(&self, offset: usize, limit: usize) -> Result<Vec<MessageEnvelope>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .messages()
+                .from(self.current_agent_id()?.as_deref(), offset, limit);
+        }
         read_jsonl_from(&self.messages_path, offset, limit)
     }
 
     pub fn read_all_messages(&self) -> Result<Vec<MessageEnvelope>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .messages()
+                .all(self.current_agent_id()?.as_deref());
+        }
         read_recent_jsonl(&self.messages_path, usize::MAX)
     }
 
     pub fn read_all_message_values(&self) -> Result<Vec<Value>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .messages()
+                .all_values(self.current_agent_id()?.as_deref());
+        }
         read_recent_jsonl(&self.messages_path, usize::MAX)
     }
 
@@ -804,10 +872,20 @@ impl AppStorage {
     }
 
     pub fn read_recent_transcript(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .transcript_entries()
+                .recent(self.current_agent_id()?.as_deref(), limit);
+        }
         read_recent_jsonl(&self.transcript_path, limit)
     }
 
     pub fn read_all_transcript(&self) -> Result<Vec<TranscriptEntry>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .transcript_entries()
+                .all(self.current_agent_id()?.as_deref());
+        }
         read_recent_jsonl(&self.transcript_path, usize::MAX)
     }
 
@@ -824,7 +902,9 @@ impl AppStorage {
 
     pub fn read_recent_queue_entries(&self, limit: usize) -> Result<Vec<QueueEntryRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.queue_entries().recent(limit);
+            return runtime_db
+                .queue_entries()
+                .recent(self.current_agent_id()?.as_deref(), limit);
         }
         read_recent_jsonl(&self.queue_entries_path, limit)
     }
@@ -1741,6 +1821,11 @@ impl AppStorage {
     }
 
     pub fn count_messages(&self) -> Result<usize> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .messages()
+                .count(self.current_agent_id()?.as_deref());
+        }
         if !self.messages_path.exists() {
             return Ok(0);
         }
@@ -2574,6 +2659,280 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn append_message_uses_runtime_db_after_cutover_without_messages_jsonl() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+
+        storage
+            .append_message(&MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "db only".into(),
+                },
+            ))
+            .unwrap();
+
+        assert!(!storage.ledger_dir().join("messages.jsonl").exists());
+        let messages = storage.read_recent_messages(10).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message_seq, Some(1));
+        assert_eq!(runtime_db.messages().count(None).unwrap(), 1);
+    }
+
+    #[test]
+    fn read_messages_from_preserves_recent_window_semantics_after_db_cutover() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        for text in ["one", "two", "three", "four"] {
+            storage
+                .append_message(&MessageEnvelope::new(
+                    "default",
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator { actor_id: None },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text { text: text.into() },
+                ))
+                .unwrap();
+        }
+
+        let messages = storage.read_messages_from(1, 2).unwrap();
+        let texts = messages
+            .into_iter()
+            .map(|message| match message.body {
+                MessageBody::Text { text } => text,
+                _ => panic!("expected text body"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(texts, vec!["three", "four"]);
+    }
+
+    #[test]
+    fn append_transcript_entry_uses_runtime_db_after_cutover_without_transcript_jsonl() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+
+        storage
+            .append_transcript_entry(&TranscriptEntry::new(
+                "default",
+                TranscriptEntryKind::IncomingMessage,
+                None,
+                Some("message-1".into()),
+                serde_json::json!({ "text": "db only" }),
+            ))
+            .unwrap();
+
+        assert!(!storage.ledger_dir().join("transcript.jsonl").exists());
+        let transcript = storage.read_recent_transcript(10).unwrap();
+        assert_eq!(transcript.len(), 1);
+        assert_eq!(transcript[0].transcript_seq, Some(1));
+        assert_eq!(runtime_db.transcript_entries().all(None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn runtime_db_message_and_transcript_import_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "legacy message".into(),
+            },
+        );
+        message.message_seq = Some(7);
+        let entry = TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::IncomingMessage,
+            None,
+            Some(message.id.clone()),
+            serde_json::json!({ "text": "legacy transcript" }),
+        );
+
+        runtime_db
+            .messages()
+            .import_legacy(vec![serde_json::to_value(&message).unwrap()])
+            .unwrap();
+        runtime_db
+            .transcript_entries()
+            .import_legacy(vec![entry.clone()])
+            .unwrap();
+        runtime_db
+            .messages()
+            .import_legacy(vec![serde_json::to_value(&message).unwrap()])
+            .unwrap();
+        runtime_db
+            .transcript_entries()
+            .import_legacy(vec![entry])
+            .unwrap();
+
+        assert_eq!(runtime_db.messages().count(None).unwrap(), 1);
+        assert_eq!(runtime_db.transcript_entries().all(None).unwrap().len(), 1);
+        assert_eq!(
+            runtime_db
+                .storage_domain("messages")
+                .unwrap()
+                .expect("messages storage domain")
+                .canonical_source,
+            "db"
+        );
+        assert_eq!(
+            runtime_db
+                .storage_domain("transcript_entries")
+                .unwrap()
+                .expect("transcript storage domain")
+                .canonical_source,
+            "db"
+        );
+    }
+
+    #[test]
+    fn runtime_db_message_import_failure_records_retryable_domain_state() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+
+        let error = runtime_db
+            .messages()
+            .import_legacy(vec![serde_json::json!({ "turn_index": 1 })])
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("importing legacy storage domain messages"));
+        assert_eq!(runtime_db.messages().count(None).unwrap(), 0);
+
+        let failed = runtime_db
+            .storage_domain("messages")
+            .unwrap()
+            .expect("failed messages storage domain");
+        let checkpoint: serde_json::Value = serde_json::from_str(
+            failed
+                .source_checkpoint_json
+                .as_deref()
+                .expect("messages failure checkpoint"),
+        )
+        .unwrap();
+        assert_eq!(failed.import_status, "failed");
+        assert_eq!(failed.canonical_source, "jsonl");
+        assert_eq!(runtime_db.messages().count(None).unwrap(), 0);
+        assert_eq!(
+            checkpoint.get("retry").and_then(serde_json::Value::as_str),
+            Some("restart runtime to retry legacy import")
+        );
+    }
+
+    #[test]
+    fn message_and_transcript_reads_ignore_legacy_jsonl_after_db_cutover() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+        let db_message = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "test".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "from db".into(),
+            },
+        );
+        let db_entry = TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::AssistantRound,
+            None,
+            Some(db_message.id.clone()),
+            serde_json::json!({ "text": "from db" }),
+        );
+        runtime_db.messages().upsert(&db_message).unwrap();
+        runtime_db.transcript_entries().upsert(&db_entry).unwrap();
+
+        fs::write(
+            storage.ledger_dir().join("messages.jsonl"),
+            serde_json::to_string(&MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "from jsonl".into(),
+                },
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            storage.ledger_dir().join("transcript.jsonl"),
+            serde_json::to_string(&TranscriptEntry::new(
+                "default",
+                TranscriptEntryKind::IncomingMessage,
+                None,
+                Some("legacy-message".into()),
+                serde_json::json!({ "text": "from jsonl" }),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let messages = storage.read_recent_messages(10).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, db_message.id);
+        let transcript = storage.read_recent_transcript(10).unwrap();
+        assert_eq!(transcript.len(), 1);
+        assert_eq!(transcript[0].id, db_entry.id);
     }
 
     #[test]

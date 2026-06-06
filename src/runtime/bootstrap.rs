@@ -441,6 +441,56 @@ fn prepare_runtime_storage(
         }
     }
 
+    let recovered_agent_for_import = storage.read_agent()?;
+    if !storage_domain_complete(&runtime_db, "work_items")? {
+        let mut legacy_work_items = storage.read_recent_work_items(usize::MAX)?;
+        for record in &mut legacy_work_items {
+            crate::work_item_plan::refresh_plan_artifact_metadata(storage.data_dir(), record)?;
+        }
+        runtime_db.work_items().import_legacy(
+            legacy_work_items,
+            recovered_agent_for_import
+                .as_ref()
+                .and_then(|agent| agent.current_work_item_id.as_deref()),
+        )?;
+    }
+    if !storage_domain_complete(&runtime_db, "tasks")? {
+        runtime_db
+            .tasks()
+            .import_legacy(storage.read_recent_tasks(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "external_triggers")? {
+        runtime_db
+            .external_triggers()
+            .import_legacy(storage.read_recent_external_triggers(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "wait_conditions")? {
+        runtime_db
+            .wait_conditions()
+            .import_legacy(storage.read_recent_wait_conditions(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "queue_entries")? {
+        runtime_db
+            .queue_entries()
+            .import_legacy(storage.read_recent_queue_entries(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "timers")? {
+        runtime_db
+            .timers()
+            .import_legacy(storage.read_recent_timers(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "messages")? {
+        runtime_db
+            .messages()
+            .import_legacy(storage.read_all_message_values()?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "transcript_entries")? {
+        runtime_db
+            .transcript_entries()
+            .import_legacy(storage.read_all_transcript()?)?;
+    }
+
+    storage.enable_scheduler_control_plane_db(runtime_db.clone())?;
     let snapshot = storage.recovery_snapshot()?;
     let mut queue = RuntimeQueue::default();
     for message in &snapshot.replay_messages {
@@ -543,40 +593,6 @@ fn prepare_runtime_storage(
         },
     );
     storage.write_agent(&state)?;
-    if !storage_domain_complete(&runtime_db, "work_items")? {
-        let mut legacy_work_items = storage.read_recent_work_items(usize::MAX)?;
-        for record in &mut legacy_work_items {
-            crate::work_item_plan::refresh_plan_artifact_metadata(storage.data_dir(), record)?;
-        }
-        runtime_db
-            .work_items()
-            .import_legacy(legacy_work_items, state.current_work_item_id.as_deref())?;
-    }
-    if !storage_domain_complete(&runtime_db, "tasks")? {
-        runtime_db
-            .tasks()
-            .import_legacy(storage.read_recent_tasks(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "external_triggers")? {
-        runtime_db
-            .external_triggers()
-            .import_legacy(storage.read_recent_external_triggers(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "wait_conditions")? {
-        runtime_db
-            .wait_conditions()
-            .import_legacy(storage.read_recent_wait_conditions(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "queue_entries")? {
-        runtime_db
-            .queue_entries()
-            .import_legacy(storage.read_recent_queue_entries(usize::MAX)?)?;
-    }
-    if !storage_domain_complete(&runtime_db, "timers")? {
-        runtime_db
-            .timers()
-            .import_legacy(storage.read_recent_timers(usize::MAX)?)?;
-    }
     let turn_records_complete = storage_domain_complete(&runtime_db, "turn_records")?;
     let evidence_complete = storage_domain_complete(&runtime_db, "evidence")?;
     let legacy_messages =
@@ -609,7 +625,6 @@ fn prepare_runtime_storage(
         crate::runtime_db::RuntimeDb::expected_storage_domains(),
     )?;
     storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
-    storage.enable_scheduler_control_plane_db(runtime_db.clone())?;
 
     Ok(PreparedRuntimeStorage {
         storage,

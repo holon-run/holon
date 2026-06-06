@@ -54,6 +54,14 @@ pub struct TurnRecordRepository<'a> {
     db: &'a RuntimeDb,
 }
 
+pub struct MessageRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct TranscriptRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
 pub struct EvidenceRepository<'a> {
     db: &'a RuntimeDb,
 }
@@ -520,22 +528,35 @@ impl QueueEntryRepository<'_> {
         rows.map(|row| decode_queue_entry_payload(&row?)).collect()
     }
 
-    pub fn recent(&self, limit: usize) -> Result<Vec<QueueEntryRecord>> {
+    pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<QueueEntryRecord>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
-             FROM queue_entries
-             ORDER BY updated_at DESC, created_at DESC, message_id ASC
-             LIMIT ?1",
-        )?;
-        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_queue_entry_payload(&row?))
-            .collect::<Result<_>>()?;
+        let mut records = if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM queue_entries
+                 WHERE agent_id = ?1
+                 ORDER BY updated_at DESC, created_at DESC, message_id ASC
+                 LIMIT ?2",
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_queue_entry_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM queue_entries
+                 ORDER BY updated_at DESC, created_at DESC, message_id ASC
+                 LIMIT ?1",
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_queue_entry_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        };
         records.reverse();
         Ok(records)
     }
@@ -687,6 +708,268 @@ impl TurnRecordRepository<'_> {
             .collect::<Result<Vec<_>>>()?;
         records.reverse();
         Ok(records)
+    }
+}
+
+impl MessageRepository<'_> {
+    pub fn import_legacy(&self, messages: Vec<serde_json::Value>) -> Result<()> {
+        if self.db.storage_domain_is_complete("messages", "db")? {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("messages", "jsonl", "db", |tx| {
+                let mut imported_messages = 0_u64;
+                let mut dropped_messages = 0_u64;
+                for raw_message in messages {
+                    match normalize_legacy_message_value(raw_message)? {
+                        Some(message) => {
+                            upsert_message_tx(tx, &message)?;
+                            imported_messages += 1;
+                        }
+                        None => dropped_messages += 1,
+                    }
+                }
+                Ok(serde_json::json!({
+                    "imported_messages": imported_messages,
+                    "dropped_messages": dropped_messages,
+                }))
+            })
+    }
+
+    pub fn upsert(&self, message: &MessageEnvelope) -> Result<()> {
+        self.db.transaction(|tx| upsert_message_tx(tx, message))
+    }
+
+    pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<MessageEnvelope>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut records = if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 WHERE agent_id = ?1
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) DESC, created_at DESC, message_id ASC
+                 LIMIT ?2",
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) DESC, created_at DESC, message_id ASC
+                 LIMIT ?1",
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        };
+        records.reverse();
+        Ok(records)
+    }
+
+    pub fn from(
+        &self,
+        agent_id: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<MessageEnvelope>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let offset = i64::try_from(offset).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut records = if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 WHERE agent_id = ?1
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC
+                 LIMIT -1 OFFSET ?2",
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, offset], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC
+                 LIMIT -1 OFFSET ?1",
+            )?;
+            let rows = statement.query_map([offset], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        };
+        if records.len() > limit {
+            records.drain(0..(records.len() - limit));
+        }
+        Ok(records)
+    }
+
+    pub fn all(&self, agent_id: Option<&str>) -> Result<Vec<MessageEnvelope>> {
+        let connection = self.db.connection()?;
+        if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 WHERE agent_id = ?1
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC",
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?)).collect()
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?)).collect()
+        }
+    }
+
+    pub fn all_values(&self, agent_id: Option<&str>) -> Result<Vec<serde_json::Value>> {
+        self.all(agent_id)?
+            .into_iter()
+            .map(|message| serde_json::to_value(message).map_err(Into::into))
+            .collect()
+    }
+
+    pub fn count(&self, agent_id: Option<&str>) -> Result<usize> {
+        let connection = self.db.connection()?;
+        let count: i64 = if let Some(agent_id) = agent_id {
+            connection.query_row(
+                "SELECT COUNT(*) FROM messages WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?
+        } else {
+            connection.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?
+        };
+        Ok(usize::try_from(count).unwrap_or(usize::MAX))
+    }
+
+    pub fn max_message_seq(&self, agent_id: Option<&str>) -> Result<u64> {
+        let connection = self.db.connection()?;
+        let max_seq: Option<i64> = if let Some(agent_id) = agent_id {
+            connection.query_row(
+                "SELECT MAX(message_seq) FROM messages WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?
+        } else {
+            connection.query_row("SELECT MAX(message_seq) FROM messages", [], |row| {
+                row.get(0)
+            })?
+        };
+        Ok(max_seq.unwrap_or_default().max(0) as u64)
+    }
+}
+
+impl TranscriptRepository<'_> {
+    pub fn import_legacy(&self, entries: Vec<TranscriptEntry>) -> Result<()> {
+        if self
+            .db
+            .storage_domain_is_complete("transcript_entries", "db")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("transcript_entries", "jsonl", "db", |tx| {
+                for entry in &entries {
+                    upsert_transcript_entry_tx(tx, entry)?;
+                }
+                Ok(serde_json::json!({
+                    "imported_transcript_entries": entries.len(),
+                }))
+            })
+    }
+
+    pub fn upsert(&self, entry: &TranscriptEntry) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_transcript_entry_tx(tx, entry))
+    }
+
+    pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<TranscriptEntry>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut records = if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM transcript_entries
+                 WHERE agent_id = ?1
+                 ORDER BY COALESCE(transcript_seq, 9223372036854775807) DESC, created_at DESC, evidence_id ASC
+                 LIMIT ?2",
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_transcript_entry_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM transcript_entries
+                 ORDER BY COALESCE(transcript_seq, 9223372036854775807) DESC, created_at DESC, evidence_id ASC
+                 LIMIT ?1",
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_transcript_entry_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        };
+        records.reverse();
+        Ok(records)
+    }
+
+    pub fn all(&self, agent_id: Option<&str>) -> Result<Vec<TranscriptEntry>> {
+        let connection = self.db.connection()?;
+        if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM transcript_entries
+                 WHERE agent_id = ?1
+                 ORDER BY COALESCE(transcript_seq, 9223372036854775807) ASC, created_at ASC, evidence_id ASC",
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_transcript_entry_payload(&row?))
+                .collect()
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM transcript_entries
+                 ORDER BY COALESCE(transcript_seq, 9223372036854775807) ASC, created_at ASC, evidence_id ASC",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_transcript_entry_payload(&row?))
+                .collect()
+        }
+    }
+
+    pub fn max_transcript_seq(&self, agent_id: Option<&str>) -> Result<u64> {
+        let connection = self.db.connection()?;
+        let max_seq: Option<i64> = if let Some(agent_id) = agent_id {
+            connection.query_row(
+                "SELECT MAX(transcript_seq) FROM transcript_entries WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?
+        } else {
+            connection.query_row(
+                "SELECT MAX(transcript_seq) FROM transcript_entries",
+                [],
+                |row| row.get(0),
+            )?
+        };
+        Ok(max_seq.unwrap_or_default().max(0) as u64)
     }
 }
 
@@ -1030,25 +1313,54 @@ fn insert_evidence_tx(tx: &Transaction<'_>, evidence: EvidenceInsert<'_>) -> Res
 }
 
 fn insert_message_evidence_tx(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<()> {
-    insert_evidence_tx(
-        tx,
-        EvidenceInsert {
-            table: EvidenceKind::Message.table_name(),
-            evidence_id: &message.id,
-            agent_id: &message.agent_id,
-            turn_id: message.turn_id.as_deref(),
-            message_id: Some(&message.id),
-            task_id: message.task_id.as_deref(),
-            work_item_id: message.work_item_id.as_deref(),
-            created_at: message.created_at,
-            kind: enum_string(&message.kind)?,
-            preview: evidence_preview(&message.body),
-            payload_json: bounded_payload_json(message)?,
-        },
-    )
+    upsert_message_tx(tx, message)
 }
 
 fn insert_transcript_evidence_tx(tx: &Transaction<'_>, entry: &TranscriptEntry) -> Result<()> {
+    upsert_transcript_entry_tx(tx, entry)
+}
+
+fn upsert_message_tx(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<()> {
+    let payload_json = serde_json::to_string(message)?;
+    let kind = enum_string(&message.kind)?;
+    tx.execute(
+        "INSERT INTO messages (
+            evidence_id, agent_id, turn_id, message_id, message_seq, task_id, work_item_id,
+            created_at, kind, content_ref, content_hash, preview, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(evidence_id) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            turn_id = excluded.turn_id,
+            message_id = excluded.message_id,
+            message_seq = excluded.message_seq,
+            task_id = excluded.task_id,
+            work_item_id = excluded.work_item_id,
+            created_at = excluded.created_at,
+            kind = excluded.kind,
+            content_ref = excluded.content_ref,
+            content_hash = excluded.content_hash,
+            preview = excluded.preview,
+            payload_json = excluded.payload_json",
+        params![
+            message.id,
+            message.agent_id,
+            message.turn_id,
+            message.id,
+            message.message_seq.map(|seq| seq as i64),
+            message.task_id,
+            message.work_item_id,
+            timestamp(message.created_at),
+            kind,
+            Option::<String>::None,
+            Option::<String>::None,
+            evidence_preview(&message.body),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_transcript_entry_tx(tx: &Transaction<'_>, entry: &TranscriptEntry) -> Result<()> {
     let turn_id = entry
         .data
         .get("turn_id")
@@ -1061,22 +1373,43 @@ fn insert_transcript_evidence_tx(tx: &Transaction<'_>, entry: &TranscriptEntry) 
         .data
         .get("work_item_id")
         .and_then(serde_json::Value::as_str);
-    insert_evidence_tx(
-        tx,
-        EvidenceInsert {
-            table: EvidenceKind::TranscriptEntry.table_name(),
-            evidence_id: &entry.id,
-            agent_id: &entry.agent_id,
+    let payload_json = serde_json::to_string(entry)?;
+    let kind = enum_string(&entry.kind)?;
+    tx.execute(
+        "INSERT INTO transcript_entries (
+            evidence_id, agent_id, turn_id, message_id, transcript_seq, task_id, work_item_id,
+            created_at, kind, content_ref, content_hash, preview, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(evidence_id) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            turn_id = excluded.turn_id,
+            message_id = excluded.message_id,
+            transcript_seq = excluded.transcript_seq,
+            task_id = excluded.task_id,
+            work_item_id = excluded.work_item_id,
+            created_at = excluded.created_at,
+            kind = excluded.kind,
+            content_ref = excluded.content_ref,
+            content_hash = excluded.content_hash,
+            preview = excluded.preview,
+            payload_json = excluded.payload_json",
+        params![
+            entry.id,
+            entry.agent_id,
             turn_id,
-            message_id: entry.related_message_id.as_deref(),
+            entry.related_message_id,
+            entry.transcript_seq.map(|seq| seq as i64),
             task_id,
             work_item_id,
-            created_at: entry.created_at,
-            kind: enum_string(&entry.kind)?,
-            preview: evidence_preview(&entry.data),
-            payload_json: bounded_payload_json(entry)?,
-        },
-    )
+            timestamp(entry.created_at),
+            kind,
+            Option::<String>::None,
+            Option::<String>::None,
+            evidence_preview(&entry.data),
+            payload_json,
+        ],
+    )?;
+    Ok(())
 }
 
 fn insert_tool_evidence_tx(tx: &Transaction<'_>, record: &ToolExecutionRecord) -> Result<()> {
@@ -2021,6 +2354,14 @@ fn decode_turn_record_payload(payload: &str) -> Result<TurnRecord> {
     serde_json::from_str(payload).context("decoding turn record payload from runtime db")
 }
 
+fn decode_message_payload(payload: &str) -> Result<MessageEnvelope> {
+    serde_json::from_str(payload).context("decoding message payload from runtime db")
+}
+
+fn decode_transcript_entry_payload(payload: &str) -> Result<TranscriptEntry> {
+    serde_json::from_str(payload).context("decoding transcript entry payload from runtime db")
+}
+
 fn enum_string<T: serde::Serialize>(value: &T) -> Result<String> {
     let value = serde_json::to_value(value)?;
     value
@@ -2252,6 +2593,7 @@ CREATE TABLE IF NOT EXISTS messages (
   agent_id TEXT NOT NULL,
   turn_id TEXT,
   message_id TEXT,
+  message_seq INTEGER,
   task_id TEXT,
   work_item_id TEXT,
   created_at TEXT NOT NULL,
@@ -2267,6 +2609,7 @@ CREATE TABLE IF NOT EXISTS transcript_entries (
   agent_id TEXT NOT NULL,
   turn_id TEXT,
   message_id TEXT,
+  transcript_seq INTEGER,
   task_id TEXT,
   work_item_id TEXT,
   created_at TEXT NOT NULL,
@@ -2371,6 +2714,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_agent_turn
   ON messages(agent_id, turn_id);
 CREATE INDEX IF NOT EXISTS idx_messages_message
   ON messages(message_id);
+CREATE INDEX IF NOT EXISTS idx_messages_seq
+  ON messages(message_seq);
 CREATE INDEX IF NOT EXISTS idx_messages_task
   ON messages(task_id);
 CREATE INDEX IF NOT EXISTS idx_messages_work_item
@@ -2380,6 +2725,8 @@ CREATE INDEX IF NOT EXISTS idx_transcript_entries_agent_turn
   ON transcript_entries(agent_id, turn_id);
 CREATE INDEX IF NOT EXISTS idx_transcript_entries_message
   ON transcript_entries(message_id);
+CREATE INDEX IF NOT EXISTS idx_transcript_entries_seq
+  ON transcript_entries(transcript_seq);
 CREATE INDEX IF NOT EXISTS idx_transcript_entries_task
   ON transcript_entries(task_id);
 CREATE INDEX IF NOT EXISTS idx_transcript_entries_work_item
@@ -2633,6 +2980,14 @@ impl RuntimeDb {
         TurnRecordRepository { db: self }
     }
 
+    pub fn messages(&self) -> MessageRepository<'_> {
+        MessageRepository { db: self }
+    }
+
+    pub fn transcript_entries(&self) -> TranscriptRepository<'_> {
+        TranscriptRepository { db: self }
+    }
+
     pub fn evidence(&self) -> EvidenceRepository<'_> {
         EvidenceRepository { db: self }
     }
@@ -2677,6 +3032,16 @@ impl RuntimeDb {
                 domain: "turn_records",
                 canonical_source: "db",
                 legacy_jsonl_posture: LegacyJsonlPosture::Disabled,
+            },
+            ExpectedStorageDomain {
+                domain: "messages",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+            },
+            ExpectedStorageDomain {
+                domain: "transcript_entries",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
             },
             ExpectedStorageDomain {
                 domain: "evidence",
