@@ -269,8 +269,13 @@ impl RuntimeHandle {
                 Err(err) => (format!("child agent failed: {err:#}"), TaskStatus::Failed),
             };
             let status_label = task_status_label(&status);
+            let mut task_detail = task_record
+                .detail
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({}));
+            task_detail["output_summary"] = serde_json::json!(text.clone());
 
-            let terminal_task = task_with_status(&task_record, status, task_record.detail.clone());
+            let terminal_task = task_with_status(&task_record, status, Some(task_detail.clone()));
             if let Err(error) = runtime
                 .persist_task_status_direct(&terminal_task, "task_status_updated")
                 .await
@@ -287,7 +292,7 @@ impl RuntimeHandle {
                     "task_kind": task_record.kind,
                     "task_status": status_label,
                     "task_summary": task_record.summary,
-                    "task_detail": task_record.detail,
+                    "task_detail": task_detail,
                     "task_recovery": task_record.recovery,
                     "work_item_id": task_record.work_item_id.clone(),
                 })),
@@ -740,6 +745,7 @@ impl RuntimeHandle {
                 }
             }
 
+            task_detail["output_summary"] = serde_json::json!(text.clone());
             let status_label = task_status_label(&status);
             let mut metadata = serde_json::json!({
                 "task_id": task_record.id,
@@ -1182,6 +1188,7 @@ impl RuntimeHandle {
         if let Some(worktree) = metadata["task_detail"].get("worktree").cloned() {
             metadata["worktree"] = worktree;
         }
+        task_detail["output_summary"] = serde_json::json!(text.clone());
         let terminal_task = task_with_status(&task_record, status, Some(task_detail.clone()));
         if let Err(error) = self
             .persist_task_status_direct(&terminal_task, "task_status_updated")
@@ -1555,6 +1562,7 @@ impl RuntimeHandle {
                 let output = latest_message
                     .as_ref()
                     .map(|message| message.text.clone())
+                    .or_else(|| detail_string(&task.detail, "output_summary"))
                     .unwrap_or_else(|| summary.clone().unwrap_or_default());
                 let result_summary = if output.trim().is_empty() {
                     None

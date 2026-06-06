@@ -296,19 +296,24 @@ impl AppStorage {
     }
 
     pub(crate) fn enable_scheduler_control_plane_db(&self, runtime_db: RuntimeDb) -> Result<()> {
+        let agent_id = self.current_agent_id()?;
         {
             let mut counter = self
                 .message_seq_counter
                 .lock()
                 .map_err(|_| anyhow::anyhow!("message sequence counter mutex poisoned"))?;
-            *counter = (*counter).max(runtime_db.messages().max_message_seq()?);
+            *counter = (*counter).max(runtime_db.messages().max_message_seq(agent_id.as_deref())?);
         }
         {
             let mut counter = self
                 .transcript_seq_counter
                 .lock()
                 .map_err(|_| anyhow::anyhow!("transcript sequence counter mutex poisoned"))?;
-            *counter = (*counter).max(runtime_db.transcript_entries().max_transcript_seq()?);
+            *counter = (*counter).max(
+                runtime_db
+                    .transcript_entries()
+                    .max_transcript_seq(agent_id.as_deref())?,
+            );
         }
         let mut guard = self
             .scheduler_control_plane_db
@@ -324,6 +329,27 @@ impl AppStorage {
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduler control-plane db mutex poisoned"))?
             .clone())
+    }
+
+    fn current_agent_id(&self) -> Result<Option<String>> {
+        if let Some(agent) = self.read_agent()? {
+            return Ok(Some(agent.id));
+        }
+        let parent_is_agents_dir = self
+            .data_dir
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            == Some("agents");
+        if !parent_is_agents_dir {
+            return Ok(None);
+        }
+        Ok(self
+            .data_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .map(ToString::to_string))
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -766,7 +792,9 @@ impl AppStorage {
 
     pub fn read_recent_messages(&self, limit: usize) -> Result<Vec<MessageEnvelope>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.messages().recent(limit);
+            return runtime_db
+                .messages()
+                .recent(self.current_agent_id()?.as_deref(), limit);
         }
         read_recent_jsonl(&self.messages_path, limit)
     }
@@ -778,21 +806,27 @@ impl AppStorage {
     /// at `offset`; it preserves recent-message window semantics.
     pub fn read_messages_from(&self, offset: usize, limit: usize) -> Result<Vec<MessageEnvelope>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.messages().from(offset, limit);
+            return runtime_db
+                .messages()
+                .from(self.current_agent_id()?.as_deref(), offset, limit);
         }
         read_jsonl_from(&self.messages_path, offset, limit)
     }
 
     pub fn read_all_messages(&self) -> Result<Vec<MessageEnvelope>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.messages().all();
+            return runtime_db
+                .messages()
+                .all(self.current_agent_id()?.as_deref());
         }
         read_recent_jsonl(&self.messages_path, usize::MAX)
     }
 
     pub fn read_all_message_values(&self) -> Result<Vec<Value>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.messages().all_values();
+            return runtime_db
+                .messages()
+                .all_values(self.current_agent_id()?.as_deref());
         }
         read_recent_jsonl(&self.messages_path, usize::MAX)
     }
@@ -839,14 +873,18 @@ impl AppStorage {
 
     pub fn read_recent_transcript(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.transcript_entries().recent(limit);
+            return runtime_db
+                .transcript_entries()
+                .recent(self.current_agent_id()?.as_deref(), limit);
         }
         read_recent_jsonl(&self.transcript_path, limit)
     }
 
     pub fn read_all_transcript(&self) -> Result<Vec<TranscriptEntry>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.transcript_entries().all();
+            return runtime_db
+                .transcript_entries()
+                .all(self.current_agent_id()?.as_deref());
         }
         read_recent_jsonl(&self.transcript_path, usize::MAX)
     }
@@ -864,7 +902,9 @@ impl AppStorage {
 
     pub fn read_recent_queue_entries(&self, limit: usize) -> Result<Vec<QueueEntryRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.queue_entries().recent(limit);
+            return runtime_db
+                .queue_entries()
+                .recent(self.current_agent_id()?.as_deref(), limit);
         }
         read_recent_jsonl(&self.queue_entries_path, limit)
     }
@@ -1782,7 +1822,9 @@ impl AppStorage {
 
     pub fn count_messages(&self) -> Result<usize> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.messages().count();
+            return runtime_db
+                .messages()
+                .count(self.current_agent_id()?.as_deref());
         }
         if !self.messages_path.exists() {
             return Ok(0);
@@ -2649,7 +2691,7 @@ mod tests {
         let messages = storage.read_recent_messages(10).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].message_seq, Some(1));
-        assert_eq!(runtime_db.messages().count().unwrap(), 1);
+        assert_eq!(runtime_db.messages().count(None).unwrap(), 1);
     }
 
     #[test]
@@ -2716,7 +2758,7 @@ mod tests {
         let transcript = storage.read_recent_transcript(10).unwrap();
         assert_eq!(transcript.len(), 1);
         assert_eq!(transcript[0].transcript_seq, Some(1));
-        assert_eq!(runtime_db.transcript_entries().all().unwrap().len(), 1);
+        assert_eq!(runtime_db.transcript_entries().all(None).unwrap().len(), 1);
     }
 
     #[test]
@@ -2764,8 +2806,8 @@ mod tests {
             .import_legacy(vec![entry])
             .unwrap();
 
-        assert_eq!(runtime_db.messages().count().unwrap(), 1);
-        assert_eq!(runtime_db.transcript_entries().all().unwrap().len(), 1);
+        assert_eq!(runtime_db.messages().count(None).unwrap(), 1);
+        assert_eq!(runtime_db.transcript_entries().all(None).unwrap().len(), 1);
         assert_eq!(
             runtime_db
                 .storage_domain("messages")
@@ -2801,7 +2843,7 @@ mod tests {
         assert!(error
             .to_string()
             .contains("importing legacy storage domain messages"));
-        assert_eq!(runtime_db.messages().count().unwrap(), 0);
+        assert_eq!(runtime_db.messages().count(None).unwrap(), 0);
 
         let failed = runtime_db
             .storage_domain("messages")
@@ -2816,7 +2858,7 @@ mod tests {
         .unwrap();
         assert_eq!(failed.import_status, "failed");
         assert_eq!(failed.canonical_source, "jsonl");
-        assert_eq!(runtime_db.messages().count().unwrap(), 0);
+        assert_eq!(runtime_db.messages().count(None).unwrap(), 0);
         assert_eq!(
             checkpoint.get("retry").and_then(serde_json::Value::as_str),
             Some("restart runtime to retry legacy import")

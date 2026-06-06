@@ -528,22 +528,35 @@ impl QueueEntryRepository<'_> {
         rows.map(|row| decode_queue_entry_payload(&row?)).collect()
     }
 
-    pub fn recent(&self, limit: usize) -> Result<Vec<QueueEntryRecord>> {
+    pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<QueueEntryRecord>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
-             FROM queue_entries
-             ORDER BY updated_at DESC, created_at DESC, message_id ASC
-             LIMIT ?1",
-        )?;
-        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_queue_entry_payload(&row?))
-            .collect::<Result<_>>()?;
+        let mut records = if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM queue_entries
+                 WHERE agent_id = ?1
+                 ORDER BY updated_at DESC, created_at DESC, message_id ASC
+                 LIMIT ?2",
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_queue_entry_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM queue_entries
+                 ORDER BY updated_at DESC, created_at DESC, message_id ASC
+                 LIMIT ?1",
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_queue_entry_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        };
         records.reverse();
         Ok(records)
     }
@@ -727,79 +740,135 @@ impl MessageRepository<'_> {
         self.db.transaction(|tx| upsert_message_tx(tx, message))
     }
 
-    pub fn recent(&self, limit: usize) -> Result<Vec<MessageEnvelope>> {
+    pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<MessageEnvelope>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
-             FROM messages
-             ORDER BY COALESCE(message_seq, 9223372036854775807) DESC, created_at DESC, message_id ASC
-             LIMIT ?1",
-        )?;
-        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_message_payload(&row?))
-            .collect::<Result<_>>()?;
+        let mut records = if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 WHERE agent_id = ?1
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) DESC, created_at DESC, message_id ASC
+                 LIMIT ?2",
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) DESC, created_at DESC, message_id ASC
+                 LIMIT ?1",
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        };
         records.reverse();
         Ok(records)
     }
 
-    pub fn from(&self, offset: usize, limit: usize) -> Result<Vec<MessageEnvelope>> {
+    pub fn from(
+        &self,
+        agent_id: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<MessageEnvelope>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
-             FROM messages
-             ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC
-             LIMIT -1 OFFSET ?1",
-        )?;
-        let rows = statement.query_map([offset], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_message_payload(&row?))
-            .collect::<Result<_>>()?;
+        let mut records = if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 WHERE agent_id = ?1
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC
+                 LIMIT -1 OFFSET ?2",
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, offset], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC
+                 LIMIT -1 OFFSET ?1",
+            )?;
+            let rows = statement.query_map([offset], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        };
         if records.len() > limit {
             records.drain(0..(records.len() - limit));
         }
         Ok(records)
     }
 
-    pub fn all(&self) -> Result<Vec<MessageEnvelope>> {
+    pub fn all(&self, agent_id: Option<&str>) -> Result<Vec<MessageEnvelope>> {
         let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
-             FROM messages
-             ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_message_payload(&row?)).collect()
+        if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 WHERE agent_id = ?1
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC",
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?)).collect()
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_message_payload(&row?)).collect()
+        }
     }
 
-    pub fn all_values(&self) -> Result<Vec<serde_json::Value>> {
-        self.all()?
+    pub fn all_values(&self, agent_id: Option<&str>) -> Result<Vec<serde_json::Value>> {
+        self.all(agent_id)?
             .into_iter()
             .map(|message| serde_json::to_value(message).map_err(Into::into))
             .collect()
     }
 
-    pub fn count(&self) -> Result<usize> {
+    pub fn count(&self, agent_id: Option<&str>) -> Result<usize> {
         let connection = self.db.connection()?;
-        let count: i64 =
-            connection.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?;
+        let count: i64 = if let Some(agent_id) = agent_id {
+            connection.query_row(
+                "SELECT COUNT(*) FROM messages WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?
+        } else {
+            connection.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?
+        };
         Ok(usize::try_from(count).unwrap_or(usize::MAX))
     }
 
-    pub fn max_message_seq(&self) -> Result<u64> {
+    pub fn max_message_seq(&self, agent_id: Option<&str>) -> Result<u64> {
         let connection = self.db.connection()?;
-        let max_seq: Option<i64> =
+        let max_seq: Option<i64> = if let Some(agent_id) = agent_id {
+            connection.query_row(
+                "SELECT MAX(message_seq) FROM messages WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?
+        } else {
             connection.query_row("SELECT MAX(message_seq) FROM messages", [], |row| {
                 row.get(0)
-            })?;
+            })?
+        };
         Ok(max_seq.unwrap_or_default().max(0) as u64)
     }
 }
@@ -828,45 +897,78 @@ impl TranscriptRepository<'_> {
             .transaction(|tx| upsert_transcript_entry_tx(tx, entry))
     }
 
-    pub fn recent(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {
+    pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<TranscriptEntry>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
-             FROM transcript_entries
-             ORDER BY COALESCE(transcript_seq, 9223372036854775807) DESC, created_at DESC, evidence_id ASC
-             LIMIT ?1",
-        )?;
-        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_transcript_entry_payload(&row?))
-            .collect::<Result<_>>()?;
+        let mut records = if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM transcript_entries
+                 WHERE agent_id = ?1
+                 ORDER BY COALESCE(transcript_seq, 9223372036854775807) DESC, created_at DESC, evidence_id ASC
+                 LIMIT ?2",
+            )?;
+            let rows =
+                statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_transcript_entry_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM transcript_entries
+                 ORDER BY COALESCE(transcript_seq, 9223372036854775807) DESC, created_at DESC, evidence_id ASC
+                 LIMIT ?1",
+            )?;
+            let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_transcript_entry_payload(&row?))
+                .collect::<Result<Vec<_>>>()?
+        };
         records.reverse();
         Ok(records)
     }
 
-    pub fn all(&self) -> Result<Vec<TranscriptEntry>> {
+    pub fn all(&self, agent_id: Option<&str>) -> Result<Vec<TranscriptEntry>> {
         let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
-             FROM transcript_entries
-             ORDER BY COALESCE(transcript_seq, 9223372036854775807) ASC, created_at ASC, evidence_id ASC",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_transcript_entry_payload(&row?))
-            .collect()
+        if let Some(agent_id) = agent_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM transcript_entries
+                 WHERE agent_id = ?1
+                 ORDER BY COALESCE(transcript_seq, 9223372036854775807) ASC, created_at ASC, evidence_id ASC",
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_transcript_entry_payload(&row?))
+                .collect()
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM transcript_entries
+                 ORDER BY COALESCE(transcript_seq, 9223372036854775807) ASC, created_at ASC, evidence_id ASC",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.map(|row| decode_transcript_entry_payload(&row?))
+                .collect()
+        }
     }
 
-    pub fn max_transcript_seq(&self) -> Result<u64> {
+    pub fn max_transcript_seq(&self, agent_id: Option<&str>) -> Result<u64> {
         let connection = self.db.connection()?;
-        let max_seq: Option<i64> = connection.query_row(
-            "SELECT MAX(transcript_seq) FROM transcript_entries",
-            [],
-            |row| row.get(0),
-        )?;
+        let max_seq: Option<i64> = if let Some(agent_id) = agent_id {
+            connection.query_row(
+                "SELECT MAX(transcript_seq) FROM transcript_entries WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?
+        } else {
+            connection.query_row(
+                "SELECT MAX(transcript_seq) FROM transcript_entries",
+                [],
+                |row| row.get(0),
+            )?
+        };
         Ok(max_seq.unwrap_or_default().max(0) as u64)
     }
 }

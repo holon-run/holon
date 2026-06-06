@@ -509,7 +509,7 @@ pub async fn multiple_subagent_tasks_do_not_cross_contaminate_outputs() -> Resul
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         let alpha_done = tasks.iter().any(|record| {
             record.id == alpha.id && record.status == holon::types::TaskStatus::Completed
