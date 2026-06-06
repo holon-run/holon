@@ -53,11 +53,13 @@ impl Drop for ServeChild {
 fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
     let mut child = isolated_holon_command(home)
         .args(["serve", "--listen", "127.0.0.1:0"])
+        .env("HOLON_PRE_SERVER_RUNTIME_PREPARED", "1")
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn holon serve");
     let stdout = child.stdout.take().expect("serve stdout should be piped");
+    let stderr = child.stderr.take().expect("serve stderr should be piped");
     let (line_tx, line_rx) = mpsc::channel();
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -67,11 +69,34 @@ fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
             }
         }
     });
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        let mut captured = String::new();
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    captured.push_str(&line);
+                    captured.push('\n');
+                }
+                Err(error) => {
+                    captured.push_str(&format!("failed to read serve stderr: {error}\n"));
+                    break;
+                }
+            }
+        }
+        let _ = stderr_tx.send(captured);
+    });
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut addr = None;
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait().expect("poll holon serve") {
-            panic!("holon serve exited before printing listening address: {status}");
+            let stderr = stderr_rx
+                .recv_timeout(Duration::from_millis(100))
+                .unwrap_or_default();
+            panic!(
+                "holon serve exited before printing listening address: {status}\nstderr:\n{stderr}"
+            );
         }
         match line_rx.recv_timeout(Duration::from_millis(25)) {
             Ok(Ok(line)) => {
@@ -97,12 +122,18 @@ fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
             Ok(Err(error)) => panic!("read serve stdout: {error}"),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("holon serve stdout closed before listening address was printed")
+                let stderr = stderr_rx
+                    .recv_timeout(Duration::from_millis(100))
+                    .unwrap_or_default();
+                panic!("holon serve stdout closed before listening address was printed\nstderr:\n{stderr}")
             }
         };
     }
     let _ = child.kill();
-    panic!("timed out waiting for holon serve to print listening address");
+    let stderr = stderr_rx
+        .recv_timeout(Duration::from_millis(100))
+        .unwrap_or_default();
+    panic!("timed out waiting for holon serve to print listening address\nstderr:\n{stderr}");
 }
 
 fn run_json(home: &tempfile::TempDir, args: &[&str]) -> Value {
