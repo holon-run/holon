@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use tracing::warn;
 use twox_hash::XxHash64;
 
 use crate::{
@@ -295,6 +296,17 @@ impl AgentProvider for AnthropicProvider {
             read_input_tokens: usage.cache_read_input_tokens.unwrap_or(0),
             creation_input_tokens: usage.cache_creation_input_tokens.unwrap_or(0),
         });
+        let tools_available = !request.tools.is_empty();
+        for (block_index, block) in parsed.content.iter().enumerate() {
+            warn_unsupported_anthropic_response_block(
+                block,
+                self.provider_id.as_str(),
+                self.model.as_str(),
+                block_index,
+                parsed.stop_reason.as_deref(),
+                tools_available,
+            );
+        }
         let blocks = parsed
             .content
             .into_iter()
@@ -830,6 +842,32 @@ fn prompt_block_to_anthropic_content(block: &PromptContentBlock) -> Value {
         content["cache_control"] = json!({ "type": "ephemeral" });
     }
     content
+}
+
+fn warn_unsupported_anthropic_response_block(
+    block: &ApiResponseBlock,
+    provider_id: &str,
+    model: &str,
+    block_index: usize,
+    stop_reason: Option<&str>,
+    tools_available: bool,
+) {
+    if matches!(
+        block.kind.as_str(),
+        "text" | "tool_use" | "thinking" | "redacted_thinking"
+    ) {
+        return;
+    }
+
+    warn!(
+        provider = provider_id,
+        model,
+        block_index,
+        block_type = %block.kind,
+        stop_reason,
+        tools_available,
+        "anthropic response contained unsupported content block"
+    );
 }
 
 fn api_response_block_to_model(block: ApiResponseBlock) -> Option<ModelBlock> {
@@ -1451,6 +1489,36 @@ mod tests {
             json!({ "type": "ephemeral" })
         );
         assert!(messages[1].content[0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn api_response_block_preserves_text_form_dsml_tool_calls_as_text() {
+        let block = ApiResponseBlock {
+            kind: "text".to_string(),
+            text: Some(
+                r#"<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="WebFetch">
+<｜｜DSML｜｜parameter name="url" string="true">https://example.com</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>"#
+                    .to_string(),
+            ),
+            thinking: None,
+            signature: None,
+            data: None,
+            id: None,
+            name: None,
+            input: None,
+        };
+
+        let model_block = api_response_block_to_model(block).expect("text block should be kept");
+        match model_block {
+            ModelBlock::Text { text } => {
+                assert!(text.contains("<｜｜DSML｜｜tool_calls>"));
+                assert!(text.contains("WebFetch"));
+            }
+            other => panic!("unexpected block: {other:?}"),
+        }
     }
 
     #[test]
