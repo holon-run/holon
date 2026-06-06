@@ -9,6 +9,7 @@ use std::{
     io::{BufRead, BufReader},
     path::PathBuf,
     process::{Child, Command, Output, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -53,37 +54,52 @@ fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
     let mut child = isolated_holon_command(home)
         .args(["serve", "--listen", "127.0.0.1:0"])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
         .expect("spawn holon serve");
     let stdout = child.stdout.take().expect("serve stdout should be piped");
-    let mut reader = BufReader::new(stdout);
+    let (line_tx, line_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut line = String::new();
     let mut addr = None;
     while Instant::now() < deadline {
-        line.clear();
-        if reader.read_line(&mut line).expect("read serve stdout") > 0 {
-            if line.starts_with("Holon listening on ") {
-                addr = Some(
-                    line.trim()
-                        .trim_start_matches("Holon listening on ")
-                        .to_string(),
-                );
-            } else if line.starts_with("Holon control socket on ") {
-                let addr = addr.expect("serve should print TCP listener before control socket");
-                return (ServeChild { child }, addr);
-            }
+        if let Some(status) = child.try_wait().expect("poll holon serve") {
+            panic!("holon serve exited before printing listening address: {status}");
         }
-        if line.starts_with("Holon listening on ") && addr.is_some() {
-            let Some(addr) = addr.clone() else {
-                unreachable!("addr should be set")
-            };
-            if !cfg!(unix) {
-                return (ServeChild { child }, addr);
+        match line_rx.recv_timeout(Duration::from_millis(25)) {
+            Ok(Ok(line)) => {
+                if line.starts_with("Holon listening on ") {
+                    addr = Some(
+                        line.trim()
+                            .trim_start_matches("Holon listening on ")
+                            .to_string(),
+                    );
+                } else if line.starts_with("Holon control socket on ") {
+                    let addr = addr.expect("serve should print TCP listener before control socket");
+                    return (ServeChild { child }, addr);
+                }
+                if line.starts_with("Holon listening on ") && addr.is_some() {
+                    let Some(addr) = addr.clone() else {
+                        unreachable!("addr should be set")
+                    };
+                    if !cfg!(unix) {
+                        return (ServeChild { child }, addr);
+                    }
+                }
             }
-        }
-        thread::sleep(Duration::from_millis(25));
+            Ok(Err(error)) => panic!("read serve stdout: {error}"),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("holon serve stdout closed before listening address was printed")
+            }
+        };
     }
     let _ = child.kill();
     panic!("timed out waiting for holon serve to print listening address");
@@ -375,7 +391,10 @@ fn config_set_prefers_running_daemon_runtime_config_api() {
         )
     };
     assert_eq!(set, json!("openai/gpt-4.1"));
-    assert_eq!(set_stderr, "applied_via=daemon_api\n");
+    assert!(
+        set_stderr.contains("applied_via=daemon_api\n"),
+        "stderr should report daemon application path: {set_stderr}"
+    );
 
     let get = run_json_with_env(
         &home,
@@ -410,7 +429,10 @@ fn config_set_prefers_running_daemon_runtime_config_api() {
             "status": "unset"
         })
     );
-    assert_eq!(unset_stderr, "applied_via=daemon_api\n");
+    assert!(
+        unset_stderr.contains("applied_via=daemon_api\n"),
+        "stderr should report daemon application path: {unset_stderr}"
+    );
 }
 
 #[test]

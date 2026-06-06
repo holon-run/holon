@@ -2434,10 +2434,7 @@ async fn config_set_command(key: String, value: String) -> Result<()> {
             &client,
             http::RuntimeConfigUpdateEntry {
                 key: key.clone(),
-                value: Some(
-                    serde_json::from_str(&value)
-                        .unwrap_or(serde_json::Value::String(value.clone())),
-                ),
+                value: Some(serde_json::Value::String(value.clone())),
                 unset: false,
             },
         )
@@ -2497,7 +2494,6 @@ async fn config_list_command() -> Result<()> {
 }
 
 async fn config_schema_command() -> Result<()> {
-    let _ = local_runtime_config_client().await;
     print_json(&serde_json::to_value(config_schema())?)
 }
 
@@ -2522,6 +2518,9 @@ async fn apply_runtime_config_update(
             result.key,
             result.reason
         );
+    }
+    if result.effect == http::RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+        eprintln!("daemon_update_note={}: {}", result.key, result.reason);
     }
     Ok(())
 }
@@ -2617,6 +2616,9 @@ async fn apply_runtime_config_updates(
                 result.key,
                 result.reason
             );
+        }
+        if result.effect == http::RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+            eprintln!("daemon_update_note={}: {}", result.key, result.reason);
         }
     }
     Ok(())

@@ -173,7 +173,7 @@ pub struct OnboardingApplySummary {
     pub credential_written: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct OnboardingWizardSubmission {
     pub draft: OnboardingWizardDraft,
     pub credential_material: Option<String>,
