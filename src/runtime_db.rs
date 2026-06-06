@@ -751,21 +751,20 @@ impl MessageRepository<'_> {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
             "SELECT payload_json
              FROM messages
              ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC
-             LIMIT ?1 OFFSET ?2",
+             LIMIT -1 OFFSET ?1",
         )?;
-        let rows = statement.query_map(params![limit, offset], |row| row.get::<_, String>(0))?;
+        let rows = statement.query_map([offset], |row| row.get::<_, String>(0))?;
         let mut records: Vec<_> = rows
             .map(|row| decode_message_payload(&row?))
             .collect::<Result<_>>()?;
-        if records.len() > limit as usize {
-            records.drain(0..(records.len() - limit as usize));
+        if records.len() > limit {
+            records.drain(0..(records.len() - limit));
         }
         Ok(records)
     }

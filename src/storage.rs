@@ -2653,6 +2653,43 @@ mod tests {
     }
 
     #[test]
+    fn read_messages_from_preserves_recent_window_semantics_after_db_cutover() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        for text in ["one", "two", "three", "four"] {
+            storage
+                .append_message(&MessageEnvelope::new(
+                    "default",
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator { actor_id: None },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text { text: text.into() },
+                ))
+                .unwrap();
+        }
+
+        let messages = storage.read_messages_from(1, 2).unwrap();
+        let texts = messages
+            .into_iter()
+            .map(|message| match message.body {
+                MessageBody::Text { text } => text,
+                _ => panic!("expected text body"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(texts, vec!["three", "four"]);
+    }
+
+    #[test]
     fn append_transcript_entry_uses_runtime_db_after_cutover_without_transcript_jsonl() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
