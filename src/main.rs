@@ -31,7 +31,10 @@ use holon::{
     host::RuntimeHost,
     http::{self, AppState, ControlRequest, CreateCommandTaskRequest, CreateTimerRequest},
     model_discovery::{discovery_cache_path, refresh_provider_models},
-    onboarding::onboarding_report,
+    onboarding::{
+        apply_onboarding_wizard_draft, onboarding_report, OnboardingApplySummary,
+        OnboardingSearchSelection, OnboardingWizardSubmission,
+    },
     onboarding_tui::run_onboarding_tui,
     provider::{provider_doctor, resolved_model_availability},
     run_once::{run_once, RunOnceRequest},
@@ -134,8 +137,10 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
         if *json || !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             return print_json(&serde_json::to_value(report)?);
         }
-        let summary = run_onboarding_tui(config)?;
+        let submission = run_onboarding_tui(config.clone())?;
+        let summary = apply_onboarding_submission(&config, &submission).await?;
         println!("Holon onboarding configured.");
+        println!("- applied via: {}", summary.applied_via);
         println!("- provider: {}", summary.provider);
         println!("- credential profile: {}", summary.credential_profile);
         println!("- default model: {}", summary.default_model);
@@ -2370,42 +2375,251 @@ fn parse_json_response_body(method: &str, path: &str, body: &str) -> Result<serd
 
 async fn handle_config_command(command: ConfigCommands) -> Result<()> {
     match command {
-        ConfigCommands::Get { key } => {
-            let path = config_file_path();
-            let config = load_persisted_config_at(&path)?;
-            print_json(&get_config_key(&config, &key)?)
-        }
-        ConfigCommands::Set { key, value } => {
-            let path = config_file_path();
-            let mut config = load_persisted_config_at(&path)?;
-            set_config_key(&mut config, &key, &value)?;
-            save_persisted_config_at(&path, &config)?;
-            print_json(&get_config_key(&config, &key)?)
-        }
-        ConfigCommands::Unset { key } => {
-            let path = config_file_path();
-            let mut config = load_persisted_config_at(&path)?;
-            unset_config_key(&mut config, &key)?;
-            save_persisted_config_at(&path, &config)?;
-            print_json(&serde_json::json!({
-                "key": key,
-                "status": "unset"
-            }))
-        }
+        ConfigCommands::Get { key } => config_get_command(key).await,
+        ConfigCommands::Set { key, value } => config_set_command(key, value).await,
+        ConfigCommands::Unset { key } => config_unset_command(key).await,
         ConfigCommands::Providers { command } => handle_config_providers_command(command).await,
         ConfigCommands::Credentials { command } => handle_config_credentials_command(command).await,
         ConfigCommands::Models { command } => handle_config_models_command(command).await,
-        ConfigCommands::List => {
-            let path = config_file_path();
-            let config = load_persisted_config_at(&path)?;
-            print_json(&serde_json::to_value(config)?)
-        }
-        ConfigCommands::Schema => print_json(&serde_json::to_value(config_schema())?),
+        ConfigCommands::List => config_list_command().await,
+        ConfigCommands::Schema => config_schema_command().await,
         ConfigCommands::Doctor => {
             let config = AppConfig::load_for_config_inspection()?;
             print_json(&provider_doctor(&config))
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigAppliedVia {
+    DaemonApi,
+    OfflineStore,
+}
+
+impl ConfigAppliedVia {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DaemonApi => "daemon_api",
+            Self::OfflineStore => "offline_store",
+        }
+    }
+}
+
+fn print_config_applied_via(applied_via: ConfigAppliedVia) {
+    eprintln!("applied_via={}", applied_via.as_str());
+}
+
+async fn local_runtime_config_client() -> Option<LocalClient> {
+    let config = AppConfig::load_for_config_inspection().ok()?;
+    let client = LocalClient::new(config).ok()?;
+    client.runtime_config().await.ok()?;
+    Some(client)
+}
+
+async fn config_get_command(key: String) -> Result<()> {
+    if let Some(client) = local_runtime_config_client().await {
+        let response = client.runtime_config().await?;
+        let config = load_persisted_config_at(&response.config_file_path)?;
+        return print_json(&get_config_key(&config, &key)?);
+    }
+
+    let path = config_file_path();
+    let config = load_persisted_config_at(&path)?;
+    print_json(&get_config_key(&config, &key)?)
+}
+
+async fn config_set_command(key: String, value: String) -> Result<()> {
+    if let Some(client) = local_runtime_config_client().await {
+        apply_runtime_config_update(
+            &client,
+            http::RuntimeConfigUpdateEntry {
+                key: key.clone(),
+                value: Some(
+                    serde_json::from_str(&value)
+                        .unwrap_or(serde_json::Value::String(value.clone())),
+                ),
+                unset: false,
+            },
+        )
+        .await?;
+        let config = load_persisted_config_at(&client.runtime_config().await?.config_file_path)?;
+        print_config_applied_via(ConfigAppliedVia::DaemonApi);
+        return print_json(&get_config_key(&config, &key)?);
+    }
+
+    let path = config_file_path();
+    let mut config = load_persisted_config_at(&path)?;
+    set_config_key(&mut config, &key, &value)?;
+    save_persisted_config_at(&path, &config)?;
+    print_config_applied_via(ConfigAppliedVia::OfflineStore);
+    print_json(&get_config_key(&config, &key)?)
+}
+
+async fn config_unset_command(key: String) -> Result<()> {
+    if let Some(client) = local_runtime_config_client().await {
+        apply_runtime_config_update(
+            &client,
+            http::RuntimeConfigUpdateEntry {
+                key: key.clone(),
+                value: None,
+                unset: true,
+            },
+        )
+        .await?;
+        print_config_applied_via(ConfigAppliedVia::DaemonApi);
+        return print_json(&serde_json::json!({
+            "key": key,
+            "status": "unset"
+        }));
+    }
+
+    let path = config_file_path();
+    let mut config = load_persisted_config_at(&path)?;
+    unset_config_key(&mut config, &key)?;
+    save_persisted_config_at(&path, &config)?;
+    print_config_applied_via(ConfigAppliedVia::OfflineStore);
+    print_json(&serde_json::json!({
+        "key": key,
+        "status": "unset"
+    }))
+}
+
+async fn config_list_command() -> Result<()> {
+    if let Some(client) = local_runtime_config_client().await {
+        let response = client.runtime_config().await?;
+        let config = load_persisted_config_at(&response.config_file_path)?;
+        return print_json(&serde_json::to_value(config)?);
+    }
+
+    let path = config_file_path();
+    let config = load_persisted_config_at(&path)?;
+    print_json(&serde_json::to_value(config)?)
+}
+
+async fn config_schema_command() -> Result<()> {
+    let _ = local_runtime_config_client().await;
+    print_json(&serde_json::to_value(config_schema())?)
+}
+
+async fn apply_runtime_config_update(
+    client: &LocalClient,
+    update: http::RuntimeConfigUpdateEntry,
+) -> Result<()> {
+    let key = update.key.clone();
+    let response = client
+        .update_runtime_config(&http::RuntimeConfigUpdateRequest {
+            updates: vec![update],
+        })
+        .await?;
+    let result = response
+        .results
+        .iter()
+        .find(|result| result.key == key)
+        .with_context(|| format!("daemon runtime config response omitted result for {key}"))?;
+    if result.effect == http::RuntimeConfigUpdateEffect::Rejected {
+        anyhow::bail!(
+            "daemon rejected runtime config update for {}: {}",
+            result.key,
+            result.reason
+        );
+    }
+    Ok(())
+}
+
+async fn apply_onboarding_submission(
+    config: &AppConfig,
+    submission: &OnboardingWizardSubmission,
+) -> Result<OnboardingApplySummary> {
+    let mut summary = apply_onboarding_wizard_draft(
+        config,
+        &submission.draft,
+        submission.credential_material.clone(),
+    )?;
+
+    if let Some(client) = local_runtime_config_client().await {
+        let mut updates = vec![http::RuntimeConfigUpdateEntry {
+            key: "model.default".into(),
+            value: Some(serde_json::Value::String(
+                submission.draft.default_model.as_string(),
+            )),
+            unset: false,
+        }];
+        match submission.draft.search {
+            OnboardingSearchSelection::Disabled => {
+                updates.push(http::RuntimeConfigUpdateEntry {
+                    key: "web.search.enabled".into(),
+                    value: Some(serde_json::json!(false)),
+                    unset: false,
+                });
+            }
+            OnboardingSearchSelection::Auto => {
+                updates.extend([
+                    http::RuntimeConfigUpdateEntry {
+                        key: "web.search.enabled".into(),
+                        value: Some(serde_json::json!(true)),
+                        unset: false,
+                    },
+                    http::RuntimeConfigUpdateEntry {
+                        key: "web.search.builtin_provider.enabled".into(),
+                        value: Some(serde_json::json!(true)),
+                        unset: false,
+                    },
+                    http::RuntimeConfigUpdateEntry {
+                        key: "web.search.provider".into(),
+                        value: Some(serde_json::Value::String("auto".into())),
+                        unset: false,
+                    },
+                ]);
+            }
+            OnboardingSearchSelection::ManagedDuckDuckGo => {
+                updates.extend([
+                    http::RuntimeConfigUpdateEntry {
+                        key: "web.search.enabled".into(),
+                        value: Some(serde_json::json!(true)),
+                        unset: false,
+                    },
+                    http::RuntimeConfigUpdateEntry {
+                        key: "web.search.builtin_provider.enabled".into(),
+                        value: Some(serde_json::json!(false)),
+                        unset: false,
+                    },
+                    http::RuntimeConfigUpdateEntry {
+                        key: "web.search.provider".into(),
+                        value: Some(serde_json::Value::String("duckduckgo".into())),
+                        unset: false,
+                    },
+                    http::RuntimeConfigUpdateEntry {
+                        key: "web.search.providers".into(),
+                        value: Some(serde_json::json!(["duckduckgo"])),
+                        unset: false,
+                    },
+                ]);
+            }
+        }
+        apply_runtime_config_updates(&client, updates).await?;
+        summary.applied_via = ConfigAppliedVia::DaemonApi.as_str().into();
+    }
+
+    Ok(summary)
+}
+
+async fn apply_runtime_config_updates(
+    client: &LocalClient,
+    updates: Vec<http::RuntimeConfigUpdateEntry>,
+) -> Result<()> {
+    let response = client
+        .update_runtime_config(&http::RuntimeConfigUpdateRequest { updates })
+        .await?;
+    for result in &response.results {
+        if result.effect == http::RuntimeConfigUpdateEffect::Rejected {
+            anyhow::bail!(
+                "daemon rejected runtime config update for {}: {}",
+                result.key,
+                result.reason
+            );
+        }
+    }
+    Ok(())
 }
 
 async fn handle_config_models_command(command: ConfigModelCommands) -> Result<()> {

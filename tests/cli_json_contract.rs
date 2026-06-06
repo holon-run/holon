@@ -6,8 +6,11 @@
 
 use std::{
     collections::BTreeSet,
+    io::{BufRead, BufReader},
     path::PathBuf,
-    process::{Command, Output},
+    process::{Child, Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use serde_json::{json, Value};
@@ -35,8 +38,71 @@ fn isolated_holon_command(home: &tempfile::TempDir) -> Command {
     command
 }
 
+struct ServeChild {
+    child: Child,
+}
+
+impl Drop for ServeChild {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn spawn_local_serve(home: &tempfile::TempDir) -> (ServeChild, String) {
+    let mut child = isolated_holon_command(home)
+        .args(["serve", "--listen", "127.0.0.1:0"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn holon serve");
+    let stdout = child.stdout.take().expect("serve stdout should be piped");
+    let mut reader = BufReader::new(stdout);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut line = String::new();
+    let mut addr = None;
+    while Instant::now() < deadline {
+        line.clear();
+        if reader.read_line(&mut line).expect("read serve stdout") > 0 {
+            if line.starts_with("Holon listening on ") {
+                addr = Some(
+                    line.trim()
+                        .trim_start_matches("Holon listening on ")
+                        .to_string(),
+                );
+            } else if line.starts_with("Holon control socket on ") {
+                let addr = addr.expect("serve should print TCP listener before control socket");
+                return (ServeChild { child }, addr);
+            }
+        }
+        if line.starts_with("Holon listening on ") && addr.is_some() {
+            let Some(addr) = addr.clone() else {
+                unreachable!("addr should be set")
+            };
+            if !cfg!(unix) {
+                return (ServeChild { child }, addr);
+            }
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    let _ = child.kill();
+    panic!("timed out waiting for holon serve to print listening address");
+}
+
 fn run_json(home: &tempfile::TempDir, args: &[&str]) -> Value {
     let output = isolated_holon_command(home)
+        .args(args)
+        .output()
+        .unwrap_or_else(|error| panic!("run holon {args:?}: {error}"));
+    assert_success(output, args)
+}
+
+fn run_json_with_env(home: &tempfile::TempDir, args: &[&str], envs: &[(&str, &str)]) -> Value {
+    let mut command = isolated_holon_command(home);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command
         .args(args)
         .output()
         .unwrap_or_else(|error| panic!("run holon {args:?}: {error}"));
@@ -54,6 +120,46 @@ fn assert_success(output: Output, args: &[&str]) -> Value {
     assert!(stderr.is_empty(), "stderr should stay empty: {stderr}");
     serde_json::from_str(&stdout)
         .unwrap_or_else(|error| panic!("stdout should be JSON for {args:?}: {error}\n{stdout}"))
+}
+
+fn run_json_with_stderr(home: &tempfile::TempDir, args: &[&str]) -> (Value, String) {
+    let output = isolated_holon_command(home)
+        .args(args)
+        .output()
+        .unwrap_or_else(|error| panic!("run holon {args:?}: {error}"));
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "holon {args:?} failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    let value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|error| panic!("stdout should be JSON for {args:?}: {error}\n{stdout}"));
+    (value, stderr)
+}
+
+fn run_failure_with_env(
+    home: &tempfile::TempDir,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> (String, String) {
+    let mut command = isolated_holon_command(home);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command
+        .args(args)
+        .output()
+        .unwrap_or_else(|error| panic!("run holon {args:?}: {error}"));
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "holon {args:?} should fail\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    (stdout, stderr)
 }
 
 #[test]
@@ -219,6 +325,117 @@ fn config_credentials_json_contract_is_stable_and_redacted() {
 
     let empty_list = run_json(&home, &["config", "credentials", "list"]);
     assert_eq!(empty_list, json!([]));
+}
+
+#[test]
+fn config_set_unset_reports_offline_application_path_on_stderr() {
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+
+    let (set, set_stderr) =
+        run_json_with_stderr(&home, &["config", "set", "model.default", "openai/gpt-4.1"]);
+    assert_eq!(set, json!("openai/gpt-4.1"));
+    assert_eq!(set_stderr, "applied_via=offline_store\n");
+
+    let get = run_json(&home, &["config", "get", "model.default"]);
+    assert_eq!(get, json!("openai/gpt-4.1"));
+
+    let (unset, unset_stderr) = run_json_with_stderr(&home, &["config", "unset", "model.default"]);
+    assert_eq!(
+        unset,
+        json!({
+            "key": "model.default",
+            "status": "unset"
+        })
+    );
+    assert_eq!(unset_stderr, "applied_via=offline_store\n");
+}
+
+#[test]
+fn config_set_prefers_running_daemon_runtime_config_api() {
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let (_serve, addr) = spawn_local_serve(&home);
+
+    let (set, set_stderr) = {
+        let mut command = isolated_holon_command(&home);
+        command.env("HOLON_HTTP_ADDR", &addr);
+        let output = command
+            .args(["config", "set", "model.default", "openai/gpt-4.1"])
+            .output()
+            .expect("run holon config set");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "config set failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        (
+            serde_json::from_str::<Value>(&stdout).expect("set stdout should be JSON"),
+            stderr,
+        )
+    };
+    assert_eq!(set, json!("openai/gpt-4.1"));
+    assert_eq!(set_stderr, "applied_via=daemon_api\n");
+
+    let get = run_json_with_env(
+        &home,
+        &["config", "get", "model.default"],
+        &[("HOLON_HTTP_ADDR", &addr)],
+    );
+    assert_eq!(get, json!("openai/gpt-4.1"));
+
+    let (unset, unset_stderr) = {
+        let mut command = isolated_holon_command(&home);
+        command.env("HOLON_HTTP_ADDR", &addr);
+        let output = command
+            .args(["config", "unset", "model.default"])
+            .output()
+            .expect("run holon config unset");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "config unset failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        (
+            serde_json::from_str::<Value>(&stdout).expect("unset stdout should be JSON"),
+            stderr,
+        )
+    };
+    assert_eq!(
+        unset,
+        json!({
+            "key": "model.default",
+            "status": "unset"
+        })
+    );
+    assert_eq!(unset_stderr, "applied_via=daemon_api\n");
+}
+
+#[test]
+fn config_set_surfaces_daemon_rejection_reason() {
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let (_serve, addr) = spawn_local_serve(&home);
+
+    let (stdout, stderr) = run_failure_with_env(
+        &home,
+        &["config", "set", "home_dir", "/tmp/other-home"],
+        &[("HOLON_HTTP_ADDR", &addr)],
+    );
+
+    assert!(
+        stdout.is_empty(),
+        "failed config set should not emit JSON stdout"
+    );
+    assert!(
+        stderr.contains("daemon rejected runtime config update for home_dir"),
+        "stderr should name the rejected key: {stderr}"
+    );
+    assert!(
+        stderr.contains("unsupported or startup-only config key"),
+        "stderr should surface daemon-provided reason: {stderr}"
+    );
 }
 
 #[test]

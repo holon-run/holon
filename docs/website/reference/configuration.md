@@ -15,7 +15,14 @@ Holon stores runtime configuration in JSON files under `~/.holon/`:
 
 ## Configuration Keys
 
-Use `holon config get/set/unset/list` to read and write keys. Use `holon config schema` to see every available key with its type, default, and description.
+Use `holon config get/set/unset/list` to read and write keys. When a local
+daemon is running, these commands prefer the daemon runtime config API; when no
+daemon is reachable, they fall back to the offline config store. `set` and
+`unset` print `applied_via=daemon_api` or `applied_via=offline_store` on
+stderr, while stdout remains the script-facing JSON value/status. Unsupported
+or startup-only daemon updates fail with the daemon-provided rejection reason.
+Use `holon config schema` to see every available key with its type, default,
+and description.
 
 ### Model & Provider Settings
 

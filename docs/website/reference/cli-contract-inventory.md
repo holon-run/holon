@@ -73,10 +73,10 @@ than requiring a running daemon.
 
 | Command | Args | Options | Output | Initial stability | Notes |
 |---|---|---|---|---:|---|
-| `holon config get` | `<KEY>` | none | JSON value for the key | `stable` candidate | Key set comes from the configuration contract. |
-| `holon config set` | `<KEY> <VALUE>` | none | JSON value after write | `stable` candidate | Value parsing is key-specific. |
-| `holon config unset` | `<KEY>` | none | JSON `{ "key": ..., "status": "unset" }` | `stable` candidate | Status string should be locked if scripts depend on it. |
-| `holon config list` | none | none | full persisted config JSON | `experimental` | Exposes broad config file shape; align with config reference before declaring stable. |
+| `holon config get` | `<KEY>` | none | JSON value for the key | `stable` candidate | Prefers daemon runtime config API when reachable, preserving stdout shape; key set comes from the configuration contract. |
+| `holon config set` | `<KEY> <VALUE>` | none | JSON value after write | `stable` candidate | Prefers daemon runtime config API when reachable, falls back offline, and reports `applied_via` on stderr; daemon rejections surface the daemon reason. |
+| `holon config unset` | `<KEY>` | none | JSON `{ "key": ..., "status": "unset" }` | `stable` candidate | Prefers daemon runtime config API when reachable, falls back offline, and reports `applied_via` on stderr; status string should be locked if scripts depend on it. |
+| `holon config list` | none | none | full persisted config JSON | `experimental` | Prefers daemon runtime config API when reachable, preserving stdout shape; exposes broad config file shape. |
 | `holon config schema` | none | none | JSON config schema/metadata | `stable` JSON | Locked by `tests/cli_json_contract.rs`; entry objects expose `key`, `kind`, `description`, `default`, and optional `allowed_values`. |
 | `holon config doctor` | none | none | JSON provider/system diagnostics | `experimental` | Diagnostic shape may evolve as providers change. |
 | `holon config models list` | none | none | JSON model availability list | `experimental` | Provider catalog and availability details are still evolving. |
