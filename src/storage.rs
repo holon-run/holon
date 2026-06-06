@@ -671,10 +671,7 @@ impl AppStorage {
     }
 
     fn storage_agent_id(&self) -> Result<String> {
-        Ok(self
-            .read_agent()?
-            .map(|agent| agent.id)
-            .unwrap_or_else(|| "unknown".into()))
+        Ok(self.current_agent_id()?.unwrap_or_else(|| "unknown".into()))
     }
 
     pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
@@ -2862,6 +2859,41 @@ mod tests {
             Some("delivery evidence".into())
         );
         assert_eq!(storage.count_briefs().unwrap(), 1);
+    }
+
+    #[test]
+    fn runtime_db_evidence_reads_use_directory_agent_id_without_agent_json() {
+        let dir = tempdir().unwrap();
+        let agent_dir = dir.path().join("agents/default");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let storage = AppStorage::new(&agent_dir).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "directory agent id",
+            None,
+            None,
+        );
+        storage.append_brief(&brief).unwrap();
+
+        assert_eq!(storage.read_recent_briefs(10).unwrap(), vec![brief]);
+        assert_eq!(storage.count_briefs().unwrap(), 1);
+        assert!(storage
+            .shared_indexes_dir()
+            .join(format!(
+                "memory.{}.dirty",
+                memory_index_agent_key("default")
+            ))
+            .exists());
     }
 
     #[test]

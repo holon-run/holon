@@ -1109,7 +1109,7 @@ impl EvidenceRepository<'_> {
             "SELECT payload_json
              FROM {}
              WHERE agent_id = ?1
-             ORDER BY created_at DESC, evidence_id ASC
+             ORDER BY created_at DESC, evidence_id DESC
              LIMIT ?2",
             kind.table_name()
         );
@@ -1167,7 +1167,7 @@ impl EvidenceRepository<'_> {
                 "SELECT payload_json
                  FROM delivery_summaries
                  WHERE agent_id = ?1 AND work_item_id = ?2
-                 ORDER BY created_at DESC, evidence_id ASC
+                 ORDER BY created_at DESC, evidence_id DESC
                  LIMIT 1",
                 params![agent_id, work_item_id],
                 |row| row.get::<_, String>(0),
@@ -3483,6 +3483,7 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::BriefKind;
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -3657,6 +3658,33 @@ mod tests {
         assert!(error
             .to_string()
             .contains("newer than this binary supports"));
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_db_recent_payloads_keep_evidence_id_ascending_after_reverse() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let created_at = Utc::now();
+        let mut later_id = BriefRecord::new("agent-a", BriefKind::Result, "later id", None, None);
+        later_id.id = "brief-b".into();
+        later_id.created_at = created_at;
+        let mut earlier_id =
+            BriefRecord::new("agent-a", BriefKind::Result, "earlier id", None, None);
+        earlier_id.id = "brief-a".into();
+        earlier_id.created_at = created_at;
+
+        db.evidence().append_brief(&later_id)?;
+        db.evidence().append_brief(&earlier_id)?;
+
+        let records = db.evidence().recent_briefs("agent-a", 2)?;
+        assert_eq!(
+            records
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>(),
+            vec!["brief-a", "brief-b"]
+        );
         Ok(())
     }
 
