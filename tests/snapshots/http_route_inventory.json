@@ -577,7 +577,7 @@
     "tag": "runtime",
     "parameters": [],
     "request_schema": "RuntimeConfigUpdateRequest",
-    "request_strict": null,
+    "request_strict": true,
     "response_content_types": [
       "application/json"
     ],

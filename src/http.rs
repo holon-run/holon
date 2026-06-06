@@ -44,8 +44,9 @@ use tower::ServiceExt;
 
 use crate::{
     config::{
-        load_persisted_config_at, save_persisted_config_at, set_config_key, unset_config_key,
-        ControlTransportKind, ModelRef,
+        credential_store_path, load_credential_store_at, load_persisted_config_at,
+        save_persisted_config_at, set_config_key, unset_config_key, ControlTransportKind,
+        HolonConfigFile, ModelRef,
     },
     daemon::{
         graceful_runtime_shutdown, runtime_activity_summary, RuntimeConfigSurface,
@@ -802,19 +803,21 @@ pub async fn runtime_readiness(
     ))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeConfigReadResponse {
     pub ok: bool,
     pub config_file_path: std::path::PathBuf,
     pub runtime_surface: RuntimeConfigSurface,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeConfigUpdateRequest {
     pub updates: Vec<RuntimeConfigUpdateEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeConfigUpdateEntry {
     pub key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -823,7 +826,7 @@ pub struct RuntimeConfigUpdateEntry {
     pub unset: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeConfigUpdateResponse {
     pub ok: bool,
     pub changed: bool,
@@ -832,14 +835,14 @@ pub struct RuntimeConfigUpdateResponse {
     pub runtime_surface: RuntimeConfigSurface,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeConfigUpdateResult {
     pub key: String,
     pub effect: RuntimeConfigUpdateEffect,
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeConfigUpdateEffect {
     AcceptedRequiresRestart,
@@ -867,6 +870,7 @@ pub async fn runtime_config_update(
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let config = state.host.config();
     let mut stored = load_persisted_config_at(&config.config_file_path).map_err(error_response)?;
+    let mut candidate = stored.clone();
     let mut changed = false;
     let mut results = Vec::new();
 
@@ -881,11 +885,11 @@ pub async fn runtime_config_update(
         }
 
         let result = if update.unset {
-            unset_config_key(&mut stored, &update.key)
+            unset_config_key(&mut candidate, &update.key)
         } else {
             match update.value {
                 Some(value) => {
-                    set_config_key(&mut stored, &update.key, &config_value_as_raw(value))
+                    set_config_key(&mut candidate, &update.key, &config_value_as_raw(value))
                 }
                 None => Err(anyhow!(
                     "runtime config update for {} requires value or unset=true",
@@ -912,6 +916,20 @@ pub async fn runtime_config_update(
     }
 
     if changed {
+        if let Err(error) = validate_runtime_config_candidate(config, &candidate) {
+            changed = false;
+            let reason = format!("updated config is invalid: {error}");
+            for result in &mut results {
+                if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+                    result.effect = RuntimeConfigUpdateEffect::Rejected;
+                    result.reason = reason.clone();
+                }
+            }
+        }
+    }
+
+    if changed {
+        stored = candidate;
         save_persisted_config_at(&config.config_file_path, &stored).map_err(error_response)?;
     }
 
@@ -922,6 +940,15 @@ pub async fn runtime_config_update(
         results,
         runtime_surface: RuntimeConfigSurface::new(config),
     }))
+}
+
+fn validate_runtime_config_candidate(
+    config: &crate::config::AppConfig,
+    candidate: &HolonConfigFile,
+) -> Result<()> {
+    let credentials = load_credential_store_at(&credential_store_path(&config.home_dir))?;
+    crate::web::materialize_web_config(&candidate.web, &credentials)?;
+    Ok(())
 }
 
 fn is_runtime_mutable_config_key(key: &str) -> bool {

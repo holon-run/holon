@@ -8,7 +8,8 @@ use serde_json::{json, Value};
 use crate::{
     http::{
         CancelTimerRequest, CompleteWorkItemRequest, CreateTimerRequest, PickWorkItemRequest,
-        PickWorkItemResponse, UpdateWorkItemRequest,
+        PickWorkItemResponse, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
+        RuntimeConfigUpdateResponse, UpdateWorkItemRequest,
     },
     types::{
         TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult, TimerRecord,
@@ -486,6 +487,18 @@ fn component_schemas() -> Value {
     schemas.insert(
         "PickWorkItemResponse".into(),
         component_schema::<PickWorkItemResponse>(),
+    );
+    schemas.insert(
+        "RuntimeConfigReadResponse".into(),
+        component_schema::<RuntimeConfigReadResponse>(),
+    );
+    schemas.insert(
+        "RuntimeConfigUpdateRequest".into(),
+        component_schema::<RuntimeConfigUpdateRequest>(),
+    );
+    schemas.insert(
+        "RuntimeConfigUpdateResponse".into(),
+        component_schema::<RuntimeConfigUpdateResponse>(),
     );
     schemas.insert(
         "PickWorkItemRequest".into(),

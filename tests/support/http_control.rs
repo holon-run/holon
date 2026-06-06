@@ -1174,6 +1174,61 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     let persisted = load_persisted_config_at(&config.config_file_path)?;
     assert_eq!(persisted.model.default.as_deref(), Some("openai/gpt-4.1"));
 
+    let valid_web_response = client
+        .patch(format!("http://{addr}/control/runtime/config"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "updates": [
+                { "key": "web.providers.review.kind", "value": "command" },
+                { "key": "web.providers.review.command.argv", "value": ["echo", "{{query}}"] },
+                { "key": "web.providers.review.output.format", "value": "json" }
+            ]
+        }))
+        .send()
+        .await?;
+    assert!(
+        valid_web_response.status().is_success(),
+        "valid command provider update failed: {:?}",
+        valid_web_response.text().await?
+    );
+    let valid_web_payload: serde_json::Value = valid_web_response.json().await?;
+    assert_eq!(valid_web_payload["changed"], true);
+
+    let invalid_web_response = client
+        .patch(format!("http://{addr}/control/runtime/config"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "updates": [
+                { "key": "model.default", "value": "openai/gpt-4.2" },
+                { "key": "web.providers.review.kind", "value": "brave" }
+            ]
+        }))
+        .send()
+        .await?;
+    assert!(invalid_web_response.status().is_success());
+    let invalid_web_payload: serde_json::Value = invalid_web_response.json().await?;
+    assert_eq!(invalid_web_payload["changed"], false);
+    assert_eq!(invalid_web_payload["results"][0]["effect"], "rejected");
+    assert_eq!(invalid_web_payload["results"][1]["effect"], "rejected");
+    assert!(
+        invalid_web_payload["results"][1]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("must not configure command.argv"),
+        "unexpected invalid config reason: {invalid_web_payload}"
+    );
+
+    let persisted = load_persisted_config_at(&config.config_file_path)?;
+    assert_eq!(persisted.model.default.as_deref(), Some("openai/gpt-4.1"));
+    assert_eq!(
+        persisted
+            .web
+            .providers
+            .get("review")
+            .map(|provider| provider.kind.as_str()),
+        Some("command")
+    );
+
     server.abort();
     Ok(())
 }
