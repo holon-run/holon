@@ -869,9 +869,8 @@ pub async fn runtime_config_update(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let config = state.host.config();
-    let mut stored = load_persisted_config_at(&config.config_file_path).map_err(error_response)?;
+    let stored = load_persisted_config_at(&config.config_file_path).map_err(error_response)?;
     let mut candidate = stored.clone();
-    let mut changed = false;
     let mut results = Vec::new();
 
     for update in request.updates {
@@ -900,7 +899,6 @@ pub async fn runtime_config_update(
 
         match result {
             Ok(()) => {
-                changed = true;
                 results.push(RuntimeConfigUpdateResult {
                     key: update.key,
                     effect: RuntimeConfigUpdateEffect::AcceptedRequiresRestart,
@@ -915,22 +913,27 @@ pub async fn runtime_config_update(
         }
     }
 
-    if changed {
-        if let Err(error) = validate_runtime_config_candidate(config, &candidate) {
-            changed = false;
-            let reason = format!("updated config is invalid: {error}");
-            for result in &mut results {
-                if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
-                    result.effect = RuntimeConfigUpdateEffect::Rejected;
-                    result.reason = reason.clone();
-                }
-            }
-        }
+    if results
+        .iter()
+        .any(|result| result.effect == RuntimeConfigUpdateEffect::Rejected)
+    {
+        reject_accepted_runtime_config_results(
+            &mut results,
+            "batch rejected; no runtime config updates were persisted",
+        );
+    } else if let Err(error) = validate_runtime_config_candidate(config, &candidate) {
+        reject_accepted_runtime_config_results(
+            &mut results,
+            &format!("updated config is invalid: {error}"),
+        );
     }
 
+    let changed = results
+        .iter()
+        .any(|result| result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart);
+
     if changed {
-        stored = candidate;
-        save_persisted_config_at(&config.config_file_path, &stored).map_err(error_response)?;
+        save_persisted_config_at(&config.config_file_path, &candidate).map_err(error_response)?;
     }
 
     Ok(Json(RuntimeConfigUpdateResponse {
@@ -940,6 +943,19 @@ pub async fn runtime_config_update(
         results,
         runtime_surface: RuntimeConfigSurface::new(config),
     }))
+}
+
+fn reject_accepted_runtime_config_results(results: &mut [RuntimeConfigUpdateResult], reason: &str) {
+    for result in results {
+        if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+            result.effect = RuntimeConfigUpdateEffect::Rejected;
+            if result.reason.is_empty() {
+                result.reason = reason.into();
+            } else {
+                result.reason = format!("{reason}: {}", result.reason);
+            }
+        }
+    }
 }
 
 fn validate_runtime_config_candidate(

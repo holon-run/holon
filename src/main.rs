@@ -12,7 +12,7 @@ use clap::Parser;
 use clap::ValueEnum;
 
 use holon::{
-    client::{normalize_control_base_url, LocalClient},
+    client::{normalize_control_base_url, LocalClient, LocalHttpError},
     config::{
         built_in_provider_default_config, config_schema, credential_store_path, default_holon_home,
         get_config_key, list_credential_profiles_at, load_credential_store_at,
@@ -2409,16 +2409,31 @@ fn print_config_applied_via(applied_via: ConfigAppliedVia) {
     eprintln!("applied_via={}", applied_via.as_str());
 }
 
-async fn local_runtime_config_client() -> Option<LocalClient> {
-    let config = AppConfig::load_for_config_inspection().ok()?;
-    let client = LocalClient::new(config).ok()?;
-    client.runtime_config().await.ok()?;
-    Some(client)
+async fn local_runtime_config() -> Result<Option<(LocalClient, http::RuntimeConfigReadResponse)>> {
+    let config = AppConfig::load_for_config_inspection()?;
+    let client = LocalClient::new(config)?;
+    match client.runtime_config().await {
+        Ok(response) => Ok(Some((client, response))),
+        Err(error) if is_local_runtime_absent(&error) => Ok(None),
+        Err(error) => Err(error).context("local daemon runtime config API is unavailable"),
+    }
+}
+
+fn is_local_runtime_absent(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        if let Some(http_error) = cause.downcast_ref::<LocalHttpError>() {
+            return http_error.status_code == 404;
+        }
+        let message = cause.to_string();
+        message.contains("Connection refused")
+            || message.contains("connection refused")
+            || message.contains("No such file or directory")
+            || message.contains("os error 2")
+    })
 }
 
 async fn config_get_command(key: String) -> Result<()> {
-    if let Some(client) = local_runtime_config_client().await {
-        let response = client.runtime_config().await?;
+    if let Some((_client, response)) = local_runtime_config().await? {
         let config = load_persisted_config_at(&response.config_file_path)?;
         return print_json(&get_config_key(&config, &key)?);
     }
@@ -2429,8 +2444,8 @@ async fn config_get_command(key: String) -> Result<()> {
 }
 
 async fn config_set_command(key: String, value: String) -> Result<()> {
-    if let Some(client) = local_runtime_config_client().await {
-        apply_runtime_config_update(
+    if let Some((client, _response)) = local_runtime_config().await? {
+        let response = apply_runtime_config_update(
             &client,
             http::RuntimeConfigUpdateEntry {
                 key: key.clone(),
@@ -2439,7 +2454,7 @@ async fn config_set_command(key: String, value: String) -> Result<()> {
             },
         )
         .await?;
-        let config = load_persisted_config_at(&client.runtime_config().await?.config_file_path)?;
+        let config = load_persisted_config_at(&response.config_file_path)?;
         print_config_applied_via(ConfigAppliedVia::DaemonApi);
         return print_json(&get_config_key(&config, &key)?);
     }
@@ -2453,7 +2468,7 @@ async fn config_set_command(key: String, value: String) -> Result<()> {
 }
 
 async fn config_unset_command(key: String) -> Result<()> {
-    if let Some(client) = local_runtime_config_client().await {
+    if let Some((client, _response)) = local_runtime_config().await? {
         apply_runtime_config_update(
             &client,
             http::RuntimeConfigUpdateEntry {
@@ -2482,8 +2497,7 @@ async fn config_unset_command(key: String) -> Result<()> {
 }
 
 async fn config_list_command() -> Result<()> {
-    if let Some(client) = local_runtime_config_client().await {
-        let response = client.runtime_config().await?;
+    if let Some((_client, response)) = local_runtime_config().await? {
         let config = load_persisted_config_at(&response.config_file_path)?;
         return print_json(&serde_json::to_value(config)?);
     }
@@ -2500,7 +2514,7 @@ async fn config_schema_command() -> Result<()> {
 async fn apply_runtime_config_update(
     client: &LocalClient,
     update: http::RuntimeConfigUpdateEntry,
-) -> Result<()> {
+) -> Result<http::RuntimeConfigUpdateResponse> {
     let key = update.key.clone();
     let response = client
         .update_runtime_config(&http::RuntimeConfigUpdateRequest {
@@ -2522,20 +2536,14 @@ async fn apply_runtime_config_update(
     if result.effect == http::RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
         eprintln!("daemon_update_note={}: {}", result.key, result.reason);
     }
-    Ok(())
+    Ok(response)
 }
 
 async fn apply_onboarding_submission(
     config: &AppConfig,
     submission: &OnboardingWizardSubmission,
 ) -> Result<OnboardingApplySummary> {
-    let mut summary = apply_onboarding_wizard_draft(
-        config,
-        &submission.draft,
-        submission.credential_material.clone(),
-    )?;
-
-    if let Some(client) = local_runtime_config_client().await {
+    if let Some((client, _response)) = local_runtime_config().await? {
         let mut updates = vec![http::RuntimeConfigUpdateEntry {
             key: "model.default".into(),
             value: Some(serde_json::Value::String(
@@ -2596,16 +2604,26 @@ async fn apply_onboarding_submission(
             }
         }
         apply_runtime_config_updates(&client, updates).await?;
+        let mut summary = apply_onboarding_wizard_draft(
+            config,
+            &submission.draft,
+            submission.credential_material.clone(),
+        )?;
         summary.applied_via = ConfigAppliedVia::DaemonApi.as_str().into();
+        return Ok(summary);
     }
 
-    Ok(summary)
+    apply_onboarding_wizard_draft(
+        config,
+        &submission.draft,
+        submission.credential_material.clone(),
+    )
 }
 
 async fn apply_runtime_config_updates(
     client: &LocalClient,
     updates: Vec<http::RuntimeConfigUpdateEntry>,
-) -> Result<()> {
+) -> Result<http::RuntimeConfigUpdateResponse> {
     let response = client
         .update_runtime_config(&http::RuntimeConfigUpdateRequest { updates })
         .await?;
@@ -2621,7 +2639,7 @@ async fn apply_runtime_config_updates(
             eprintln!("daemon_update_note={}: {}", result.key, result.reason);
         }
     }
-    Ok(())
+    Ok(response)
 }
 
 async fn handle_config_models_command(command: ConfigModelCommands) -> Result<()> {
