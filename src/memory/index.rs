@@ -1445,6 +1445,38 @@ mod tests {
     }
 
     #[test]
+    fn memory_get_returns_db_backed_runtime_evidence_content() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+        let body = format!(
+            "db backed exact evidence {}\n{}",
+            "sentinel_1623",
+            "x".repeat(4096)
+        );
+        let brief = brief_with_workspace("default", BriefKind::Result, &body, "ws-holon");
+        let brief_ref = format!("brief:{}", brief.id);
+
+        storage.append_brief(&brief).unwrap();
+        assert!(!storage.ledger_dir().join("briefs.jsonl").exists());
+        rebuild_memory_index(&storage, Some("ws-holon")).unwrap();
+
+        let memory = get_memory(&storage, &brief_ref, None, Some("ws-holon"))
+            .unwrap()
+            .expect("DB-backed runtime evidence should be indexed");
+        assert_eq!(memory.content, body);
+        assert!(!memory.truncated);
+    }
+
+    #[test]
     fn deleting_known_memory_markdown_removes_index_row() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();

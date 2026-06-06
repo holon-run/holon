@@ -438,6 +438,7 @@ impl AppStorage {
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.evidence().append_brief(brief)?;
+            return self.mark_memory_index_dirty();
         }
         self.append_jsonl(&self.briefs_path, brief)?;
         self.mark_memory_index_dirty()
@@ -485,6 +486,10 @@ impl AppStorage {
     }
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.evidence().append_delivery_summary(record)?;
+            return Ok(());
+        }
         self.append_jsonl(&self.delivery_summaries_path, record)
     }
 
@@ -502,6 +507,13 @@ impl AppStorage {
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.evidence().append_tool_execution(record)?;
+            if matches!(
+                record.tool_name.as_str(),
+                "ExecCommand" | "ExecCommandBatch"
+            ) {
+                self.mark_memory_index_dirty()?;
+            }
+            return Ok(());
         }
         self.append_jsonl(&self.tools_path, record)?;
         if matches!(
@@ -646,10 +658,7 @@ impl AppStorage {
     }
 
     pub fn mark_memory_index_dirty(&self) -> Result<()> {
-        let agent_id = self
-            .read_agent()?
-            .map(|agent| agent.id)
-            .unwrap_or_else(|| "unknown".into());
+        let agent_id = self.storage_agent_id()?;
         let dirty_path = self.shared_indexes_dir().join(format!(
             "memory.{}.dirty",
             memory_index_agent_key(&agent_id)
@@ -659,6 +668,13 @@ impl AppStorage {
         }
         fs::create_dir_all(self.shared_indexes_dir())?;
         fs::write(&dirty_path, b"dirty").with_context(|| "failed to mark memory index dirty")
+    }
+
+    fn storage_agent_id(&self) -> Result<String> {
+        Ok(self
+            .read_agent()?
+            .map(|agent| agent.id)
+            .unwrap_or_else(|| "unknown".into()))
     }
 
     pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
@@ -787,6 +803,11 @@ impl AppStorage {
     }
 
     pub fn read_recent_briefs(&self, limit: usize) -> Result<Vec<BriefRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .evidence()
+                .recent_briefs(&self.storage_agent_id()?, limit);
+        }
         read_recent_jsonl(&self.briefs_path, limit)
     }
 
@@ -843,6 +864,11 @@ impl AppStorage {
         &self,
         limit: usize,
     ) -> Result<Vec<DeliverySummaryRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .evidence()
+                .recent_delivery_summaries(&self.storage_agent_id()?, limit);
+        }
         read_recent_jsonl(&self.delivery_summaries_path, limit)
     }
 
@@ -861,6 +887,11 @@ impl AppStorage {
     }
 
     pub fn read_recent_tool_executions(&self, limit: usize) -> Result<Vec<ToolExecutionRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .evidence()
+                .recent_tool_executions(&self.storage_agent_id()?, limit);
+        }
         read_recent_jsonl(&self.tools_path, limit)
     }
 
@@ -1571,6 +1602,11 @@ impl AppStorage {
         &self,
         work_item_id: &str,
     ) -> Result<Option<DeliverySummaryRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .evidence()
+                .latest_delivery_summary(&self.storage_agent_id()?, work_item_id);
+        }
         if !self.delivery_summaries_path.exists() {
             return Ok(None);
         }
@@ -1810,6 +1846,11 @@ impl AppStorage {
     }
 
     pub fn count_briefs(&self) -> Result<usize> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .evidence()
+                .count_briefs(&self.storage_agent_id()?);
+        }
         if !self.briefs_path.exists() {
             return Ok(0);
         }
@@ -2341,10 +2382,11 @@ mod tests {
     use chrono::Utc;
 
     use crate::types::{
-        AgentState, AgentStatus, AuthorityClass, CallbackDeliveryMode, EpisodeBoundaryReason,
-        MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord,
-        QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TodoItem,
-        TodoItemState, TranscriptEntry, TranscriptEntryKind, WorkItemPlanStatus, WorkItemState,
+        AgentState, AgentStatus, AuthorityClass, BriefKind, CallbackDeliveryMode,
+        EpisodeBoundaryReason, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus,
+        TodoItem, TodoItemState, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind,
+        WorkItemPlanStatus, WorkItemState,
     };
 
     use super::*;
@@ -2759,6 +2801,67 @@ mod tests {
         assert_eq!(transcript.len(), 1);
         assert_eq!(transcript[0].transcript_seq, Some(1));
         assert_eq!(runtime_db.transcript_entries().all(None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn runtime_db_evidence_writes_skip_live_jsonl_after_cutover() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+        let brief = BriefRecord::new("default", BriefKind::Result, "db brief", None, None);
+        let tool = ToolExecutionRecord {
+            id: "tool-db-evidence".into(),
+            agent_id: "default".into(),
+            work_item_id: Some("work-db-evidence".into()),
+            turn_index: 0,
+            turn_id: Some("turn-db-evidence".into()),
+            tool_name: "ExecCommand".into(),
+            created_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            duration_ms: 1,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: serde_json::json!({ "cmd": "echo db evidence" }),
+            output: serde_json::json!({ "exit_code": 0 }),
+            summary: "command exited".into(),
+            invocation_surface: None,
+        };
+        let delivery = DeliverySummaryRecord::new(
+            "default",
+            "work-db-evidence",
+            "delivery evidence",
+            None,
+            None,
+        );
+
+        storage.append_brief(&brief).unwrap();
+        storage.append_tool_execution(&tool).unwrap();
+        storage.append_delivery_summary(&delivery).unwrap();
+
+        assert!(!storage.ledger_dir().join("briefs.jsonl").exists());
+        assert!(!storage.ledger_dir().join("tools.jsonl").exists());
+        assert!(!storage
+            .ledger_dir()
+            .join("delivery_summaries.jsonl")
+            .exists());
+        assert_eq!(storage.read_recent_briefs(10).unwrap(), vec![brief]);
+        assert_eq!(storage.read_recent_tool_executions(10).unwrap(), vec![tool]);
+        assert_eq!(
+            storage
+                .latest_delivery_summary("work-db-evidence")
+                .unwrap()
+                .map(|record| record.text),
+            Some("delivery evidence".into())
+        );
+        assert_eq!(storage.count_briefs().unwrap(), 1);
     }
 
     #[test]

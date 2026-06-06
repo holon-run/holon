@@ -8,6 +8,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::types::{
     AuditEvent, BriefRecord, CallbackDeliveryMode, DeliverySummaryRecord, ExternalTriggerRecord,
@@ -982,14 +983,11 @@ impl EvidenceRepository<'_> {
         briefs: Vec<BriefRecord>,
         delivery_summaries: Vec<DeliverySummaryRecord>,
     ) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete("evidence", "jsonl+db-index")?
-        {
+        if self.db.storage_domain_is_complete("evidence", "db")? {
             return Ok(());
         }
         self.db
-            .run_storage_domain_import("evidence", "jsonl", "jsonl+db-index", |tx| {
+            .run_storage_domain_import("evidence", "jsonl", "db", |tx| {
                 let mut imported_messages = 0_u64;
                 let mut dropped_messages = 0_u64;
                 for raw_message in messages {
@@ -1122,7 +1120,72 @@ impl EvidenceRepository<'_> {
                 payload_json: row.get(0)?,
             })
         })?;
-        rows.map(|row| row.map_err(Into::into)).collect()
+        let mut records: Vec<_> = rows
+            .map(|row| row.map_err(Into::into))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
+    }
+
+    pub fn recent_briefs(&self, agent_id: &str, limit: usize) -> Result<Vec<BriefRecord>> {
+        self.recent_payloads(EvidenceKind::Brief, agent_id, limit)?
+            .into_iter()
+            .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
+            .collect()
+    }
+
+    pub fn recent_tool_executions(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ToolExecutionRecord>> {
+        self.recent_payloads(EvidenceKind::ToolExecution, agent_id, limit)?
+            .into_iter()
+            .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
+            .collect()
+    }
+
+    pub fn recent_delivery_summaries(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<DeliverySummaryRecord>> {
+        self.recent_payloads(EvidenceKind::DeliverySummary, agent_id, limit)?
+            .into_iter()
+            .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
+            .collect()
+    }
+
+    pub fn latest_delivery_summary(
+        &self,
+        agent_id: &str,
+        work_item_id: &str,
+    ) -> Result<Option<DeliverySummaryRecord>> {
+        let connection = self.db.connection()?;
+        let payload = connection
+            .query_row(
+                "SELECT payload_json
+                 FROM delivery_summaries
+                 WHERE agent_id = ?1 AND work_item_id = ?2
+                 ORDER BY created_at DESC, evidence_id ASC
+                 LIMIT 1",
+                params![agent_id, work_item_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        payload
+            .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
+            .transpose()
+    }
+
+    pub fn count_briefs(&self, agent_id: &str) -> Result<usize> {
+        let connection = self.db.connection()?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM briefs WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get(0),
+        )?;
+        Ok(usize::try_from(count).unwrap_or(usize::MAX))
     }
 }
 
@@ -1284,12 +1347,24 @@ struct EvidenceInsert<'a> {
 }
 
 fn insert_evidence_tx(tx: &Transaction<'_>, evidence: EvidenceInsert<'_>) -> Result<()> {
+    let content_hash = content_hash(&evidence.payload_json);
     let sql = format!(
         "INSERT INTO {} (
             evidence_id, agent_id, turn_id, message_id, task_id, work_item_id,
             created_at, kind, content_ref, content_hash, preview, payload_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-         ON CONFLICT(evidence_id) DO NOTHING",
+         ON CONFLICT(evidence_id) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            turn_id = excluded.turn_id,
+            message_id = excluded.message_id,
+            task_id = excluded.task_id,
+            work_item_id = excluded.work_item_id,
+            created_at = excluded.created_at,
+            kind = excluded.kind,
+            content_ref = excluded.content_ref,
+            content_hash = excluded.content_hash,
+            preview = excluded.preview,
+            payload_json = excluded.payload_json",
         evidence.table
     );
     tx.execute(
@@ -1304,7 +1379,7 @@ fn insert_evidence_tx(tx: &Transaction<'_>, evidence: EvidenceInsert<'_>) -> Res
             timestamp(evidence.created_at),
             evidence.kind,
             Option::<String>::None,
-            Option::<String>::None,
+            content_hash,
             evidence.preview,
             evidence.payload_json,
         ],
@@ -1322,6 +1397,7 @@ fn insert_transcript_evidence_tx(tx: &Transaction<'_>, entry: &TranscriptEntry) 
 
 fn upsert_message_tx(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<()> {
     let payload_json = serde_json::to_string(message)?;
+    let content_hash = content_hash(&payload_json);
     let kind = enum_string(&message.kind)?;
     tx.execute(
         "INSERT INTO messages (
@@ -1352,7 +1428,7 @@ fn upsert_message_tx(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<
             timestamp(message.created_at),
             kind,
             Option::<String>::None,
-            Option::<String>::None,
+            content_hash,
             evidence_preview(&message.body),
             payload_json,
         ],
@@ -1374,6 +1450,7 @@ fn upsert_transcript_entry_tx(tx: &Transaction<'_>, entry: &TranscriptEntry) -> 
         .get("work_item_id")
         .and_then(serde_json::Value::as_str);
     let payload_json = serde_json::to_string(entry)?;
+    let content_hash = content_hash(&payload_json);
     let kind = enum_string(&entry.kind)?;
     tx.execute(
         "INSERT INTO transcript_entries (
@@ -1404,7 +1481,7 @@ fn upsert_transcript_entry_tx(tx: &Transaction<'_>, entry: &TranscriptEntry) -> 
             timestamp(entry.created_at),
             kind,
             Option::<String>::None,
-            Option::<String>::None,
+            content_hash,
             evidence_preview(&entry.data),
             payload_json,
         ],
@@ -1426,7 +1503,7 @@ fn insert_tool_evidence_tx(tx: &Transaction<'_>, record: &ToolExecutionRecord) -
             created_at: record.created_at,
             kind: record.tool_name.clone(),
             preview: Some(truncate_evidence_string(&record.summary)),
-            payload_json: bounded_payload_json(record)?,
+            payload_json: full_payload_json(record)?,
         },
     )
 }
@@ -1445,7 +1522,7 @@ fn insert_brief_evidence_tx(tx: &Transaction<'_>, brief: &BriefRecord) -> Result
             created_at: brief.created_at,
             kind: enum_string(&brief.kind)?,
             preview: Some(truncate_evidence_string(&brief.text)),
-            payload_json: bounded_payload_json(brief)?,
+            payload_json: full_payload_json(brief)?,
         },
     )
 }
@@ -1467,7 +1544,7 @@ fn insert_delivery_summary_evidence_tx(
             created_at: record.created_at,
             kind: "delivery_summary".to_string(),
             preview: Some(truncate_evidence_string(&record.text)),
-            payload_json: bounded_payload_json(record)?,
+            payload_json: full_payload_json(record)?,
         },
     )
 }
@@ -1536,38 +1613,20 @@ fn push_optional_clause(
     }
 }
 
-fn bounded_payload_json<T: Serialize>(value: &T) -> Result<String> {
-    let mut payload = serde_json::to_value(value)?;
-    bound_json_value(&mut payload);
-    serde_json::to_string(&payload).map_err(Into::into)
+fn full_payload_json<T: Serialize>(value: &T) -> Result<String> {
+    serde_json::to_string(value).map_err(Into::into)
+}
+
+fn content_hash(payload_json: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(payload_json.as_bytes());
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 fn evidence_preview(value: &impl Serialize) -> Option<String> {
     serde_json::to_string(value)
         .ok()
         .map(|value| truncate_evidence_string(&value))
-}
-
-fn bound_json_value(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::String(text) if text.len() > EVIDENCE_PREVIEW_LIMIT => {
-            truncate_string_in_place(text, EVIDENCE_PREVIEW_LIMIT);
-        }
-        serde_json::Value::Array(items) => {
-            if items.len() > TASK_PAYLOAD_ARRAY_LIMIT {
-                items.truncate(TASK_PAYLOAD_ARRAY_LIMIT);
-            }
-            for item in items {
-                bound_json_value(item);
-            }
-        }
-        serde_json::Value::Object(map) => {
-            for value in map.values_mut() {
-                bound_json_value(value);
-            }
-        }
-        _ => {}
-    }
 }
 
 fn truncate_evidence_string(value: &str) -> String {
@@ -3045,7 +3104,7 @@ impl RuntimeDb {
             },
             ExpectedStorageDomain {
                 domain: "evidence",
-                canonical_source: "jsonl+db-index",
+                canonical_source: "db",
                 legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
             },
             ExpectedStorageDomain {
@@ -3684,7 +3743,7 @@ mod tests {
             .as_deref()
             .is_some_and(|checkpoint| checkpoint.contains("restart runtime to retry")));
 
-        db.run_storage_domain_import("evidence", "jsonl", "jsonl+db-index", |tx| {
+        db.run_storage_domain_import("evidence", "jsonl", "db", |tx| {
             let checkpoint: Option<String> = tx.query_row(
                 "SELECT source_checkpoint_json FROM storage_domains WHERE domain = 'evidence'",
                 [],
@@ -3697,7 +3756,7 @@ mod tests {
             .storage_domain("evidence")?
             .expect("complete storage domain row");
         assert_eq!(complete.import_status, "complete");
-        assert_eq!(complete.canonical_source, "jsonl+db-index");
+        assert_eq!(complete.canonical_source, "db");
         Ok(())
     }
 
@@ -3721,7 +3780,7 @@ mod tests {
                 Some(serde_json::json!({ "error": "forced failure" })),
             )?;
             upsert_storage_domain(tx, "external_triggers", "complete", "db", None)?;
-            upsert_storage_domain(tx, "evidence", "complete", "jsonl+db-index", None)?;
+            upsert_storage_domain(tx, "evidence", "complete", "db", None)?;
             upsert_storage_domain(tx, "audit_events", "complete", "jsonl+db-index", None)?;
             Ok(())
         })?;
