@@ -1,17 +1,20 @@
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use anyhow::{anyhow, Result};
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, MatchedPath, Path, Query, State},
     http::{
         header::{AUTHORIZATION, CONTENT_TYPE},
-        HeaderMap, StatusCode,
+        HeaderMap, Request as AxumRequest, Response, StatusCode,
     },
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse,
+        IntoResponse, Response as AxumResponse,
     },
     routing::{get, patch, post},
     Json, Router,
@@ -23,8 +26,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::time::{sleep, Duration};
 use tokio_stream::wrappers::ReceiverStream;
-use tower_http::compression::CompressionLayer;
-use tracing::{error, warn};
+use tower_http::{
+    classify::ServerErrorsFailureClass, compression::CompressionLayer, trace::TraceLayer,
+};
+use tracing::{error, info, warn, Span};
 
 #[cfg(unix)]
 use axum::body::Body;
@@ -79,6 +84,28 @@ const STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT: usize = 2048;
 #[cfg(test)]
 const STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT: usize = 8192;
 const STATE_BOOTSTRAP_JSON_ARRAY_LIMIT: usize = 64;
+const HTTP_SLOW_RESPONSE_WARN_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+const HTTP_LARGE_RESPONSE_WARN_BYTES: usize = 128 * 1024;
+
+static HTTP_IN_FLIGHT_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+
+fn decrement_http_in_flight_requests() -> usize {
+    let mut current = HTTP_IN_FLIGHT_REQUESTS.load(Ordering::Relaxed);
+    loop {
+        if current == 0 {
+            return 0;
+        }
+        match HTTP_IN_FLIGHT_REQUESTS.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return current - 1,
+            Err(next) => current = next,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -304,7 +331,107 @@ pub fn router(state: AppState) -> Router {
         .route("/worktree-summary", get(worktree_summary_default))
         .fallback(not_found_handler)
         .layer(CompressionLayer::new())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &AxumRequest<axum::body::Body>| {
+                    let matched_path = request
+                        .extensions()
+                        .get::<MatchedPath>()
+                        .map(MatchedPath::as_str)
+                        .unwrap_or_else(|| request.uri().path());
+                    tracing::info_span!(
+                        "http_request",
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                        matched_path,
+                        status = tracing::field::Empty,
+                        response_bytes = tracing::field::Empty,
+                        elapsed_ms = tracing::field::Empty,
+                        in_flight = tracing::field::Empty,
+                    )
+                })
+                .on_request(|_request: &AxumRequest<axum::body::Body>, span: &Span| {
+                    let in_flight = HTTP_IN_FLIGHT_REQUESTS.fetch_add(1, Ordering::Relaxed) + 1;
+                    span.record("in_flight", in_flight);
+                })
+                .on_response(
+                    |response: &Response<axum::body::Body>,
+                     elapsed: std::time::Duration,
+                     span: &Span| {
+                        let in_flight = decrement_http_in_flight_requests();
+                        let response_bytes = response
+                            .headers()
+                            .get(axum::http::header::CONTENT_LENGTH)
+                            .and_then(|value| value.to_str().ok())
+                            .and_then(|value| value.parse::<usize>().ok());
+                        span.record("status", response.status().as_u16());
+                        span.record("elapsed_ms", elapsed.as_millis() as u64);
+                        span.record("in_flight", in_flight);
+                        if let Some(bytes) = response_bytes {
+                            span.record("response_bytes", bytes);
+                        }
+
+                        let is_slow = elapsed >= HTTP_SLOW_RESPONSE_WARN_AFTER;
+                        let is_large = response_bytes
+                            .is_some_and(|bytes| bytes >= HTTP_LARGE_RESPONSE_WARN_BYTES);
+                        if is_slow || is_large {
+                            warn!(
+                                status = response.status().as_u16(),
+                                elapsed_ms = elapsed.as_millis() as u64,
+                                response_bytes,
+                                in_flight,
+                                "slow or large HTTP response"
+                            );
+                        } else {
+                            info!(
+                                status = response.status().as_u16(),
+                                elapsed_ms = elapsed.as_millis() as u64,
+                                response_bytes,
+                                in_flight,
+                                "HTTP response"
+                            );
+                        }
+                    },
+                )
+                .on_failure(
+                    |failure: ServerErrorsFailureClass,
+                     elapsed: std::time::Duration,
+                     span: &Span| {
+                        if matches!(failure, ServerErrorsFailureClass::Error(_)) {
+                            let in_flight = decrement_http_in_flight_requests();
+                            span.record("elapsed_ms", elapsed.as_millis() as u64);
+                            span.record("in_flight", in_flight);
+                            warn!(
+                                %failure,
+                                elapsed_ms = elapsed.as_millis() as u64,
+                                in_flight,
+                                "HTTP request failed before response"
+                            );
+                        }
+                    },
+                ),
+        )
         .with_state(Arc::new(state))
+}
+
+fn traced_json<T: Serialize>(
+    route: &'static str,
+    started_at: std::time::Instant,
+    value: T,
+) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
+    let bytes = serde_json::to_vec(&value).map_err(|err| error_response(err.into()))?;
+    let build_elapsed = started_at.elapsed();
+    if build_elapsed >= HTTP_SLOW_RESPONSE_WARN_AFTER
+        || bytes.len() >= HTTP_LARGE_RESPONSE_WARN_BYTES
+    {
+        warn!(
+            route,
+            handler_build_ms = build_elapsed.as_millis() as u64,
+            response_bytes = bytes.len(),
+            "large or slow HTTP JSON payload built"
+        );
+    }
+    Ok(([(CONTENT_TYPE, "application/json")], bytes).into_response())
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -704,14 +831,19 @@ pub async fn models_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state.host.default_runtime().await.map_err(error_response)?;
     let available_models = runtime.available_models().await.map_err(error_response)?;
     let model_availability = runtime.model_availability().await.map_err(error_response)?;
-    Ok(Json(json!({
-        "available_models": available_models,
-        "model_availability": model_availability,
-    })))
+    traced_json(
+        "/models",
+        started_at,
+        json!({
+            "available_models": available_models,
+            "model_availability": model_availability,
+        }),
+    )
 }
 
 pub async fn handshake(
@@ -751,13 +883,14 @@ pub async fn list_agent_entries(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let agents = state
         .host
         .list_agent_entries()
         .await
         .map_err(error_response)?;
-    Ok(Json(agents))
+    traced_json("/agents/list", started_at, agents)
 }
 
 pub async fn runtime_status(
@@ -1230,6 +1363,7 @@ pub async fn agent_state(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state
         .host
@@ -1269,18 +1403,22 @@ pub async fn agent_state(
         pending_count: agent.agent.pending,
         last_turn: agent.agent.last_turn_terminal.clone(),
     };
-    Ok(Json(AgentStateSnapshot {
-        agent,
-        session,
-        tasks,
-        timers,
-        work_items,
-        waiting_intents,
-        external_triggers,
-        operator_notifications,
-        execution: Some(execution),
-        workspace,
-    }))
+    traced_json(
+        "/agents/{agent_id}/state",
+        started_at,
+        AgentStateSnapshot {
+            agent,
+            session,
+            tasks,
+            timers,
+            work_items,
+            waiting_intents,
+            external_triggers,
+            operator_notifications,
+            execution: Some(execution),
+            workspace,
+        },
+    )
 }
 
 fn sort_state_work_items(work_items: &mut [WorkItemRecord]) {

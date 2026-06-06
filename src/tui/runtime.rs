@@ -89,6 +89,10 @@ pub(super) fn reconnect_delay_for_attempt(attempt: u32) -> Duration {
     Duration::from_secs(delay_secs).min(STREAM_RECONNECT_MAX_DELAY)
 }
 
+fn agent_list_retry_delay_for_failures(failures: u32) -> Duration {
+    reconnect_delay_for_attempt(failures.saturating_add(1)).max(AGENT_LIST_REFRESH_INTERVAL)
+}
+
 fn format_duration(duration: Duration) -> String {
     if duration.as_secs() > 0 && duration.subsec_millis() == 0 {
         format!("{}s", duration.as_secs())
@@ -204,10 +208,22 @@ impl TuiApp {
 
     pub(super) fn apply_loaded_agents(&mut self, result: Result<Vec<AgentListEntry>, String>) {
         self.agent_list_refresh_in_flight = false;
-        self.schedule_agent_list_refresh();
         let entries = match result {
-            Ok(entries) => entries,
+            Ok(entries) => {
+                self.agent_list_refresh_failures = 0;
+                self.schedule_agent_list_refresh();
+                entries
+            }
             Err(err) => {
+                if self.client.remote_base_url().is_some() {
+                    self.agent_list_refresh_failures =
+                        self.agent_list_refresh_failures.saturating_add(1);
+                    self.schedule_agent_list_refresh_after(agent_list_retry_delay_for_failures(
+                        self.agent_list_refresh_failures,
+                    ));
+                } else {
+                    self.schedule_agent_list_refresh();
+                }
                 if self.agents.is_empty() {
                     self.set_disconnected(format!("failed to list public agents: {err}"));
                 } else {
@@ -923,7 +939,11 @@ impl TuiApp {
     }
 
     pub(super) fn schedule_agent_list_refresh(&mut self) {
-        self.agent_list_refresh_deadline = Some(Instant::now() + AGENT_LIST_REFRESH_INTERVAL);
+        self.schedule_agent_list_refresh_after(AGENT_LIST_REFRESH_INTERVAL);
+    }
+
+    fn schedule_agent_list_refresh_after(&mut self, delay: Duration) {
+        self.agent_list_refresh_deadline = Some(Instant::now() + delay);
     }
 
     pub(super) fn set_disconnected(&mut self, reason: String) {

@@ -43,7 +43,7 @@ pub const TUI_LOCAL_NETWORK_POLICY: TuiNetworkPolicy = TuiNetworkPolicy {
 
 pub const TUI_REMOTE_NETWORK_POLICY: TuiNetworkPolicy = TuiNetworkPolicy {
     connect_timeout: Duration::from_secs(5),
-    read_idle_timeout: Duration::from_secs(10),
+    read_idle_timeout: Duration::from_secs(30),
     stream_idle_timeout: Duration::from_secs(45),
 };
 
@@ -1529,13 +1529,13 @@ mod tests {
     }
 
     #[test]
-    fn remote_policy_has_longer_connect_timeout_than_local_policy() {
+    fn remote_policy_has_longer_timeouts_than_local_policy() {
         assert!(
             TUI_REMOTE_NETWORK_POLICY.connect_timeout > TUI_LOCAL_NETWORK_POLICY.connect_timeout
         );
-        assert_eq!(
-            TUI_REMOTE_NETWORK_POLICY.read_idle_timeout,
-            TUI_LOCAL_NETWORK_POLICY.read_idle_timeout
+        assert!(
+            TUI_REMOTE_NETWORK_POLICY.read_idle_timeout
+                > TUI_LOCAL_NETWORK_POLICY.read_idle_timeout
         );
     }
 

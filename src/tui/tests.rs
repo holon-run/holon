@@ -22,6 +22,7 @@ use crate::{
     client::{
         AgentStateSnapshot, AgentStreamEvent, LocalClient, StateSessionSnapshot,
         StateWorkspaceSnapshot, StreamEventEnvelope, TUI_LOCAL_NETWORK_POLICY,
+        TUI_REMOTE_NETWORK_POLICY,
     },
     config::{AltScreenMode, AppConfig},
     system::{ExecutionProfile, ExecutionSnapshot},
@@ -3974,6 +3975,18 @@ fn heartbeat_interval_is_less_than_client_stream_idle_timeout() {
 }
 
 #[test]
+fn remote_read_idle_timeout_allows_slow_tailnet_responses() {
+    assert_eq!(
+        TUI_REMOTE_NETWORK_POLICY.read_idle_timeout,
+        std::time::Duration::from_secs(30)
+    );
+    assert_eq!(
+        TUI_LOCAL_NETWORK_POLICY.read_idle_timeout,
+        std::time::Duration::from_secs(10)
+    );
+}
+
+#[test]
 fn reconnect_backoff_increases_and_caps() {
     assert_eq!(
         reconnect_delay_for_attempt(1),
@@ -4270,6 +4283,25 @@ async fn remote_tick_does_not_await_slow_agent_list_refresh() {
         .unwrap();
 
     assert!(app.agent_list_refresh_in_flight);
+}
+
+#[test]
+fn remote_agent_list_refresh_failures_back_off() {
+    let client = LocalClient::remote(test_config(), "http://example.test:7878", "secret").unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+
+    app.apply_loaded_agents(Err("timeout one".into()));
+    assert_eq!(app.agent_list_refresh_failures, 1);
+    let first_deadline = app.agent_list_refresh_deadline.unwrap();
+
+    app.apply_loaded_agents(Err("timeout two".into()));
+    assert_eq!(app.agent_list_refresh_failures, 2);
+    let second_deadline = app.agent_list_refresh_deadline.unwrap();
+
+    assert!(second_deadline > first_deadline + std::time::Duration::from_secs(1));
 }
 
 #[tokio::test]

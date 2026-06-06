@@ -37,7 +37,7 @@ tokio = { version = "1.43", features = ["full"] }
 tokio-stream = "0.1"
 tokio-util = "0.7"
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6.8", features = ["compression-gzip"] }
+tower-http = { version = "0.6.8", features = ["compression-gzip", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-width = "0.2"
