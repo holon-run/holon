@@ -577,6 +577,16 @@ fn prepare_runtime_storage(
             .timers()
             .import_legacy(storage.read_recent_timers(usize::MAX)?)?;
     }
+    if !storage_domain_complete(&runtime_db, "messages")? {
+        runtime_db
+            .messages()
+            .import_legacy(storage.read_all_message_values()?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "transcript_entries")? {
+        runtime_db
+            .transcript_entries()
+            .import_legacy(storage.read_all_transcript()?)?;
+    }
     let turn_records_complete = storage_domain_complete(&runtime_db, "turn_records")?;
     let evidence_complete = storage_domain_complete(&runtime_db, "evidence")?;
     let legacy_messages =
