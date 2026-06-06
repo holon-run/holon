@@ -332,8 +332,23 @@ impl AppStorage {
         self.runtime_dir().join(RUNTIME_INDEXES_DIR)
     }
 
+    // Shared search projections live at host data scope. They are rebuildable
+    // indexes, not canonical runtime state.
+    pub fn shared_indexes_dir(&self) -> PathBuf {
+        self.data_dir
+            .parent()
+            .filter(|agents_dir| agents_dir.file_name().is_some_and(|name| name == "agents"))
+            .and_then(|agents_dir| agents_dir.parent())
+            .map(|host_data_dir| host_data_dir.join(RUNTIME_DIR).join(RUNTIME_INDEXES_DIR))
+            .unwrap_or_else(|| self.indexes_dir())
+    }
+
     pub fn cache_dir(&self) -> PathBuf {
         self.runtime_dir().join(RUNTIME_CACHE_DIR)
+    }
+
+    pub(crate) fn runtime_db(&self) -> Result<Option<RuntimeDb>> {
+        self.scheduler_control_plane_db()
     }
 
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {
@@ -566,11 +581,11 @@ impl AppStorage {
     }
 
     pub fn mark_memory_index_dirty(&self) -> Result<()> {
-        let dirty_path = self.indexes_dir().join("memory.dirty");
+        let dirty_path = self.shared_indexes_dir().join("memory.dirty");
         if dirty_path.exists() {
             return Ok(());
         }
-        fs::create_dir_all(self.indexes_dir())?;
+        fs::create_dir_all(self.shared_indexes_dir())?;
         fs::write(&dirty_path, b"dirty").with_context(|| "failed to mark memory index dirty")
     }
 

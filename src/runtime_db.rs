@@ -148,6 +148,11 @@ pub struct EvidenceRow {
     pub preview: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct EvidencePayloadRow {
+    pub payload_json: String,
+}
+
 impl WorkItemRepository<'_> {
     pub fn import_legacy(
         &self,
@@ -804,6 +809,34 @@ impl EvidenceRepository<'_> {
                 work_item_id: row.get(5)?,
                 created_at: row.get(6)?,
                 preview: row.get(7)?,
+            })
+        })?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
+    pub fn recent_payloads(
+        &self,
+        kind: EvidenceKind,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<EvidencePayloadRow>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let sql = format!(
+            "SELECT payload_json
+             FROM {}
+             WHERE agent_id = ?1
+             ORDER BY created_at DESC, evidence_id ASC
+             LIMIT ?2",
+            kind.table_name()
+        );
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(params![agent_id, limit], |row| {
+            Ok(EvidencePayloadRow {
+                payload_json: row.get(0)?,
             })
         })?;
         rows.map(|row| row.map_err(Into::into)).collect()
