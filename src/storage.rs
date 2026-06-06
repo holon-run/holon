@@ -332,8 +332,23 @@ impl AppStorage {
         self.runtime_dir().join(RUNTIME_INDEXES_DIR)
     }
 
+    // Shared search projections live at host data scope. They are rebuildable
+    // indexes, not canonical runtime state.
+    pub fn shared_indexes_dir(&self) -> PathBuf {
+        self.data_dir
+            .parent()
+            .filter(|agents_dir| agents_dir.file_name().is_some_and(|name| name == "agents"))
+            .and_then(|agents_dir| agents_dir.parent())
+            .map(|host_data_dir| host_data_dir.join(RUNTIME_DIR).join(RUNTIME_INDEXES_DIR))
+            .unwrap_or_else(|| self.indexes_dir())
+    }
+
     pub fn cache_dir(&self) -> PathBuf {
         self.runtime_dir().join(RUNTIME_CACHE_DIR)
+    }
+
+    pub(crate) fn runtime_db(&self) -> Result<Option<RuntimeDb>> {
+        self.scheduler_control_plane_db()
     }
 
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {
@@ -381,6 +396,9 @@ impl AppStorage {
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.evidence().append_brief(brief)?;
+        }
         self.append_jsonl(&self.briefs_path, brief)?;
         self.mark_memory_index_dirty()
     }
@@ -402,11 +420,22 @@ impl AppStorage {
     }
 
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.tasks().upsert(task)?;
+        }
         self.append_jsonl(&self.tasks_path, task)?;
         self.mark_memory_index_dirty()
     }
 
     pub fn append_work_item(&self, record: &WorkItemRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            let current_focus = self
+                .read_agent()?
+                .and_then(|agent| agent.current_work_item_id)
+                .as_deref()
+                == Some(record.id.as_str());
+            runtime_db.work_items().upsert(record, current_focus)?;
+        }
         self.append_jsonl(&self.work_items_path, record)?;
         self.mark_memory_index_dirty()
     }
@@ -427,6 +456,9 @@ impl AppStorage {
     }
 
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.evidence().append_tool_execution(record)?;
+        }
         self.append_jsonl(&self.tools_path, record)?;
         if matches!(
             record.tool_name.as_str(),
@@ -566,11 +598,18 @@ impl AppStorage {
     }
 
     pub fn mark_memory_index_dirty(&self) -> Result<()> {
-        let dirty_path = self.indexes_dir().join("memory.dirty");
+        let agent_id = self
+            .read_agent()?
+            .map(|agent| agent.id)
+            .unwrap_or_else(|| "unknown".into());
+        let dirty_path = self.shared_indexes_dir().join(format!(
+            "memory.{}.dirty",
+            memory_index_agent_key(&agent_id)
+        ));
         if dirty_path.exists() {
             return Ok(());
         }
-        fs::create_dir_all(self.indexes_dir())?;
+        fs::create_dir_all(self.shared_indexes_dir())?;
         fs::write(&dirty_path, b"dirty").with_context(|| "failed to mark memory index dirty")
     }
 
@@ -1713,6 +1752,19 @@ impl AppStorage {
     }
 }
 
+fn memory_index_agent_key(agent_id: &str) -> String {
+    agent_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn migrate_events_ledger(path: &Path) -> Result<u64> {
     if !path.exists() {
         return Ok(0);
@@ -2845,7 +2897,8 @@ mod tests {
     fn mark_memory_index_dirty_does_not_rewrite_existing_marker() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
-        let dirty_path = storage.indexes_dir().join("memory.dirty");
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let dirty_path = storage.indexes_dir().join("memory.default.dirty");
 
         storage.mark_memory_index_dirty().unwrap();
         fs::write(&dirty_path, b"already dirty").unwrap();

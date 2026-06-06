@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     agent_template::{agent_memory_operator_path, agent_memory_self_path},
+    runtime_db::{EvidenceKind, RuntimeDb},
     storage::AppStorage,
     tool::helpers::{command_digest, command_preview, command_receipt_source_ref},
     types::{
@@ -84,7 +85,7 @@ struct MemoryDocument {
 }
 
 pub fn memory_index_path(storage: &AppStorage) -> PathBuf {
-    storage.indexes_dir().join(INDEX_FILENAME)
+    storage.shared_indexes_dir().join(INDEX_FILENAME)
 }
 
 pub fn rebuild_memory_index(storage: &AppStorage, active_workspace_id: Option<&str>) -> Result<()> {
@@ -114,7 +115,14 @@ pub fn search_memory(
     include_all_workspaces: bool,
 ) -> Result<Vec<MemorySearchResult>> {
     let index = ensure_memory_index_current(storage, active_workspace_id)?;
-    index.search(query, limit, active_workspace_id, include_all_workspaces)
+    let agent_id = storage_agent_id(storage);
+    index.search(
+        query,
+        limit,
+        &agent_id,
+        active_workspace_id,
+        include_all_workspaces,
+    )
 }
 
 pub fn get_memory(
@@ -124,7 +132,8 @@ pub fn get_memory(
     active_workspace_id: Option<&str>,
 ) -> Result<Option<MemoryGetResult>> {
     let index = ensure_memory_index_current(storage, active_workspace_id)?;
-    index.get(source_ref, max_chars, active_workspace_id)
+    let agent_id = storage_agent_id(storage);
+    index.get(source_ref, max_chars, &agent_id, active_workspace_id)
 }
 
 fn ensure_memory_index_current(
@@ -133,7 +142,11 @@ fn ensure_memory_index_current(
 ) -> Result<MemoryIndex> {
     let index_file_exists = memory_index_path(storage).exists();
     let mut index = MemoryIndex::open(storage)?;
-    if !index_file_exists || memory_index_is_dirty(storage) || !index.has_any_documents()? {
+    let agent_id = storage_agent_id(storage);
+    if !index_file_exists
+        || memory_index_is_dirty(storage)
+        || !index.has_any_documents_for_agent(&agent_id)?
+    {
         index.rebuild(storage, active_workspace_id)?;
     } else {
         repair_known_markdown_sources(storage, &index)?;
@@ -142,6 +155,7 @@ fn ensure_memory_index_current(
 }
 
 fn repair_known_markdown_sources(storage: &AppStorage, index: &MemoryIndex) -> Result<()> {
+    let agent_id = storage_agent_id(storage);
     for source in known_memory_markdown_sources(storage) {
         if source.path.exists() {
             let Some(document) =
@@ -149,11 +163,13 @@ fn repair_known_markdown_sources(storage: &AppStorage, index: &MemoryIndex) -> R
             else {
                 continue;
             };
-            if index.document_hash(&document.source_ref)? != Some(content_hash(&document.body)) {
+            if index.document_hash(&agent_id, &document.source_ref)?
+                != Some(content_hash(&document.body))
+            {
                 index.upsert_document(&document)?;
             }
         } else {
-            index.delete_document(source.source_ref)?;
+            index.delete_document(&agent_id, source.source_ref)?;
         }
     }
     Ok(())
@@ -185,15 +201,34 @@ fn known_memory_markdown_sources(storage: &AppStorage) -> Vec<KnownMemoryMarkdow
 }
 
 fn memory_index_is_dirty(storage: &AppStorage) -> bool {
-    storage.indexes_dir().join(DIRTY_FILENAME).exists()
+    storage
+        .shared_indexes_dir()
+        .join(dirty_filename_for_agent(&storage_agent_id(storage)))
+        .exists()
 }
 
 fn clear_memory_index_dirty(storage: &AppStorage) -> Result<()> {
-    let path = storage.indexes_dir().join(DIRTY_FILENAME);
+    let path = storage
+        .shared_indexes_dir()
+        .join(dirty_filename_for_agent(&storage_agent_id(storage)));
     if path.exists() {
         fs::remove_file(path)?;
     }
     Ok(())
+}
+
+fn dirty_filename_for_agent(agent_id: &str) -> String {
+    let agent_key: String = agent_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    DIRTY_FILENAME.replace(".dirty", &format!(".{agent_key}.dirty"))
 }
 
 struct MemoryIndex {
@@ -202,8 +237,12 @@ struct MemoryIndex {
 
 impl MemoryIndex {
     fn open(storage: &AppStorage) -> Result<Self> {
-        fs::create_dir_all(storage.indexes_dir())
-            .with_context(|| format!("failed to create {}", storage.indexes_dir().display()))?;
+        fs::create_dir_all(storage.shared_indexes_dir()).with_context(|| {
+            format!(
+                "failed to create {}",
+                storage.shared_indexes_dir().display()
+            )
+        })?;
         let connection = Connection::open(memory_index_path(storage))?;
         let index = Self { connection };
         index.ensure_schema()?;
@@ -212,7 +251,8 @@ impl MemoryIndex {
 
     fn ensure_schema(&self) -> Result<()> {
         if self.table_exists("memory_documents")?
-            && !self.table_has_column("memory_documents", "original_body")?
+            && (!self.table_has_column("memory_documents", "original_body")?
+                || !self.table_has_column("memory_documents", "document_key")?)
         {
             self.connection.execute_batch(
                 r#"
@@ -224,7 +264,8 @@ impl MemoryIndex {
         self.connection.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS memory_documents (
-                source_ref TEXT PRIMARY KEY,
+                document_key TEXT PRIMARY KEY,
+                source_ref TEXT NOT NULL,
                 source_kind TEXT NOT NULL,
                 scope_kind TEXT NOT NULL,
                 workspace_id TEXT,
@@ -239,7 +280,7 @@ impl MemoryIndex {
                 updated_at TEXT NOT NULL
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_documents_fts
-            USING fts5(source_ref UNINDEXED, title, body, sanitized_excerpt, tokenize='unicode61');
+            USING fts5(document_key UNINDEXED, title, body, sanitized_excerpt, tokenize='unicode61');
             "#,
         )?;
         Ok(())
@@ -271,9 +312,19 @@ impl MemoryIndex {
     }
 
     fn rebuild(&mut self, storage: &AppStorage, active_workspace_id: Option<&str>) -> Result<()> {
+        let agent_id = storage_agent_id(storage);
         let transaction = self.connection.transaction()?;
-        transaction.execute("DELETE FROM memory_documents", [])?;
-        transaction.execute("DELETE FROM memory_documents_fts", [])?;
+        transaction.execute(
+            "DELETE FROM memory_documents_fts
+             WHERE document_key IN (
+                SELECT document_key FROM memory_documents WHERE agent_id = ?1
+             )",
+            [&agent_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM memory_documents WHERE agent_id = ?1",
+            [&agent_id],
+        )?;
         for document in collect_documents(storage, active_workspace_id)? {
             upsert_document_tx(&transaction, &document)?;
         }
@@ -286,32 +337,34 @@ impl MemoryIndex {
         upsert_document_tx(&self.connection, document)
     }
 
-    fn delete_document(&self, source_ref: &str) -> Result<()> {
+    fn delete_document(&self, agent_id: &str, source_ref: &str) -> Result<()> {
+        let document_key = document_key_for(agent_id, source_ref);
         self.connection.execute(
-            "DELETE FROM memory_documents_fts WHERE source_ref = ?1",
-            [source_ref],
+            "DELETE FROM memory_documents_fts WHERE document_key = ?1",
+            [document_key.as_str()],
         )?;
         self.connection.execute(
-            "DELETE FROM memory_documents WHERE source_ref = ?1",
-            [source_ref],
+            "DELETE FROM memory_documents WHERE document_key = ?1",
+            [document_key.as_str()],
         )?;
         Ok(())
     }
 
-    fn has_any_documents(&self) -> Result<bool> {
-        let count: i64 =
-            self.connection
-                .query_row("SELECT COUNT(*) FROM memory_documents", [], |row| {
-                    row.get(0)
-                })?;
+    fn has_any_documents_for_agent(&self, agent_id: &str) -> Result<bool> {
+        let count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM memory_documents WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get(0),
+        )?;
         Ok(count > 0)
     }
 
-    fn document_hash(&self, source_ref: &str) -> Result<Option<String>> {
+    fn document_hash(&self, agent_id: &str, source_ref: &str) -> Result<Option<String>> {
+        let document_key = document_key_for(agent_id, source_ref);
         self.connection
             .query_row(
-                "SELECT content_hash FROM memory_documents WHERE source_ref = ?1",
-                [source_ref],
+                "SELECT content_hash FROM memory_documents WHERE document_key = ?1",
+                [document_key],
                 |row| row.get(0),
             )
             .optional()
@@ -322,6 +375,7 @@ impl MemoryIndex {
         &self,
         query: &str,
         limit: usize,
+        agent_id: &str,
         active_workspace_id: Option<&str>,
         include_all_workspaces: bool,
     ) -> Result<Vec<MemorySearchResult>> {
@@ -339,8 +393,9 @@ impl MemoryIndex {
                    d.source_path, d.title, d.sanitized_excerpt, d.metadata_json,
                    d.updated_at, bm25(memory_documents_fts) AS score
             FROM memory_documents_fts
-            JOIN memory_documents d ON d.source_ref = memory_documents_fts.source_ref
+            JOIN memory_documents d ON d.document_key = memory_documents_fts.document_key
             WHERE memory_documents_fts MATCH ?1
+              AND d.agent_id = ?5
               AND (?3 OR d.scope_kind = 'agent' OR (?2 IS NOT NULL AND d.workspace_id = ?2))
             ORDER BY score ASC, d.updated_at DESC
             LIMIT ?4
@@ -351,7 +406,8 @@ impl MemoryIndex {
                 query,
                 workspace_filter,
                 include_all_workspaces,
-                limit as i64
+                limit as i64,
+                agent_id
             ],
             |row| {
                 let metadata_json: String = row.get(8)?;
@@ -384,6 +440,7 @@ impl MemoryIndex {
         &self,
         source_ref: &str,
         max_chars: Option<usize>,
+        agent_id: &str,
         _active_workspace_id: Option<&str>,
     ) -> Result<Option<MemoryGetResult>> {
         let max_chars = max_chars
@@ -395,9 +452,9 @@ impl MemoryIndex {
                 SELECT source_ref, source_kind, scope_kind, workspace_id, agent_id, source_path,
                        title, original_body, metadata_json, updated_at
                 FROM memory_documents
-                WHERE source_ref = ?1
+                WHERE source_ref = ?1 AND agent_id = ?2
                 "#,
-                params![source_ref],
+                params![source_ref, agent_id],
                 |row| {
                     let content: String = row.get(7)?;
                     let metadata_json: String = row.get(8)?;
@@ -428,6 +485,7 @@ impl MemoryIndex {
 fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Result<()> {
     let metadata_json = serde_json::to_string(&document.metadata)?;
     let hash = content_hash(&document.body);
+    let document_key = document_key(document);
     let source_path = document
         .source_path
         .as_ref()
@@ -435,10 +493,11 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
     connection.execute(
         r#"
         INSERT INTO memory_documents (
-            source_ref, source_kind, scope_kind, workspace_id, agent_id, source_path,
+            document_key, source_ref, source_kind, scope_kind, workspace_id, agent_id, source_path,
             title, original_body, body, sanitized_excerpt, metadata_json, content_hash, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-        ON CONFLICT(source_ref) DO UPDATE SET
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        ON CONFLICT(document_key) DO UPDATE SET
+            source_ref=excluded.source_ref,
             source_kind=excluded.source_kind,
             scope_kind=excluded.scope_kind,
             workspace_id=excluded.workspace_id,
@@ -453,6 +512,7 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
             updated_at=excluded.updated_at
         "#,
         params![
+            document_key,
             document.source_ref,
             document.source_kind,
             document.scope_kind,
@@ -469,13 +529,13 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
         ],
     )?;
     connection.execute(
-        "DELETE FROM memory_documents_fts WHERE source_ref = ?1",
-        [document.source_ref.as_str()],
+        "DELETE FROM memory_documents_fts WHERE document_key = ?1",
+        [document_key.as_str()],
     )?;
     connection.execute(
-        "INSERT INTO memory_documents_fts(source_ref, title, body, sanitized_excerpt) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO memory_documents_fts(document_key, title, body, sanitized_excerpt) VALUES (?1, ?2, ?3, ?4)",
         params![
-            document.source_ref,
+            document_key,
             indexed_text(&document.title),
             indexed_text(&document.body),
             indexed_text(&document.sanitized_excerpt)
@@ -484,18 +544,27 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
     Ok(())
 }
 
+fn document_key(document: &MemoryDocument) -> String {
+    document_key_for(&document.agent_id, &document.source_ref)
+}
+
+fn document_key_for(agent_id: &str, source_ref: &str) -> String {
+    format!("{agent_id}:{source_ref}")
+}
+
 fn collect_documents(
     storage: &AppStorage,
     _active_workspace_id: Option<&str>,
 ) -> Result<Vec<MemoryDocument>> {
+    let runtime_db = storage.runtime_db()?;
     let mut documents = Vec::new();
     documents.extend(agent_memory_documents(storage)?);
     documents.extend(workspace_profile_documents(storage)?);
-    documents.extend(brief_documents(storage)?);
+    documents.extend(brief_documents(storage, runtime_db.as_ref())?);
     documents.extend(context_episode_documents(storage)?);
-    documents.extend(work_item_documents(storage)?);
-    documents.extend(task_documents(storage)?);
-    documents.extend(command_execution_documents(storage)?);
+    documents.extend(work_item_documents(storage, runtime_db.as_ref())?);
+    documents.extend(task_documents(storage, runtime_db.as_ref())?);
+    documents.extend(command_execution_documents(storage, runtime_db.as_ref())?);
     Ok(documents)
 }
 
@@ -582,9 +651,25 @@ fn workspace_profile_documents(storage: &AppStorage) -> Result<Vec<MemoryDocumen
         .collect())
 }
 
-fn brief_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
-    Ok(storage
-        .read_recent_briefs(REBUILD_BRIEF_LIMIT)?
+fn brief_documents(
+    storage: &AppStorage,
+    runtime_db: Option<&RuntimeDb>,
+) -> Result<Vec<MemoryDocument>> {
+    let briefs = if let Some(runtime_db) = runtime_db {
+        runtime_db
+            .evidence()
+            .recent_payloads(
+                EvidenceKind::Brief,
+                &storage_agent_id(storage),
+                REBUILD_BRIEF_LIMIT,
+            )?
+            .into_iter()
+            .map(|row| serde_json::from_str::<BriefRecord>(&row.payload_json).map_err(Into::into))
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        storage.read_recent_briefs(REBUILD_BRIEF_LIMIT)?
+    };
+    Ok(briefs
         .into_iter()
         .filter(|brief| !brief.text.trim().is_empty())
         .map(|brief| brief_document(storage, brief))
@@ -663,11 +748,24 @@ fn episode_document(episode: ContextEpisodeRecord) -> MemoryDocument {
     }
 }
 
-fn work_item_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
-    let mut latest = BTreeMap::<String, WorkItemRecord>::new();
-    for item in storage.read_recent_work_items(REBUILD_WORK_ITEM_LIMIT)? {
-        latest.insert(item.id.clone(), item);
-    }
+fn work_item_documents(
+    storage: &AppStorage,
+    runtime_db: Option<&RuntimeDb>,
+) -> Result<Vec<MemoryDocument>> {
+    let latest = if let Some(runtime_db) = runtime_db {
+        runtime_db
+            .work_items()
+            .latest_for_agent(&storage_agent_id(storage), REBUILD_WORK_ITEM_LIMIT)?
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect()
+    } else {
+        let mut latest = BTreeMap::<String, WorkItemRecord>::new();
+        for item in storage.read_recent_work_items(REBUILD_WORK_ITEM_LIMIT)? {
+            latest.insert(item.id.clone(), item);
+        }
+        latest
+    };
     Ok(latest.into_values().map(work_item_document).collect())
 }
 
@@ -722,12 +820,18 @@ fn work_item_document_body(item: &WorkItemRecord) -> String {
     lines.join("\n")
 }
 
-fn task_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
-    Ok(storage
-        .latest_task_records_from_recent(REBUILD_TASK_HISTORY_LIMIT)?
-        .into_iter()
-        .map(task_document)
-        .collect())
+fn task_documents(
+    storage: &AppStorage,
+    runtime_db: Option<&RuntimeDb>,
+) -> Result<Vec<MemoryDocument>> {
+    let tasks = if let Some(runtime_db) = runtime_db {
+        runtime_db
+            .tasks()
+            .latest_for_agent(&storage_agent_id(storage), REBUILD_TASK_HISTORY_LIMIT)?
+    } else {
+        storage.latest_task_records_from_recent(REBUILD_TASK_HISTORY_LIMIT)?
+    };
+    Ok(tasks.into_iter().map(task_document).collect())
 }
 
 fn task_document(task: TaskRecord) -> MemoryDocument {
@@ -868,9 +972,28 @@ fn task_status_label(status: &TaskStatus) -> &'static str {
     }
 }
 
-fn command_execution_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
+fn command_execution_documents(
+    storage: &AppStorage,
+    runtime_db: Option<&RuntimeDb>,
+) -> Result<Vec<MemoryDocument>> {
     let mut documents = Vec::new();
-    for record in storage.read_recent_tool_executions(REBUILD_COMMAND_RECEIPT_LIMIT)? {
+    let records = if let Some(runtime_db) = runtime_db {
+        runtime_db
+            .evidence()
+            .recent_payloads(
+                EvidenceKind::ToolExecution,
+                &storage_agent_id(storage),
+                REBUILD_COMMAND_RECEIPT_LIMIT,
+            )?
+            .into_iter()
+            .map(|row| {
+                serde_json::from_str::<ToolExecutionRecord>(&row.payload_json).map_err(Into::into)
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        storage.read_recent_tool_executions(REBUILD_COMMAND_RECEIPT_LIMIT)?
+    };
+    for record in records {
         match record.tool_name.as_str() {
             "ExecCommand" => {
                 if let Some(cmd) = record.input.get("cmd").and_then(Value::as_str) {
@@ -1149,6 +1272,119 @@ mod tests {
         assert!(results.iter().any(|result| {
             result.source_ref == "agent_memory:self" && result.snippet.contains("混合")
         }));
+    }
+
+    #[test]
+    fn shared_memory_index_is_scoped_by_agent_for_search_and_get() {
+        let dir = tempdir().unwrap();
+        let agents_dir = dir.path().join("agents");
+        let alpha_home = agents_dir.join("alpha");
+        let beta_home = agents_dir.join("beta");
+        let alpha = AppStorage::new(&alpha_home).unwrap();
+        let beta = AppStorage::new(&beta_home).unwrap();
+        alpha.write_agent(&AgentState::new("alpha")).unwrap();
+        beta.write_agent(&AgentState::new("beta")).unwrap();
+        ensure_agent_home_layout(&alpha_home).unwrap();
+        ensure_agent_home_layout(&beta_home).unwrap();
+        fs::write(
+            agent_memory_self_path(&alpha_home),
+            "alpha private recall shared-index-sentinel",
+        )
+        .unwrap();
+        fs::write(
+            agent_memory_self_path(&beta_home),
+            "beta private recall shared-index-sentinel",
+        )
+        .unwrap();
+
+        assert_eq!(memory_index_path(&alpha), memory_index_path(&beta));
+
+        rebuild_memory_index(&alpha, None).unwrap();
+        rebuild_memory_index(&beta, None).unwrap();
+
+        let alpha_results = search_memory(&alpha, "shared-index-sentinel", 10, None, true).unwrap();
+        assert!(alpha_results
+            .iter()
+            .any(|result| result.source_ref == "agent_memory:self"
+                && result.agent_id == "alpha"
+                && result.snippet.contains("alpha private recall")));
+        assert!(alpha_results
+            .iter()
+            .all(|result| result.agent_id == "alpha"));
+
+        let beta_results = search_memory(&beta, "shared-index-sentinel", 10, None, true).unwrap();
+        assert!(beta_results
+            .iter()
+            .any(|result| result.source_ref == "agent_memory:self"
+                && result.agent_id == "beta"
+                && result.snippet.contains("beta private recall")));
+        assert!(beta_results.iter().all(|result| result.agent_id == "beta"));
+
+        let alpha_memory = get_memory(&alpha, "agent_memory:self", None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            alpha_memory.content,
+            "alpha private recall shared-index-sentinel"
+        );
+        let beta_memory = get_memory(&beta, "agent_memory:self", None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            beta_memory.content,
+            "beta private recall shared-index-sentinel"
+        );
+    }
+
+    #[test]
+    fn shared_memory_index_dirty_and_readiness_are_scoped_by_agent() {
+        let dir = tempdir().unwrap();
+        let agents_dir = dir.path().join("agents");
+        let alpha_home = agents_dir.join("alpha");
+        let beta_home = agents_dir.join("beta");
+        let alpha = AppStorage::new(&alpha_home).unwrap();
+        let beta = AppStorage::new(&beta_home).unwrap();
+        alpha.write_agent(&AgentState::new("alpha")).unwrap();
+        beta.write_agent(&AgentState::new("beta")).unwrap();
+        ensure_agent_home_layout(&alpha_home).unwrap();
+        ensure_agent_home_layout(&beta_home).unwrap();
+        fs::write(agent_memory_self_path(&alpha_home), "alpha initial slice").unwrap();
+        fs::write(agent_memory_self_path(&beta_home), "beta initial slice").unwrap();
+
+        rebuild_memory_index(&alpha, None).unwrap();
+        assert!(search_memory(&beta, "initial", 10, None, true)
+            .unwrap()
+            .iter()
+            .any(|result| result.agent_id == "beta"
+                && result.source_ref == "agent_memory:self"
+                && result.snippet.contains("beta initial slice")));
+
+        beta.append_brief(&brief_with_workspace(
+            "beta",
+            BriefKind::Result,
+            "beta fresh dirty marker remains scoped",
+            "ws-beta",
+        ))
+        .unwrap();
+        fs::write(
+            agent_memory_self_path(&alpha_home),
+            "alpha rebuild should not clear beta dirty marker",
+        )
+        .unwrap();
+        alpha.mark_memory_index_dirty().unwrap();
+
+        assert!(search_memory(&alpha, "rebuild", 10, None, true)
+            .unwrap()
+            .iter()
+            .any(|result| result.agent_id == "alpha"
+                && result.source_ref == "agent_memory:self"
+                && result.snippet.contains("alpha rebuild")));
+        assert!(search_memory(&beta, "fresh", 10, Some("ws-beta"), true)
+            .unwrap()
+            .iter()
+            .any(|result| result.agent_id == "beta"
+                && result.kind == "brief"
+                && result.snippet.contains("fresh dirty marker")));
     }
 
     #[test]
@@ -1461,7 +1697,11 @@ mod tests {
             .unwrap();
 
         let _ = fs::remove_file(memory_index_path(&storage));
-        let _ = fs::remove_file(storage.indexes_dir().join(DIRTY_FILENAME));
+        let _ = fs::remove_file(
+            storage
+                .shared_indexes_dir()
+                .join(dirty_filename_for_agent("default")),
+        );
 
         let results = search_memory(&storage, "existing", 10, Some("ws-existing"), false).unwrap();
         assert!(results.iter().any(|result| result.kind == "brief"));
