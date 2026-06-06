@@ -7,7 +7,7 @@ use std::sync::{
 use anyhow::{anyhow, Result};
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, MatchedPath, Path, Query, State},
     http::{
         header::{AUTHORIZATION, CONTENT_TYPE},
         HeaderMap, Request as AxumRequest, Response, StatusCode,
@@ -26,7 +26,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::time::{sleep, Duration};
 use tokio_stream::wrappers::ReceiverStream;
-use tower_http::{compression::CompressionLayer, trace::TraceLayer};
+use tower_http::{
+    classify::ServerErrorsFailureClass, compression::CompressionLayer, trace::TraceLayer,
+};
 use tracing::{error, info, warn, Span};
 
 #[cfg(unix)]
@@ -86,6 +88,24 @@ const HTTP_SLOW_RESPONSE_WARN_AFTER: std::time::Duration = std::time::Duration::
 const HTTP_LARGE_RESPONSE_WARN_BYTES: usize = 128 * 1024;
 
 static HTTP_IN_FLIGHT_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+
+fn decrement_http_in_flight_requests() -> usize {
+    let mut current = HTTP_IN_FLIGHT_REQUESTS.load(Ordering::Relaxed);
+    loop {
+        if current == 0 {
+            return 0;
+        }
+        match HTTP_IN_FLIGHT_REQUESTS.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return current - 1,
+            Err(next) => current = next,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -310,13 +330,20 @@ pub fn router(state: AppState) -> Router {
         .route("/transcript", get(transcript_default))
         .route("/worktree-summary", get(worktree_summary_default))
         .fallback(not_found_handler)
+        .layer(CompressionLayer::new())
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &AxumRequest<axum::body::Body>| {
+                    let matched_path = request
+                        .extensions()
+                        .get::<MatchedPath>()
+                        .map(MatchedPath::as_str)
+                        .unwrap_or_else(|| request.uri().path());
                     tracing::info_span!(
                         "http_request",
                         method = %request.method(),
                         path = %request.uri().path(),
+                        matched_path,
                         status = tracing::field::Empty,
                         response_bytes = tracing::field::Empty,
                         elapsed_ms = tracing::field::Empty,
@@ -331,9 +358,7 @@ pub fn router(state: AppState) -> Router {
                     |response: &Response<axum::body::Body>,
                      elapsed: std::time::Duration,
                      span: &Span| {
-                        let in_flight = HTTP_IN_FLIGHT_REQUESTS
-                            .fetch_sub(1, Ordering::Relaxed)
-                            .saturating_sub(1);
+                        let in_flight = decrement_http_in_flight_requests();
                         let response_bytes = response
                             .headers()
                             .get(axum::http::header::CONTENT_LENGTH)
@@ -367,9 +392,25 @@ pub fn router(state: AppState) -> Router {
                             );
                         }
                     },
+                )
+                .on_failure(
+                    |failure: ServerErrorsFailureClass,
+                     elapsed: std::time::Duration,
+                     span: &Span| {
+                        if matches!(failure, ServerErrorsFailureClass::Error(_)) {
+                            let in_flight = decrement_http_in_flight_requests();
+                            span.record("elapsed_ms", elapsed.as_millis() as u64);
+                            span.record("in_flight", in_flight);
+                            warn!(
+                                %failure,
+                                elapsed_ms = elapsed.as_millis() as u64,
+                                in_flight,
+                                "HTTP request failed before response"
+                            );
+                        }
+                    },
                 ),
         )
-        .layer(CompressionLayer::new())
         .with_state(Arc::new(state))
 }
 
