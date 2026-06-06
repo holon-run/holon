@@ -11,8 +11,9 @@ use crate::{
     daemon::{RuntimeShutdownResponse, RuntimeStatusResponse},
     http::{
         AttachWorkspaceRequest, ClearAgentModelRequest, ControlPromptRequest, CreateAgentRequest,
-        DebugPromptRequest, DetachWorkspaceRequest, ExitWorkspaceRequest, SetAgentModelRequest,
-        TaskInputRequest, TaskStopRequest,
+        DebugPromptRequest, DetachWorkspaceRequest, ExitWorkspaceRequest,
+        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
+        SetAgentModelRequest, TaskInputRequest, TaskStopRequest,
     },
     model_catalog::BuiltInModelMetadata,
     system::ExecutionSnapshot,
@@ -384,6 +385,18 @@ impl LocalClient {
         self.get_control_json("/control/runtime/readiness").await
     }
 
+    pub async fn runtime_config(&self) -> Result<RuntimeConfigReadResponse> {
+        self.get_control_json("/control/runtime/config").await
+    }
+
+    pub async fn update_runtime_config(
+        &self,
+        request: &RuntimeConfigUpdateRequest,
+    ) -> Result<RuntimeConfigUpdateResponse> {
+        self.patch_control_json("/control/runtime/config", request)
+            .await
+    }
+
     #[cfg(unix)]
     pub async fn runtime_readiness_unix_only(&self) -> Result<RuntimeStatusResponse> {
         let body = self
@@ -726,6 +739,18 @@ impl LocalClient {
             .with_context(|| format!("failed to decode response body for POST {}", path))
     }
 
+    async fn patch_control_json<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        payload: &B,
+    ) -> Result<T> {
+        let body = self
+            .send(RequestSpec::patch_json(path, payload)?, true)
+            .await?;
+        serde_json::from_slice(&body)
+            .with_context(|| format!("failed to decode response body for PATCH {}", path))
+    }
+
     async fn send(&self, request: RequestSpec, include_control_auth: bool) -> Result<Vec<u8>> {
         #[cfg(unix)]
         if self.remote.is_none() && self.config.socket_path.exists() {
@@ -797,6 +822,7 @@ impl LocalClient {
         let mut builder = match request.method {
             HttpMethod::Get => self.http.get(self.http_url_for(&request.path)),
             HttpMethod::Post => self.http.post(self.http_url_for(&request.path)),
+            HttpMethod::Patch => self.http.patch(self.http_url_for(&request.path)),
         };
         if let Some(remote) = &self.remote {
             builder = builder.bearer_auth(&remote.token);
@@ -847,6 +873,7 @@ impl LocalClient {
         let method = match request.method {
             HttpMethod::Get => "GET",
             HttpMethod::Post => "POST",
+            HttpMethod::Patch => "PATCH",
         };
         let mut raw = format!(
             "{method} {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: application/json\r\n",
@@ -1016,12 +1043,21 @@ impl RequestSpec {
             body: Some(serde_json::to_vec(payload)?),
         })
     }
+
+    fn patch_json<B: Serialize>(path: &str, payload: &B) -> Result<Self> {
+        Ok(Self {
+            method: HttpMethod::Patch,
+            path: path.to_string(),
+            body: Some(serde_json::to_vec(payload)?),
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
 enum HttpMethod {
     Get,
     Post,
+    Patch,
 }
 
 impl LocalEventStream {

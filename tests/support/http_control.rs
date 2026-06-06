@@ -13,7 +13,7 @@ use anyhow::Result;
 use axum::Router;
 use holon::{
     client::LocalClient,
-    config::{AppConfig, ControlAuthMode},
+    config::{load_persisted_config_at, AppConfig, ControlAuthMode},
     daemon::RuntimeServiceHandle,
     host::RuntimeHost,
     http::{self, AppState},
@@ -492,6 +492,7 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         "/handshake",
         "/",
         "/control/runtime/status",
+        "/control/runtime/config",
         "/agents/list",
         "/agents/default/status",
         "/agents/default/state",
@@ -1106,6 +1107,72 @@ pub async fn runtime_readiness_route_omits_activity_summary() -> Result<()> {
     );
     assert!(payload.get("activity").is_none());
     assert!(payload.get("last_failure").is_none());
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -> Result<()> {
+    let config = test_config();
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    let host = RuntimeHost::new_with_provider(config.clone(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    let runtime_service = RuntimeServiceHandle::new(&config)?;
+    let router: Router = http::router(AppState::for_tcp_with_runtime_service(
+        host.clone(),
+        Some(runtime_service.clone()),
+    ));
+    let listener = TcpListener::bind(&config.http_addr).await?;
+    let addr = connect_addr(listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await?;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client = reqwest::Client::new();
+    let read_response = client
+        .get(format!("http://{addr}/control/runtime/config"))
+        .bearer_auth("secret")
+        .send()
+        .await?;
+    assert!(read_response.status().is_success());
+    let read_payload: serde_json::Value = read_response.json().await?;
+    assert_eq!(read_payload["ok"], true);
+    assert_eq!(
+        read_payload["runtime_surface"]["model_default"],
+        config.default_model.as_string()
+    );
+
+    let update_response = client
+        .patch(format!("http://{addr}/control/runtime/config"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "updates": [
+                { "key": "model.default", "value": "openai/gpt-4.1" },
+                { "key": "home_dir", "value": "/tmp/other-home" }
+            ]
+        }))
+        .send()
+        .await?;
+    assert!(update_response.status().is_success());
+    let update_payload: serde_json::Value = update_response.json().await?;
+    assert_eq!(update_payload["ok"], true);
+    assert_eq!(update_payload["changed"], true);
+    assert_eq!(update_payload["results"][0]["key"], "model.default");
+    assert_eq!(
+        update_payload["results"][0]["effect"],
+        "accepted_requires_restart"
+    );
+    assert_eq!(update_payload["results"][1]["key"], "home_dir");
+    assert_eq!(update_payload["results"][1]["effect"], "rejected");
+    assert_eq!(
+        update_payload["runtime_surface"]["model_default"],
+        config.default_model.as_string()
+    );
+
+    let persisted = load_persisted_config_at(&config.config_file_path)?;
+    assert_eq!(persisted.model.default.as_deref(), Some("openai/gpt-4.1"));
 
     server.abort();
     Ok(())
