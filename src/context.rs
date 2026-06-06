@@ -2566,6 +2566,7 @@ mod tests {
     fn recent_turns_prefers_db_turn_records_when_available() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -2643,6 +2644,7 @@ mod tests {
     fn recent_turns_keeps_db_turn_when_trigger_message_is_outside_window() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
