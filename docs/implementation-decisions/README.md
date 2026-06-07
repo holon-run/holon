@@ -73,4 +73,5 @@ Current decision notes:
 - [053 Anthropic-Compatible Provider Probes](./053-anthropic-compatible-provider-probes.md)
 - [054 Web Tool Plane](./054-web-tool-plane.md)
 - [055 Prompt Dump Inventory](./055-prompt-dump-inventory.md)
+- [056 Prompt Cache Workspace Guidance Boundary](./056-prompt-cache-workspace-guidance-boundary.md)
 - [057 OpenAI Codex OAuth Refresh Boundary](./057-openai-codex-oauth-refresh-boundary.md)
