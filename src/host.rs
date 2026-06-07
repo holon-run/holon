@@ -2961,6 +2961,9 @@ mod tests {
 
         let persisted = storage.read_agent().unwrap().unwrap();
         assert_eq!(persisted.status, AgentStatus::Stopped);
+        storage
+            .enable_scheduler_control_plane_db(host.runtime_db().clone())
+            .unwrap();
         let events = storage.read_recent_events(16).unwrap();
         assert!(events
             .iter()
@@ -3013,6 +3016,9 @@ mod tests {
         assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
         assert_eq!(terminal.reason.as_deref(), Some("daemon_shutdown"));
 
+        storage
+            .enable_scheduler_control_plane_db(host.runtime_db().clone())
+            .unwrap();
         let events = storage.read_recent_events(32).unwrap();
         assert!(events.iter().any(|event| {
             event.kind == "runtime_service_shutdown_requested"

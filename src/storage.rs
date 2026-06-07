@@ -761,17 +761,36 @@ impl AppStorage {
             }
             let descending = matches!(order, EventLogPageOrder::Desc);
             let mut page = Vec::with_capacity(limit.saturating_add(1).min(1024));
-            for event in runtime_db.audit_events().range(
-                self.current_agent_id()?.as_deref(),
-                before_seq,
-                after_seq,
-                descending,
-            )? {
-                if matches(&event) {
-                    page.push(event);
+            let agent_id = self.current_agent_id()?;
+            let chunk_limit = limit.saturating_add(1).clamp(64, 1024);
+            let mut next_before_seq = before_seq;
+            let mut next_after_seq = after_seq;
+            loop {
+                let chunk = runtime_db.audit_events().range(
+                    agent_id.as_deref(),
+                    next_before_seq,
+                    next_after_seq,
+                    descending,
+                    chunk_limit,
+                )?;
+                let Some(last_seq) = chunk.last().map(|event| event.event_seq) else {
+                    break;
+                };
+                for event in chunk {
+                    if matches(&event) {
+                        page.push(event);
+                    }
+                    if page.len() > limit {
+                        break;
+                    }
                 }
                 if page.len() > limit {
                     break;
+                }
+                if descending {
+                    next_before_seq = Some(last_seq);
+                } else {
+                    next_after_seq = Some(last_seq);
                 }
             }
             let has_more = page.len() > limit;

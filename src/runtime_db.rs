@@ -1218,12 +1218,11 @@ impl AuditEventSink<'_> {
         if agent_id.is_some() {
             sql.push_str(" WHERE agent_id = ?1");
         }
-        sql.push_str(" ORDER BY COALESCE(event_seq, 0) DESC, created_at DESC LIMIT ");
-        sql.push_str(&limit.to_string());
+        sql.push_str(" ORDER BY COALESCE(event_seq, 0) DESC, created_at DESC LIMIT ?");
         let mut statement = connection.prepare(&sql)?;
         let mut events = if let Some(agent_id) = agent_id {
             statement
-                .query_map([agent_id], |row| row.get::<_, String>(0))?
+                .query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?
                 .map(|row| {
                     let payload = row?;
                     serde_json::from_str(&payload).map_err(Into::into)
@@ -1231,7 +1230,7 @@ impl AuditEventSink<'_> {
                 .collect::<Result<Vec<_>>>()?
         } else {
             statement
-                .query_map([], |row| row.get::<_, String>(0))?
+                .query_map(params![limit], |row| row.get::<_, String>(0))?
                 .map(|row| {
                     let payload = row?;
                     serde_json::from_str(&payload).map_err(Into::into)
@@ -1270,43 +1269,55 @@ impl AuditEventSink<'_> {
         before_seq: Option<u64>,
         after_seq: Option<u64>,
         descending: bool,
+        limit: usize,
     ) -> Result<Vec<AuditEvent>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let lower = i64::try_from(after_seq.unwrap_or(0))
             .context("audit event lower cursor exceeds SQLite integer range")?;
-        let upper = i64::try_from(before_seq.unwrap_or(u64::MAX))
-            .context("audit event upper cursor exceeds SQLite integer range")?;
+        let upper = before_seq
+            .map(|seq| {
+                i64::try_from(seq).context("audit event upper cursor exceeds SQLite integer range")
+            })
+            .transpose()?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
-        let mut sql = String::from(
-            "SELECT data_json FROM audit_events WHERE COALESCE(event_seq, 0) > ?1 AND COALESCE(event_seq, 0) < ?2",
-        );
+        let mut sql =
+            String::from("SELECT data_json FROM audit_events WHERE COALESCE(event_seq, 0) > ?1");
+        if upper.is_some() {
+            sql.push_str(" AND COALESCE(event_seq, 0) < ?2");
+        }
         if agent_id.is_some() {
-            sql.push_str(" AND agent_id = ?3");
+            let param_index = if upper.is_some() { 3 } else { 2 };
+            sql.push_str(&format!(" AND agent_id = ?{param_index}"));
         }
         if descending {
             sql.push_str(" ORDER BY COALESCE(event_seq, 0) DESC, created_at DESC");
         } else {
             sql.push_str(" ORDER BY COALESCE(event_seq, 0) ASC, created_at ASC");
         }
+        let limit_param_index = 2 + usize::from(upper.is_some()) + usize::from(agent_id.is_some());
+        sql.push_str(&format!(" LIMIT ?{limit_param_index}"));
         let mut statement = connection.prepare(&sql)?;
-        if let Some(agent_id) = agent_id {
-            statement
-                .query_map(params![lower, upper, agent_id], |row| {
-                    row.get::<_, String>(0)
-                })?
-                .map(|row| {
-                    let payload = row?;
-                    serde_json::from_str(&payload).map_err(Into::into)
-                })
-                .collect()
-        } else {
-            statement
-                .query_map(params![lower, upper], |row| row.get::<_, String>(0))?
-                .map(|row| {
-                    let payload = row?;
-                    serde_json::from_str(&payload).map_err(Into::into)
-                })
-                .collect()
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(lower)];
+        if let Some(upper) = upper {
+            params.push(Box::new(upper));
         }
+        if let Some(agent_id) = agent_id {
+            params.push(Box::new(agent_id.to_owned()));
+        }
+        params.push(Box::new(limit));
+        let events = statement
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                row.get::<_, String>(0)
+            })?
+            .map(|row| {
+                let payload = row?;
+                serde_json::from_str(&payload).map_err(Into::into)
+            })
+            .collect();
+        events
     }
 
     pub fn page_after(
@@ -1325,13 +1336,15 @@ impl AuditEventSink<'_> {
         if agent_id.is_some() {
             sql.push_str(" AND agent_id = ?2");
         }
-        sql.push_str(" ORDER BY event_seq ASC, created_at ASC LIMIT ");
-        sql.push_str(&limit.to_string());
+        let limit_param_index = if agent_id.is_some() { 3 } else { 2 };
+        sql.push_str(&format!(
+            " ORDER BY event_seq ASC, created_at ASC LIMIT ?{limit_param_index}"
+        ));
         let mut statement = connection.prepare(&sql)?;
         if let Some(agent_id) = agent_id {
             let after_event_seq = i64::try_from(after_event_seq)
                 .context("audit event cursor exceeds SQLite integer range")?;
-            let rows = statement.query_map(params![after_event_seq, agent_id], |row| {
+            let rows = statement.query_map(params![after_event_seq, agent_id, limit], |row| {
                 row.get::<_, String>(0)
             })?;
             rows.map(|row| {
@@ -1342,8 +1355,9 @@ impl AuditEventSink<'_> {
         } else {
             let after_event_seq = i64::try_from(after_event_seq)
                 .context("audit event cursor exceeds SQLite integer range")?;
-            let rows =
-                statement.query_map(params![after_event_seq], |row| row.get::<_, String>(0))?;
+            let rows = statement.query_map(params![after_event_seq, limit], |row| {
+                row.get::<_, String>(0)
+            })?;
             rows.map(|row| {
                 let payload = row?;
                 serde_json::from_str(&payload).map_err(Into::into)
