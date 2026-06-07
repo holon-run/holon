@@ -1573,13 +1573,16 @@ fn render_recent_turns_with_budget(
     let latest_operator_for_continuation = (!is_trusted_operator_input(current_message))
         .then(|| latest_trusted_operator_input(messages, current_message))
         .flatten();
-    let mut rendered_turns = messages
+    let projected_messages = messages
         .iter()
         .filter(|message| include_in_prompt_context(message))
         .filter(|message| {
             latest_operator_for_continuation
                 .is_none_or(|operator| !same_message_identity(message, operator))
         })
+        .collect::<Vec<_>>();
+    let mut rendered_turns = projected_messages
+        .iter()
         .map(|message| render_turn_projection(message, briefs, tools, None))
         .collect::<Vec<_>>();
 
@@ -1592,12 +1595,75 @@ fn render_recent_turns_with_budget(
             current_work_item,
         ));
     }
+    let matched_messages = messages
+        .iter()
+        .filter(|message| include_in_prompt_context(message))
+        .collect::<Vec<_>>();
+    if let Some(orphan_evidence) =
+        render_unmatched_recent_evidence_turn(briefs, tools, &matched_messages)
+    {
+        rendered_turns.push(orphan_evidence);
+    }
 
     if rendered_turns.is_empty() {
         return None;
     }
 
     render_budgeted_lines("Recent turns:", rendered_turns, budget)
+}
+
+fn render_unmatched_recent_evidence_turn(
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    messages: &[&MessageEnvelope],
+) -> Option<String> {
+    let unmatched_briefs = briefs
+        .iter()
+        .filter(|brief| {
+            !messages
+                .iter()
+                .any(|message| brief_matches_message(brief, message))
+        })
+        .map(|brief| {
+            format!(
+                "    - {:?}: {}",
+                brief.kind,
+                sanitize_inline(&truncate_text(&brief.text, 160))
+            )
+        })
+        .collect::<Vec<_>>();
+    let unmatched_tools = tools
+        .iter()
+        .filter(|tool| {
+            !messages
+                .iter()
+                .any(|message| tool_execution_matches_message(tool, message))
+        })
+        .map(render_recent_tool_execution)
+        .collect::<Vec<_>>();
+
+    if unmatched_briefs.is_empty() && unmatched_tools.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec![
+        "- Turn unmatched recent evidence:".to_string(),
+        "  - trigger: unavailable in recent message window".to_string(),
+    ];
+    if !unmatched_briefs.is_empty() {
+        lines.push("  - produced briefs:".to_string());
+        lines.extend(unmatched_briefs);
+    }
+    if !unmatched_tools.is_empty() {
+        lines.push("  - tool executions:".to_string());
+        lines.extend(
+            unmatched_tools
+                .into_iter()
+                .map(|tool| format!("    {tool}")),
+        );
+    }
+
+    Some(lines.join("\n"))
 }
 
 fn render_turn_records_with_budget(
@@ -2938,6 +3004,105 @@ mod tests {
         assert!(context_contract
             .content
             .contains("current work item objective first"));
+    }
+
+    #[test]
+    fn build_context_preserves_orphan_recent_evidence_in_recent_turns_fallback() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        storage
+            .append_message(&MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "Patch the prompt context fallback.".to_string(),
+                },
+            ))
+            .unwrap();
+
+        storage
+            .append_brief(&BriefRecord::new(
+                "default",
+                BriefKind::Result,
+                "Orphan result brief should still be visible.",
+                None,
+                None,
+            ))
+            .unwrap();
+
+        let tool_record = ToolExecutionRecord {
+            id: "tool-orphan".to_string(),
+            agent_id: "default".to_string(),
+            work_item_id: Some("work_orphan".to_string()),
+            turn_index: 0,
+            turn_id: None,
+            tool_name: "ExecCommand".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 123,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": "cargo test context::tests::orphan_recent_evidence"}),
+            output: json!({"exit_code": 0}),
+            summary: "verified orphan recent evidence fallback".to_string(),
+            invocation_surface: None,
+        };
+        storage.append_tool_execution(&tool_record).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue".to_string(),
+            },
+        );
+
+        let session = AgentState::new("default");
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 4,
+                recent_briefs: 4,
+                prompt_budget_estimated_tokens: 8192,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let recent_turns = built
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section should be present");
+        assert!(recent_turns
+            .content
+            .contains("- Turn unmatched recent evidence:"));
+        assert!(recent_turns
+            .content
+            .contains("Orphan result brief should still be visible."));
+        assert!(recent_turns
+            .content
+            .contains("verified orphan recent evidence fallback"));
+        assert!(!built
+            .sections
+            .iter()
+            .any(|section| section.name == "latest_result"));
+        assert!(!built
+            .sections
+            .iter()
+            .any(|section| section.name == "recent_tool_executions"));
     }
 
     #[test]
