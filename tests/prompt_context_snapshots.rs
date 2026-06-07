@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 use chrono::Utc;
@@ -16,7 +20,7 @@ use holon::{
         WaitingReason, WorkItemRecord, WorkItemState, WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use tempfile::tempdir;
 
 const EXECUTION_ENVIRONMENT: &str = r#"Execution environment summary (policy snapshot; host-local is not a strong sandbox guarantee):
@@ -100,6 +104,16 @@ fn render_context_snapshot(
     current_message: &MessageEnvelope,
     continuation: Option<&ContinuationResolution>,
 ) -> Result<String> {
+    render_context_snapshot_named(storage, session, current_message, continuation, None)
+}
+
+fn render_context_snapshot_named(
+    storage: &AppStorage,
+    session: &AgentState,
+    current_message: &MessageEnvelope,
+    continuation: Option<&ContinuationResolution>,
+    scenario_name: Option<&str>,
+) -> Result<String> {
     storage.write_agent(session)?;
     let prompt = build_effective_prompt(
         storage,
@@ -116,14 +130,248 @@ fn render_context_snapshot(
         continuation,
     )?;
     let agent_home = storage.data_dir().display().to_string();
-    Ok(prompt
+    let rendered = prompt
         .rendered_context_attachment
         .replace(&agent_home, "$AGENT_HOME")
-        .replace('\\', "/"))
+        .replace('\\', "/");
+    maybe_dump_prompt_context(scenario_name, &current_message.id, &rendered)?;
+    Ok(rendered)
 }
 
 fn assert_snapshot(actual: &str, expected: &str) {
     assert_eq!(actual, expected);
+}
+
+#[derive(Debug, Clone)]
+struct ContextDiagnostics {
+    total_chars: usize,
+    estimated_tokens: usize,
+    sections: Vec<SectionDiagnostics>,
+    repeated_line_ratio: f64,
+    repeated_5gram_ratio: f64,
+}
+
+#[derive(Debug, Clone)]
+struct SectionDiagnostics {
+    name: String,
+    chars: usize,
+    estimated_tokens: usize,
+    line_count: usize,
+}
+
+impl ContextDiagnostics {
+    fn section(&self, name: &str) -> Option<&SectionDiagnostics> {
+        self.sections.iter().find(|section| section.name == name)
+    }
+
+    fn section_share(&self, name: &str) -> f64 {
+        let Some(section) = self.section(name) else {
+            return 0.0;
+        };
+        if self.total_chars == 0 {
+            0.0
+        } else {
+            section.chars as f64 / self.total_chars as f64
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "total_chars": self.total_chars,
+            "estimated_tokens": self.estimated_tokens,
+            "sections": self.sections.iter().map(|section| {
+                json!({
+                    "name": section.name,
+                    "chars": section.chars,
+                    "estimated_tokens": section.estimated_tokens,
+                    "line_count": section.line_count,
+                })
+            }).collect::<Vec<_>>(),
+            "duplication": {
+                "repeated_line_ratio": self.repeated_line_ratio,
+                "repeated_5gram_ratio": self.repeated_5gram_ratio,
+            },
+        })
+    }
+}
+
+fn analyze_context(rendered: &str) -> ContextDiagnostics {
+    let sections = parse_context_sections(rendered);
+    ContextDiagnostics {
+        total_chars: rendered.chars().count(),
+        estimated_tokens: estimated_tokens(rendered),
+        sections: sections
+            .iter()
+            .map(|(name, content)| SectionDiagnostics {
+                name: name.clone(),
+                chars: content.chars().count(),
+                estimated_tokens: estimated_tokens(content),
+                line_count: content.lines().count(),
+            })
+            .collect(),
+        repeated_line_ratio: repeated_line_ratio(rendered),
+        repeated_5gram_ratio: repeated_ngram_ratio(rendered, 5),
+    }
+}
+
+fn parse_context_sections(rendered: &str) -> Vec<(String, String)> {
+    let mut sections = Vec::<(String, String)>::new();
+    let mut current_name: Option<String> = None;
+    let mut current_content = Vec::<String>::new();
+
+    for line in rendered.lines() {
+        if let Some(name) = line.strip_prefix("## ") {
+            if let Some(previous_name) = current_name.replace(name.trim().to_string()) {
+                sections.push((previous_name, current_content.join("\n").trim().to_string()));
+                current_content.clear();
+            }
+        } else if current_name.is_some() {
+            current_content.push(line.to_string());
+        }
+    }
+
+    if let Some(name) = current_name {
+        sections.push((name, current_content.join("\n").trim().to_string()));
+    }
+
+    sections
+}
+
+fn section_content(rendered: &str, section_name: &str) -> Option<String> {
+    parse_context_sections(rendered)
+        .into_iter()
+        .find_map(|(name, content)| (name == section_name).then_some(content))
+}
+
+fn estimated_tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(4)
+}
+
+fn repeated_line_ratio(text: &str) -> f64 {
+    let mut counts = HashMap::<String, usize>::new();
+    let mut total = 0usize;
+    let mut repeated = 0usize;
+    for line in text.lines().map(str::trim).filter(|line| {
+        line.len() >= 12
+            && !line.starts_with("- Plan artifact:")
+            && !line.starts_with("- Plan preview complete:")
+    }) {
+        total += 1;
+        let count = counts.entry(line.to_string()).or_default();
+        *count += 1;
+        if *count > 1 {
+            repeated += 1;
+        }
+    }
+    if total == 0 {
+        0.0
+    } else {
+        repeated as f64 / total as f64
+    }
+}
+
+fn repeated_ngram_ratio(text: &str, n: usize) -> f64 {
+    let words = text
+        .split_whitespace()
+        .map(|word| {
+            word.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '_' && ch != '-')
+                .to_ascii_lowercase()
+        })
+        .filter(|word| word.len() >= 3)
+        .collect::<Vec<_>>();
+    if words.len() < n || n == 0 {
+        return 0.0;
+    }
+
+    let mut seen = HashSet::<String>::new();
+    let mut repeated = 0usize;
+    let total = words.len() - n + 1;
+    for window in words.windows(n) {
+        let ngram = window.join(" ");
+        if !seen.insert(ngram) {
+            repeated += 1;
+        }
+    }
+    repeated as f64 / total as f64
+}
+
+fn phrase_count(text: &str, phrase: &str) -> usize {
+    text.match_indices(phrase).count()
+}
+
+// Manual prompt review mode for context evaluation tests:
+//
+//   HOLON_PROMPT_CONTEXT_DUMP_DIR=/tmp/holon-context-dumps \
+//     cargo test -q --test prompt_context_snapshots multi_turn_context_
+//
+// The helper writes sanitized rendered-context and diagnostics artifacts for each named
+// scenario. Keep dumps outside the repository; they are intentionally not committed.
+fn maybe_dump_prompt_context(
+    scenario_name: Option<&str>,
+    fallback_id: &str,
+    rendered: &str,
+) -> Result<()> {
+    let Ok(output_dir) = env::var("HOLON_PROMPT_CONTEXT_DUMP_DIR") else {
+        return Ok(());
+    };
+    let scenario_name = scenario_name.unwrap_or(fallback_id);
+    let file_stem = sanitize_file_stem(scenario_name);
+    let output_dir = PathBuf::from(output_dir);
+    fs::create_dir_all(&output_dir)?;
+
+    let sanitized = sanitize_prompt_dump(rendered);
+    let diagnostics = analyze_context(&sanitized);
+    fs::write(
+        output_dir.join(format!("{file_stem}.context.txt")),
+        sanitized,
+    )?;
+    fs::write(
+        output_dir.join(format!("{file_stem}.diagnostics.json")),
+        serde_json::to_string_pretty(&diagnostics.to_json())?,
+    )?;
+    Ok(())
+}
+
+fn sanitize_file_stem(input: &str) -> String {
+    input
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+fn sanitize_prompt_dump(rendered: &str) -> String {
+    let mut sanitized = String::with_capacity(rendered.len());
+    for token in rendered.split_inclusive(char::is_whitespace) {
+        let token_body = token.trim_end_matches(char::is_whitespace);
+        let trailing_whitespace = &token[token_body.len()..];
+        if token_body.contains("/callbacks/") {
+            sanitized.push_str("$CALLBACK_URL");
+        } else {
+            sanitized.push_str(token_body);
+        }
+        sanitized.push_str(trailing_whitespace);
+    }
+    sanitized
+}
+
+#[test]
+fn sanitize_prompt_dump_preserves_formatting_and_redacts_callback_tokens() {
+    let rendered = "## default_external_ingress\n  - url: http://127.0.0.1:7878/callbacks/wake/wake-secret\n\t- enqueue: http://127.0.0.1:7878/callbacks/enqueue/enqueue-secret\n  - keep: http://127.0.0.1:7878/not-secret\n";
+
+    let sanitized = sanitize_prompt_dump(rendered);
+
+    assert_eq!(
+        sanitized,
+        "## default_external_ingress\n  - url: $CALLBACK_URL\n\t- enqueue: $CALLBACK_URL\n  - keep: http://127.0.0.1:7878/not-secret\n"
+    );
 }
 
 fn append_work_item_todo(
@@ -1520,5 +1768,351 @@ Current input:
   Test task completed: 120 tests passed, 0 failed"#
     );
     assert_snapshot(&rendered, &expected);
+    Ok(())
+}
+
+#[test]
+fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Result<()> {
+    let dir = tempdir()?;
+    let storage = AppStorage::new(dir.path())?;
+
+    let mut work_item = WorkItemRecord::new(
+        "default",
+        "Evaluate context continuity for issue 1634",
+        WorkItemState::Open,
+    );
+    work_item.id = "work_context_eval".into();
+    storage.append_work_item(&work_item)?;
+    append_work_item_todo(
+        &storage,
+        work_item.id.clone(),
+        vec![
+            TodoItem {
+                text: "Build deterministic long-task prompt fixture".into(),
+                state: TodoItemState::Completed,
+            },
+            TodoItem {
+                text: "Inspect diagnostics and duplicate ratios".into(),
+                state: TodoItemState::InProgress,
+            },
+            TodoItem {
+                text: "Emit prompt artifact for manual review".into(),
+                state: TodoItemState::Pending,
+            },
+        ],
+    )?;
+
+    let first_operator = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Start the multi-turn context quality evaluation and keep fact alpha visible."
+                .into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    storage.append_message(&first_operator)?;
+    storage.append_brief(&BriefRecord::new(
+        "default",
+        BriefKind::Ack,
+        "Started deterministic fixture construction.",
+        Some(first_operator.id.clone()),
+        None,
+    ))?;
+
+    let tool_summary = "Run command: cargo test -q --test prompt_context_snapshots";
+    storage.append_tool_execution(&ToolExecutionRecord {
+        id: "tool_context_eval".into(),
+        agent_id: "default".into(),
+        work_item_id: Some(work_item.id.clone()),
+        turn_index: 2,
+        turn_id: Some("turn_context_eval_tool".into()),
+        tool_name: "ExecCommand".into(),
+        created_at: Utc::now(),
+        completed_at: Some(Utc::now()),
+        duration_ms: 120,
+        authority_class: AuthorityClass::RuntimeInstruction,
+        status: ToolExecutionStatus::Success,
+        input: json!({ "cmd": "cargo test -q --test prompt_context_snapshots" }),
+        output: json!({ "exit_status": 0 }),
+        summary: tool_summary.into(),
+        invocation_surface: Some("commentary".into()),
+    })?;
+
+    let task_result = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task_context_eval".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "Focused snapshot test completed; fact beta remains visible.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    storage.append_message(&task_result)?;
+    storage.append_brief(&BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "Diagnostics helper reports stable section sizes.",
+        Some(task_result.id.clone()),
+        Some("task_context_eval".into()),
+    ))?;
+
+    let current_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Now review the long task context and confirm fact gamma is still available."
+                .into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+
+    let mut session = AgentState::new("default");
+    session.current_work_item_id = Some(work_item.id.clone());
+    session.working_memory.current_working_memory = WorkingMemorySnapshot {
+        current_work_item_id: Some(work_item.id.clone()),
+        objective: Some(work_item.objective.clone()),
+        work_summary: Some("long task context eval retains alpha beta gamma facts".into()),
+        plan: Some(
+            vec![
+                "build deterministic long-task prompt fixture",
+                "inspect diagnostics and duplicate ratios",
+                "emit prompt artifact for manual review",
+            ]
+            .join("\n"),
+        ),
+        ..WorkingMemorySnapshot::default()
+    };
+
+    let rendered = render_context_snapshot_named(
+        &storage,
+        &session,
+        &current_message,
+        None,
+        Some("multi_turn_context_long_task"),
+    )?;
+    let diagnostics = analyze_context(&rendered);
+    let current_work_item =
+        section_content(&rendered, "current_work_item").expect("current work section");
+    let recent_turns = section_content(&rendered, "recent_turns").expect("recent turns section");
+    let current_input = section_content(&rendered, "current_input").expect("current input");
+
+    assert!(current_work_item.contains("work_context_eval"));
+    assert!(current_work_item.contains("Evaluate context continuity for issue 1634"));
+    assert!(current_work_item.contains("[in_progress] Inspect diagnostics and duplicate ratios"));
+    assert!(recent_turns.contains("fact alpha visible"));
+    assert!(recent_turns.contains("fact beta remains visible"));
+    assert!(recent_turns.contains(tool_summary));
+    assert!(current_input.contains("fact gamma is still available"));
+    assert!(!recent_turns.contains("Plan artifact:"));
+    assert!(!recent_turns.contains("[in_progress] Inspect diagnostics and duplicate ratios"));
+    assert!(diagnostics.section("current_work_item").is_some());
+    assert!(diagnostics.section("recent_turns").is_some());
+    assert!(diagnostics.section("current_input").is_some());
+    assert!(
+        diagnostics.section_share("recent_turns") < 0.45,
+        "recent_turns should not dominate the rendered context: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics.repeated_line_ratio < 0.05,
+        "line duplication should stay low: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics.repeated_5gram_ratio < 0.20,
+        "ngram duplication should stay bounded: {diagnostics:?}"
+    );
+    assert!(
+        phrase_count(&rendered, "Evaluate context continuity for issue 1634") <= 2,
+        "authoritative work objective should not be copied throughout the context:\n{rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() -> Result<()> {
+    let dir = tempdir()?;
+    let storage = AppStorage::new(dir.path())?;
+
+    let stale_operator = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Archive stale objective delta before compaction.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    storage.append_message(&stale_operator)?;
+    storage.append_brief(&BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "Compaction summary should carry only the preserved budget decision.",
+        Some(stale_operator.id.clone()),
+        None,
+    ))?;
+
+    let recent_operator = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Resume active context eval after compacted history.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    storage.append_message(&recent_operator)?;
+    storage.append_brief(&BriefRecord::new(
+        "default",
+        BriefKind::Ack,
+        "Active work resumed after compaction.",
+        Some(recent_operator.id.clone()),
+        None,
+    ))?;
+
+    let mut active_work = WorkItemRecord::new(
+        "default",
+        "Ship compacted interleaving eval",
+        WorkItemState::Open,
+    );
+    active_work.id = "work_active_eval".into();
+    storage.append_work_item(&active_work)?;
+    append_work_item_todo(
+        &storage,
+        active_work.id.clone(),
+        vec![TodoItem {
+            text: "Check compacted continuity fact".into(),
+            state: TodoItemState::InProgress,
+        }],
+    )?;
+
+    let mut queued_work = WorkItemRecord::new(
+        "default",
+        "Follow up on context benchmark integration",
+        WorkItemState::Open,
+    );
+    queued_work.id = "work_queued_eval".into();
+    storage.append_work_item(&queued_work)?;
+
+    let mut blocked_work = WorkItemRecord::new(
+        "default",
+        "Wait for prompt dump review",
+        WorkItemState::Open,
+    );
+    blocked_work.id = "work_blocked_eval".into();
+    blocked_work.blocked_by = Some("blocked until human prompt dump review finishes".into());
+    storage.append_work_item(&blocked_work)?;
+
+    let mut completed_work = WorkItemRecord::new(
+        "default",
+        "Finish old context cleanup",
+        WorkItemState::Completed,
+    );
+    completed_work.id = "work_completed_eval".into();
+    completed_work.result_summary =
+        Some("Old cleanup finished without becoming current truth".into());
+    storage.append_work_item(&completed_work)?;
+
+    let current_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Continue the compacted interleaving evaluation with preserved fact omega."
+                .into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+
+    let mut session = AgentState::new("default");
+    session.compacted_message_count = 1;
+    session.context_summary =
+        Some("Compacted summary: preserved budget decision and fact omega.".into());
+    session.current_work_item_id = Some(active_work.id.clone());
+
+    let rendered = render_context_snapshot_named(
+        &storage,
+        &session,
+        &current_message,
+        None,
+        Some("multi_turn_context_compacted_interleaving"),
+    )?;
+    let diagnostics = analyze_context(&rendered);
+    let compacted_summary =
+        section_content(&rendered, "compacted_summary").expect("compacted summary section");
+    let current_work_item =
+        section_content(&rendered, "current_work_item").expect("current work section");
+    let queued_blocked =
+        section_content(&rendered, "queued_blocked_work_items").expect("queued work section");
+    let recent_turns = section_content(&rendered, "recent_turns").expect("recent turns section");
+    let current_input = section_content(&rendered, "current_input").expect("current input");
+
+    assert!(compacted_summary.contains("preserved budget decision and fact omega"));
+    assert!(current_work_item.contains("work_active_eval"));
+    assert!(current_work_item.contains("Ship compacted interleaving eval"));
+    assert!(queued_blocked.contains("work_queued_eval"));
+    assert!(queued_blocked.contains("work_blocked_eval"));
+    assert!(queued_blocked.contains("work_completed_eval"));
+    assert!(queued_blocked.contains("Old cleanup finished without becoming current truth"));
+    assert!(recent_turns.contains("Resume active context eval after compacted history"));
+    assert!(!recent_turns.contains("Archive stale objective delta"));
+    assert!(!current_work_item.contains("work_queued_eval"));
+    assert!(current_input.contains("preserved fact omega"));
+    assert!(diagnostics.section("queued_blocked_work_items").is_some());
+    assert!(
+        diagnostics.section_share("queued_blocked_work_items") < 0.40,
+        "queued/blocked projection should stay bounded: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics.repeated_line_ratio < 0.05,
+        "line duplication should stay low: {diagnostics:?}"
+    );
+    assert!(
+        phrase_count(&rendered, "Archive stale objective delta") == 0,
+        "compacted stale objective should not be replayed from recent_turns:\n{rendered}"
+    );
     Ok(())
 }
