@@ -48,33 +48,34 @@ pub(crate) fn legacy_definition() -> Result<BuiltinToolDefinition> {
 
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
-    agent_id: &str,
+    _agent_id: &str,
     _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
-    execute_with_name(NAME, runtime, agent_id, input).await
+    execute_with_name(NAME, runtime, input).await
 }
 
 pub(crate) async fn execute_legacy(
     runtime: &RuntimeHandle,
-    agent_id: &str,
+    _agent_id: &str,
     _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
-    execute_with_name(LEGACY_NAME, runtime, agent_id, input).await
+    execute_with_name(LEGACY_NAME, runtime, input).await
 }
 
 async fn execute_with_name(
     tool_name: &str,
     runtime: &RuntimeHandle,
-    agent_id: &str,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: ListTasksArgs = parse_tool_args(tool_name, input)?;
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let total_active = runtime.storage().active_task_count_for_agent(agent_id)?;
+    let current_agent = runtime.agent_state().await?;
+    let agent_id = current_agent.id;
+    let total_active = runtime.storage().active_task_count_for_agent(&agent_id)?;
     let tasks = runtime
-        .latest_task_list_entries_for_agent(agent_id, limit)
+        .latest_task_list_entries_for_agent(&agent_id, limit)
         .await?;
     serialize_success(
         tool_name,
