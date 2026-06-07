@@ -617,8 +617,8 @@ impl AppStorage {
             .lock()
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.wait_conditions().upsert(&wait_condition)?;
             append_jsonl_bytes(&self.waiting_intents_path, &waiting_intent_bytes)?;
+            runtime_db.wait_conditions().upsert(&wait_condition)?;
             if let Some(event) = event.as_ref() {
                 self.append_event_with_append_mutex_held(event)?;
             }
@@ -1100,10 +1100,9 @@ impl AppStorage {
     ) -> Result<Vec<ExternalTriggerRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             if let Some(agent_id) = self.current_agent_id()? {
-                return Ok(take_recent(
-                    runtime_db.external_triggers().latest_for_agent(&agent_id)?,
-                    limit,
-                ));
+                return runtime_db
+                    .external_triggers()
+                    .latest_for_agent_limit(&agent_id, limit);
             }
         }
         read_recent_jsonl(&self.external_triggers_path, limit)
@@ -1412,8 +1411,13 @@ impl AppStorage {
             .and_then(|agent| agent.current_work_item_id);
         let mut latest = std::collections::HashMap::<String, WorkItemRecord>::new();
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            for record in runtime_db.work_items().latest_all()? {
-                latest.insert(record.id.clone(), record);
+            if let Some(agent_id) = self.current_agent_id()? {
+                for record in runtime_db
+                    .work_items()
+                    .latest_for_agent(&agent_id, usize::MAX)?
+                {
+                    latest.insert(record.id.clone(), record);
+                }
             }
         } else {
             let content = fs::read_to_string(&self.work_items_path)
@@ -5477,6 +5481,50 @@ mod tests {
             rendered,
             vec!["queued first", "queued second", "waiting item"]
         );
+    }
+
+    #[test]
+    fn db_backed_work_queue_prompt_projection_filters_by_current_agent() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        runtime_db
+            .work_items()
+            .import_legacy(Vec::new(), None)
+            .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+
+        let mut current = WorkItemRecord::new("default", "current agent item", WorkItemState::Open);
+        current.updated_at = Utc::now();
+        let mut other_agent =
+            WorkItemRecord::new("other-agent", "other agent item", WorkItemState::Open);
+        other_agent.updated_at = current.updated_at + chrono::Duration::seconds(1);
+        storage.append_work_item(&current).unwrap();
+        storage.append_work_item(&other_agent).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(current.id.clone());
+        storage.write_agent(&agent).unwrap();
+        storage.append_work_item(&current).unwrap();
+
+        let projection = storage.work_queue_prompt_projection().unwrap();
+        assert_eq!(
+            projection
+                .current
+                .as_ref()
+                .map(|item| item.objective.as_str()),
+            Some("current agent item")
+        );
+        assert!(projection
+            .queued_blocked
+            .iter()
+            .all(|item| item.objective != "other agent item"));
     }
 
     #[test]

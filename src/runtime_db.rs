@@ -475,6 +475,28 @@ impl ExternalTriggerRepository<'_> {
             .collect()
     }
 
+    pub fn latest_for_agent_limit(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ExternalTriggerRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM external_triggers
+             WHERE target_agent_id = ?1
+             ORDER BY created_at DESC, external_trigger_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_external_trigger_payload(&row?))
+            .collect()
+    }
+
     pub fn active_default_for_agent(
         &self,
         agent_id: &str,
@@ -4764,6 +4786,44 @@ mod tests {
                 .count(),
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn external_trigger_latest_for_agent_limit_uses_bounded_recent_results() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.external_triggers().import_legacy(Vec::new())?;
+
+        for index in 0..4 {
+            db.external_triggers().upsert(&external_trigger_record(
+                &format!("trigger-{index}"),
+                "agent-a",
+                ExternalTriggerStatus::Revoked,
+                index,
+            ))?;
+        }
+        db.external_triggers().upsert(&external_trigger_record(
+            "trigger-other-agent",
+            "agent-b",
+            ExternalTriggerStatus::Revoked,
+            10,
+        ))?;
+
+        let recent = db
+            .external_triggers()
+            .latest_for_agent_limit("agent-a", 2)?;
+        assert_eq!(
+            recent
+                .into_iter()
+                .map(|record| record.external_trigger_id)
+                .collect::<Vec<_>>(),
+            vec!["trigger-3", "trigger-2"]
+        );
+        assert!(db
+            .external_triggers()
+            .latest_for_agent_limit("agent-a", 0)?
+            .is_empty());
         Ok(())
     }
 
