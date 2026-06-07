@@ -695,7 +695,15 @@ async fn build_response(
     let mut task_summaries = Vec::new();
     for task in &view.new_tasks {
         let output = runtime.task_output(&task.id, false, 0).await?;
-        let worktree = worktree_summary_for_task(task.id.as_str(), &view.new_messages);
+        let worktree =
+            worktree_summary_for_task(task.id.as_str(), &view.new_messages).or_else(|| {
+                output
+                    .task
+                    .child_supervision
+                    .as_ref()
+                    .and_then(|child| child.worktree.as_ref())
+                    .map(worktree_summary_from_projection)
+            });
         if let Some(worktree) = worktree.as_ref() {
             changed_files.extend(worktree.changed_files.iter().cloned());
         }
@@ -945,6 +953,18 @@ fn worktree_summary_for_task(
             .get("auto_cleaned_up")
             .and_then(|value| value.as_bool()),
     })
+}
+
+fn worktree_summary_from_projection(
+    worktree: &crate::types::ChildSupervisionWorktreeProjection,
+) -> RunWorktreeSummary {
+    RunWorktreeSummary {
+        worktree_path: worktree.worktree_path.clone().unwrap_or_default(),
+        worktree_branch: worktree.worktree_branch.clone().unwrap_or_default(),
+        changed_files: worktree.changed_files.clone(),
+        retained_for_review: worktree.retained_for_review,
+        auto_cleaned_up: worktree.auto_cleaned_up,
+    }
 }
 
 fn changed_files_from_tools(tools: &[ToolExecutionRecord], workspace_root: &Path) -> Vec<String> {

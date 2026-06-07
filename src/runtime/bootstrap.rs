@@ -431,17 +431,42 @@ fn prepare_runtime_storage(
         )),
     };
 
+    let workspace_entries_complete = storage_domain_complete(&runtime_db, "workspace_entries")?;
     if let Some(workspace) = initial_workspace_entry.as_ref() {
         let known = storage.latest_workspace_entries()?;
         if !known
             .iter()
             .any(|entry| entry.workspace_id == workspace.workspace_id)
         {
-            storage.append_workspace_entry(workspace)?;
+            if workspace_entries_complete {
+                runtime_db.workspace_entries().upsert(workspace)?;
+            } else {
+                storage.append_workspace_entry(workspace)?;
+            }
         }
     }
 
     let recovered_agent_for_import = storage.read_agent()?;
+    if !storage_domain_complete(&runtime_db, "agent_states")? {
+        runtime_db
+            .agent_states()
+            .import_legacy(recovered_agent_for_import.clone())?;
+    }
+    if !workspace_entries_complete {
+        runtime_db
+            .workspace_entries()
+            .import_legacy(storage.read_recent_workspace_entries(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "workspace_occupancies")? {
+        runtime_db
+            .workspace_occupancies()
+            .import_legacy(storage.read_recent_workspace_occupancies(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "agent_identities")? {
+        runtime_db
+            .agent_identities()
+            .import_legacy(storage.read_recent_agent_identities(usize::MAX)?)?;
+    }
     if !storage_domain_complete(&runtime_db, "work_items")? {
         let mut legacy_work_items = storage.read_recent_work_items(usize::MAX)?;
         for record in &mut legacy_work_items {
@@ -491,7 +516,7 @@ fn prepare_runtime_storage(
     }
 
     storage.enable_scheduler_control_plane_db(runtime_db.clone())?;
-    let snapshot = storage.recovery_snapshot()?;
+    let snapshot = storage.recovery_snapshot(&agent_id)?;
     let mut queue = RuntimeQueue::default();
     for message in &snapshot.replay_messages {
         queue.push(message.clone());

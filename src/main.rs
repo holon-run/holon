@@ -1524,7 +1524,7 @@ fn export_scheduler_fixture(
         .filter(|timer| timer.agent_id == agent.id && timer.status == TimerStatus::Active)
         .collect::<Vec<_>>();
     let replay_message_ids = storage
-        .recovery_snapshot()?
+        .recovery_snapshot(&agent.id)?
         .replay_messages
         .into_iter()
         .map(|message| message.id)

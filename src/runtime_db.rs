@@ -11,10 +11,11 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::types::{
-    AuditEvent, BriefRecord, CallbackDeliveryMode, DeliverySummaryRecord, ExternalTriggerRecord,
-    ExternalTriggerScope, ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord, TaskRecord,
-    TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry, TurnRecord,
-    WaitConditionRecord, WorkItemRecord, WorkItemState,
+    AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, CallbackDeliveryMode,
+    DeliverySummaryRecord, ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus,
+    MessageEnvelope, QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord, TimerStatus,
+    ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord, WorkItemRecord,
+    WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
@@ -68,6 +69,22 @@ pub struct EvidenceRepository<'a> {
 }
 
 pub struct AuditEventSink<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct AgentStateRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct WorkspaceEntryRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct WorkspaceOccupancyRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct AgentIdentityRepository<'a> {
     db: &'a RuntimeDb,
 }
 
@@ -253,6 +270,159 @@ impl WorkItemRepository<'_> {
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.map(|row| decode_work_item_payload(&row?)).collect()
+    }
+}
+
+impl AgentStateRepository<'_> {
+    pub fn import_legacy(&self, record: Option<AgentState>) -> Result<()> {
+        if self.db.storage_domain_is_complete("agent_states", "db")? {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("agent_states", "json", "db", |tx| {
+                if let Some(record) = record.as_ref() {
+                    upsert_agent_state_tx(tx, record)?;
+                }
+                Ok(serde_json::json!({ "imported_records": usize::from(record.is_some()) }))
+            })
+    }
+
+    pub fn upsert(&self, record: &AgentState) -> Result<()> {
+        self.db.transaction(|tx| upsert_agent_state_tx(tx, record))
+    }
+
+    pub fn latest(&self, agent_id: &str) -> Result<Option<AgentState>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_agent_state_payload(&payload))
+            .transpose()
+    }
+}
+
+impl WorkspaceEntryRepository<'_> {
+    pub fn import_legacy(&self, records: Vec<WorkspaceEntry>) -> Result<()> {
+        if self
+            .db
+            .storage_domain_is_complete("workspace_entries", "db")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("workspace_entries", "jsonl", "db", |tx| {
+                let latest = reduce_workspace_entry_records(records);
+                for record in latest.values() {
+                    upsert_workspace_entry_tx(tx, record)?;
+                }
+                Ok(serde_json::json!({ "imported_records": latest.len() }))
+            })
+    }
+
+    pub fn upsert(&self, record: &WorkspaceEntry) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_workspace_entry_tx(tx, record))
+    }
+
+    pub fn latest_all(&self) -> Result<Vec<WorkspaceEntry>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM workspace_entries
+             ORDER BY updated_at DESC, created_at DESC, workspace_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_workspace_entry_payload(&row?))
+            .collect()
+    }
+}
+
+impl WorkspaceOccupancyRepository<'_> {
+    pub fn import_legacy(&self, records: Vec<WorkspaceOccupancyRecord>) -> Result<()> {
+        if self
+            .db
+            .storage_domain_is_complete("workspace_occupancies", "db")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("workspace_occupancies", "jsonl", "db", |tx| {
+                let latest = reduce_workspace_occupancy_records(records);
+                for record in latest.values() {
+                    upsert_workspace_occupancy_tx(tx, record)?;
+                }
+                Ok(serde_json::json!({ "imported_records": latest.len() }))
+            })
+    }
+
+    pub fn upsert(&self, record: &WorkspaceOccupancyRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_workspace_occupancy_tx(tx, record))
+    }
+
+    pub fn latest_all(&self) -> Result<Vec<WorkspaceOccupancyRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM workspace_occupancies
+             ORDER BY acquired_at DESC, occupancy_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_workspace_occupancy_payload(&row?))
+            .collect()
+    }
+}
+
+impl AgentIdentityRepository<'_> {
+    pub fn import_legacy(&self, records: Vec<AgentIdentityRecord>) -> Result<()> {
+        if self
+            .db
+            .storage_domain_is_complete("agent_identities", "db")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("agent_identities", "jsonl", "db", |tx| {
+                let latest = reduce_agent_identity_records(records);
+                for record in latest.values() {
+                    upsert_agent_identity_tx(tx, record)?;
+                }
+                Ok(serde_json::json!({ "imported_records": latest.len() }))
+            })
+    }
+
+    pub fn upsert(&self, record: &AgentIdentityRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_agent_identity_tx(tx, record))
+    }
+
+    pub fn latest_all(&self) -> Result<Vec<AgentIdentityRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM agent_identities
+             ORDER BY updated_at DESC, created_at DESC, agent_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_agent_identity_payload(&row?))
+            .collect()
+    }
+
+    pub fn latest(&self, agent_id: &str) -> Result<Option<AgentIdentityRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_agent_identity_payload(&payload))
+            .transpose()
     }
 }
 
@@ -1507,6 +1677,157 @@ fn insert_transcript_evidence_tx(tx: &Transaction<'_>, entry: &TranscriptEntry) 
     upsert_transcript_entry_tx(tx, entry)
 }
 
+fn upsert_agent_state_tx(tx: &Transaction<'_>, record: &AgentState) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let status = enum_string(&record.status)?;
+    let now = timestamp(Utc::now());
+    tx.execute(
+        "INSERT INTO agent_states (
+            agent_id, status, turn_index, current_run_id, current_work_item_id,
+            active_workspace_id, updated_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(agent_id) DO UPDATE SET
+            status = excluded.status,
+            turn_index = excluded.turn_index,
+            current_run_id = excluded.current_run_id,
+            current_work_item_id = excluded.current_work_item_id,
+            active_workspace_id = excluded.active_workspace_id,
+            updated_at = excluded.updated_at,
+            payload_json = excluded.payload_json
+         WHERE excluded.turn_index >= agent_states.turn_index",
+        params![
+            record.id,
+            status,
+            record.turn_index as i64,
+            record.current_run_id,
+            record.current_work_item_id,
+            record
+                .active_workspace_entry
+                .as_ref()
+                .map(|entry| entry.workspace_id.as_str()),
+            now,
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_workspace_entry_tx(tx: &Transaction<'_>, record: &WorkspaceEntry) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    tx.execute(
+        "INSERT INTO workspace_entries (
+            workspace_id, workspace_alias, workspace_kind, owner_agent_id,
+            workspace_anchor, repo_name, created_at, updated_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(workspace_id) DO UPDATE SET
+            workspace_alias = excluded.workspace_alias,
+            workspace_kind = excluded.workspace_kind,
+            owner_agent_id = excluded.owner_agent_id,
+            workspace_anchor = excluded.workspace_anchor,
+            repo_name = excluded.repo_name,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            payload_json = excluded.payload_json
+         WHERE excluded.updated_at >= workspace_entries.updated_at",
+        params![
+            record.workspace_id,
+            record.workspace_alias,
+            record.workspace_kind,
+            record.owner_agent_id,
+            record.workspace_anchor.display().to_string(),
+            record.repo_name,
+            timestamp(record.created_at),
+            timestamp(record.updated_at),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_workspace_occupancy_tx(
+    tx: &Transaction<'_>,
+    record: &WorkspaceOccupancyRecord,
+) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let access_mode = enum_string(&record.access_mode)?;
+    tx.execute(
+        "INSERT INTO workspace_occupancies (
+            occupancy_id, execution_root_id, workspace_id, holder_agent_id,
+            access_mode, acquired_at, released_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(occupancy_id) DO UPDATE SET
+            execution_root_id = excluded.execution_root_id,
+            workspace_id = excluded.workspace_id,
+            holder_agent_id = excluded.holder_agent_id,
+            access_mode = excluded.access_mode,
+            acquired_at = excluded.acquired_at,
+            released_at = excluded.released_at,
+            payload_json = excluded.payload_json
+         WHERE COALESCE(excluded.released_at, '') >= COALESCE(workspace_occupancies.released_at, '')",
+        params![
+            record.occupancy_id,
+            record.execution_root_id,
+            record.workspace_id,
+            record.holder_agent_id,
+            access_mode,
+            timestamp(record.acquired_at),
+            record.released_at.map(timestamp),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_agent_identity_tx(tx: &Transaction<'_>, record: &AgentIdentityRecord) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let kind = enum_string(&record.kind)?;
+    let visibility = enum_string(&record.visibility)?;
+    let ownership = record.ownership.as_ref().map(enum_string).transpose()?;
+    let profile_preset = record
+        .profile_preset
+        .as_ref()
+        .map(enum_string)
+        .transpose()?;
+    let status = enum_string(&record.status)?;
+    tx.execute(
+        "INSERT INTO agent_identities (
+            agent_id, kind, visibility, ownership, profile_preset, status,
+            parent_agent_id, lineage_parent_agent_id, delegated_from_task_id,
+            created_at, updated_at, archived_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(agent_id) DO UPDATE SET
+            kind = excluded.kind,
+            visibility = excluded.visibility,
+            ownership = excluded.ownership,
+            profile_preset = excluded.profile_preset,
+            status = excluded.status,
+            parent_agent_id = excluded.parent_agent_id,
+            lineage_parent_agent_id = excluded.lineage_parent_agent_id,
+            delegated_from_task_id = excluded.delegated_from_task_id,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            archived_at = excluded.archived_at,
+            payload_json = excluded.payload_json
+         WHERE excluded.updated_at >= agent_identities.updated_at",
+        params![
+            record.agent_id,
+            kind,
+            visibility,
+            ownership,
+            profile_preset,
+            status,
+            record.parent_agent_id,
+            record.lineage_parent_agent_id,
+            record.delegated_from_task_id,
+            timestamp(record.created_at),
+            timestamp(record.updated_at),
+            record.archived_at.map(timestamp),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
 fn upsert_message_tx(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<()> {
     let payload_json = serde_json::to_string(message)?;
     let content_hash = content_hash(&payload_json);
@@ -1876,6 +2197,7 @@ fn upsert_work_item_tx(
 fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
     let kind = record.kind.as_str();
     let status = enum_string(&record.status)?;
+    let status_phase = i64::from(task_status_phase(&record.status));
     let child_agent_id = task_detail_string(&record.detail, "child_agent_id");
     let parent_agent_id = child_agent_id.as_ref().map(|_| record.agent_id.clone());
     let input_target = task_detail_string(&record.detail, "input_target");
@@ -1914,7 +2236,13 @@ fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
             completed_at = excluded.completed_at,
             last_message_id = excluded.last_message_id,
             payload_json = excluded.payload_json
-         WHERE excluded.revision >= tasks.revision",
+         WHERE excluded.revision > tasks.revision
+            OR (excluded.revision = tasks.revision AND ?20 >= CASE tasks.status
+                WHEN 'queued' THEN 0
+                WHEN 'running' THEN 1
+                WHEN 'cancelling' THEN 2
+                ELSE 3
+            END)",
         params![
             record.id,
             record.agent_id,
@@ -1935,9 +2263,22 @@ fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
             completed_at,
             record.parent_message_id,
             payload_json,
+            status_phase,
         ],
     )?;
     Ok(())
+}
+
+fn task_status_phase(status: &TaskStatus) -> u8 {
+    match status {
+        TaskStatus::Queued => 0,
+        TaskStatus::Running => 1,
+        TaskStatus::Cancelling => 2,
+        TaskStatus::Completed
+        | TaskStatus::Failed
+        | TaskStatus::Cancelled
+        | TaskStatus::Interrupted => 3,
+    }
 }
 
 fn upsert_wait_condition_tx(tx: &Transaction<'_>, record: &WaitConditionRecord) -> Result<()> {
@@ -2449,6 +2790,51 @@ fn reduce_task_records(records: Vec<TaskRecord>) -> BTreeMap<String, TaskRecord>
     latest
 }
 
+fn reduce_workspace_entry_records(
+    records: Vec<WorkspaceEntry>,
+) -> BTreeMap<String, WorkspaceEntry> {
+    let mut latest = BTreeMap::<String, WorkspaceEntry>::new();
+    for record in records {
+        let should_replace = latest
+            .get(&record.workspace_id)
+            .is_none_or(|existing| record.updated_at >= existing.updated_at);
+        if should_replace {
+            latest.insert(record.workspace_id.clone(), record);
+        }
+    }
+    latest
+}
+
+fn reduce_workspace_occupancy_records(
+    records: Vec<WorkspaceOccupancyRecord>,
+) -> BTreeMap<String, WorkspaceOccupancyRecord> {
+    let mut latest = BTreeMap::<String, WorkspaceOccupancyRecord>::new();
+    for record in records {
+        let should_replace = latest
+            .get(&record.occupancy_id)
+            .is_none_or(|existing| record.released_at >= existing.released_at);
+        if should_replace {
+            latest.insert(record.occupancy_id.clone(), record);
+        }
+    }
+    latest
+}
+
+fn reduce_agent_identity_records(
+    records: Vec<AgentIdentityRecord>,
+) -> BTreeMap<String, AgentIdentityRecord> {
+    let mut latest = BTreeMap::<String, AgentIdentityRecord>::new();
+    for record in records {
+        let should_replace = latest
+            .get(&record.agent_id)
+            .is_none_or(|existing| record.updated_at >= existing.updated_at);
+        if should_replace {
+            latest.insert(record.agent_id.clone(), record);
+        }
+    }
+    latest
+}
+
 fn slim_task_record_for_payload(record: &TaskRecord) -> TaskRecord {
     let mut slim = record.clone();
     slim.detail = slim.detail.as_ref().map(slim_task_detail_value);
@@ -2495,6 +2881,22 @@ fn newer_task_record(candidate: &TaskRecord, existing: &TaskRecord) -> bool {
 
 fn task_revision(record: &TaskRecord) -> i64 {
     record.updated_at.timestamp_millis()
+}
+
+fn decode_agent_state_payload(payload: &str) -> Result<AgentState> {
+    serde_json::from_str(payload).context("decoding agent state payload from runtime db")
+}
+
+fn decode_workspace_entry_payload(payload: &str) -> Result<WorkspaceEntry> {
+    serde_json::from_str(payload).context("decoding workspace entry payload from runtime db")
+}
+
+fn decode_workspace_occupancy_payload(payload: &str) -> Result<WorkspaceOccupancyRecord> {
+    serde_json::from_str(payload).context("decoding workspace occupancy payload from runtime db")
+}
+
+fn decode_agent_identity_payload(payload: &str) -> Result<AgentIdentityRecord> {
+    serde_json::from_str(payload).context("decoding agent identity payload from runtime db")
 }
 
 fn decode_work_item_payload(payload: &str) -> Result<WorkItemRecord> {
@@ -3076,6 +3478,76 @@ CREATE INDEX IF NOT EXISTS idx_turn_records_work_item
   ON turn_records(current_work_item_id);
 "#,
     },
+    Migration {
+        version: 9,
+        name: "agent_workspace_registry_current_state",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS agent_states (
+  agent_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  turn_index INTEGER NOT NULL DEFAULT 0,
+  current_run_id TEXT,
+  current_work_item_id TEXT,
+  active_workspace_id TEXT,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspace_entries (
+  workspace_id TEXT PRIMARY KEY,
+  workspace_alias TEXT,
+  workspace_kind TEXT,
+  owner_agent_id TEXT,
+  workspace_anchor TEXT NOT NULL,
+  repo_name TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspace_occupancies (
+  occupancy_id TEXT PRIMARY KEY,
+  execution_root_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  holder_agent_id TEXT NOT NULL,
+  access_mode TEXT NOT NULL,
+  acquired_at TEXT NOT NULL,
+  released_at TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_identities (
+  agent_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  visibility TEXT NOT NULL,
+  ownership TEXT,
+  profile_preset TEXT,
+  status TEXT NOT NULL,
+  parent_agent_id TEXT,
+  lineage_parent_agent_id TEXT,
+  delegated_from_task_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  archived_at TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_states_status
+  ON agent_states(status);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_entries_anchor
+  ON workspace_entries(workspace_anchor);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_occupancies_root_active
+  ON workspace_occupancies(execution_root_id, released_at);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_occupancies_holder
+  ON workspace_occupancies(holder_agent_id);
+
+CREATE INDEX IF NOT EXISTS idx_agent_identities_status
+  ON agent_identities(status);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -3167,8 +3639,44 @@ impl RuntimeDb {
         AuditEventSink { db: self }
     }
 
+    pub fn agent_states(&self) -> AgentStateRepository<'_> {
+        AgentStateRepository { db: self }
+    }
+
+    pub fn workspace_entries(&self) -> WorkspaceEntryRepository<'_> {
+        WorkspaceEntryRepository { db: self }
+    }
+
+    pub fn workspace_occupancies(&self) -> WorkspaceOccupancyRepository<'_> {
+        WorkspaceOccupancyRepository { db: self }
+    }
+
+    pub fn agent_identities(&self) -> AgentIdentityRepository<'_> {
+        AgentIdentityRepository { db: self }
+    }
+
     pub const fn expected_storage_domains() -> &'static [ExpectedStorageDomain] {
         &[
+            ExpectedStorageDomain {
+                domain: "agent_states",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+            },
+            ExpectedStorageDomain {
+                domain: "workspace_entries",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+            },
+            ExpectedStorageDomain {
+                domain: "workspace_occupancies",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+            },
+            ExpectedStorageDomain {
+                domain: "agent_identities",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+            },
             ExpectedStorageDomain {
                 domain: "work_items",
                 canonical_source: "db",
@@ -3595,7 +4103,13 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::BriefKind;
+    use crate::{
+        system::WorkspaceAccessMode,
+        types::{
+            AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
+            AgentVisibility, BriefKind,
+        },
+    };
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -3653,6 +4167,51 @@ mod tests {
         }
     }
 
+    fn workspace_entry(id: &str, updated_offset: i64) -> WorkspaceEntry {
+        let created_at = Utc::now();
+        let mut entry = WorkspaceEntry::new(
+            id,
+            PathBuf::from(format!("/tmp/{id}")),
+            Some(format!("repo-{id}")),
+        );
+        entry.workspace_alias = Some(format!("alias-{id}"));
+        entry.workspace_kind = Some("project".into());
+        entry.owner_agent_id = Some("agent-a".into());
+        entry.created_at = created_at;
+        entry.updated_at = created_at + chrono::Duration::seconds(updated_offset);
+        entry
+    }
+
+    fn workspace_occupancy(id: &str, released_offset: Option<i64>) -> WorkspaceOccupancyRecord {
+        let acquired_at = Utc::now();
+        WorkspaceOccupancyRecord {
+            occupancy_id: id.into(),
+            execution_root_id: format!("exec-{id}"),
+            workspace_id: format!("ws-{id}"),
+            holder_agent_id: "agent-a".into(),
+            access_mode: WorkspaceAccessMode::ExclusiveWrite,
+            acquired_at,
+            released_at: released_offset
+                .map(|offset| acquired_at + chrono::Duration::seconds(offset)),
+        }
+    }
+
+    fn agent_identity(agent_id: &str, updated_offset: i64) -> AgentIdentityRecord {
+        let mut identity = AgentIdentityRecord::new(
+            agent_id,
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        identity.created_at = Utc::now();
+        identity.updated_at = identity.created_at + chrono::Duration::seconds(updated_offset);
+        identity.status = AgentRegistryStatus::Active;
+        identity
+    }
+
     #[test]
     fn runtime_db_fresh_migration_creates_foundation_schema() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
@@ -3681,6 +4240,10 @@ mod tests {
             "queue_entries",
             "timers",
             "turn_records",
+            "agent_states",
+            "workspace_entries",
+            "workspace_occupancies",
+            "agent_identities",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -3807,6 +4370,107 @@ mod tests {
         let connection = db.connection()?;
         let enabled: i64 = connection.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
         assert_eq!(enabled, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_state_repository_upserts_latest_turn_state() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut current = AgentState::new("agent-a");
+        current.status = AgentStatus::AwakeIdle;
+        current.turn_index = 3;
+        current.current_work_item_id = Some("work-current".into());
+        db.agent_states().import_legacy(Some(current.clone()))?;
+
+        let mut stale = current.clone();
+        stale.status = AgentStatus::Stopped;
+        stale.turn_index = 2;
+        stale.current_work_item_id = Some("work-stale".into());
+        db.agent_states().upsert(&stale)?;
+
+        let persisted = db.agent_states().latest("agent-a")?.expect("agent state");
+        assert_eq!(persisted.status, AgentStatus::AwakeIdle);
+        assert_eq!(persisted.turn_index, 3);
+        assert_eq!(
+            persisted.current_work_item_id.as_deref(),
+            Some("work-current")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_entry_import_is_idempotent_and_keeps_latest_update() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let older = workspace_entry("ws-a", 1);
+        let mut newer = workspace_entry("ws-a", 5);
+        newer.workspace_alias = Some("alias-newer".into());
+
+        db.workspace_entries()
+            .import_legacy(vec![older.clone(), newer.clone()])?;
+        db.workspace_entries().import_legacy(vec![older, newer])?;
+
+        let entries = db.workspace_entries().latest_all()?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].workspace_id, "ws-a");
+        assert_eq!(entries[0].workspace_alias.as_deref(), Some("alias-newer"));
+        let rows: i64 =
+            db.connection()?
+                .query_row("SELECT COUNT(*) FROM workspace_entries", [], |row| {
+                    row.get(0)
+                })?;
+        assert_eq!(rows, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_occupancy_import_is_idempotent_and_keeps_released_record() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let active = workspace_occupancy("occ-a", None);
+        let released = workspace_occupancy("occ-a", Some(10));
+
+        db.workspace_occupancies()
+            .import_legacy(vec![active.clone(), released.clone()])?;
+        db.workspace_occupancies()
+            .import_legacy(vec![active, released])?;
+
+        let occupancies = db.workspace_occupancies().latest_all()?;
+        assert_eq!(occupancies.len(), 1);
+        assert_eq!(occupancies[0].occupancy_id, "occ-a");
+        assert!(occupancies[0].released_at.is_some());
+        let rows: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM workspace_occupancies",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(rows, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_identity_repository_imports_latest_and_reads_by_agent() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let older = agent_identity("agent-a", 1);
+        let mut newer = agent_identity("agent-a", 5);
+        newer.status = AgentRegistryStatus::Archived;
+        newer.archived_at = Some(newer.updated_at);
+
+        db.agent_identities()
+            .import_legacy(vec![older.clone(), newer.clone()])?;
+        db.agent_identities().import_legacy(vec![older, newer])?;
+
+        let identity = db
+            .agent_identities()
+            .latest("agent-a")?
+            .expect("agent identity");
+        assert_eq!(identity.status, AgentRegistryStatus::Archived);
+        assert!(identity.archived_at.is_some());
+        let identities = db.agent_identities().latest_all()?;
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].agent_id, "agent-a");
         Ok(())
     }
 

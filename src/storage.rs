@@ -343,7 +343,7 @@ impl AppStorage {
     }
 
     fn current_agent_id(&self) -> Result<Option<String>> {
-        if let Some(agent) = self.read_agent()? {
+        if let Some(agent) = self.read_agent_file()? {
             return Ok(Some(agent.id));
         }
         let parent_is_agents_dir = self
@@ -670,15 +670,24 @@ impl AppStorage {
     }
 
     pub fn append_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.workspace_entries().upsert(entry)?;
+        }
         self.append_jsonl(&self.workspaces_path, entry)?;
         self.mark_memory_index_dirty()
     }
 
     pub fn append_workspace_occupancy(&self, entry: &WorkspaceOccupancyRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.workspace_occupancies().upsert(entry)?;
+        }
         self.append_jsonl(&self.occupancies_path, entry)
     }
 
     pub fn append_agent_identity(&self, entry: &AgentIdentityRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.agent_identities().upsert(entry)?;
+        }
         self.append_jsonl(&self.agent_identities_path, entry)
     }
 
@@ -710,6 +719,9 @@ impl AppStorage {
     }
 
     pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.agent_states().upsert(agent)?;
+        }
         let content = serde_json::to_vec_pretty(agent)?;
         let tmp_path = self
             .agent_path
@@ -726,6 +738,17 @@ impl AppStorage {
     }
 
     pub fn read_agent(&self) -> Result<Option<AgentState>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                if let Some(agent) = runtime_db.agent_states().latest(&agent_id)? {
+                    return Ok(Some(agent));
+                }
+            }
+        }
+        self.read_agent_file()
+    }
+
+    fn read_agent_file(&self) -> Result<Option<AgentState>> {
         let path = if self.agent_path.exists() {
             &self.agent_path
         } else {
@@ -1085,6 +1108,12 @@ impl AppStorage {
     }
 
     pub fn read_recent_workspace_entries(&self, limit: usize) -> Result<Vec<WorkspaceEntry>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(take_recent(
+                runtime_db.workspace_entries().latest_all()?,
+                limit,
+            ));
+        }
         read_recent_jsonl(&self.workspaces_path, limit)
     }
 
@@ -1092,10 +1121,22 @@ impl AppStorage {
         &self,
         limit: usize,
     ) -> Result<Vec<WorkspaceOccupancyRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(take_recent(
+                runtime_db.workspace_occupancies().latest_all()?,
+                limit,
+            ));
+        }
         read_recent_jsonl(&self.occupancies_path, limit)
     }
 
     pub fn read_recent_agent_identities(&self, limit: usize) -> Result<Vec<AgentIdentityRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(take_recent(
+                runtime_db.agent_identities().latest_all()?,
+                limit,
+            ));
+        }
         read_recent_jsonl(&self.agent_identities_path, limit)
     }
 
@@ -1121,6 +1162,17 @@ impl AppStorage {
     }
 
     pub fn latest_active_task_records(&self, limit: usize) -> Result<Vec<TaskRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(take_recent(
+                runtime_db
+                    .tasks()
+                    .latest_all()?
+                    .into_iter()
+                    .filter(|record| is_active_task_status(&record.status))
+                    .collect(),
+                limit,
+            ));
+        }
         if limit == 0 || !self.tasks_path.exists() {
             return Ok(Vec::new());
         }
@@ -1164,6 +1216,9 @@ impl AppStorage {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<TaskRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.tasks().active_for_agent(agent_id, limit);
+        }
         if limit == 0 || !self.tasks_path.exists() {
             return Ok(Vec::new());
         }
@@ -1206,6 +1261,12 @@ impl AppStorage {
     }
 
     pub fn active_task_count_for_agent(&self, agent_id: &str) -> Result<usize> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(runtime_db
+                .tasks()
+                .active_for_agent(agent_id, usize::MAX)?
+                .len());
+        }
         if !self.tasks_path.exists() {
             return Ok(0);
         }
@@ -1227,6 +1288,9 @@ impl AppStorage {
     }
 
     pub fn latest_task_record(&self, task_id: &str) -> Result<Option<TaskRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.tasks().latest(task_id);
+        }
         if !self.tasks_path.exists() {
             return Ok(None);
         }
@@ -1903,7 +1967,7 @@ impl AppStorage {
         Ok(latest.into_values().collect())
     }
 
-    pub fn recovery_snapshot(&self) -> Result<RecoverySnapshot> {
+    pub fn recovery_snapshot(&self, agent_id: &str) -> Result<RecoverySnapshot> {
         let agent = self.read_agent()?;
         let mut messages_by_id = std::collections::BTreeMap::new();
         for message in self.read_all_messages()? {
@@ -1931,11 +1995,13 @@ impl AppStorage {
             _ => left.created_at.cmp(&right.created_at),
         });
 
-        let active_tasks = self.latest_active_task_records(usize::MAX)?;
+        let active_tasks = self.latest_active_task_records_for_agent(agent_id, usize::MAX)?;
         let active_timers = self
             .latest_timer_records()?
             .into_iter()
-            .filter(|record| record.status == crate::types::TimerStatus::Active)
+            .filter(|record| {
+                record.agent_id == agent_id && record.status == crate::types::TimerStatus::Active
+            })
             .collect();
         let work_items = self.latest_work_items()?;
         let work_item_delegations = self.latest_work_item_delegations()?;
@@ -2137,6 +2203,17 @@ fn read_recent_jsonl<T: DeserializeOwned>(path: &Path, limit: usize) -> Result<V
         .into_iter()
         .map(|line| serde_json::from_str::<T>(&line).map_err(Into::into))
         .collect()
+}
+
+fn take_recent<T>(mut records_desc: Vec<T>, limit: usize) -> Vec<T> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    if records_desc.len() > limit {
+        records_desc.truncate(limit);
+    }
+    records_desc.reverse();
+    records_desc
 }
 
 fn read_jsonl_from<T: DeserializeOwned>(
@@ -3458,6 +3535,35 @@ mod tests {
     }
 
     #[test]
+    fn write_agent_with_runtime_db_keeps_legacy_agent_json_export_current() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        runtime_db
+            .agent_states()
+            .import_legacy(storage.read_agent_file().unwrap())
+            .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Stopped;
+        agent.turn_index = 7;
+        storage.write_agent(&agent).unwrap();
+
+        let reopened_without_db = AppStorage::new(dir.path()).unwrap();
+        let restored = reopened_without_db.read_agent().unwrap().unwrap();
+        assert_eq!(restored.status, AgentStatus::Stopped);
+        assert_eq!(restored.turn_index, 7);
+    }
+
+    #[test]
     fn read_agent_maps_legacy_paused_status_to_stopped() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
@@ -4771,7 +4877,7 @@ mod tests {
             })
             .unwrap();
 
-        let snapshot = storage.recovery_snapshot().unwrap();
+        let snapshot = storage.recovery_snapshot("default").unwrap();
         assert_eq!(snapshot.replay_messages.len(), 2);
         assert_eq!(snapshot.replay_messages[0].id, queued.id);
         assert_eq!(snapshot.replay_messages[1].id, dequeued.id);
@@ -4826,7 +4932,7 @@ mod tests {
                 .unwrap();
         }
 
-        let snapshot = storage.recovery_snapshot().unwrap();
+        let snapshot = storage.recovery_snapshot("default").unwrap();
         assert_eq!(
             snapshot
                 .replay_messages
@@ -4886,7 +4992,7 @@ mod tests {
                 .unwrap();
         }
 
-        let snapshot = storage.recovery_snapshot().unwrap();
+        let snapshot = storage.recovery_snapshot("default").unwrap();
         assert_eq!(
             snapshot
                 .replay_messages
@@ -4895,6 +5001,42 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![later.id.as_str(), earlier.id.as_str()]
         );
+    }
+
+    #[test]
+    fn recovery_snapshot_scopes_active_tasks_to_agent() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+        let task = |id: &str, agent_id: &str, offset: i64| TaskRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            kind: TaskKind::ChildAgentTask,
+            status: TaskStatus::Running,
+            created_at: now + chrono::Duration::seconds(offset),
+            updated_at: now + chrono::Duration::seconds(offset),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some(id.into()),
+            detail: None,
+            recovery: Some(TaskRecoverySpec::ChildAgentTask {
+                summary: id.into(),
+                prompt: "resume".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+                workspace_mode: crate::types::ChildAgentWorkspaceMode::Worktree,
+            }),
+        };
+
+        storage
+            .append_task(&task("parent-task", "default", 0))
+            .unwrap();
+        storage
+            .append_task(&task("child-task", "child", 1))
+            .unwrap();
+
+        let snapshot = storage.recovery_snapshot("child").unwrap();
+        assert_eq!(snapshot.active_tasks.len(), 1);
+        assert_eq!(snapshot.active_tasks[0].id, "child-task");
     }
 
     #[test]
@@ -5010,7 +5152,7 @@ mod tests {
 
         storage.append_work_item(&work_item).unwrap();
 
-        let snapshot = storage.recovery_snapshot().unwrap();
+        let snapshot = storage.recovery_snapshot("default").unwrap();
         assert_eq!(snapshot.work_items.len(), 1);
         assert_eq!(snapshot.work_items[0].id, work_item.id);
         assert_eq!(

@@ -1104,9 +1104,14 @@ impl RuntimeHandle {
             Err(err) => (
                 format!("child agent failed: {err:#}"),
                 TaskStatus::Failed,
-                task_detail_for_result,
+                task_detail_for_result.clone(),
             ),
         };
+        if worktree && task_detail.get("worktree").is_none() {
+            if let Some(worktree_detail) = task_detail_for_result.get("worktree").cloned() {
+                task_detail["worktree"] = worktree_detail;
+            }
+        }
 
         if worktree {
             if let Some(worktree) = task_detail.get("worktree").cloned() {
