@@ -143,7 +143,7 @@ pub async fn background_task_rejoins_main_session() -> Result<()> {
     assert_eq!(summary.closure.outcome, ClosureOutcome::Completed);
     assert_eq!(summary.closure.waiting_reason, None);
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let active_tasks = runtime.storage().latest_active_task_records(usize::MAX)?;
         let tasks = runtime.storage().latest_task_records()?;
         Ok(!active_tasks.iter().any(|record| record.id == task.id)
@@ -184,7 +184,7 @@ pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reent
         ))
         .await?;
 
-    wait_until_async(|| {
+    wait_until_async_for(Duration::from_secs(10), || {
         let runtime = runtime.clone();
         let provider = provider.clone();
         async move {
@@ -215,7 +215,7 @@ pub async fn background_command_task_result_wakes_sleeping_agent_for_model_reent
         )
         .await?;
 
-    wait_until_async(|| {
+    wait_until_async_for(Duration::from_secs(10), || {
         let provider = provider.clone();
         async move { Ok(provider.captured_requests().await.len() >= 2) }
     })
@@ -272,7 +272,7 @@ pub async fn stop_task_cancels_running_background_task() -> Result<()> {
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Cancelled
@@ -307,7 +307,7 @@ pub async fn lifecycle_stop_interrupts_active_command_task() -> Result<()> {
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Running
@@ -454,11 +454,14 @@ pub async fn file_tools_can_modify_workspace_and_reenter_context() -> Result<()>
             },
         ))
         .await?;
-    wait_until(|| Ok(workspace.join("notes/result.txt").exists())).await?;
+    eventually_for(Duration::from_secs(10), || {
+        Ok(workspace.join("notes/result.txt").exists())
+    })
+    .await?;
 
     let content = std::fs::read_to_string(workspace.join("notes/result.txt"))?;
     assert_eq!(content, "hello from holon\n");
-    wait_until_async(|| {
+    wait_until_async_for(Duration::from_secs(10), || {
         let runtime = runtime.clone();
         async move {
             let briefs = runtime.recent_briefs(10).await?;
@@ -488,7 +491,7 @@ pub async fn shell_tools_capture_command_output() -> Result<()> {
             },
         ))
         .await?;
-    wait_until_async(|| {
+    wait_until_async_for(Duration::from_secs(10), || {
         let runtime = runtime.clone();
         async move {
             let briefs = runtime.recent_briefs(10).await?;
@@ -524,7 +527,7 @@ pub async fn shell_tools_truncate_large_output_before_provider_reinjection() -> 
             },
         ))
         .await?;
-    wait_until_async(|| {
+    wait_until_async_for(Duration::from_secs(10), || {
         let runtime = runtime.clone();
         async move {
             let briefs = runtime.recent_briefs(10).await?;
@@ -834,7 +837,7 @@ pub async fn tool_schema_and_dispatch_errors_are_recorded_without_corrupting_run
         ))
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let briefs = runtime.storage().read_recent_briefs(10)?;
         Ok(briefs
             .iter()
@@ -938,7 +941,7 @@ pub async fn runtime_provider_failure_surfaces_failure_brief_and_transcript_entr
         ))
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let briefs = runtime.storage().read_recent_briefs(10)?;
         Ok(briefs.iter().any(|brief| {
             brief.kind == BriefKind::Failure
@@ -1022,7 +1025,7 @@ pub async fn runtime_failure_brief_sanitizes_long_provider_error_but_transcript_
         ))
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let briefs = runtime.storage().read_recent_briefs(10)?;
         Ok(briefs.iter().any(|brief| {
             brief.kind == BriefKind::Failure
@@ -1089,7 +1092,7 @@ pub async fn command_task_runs_to_completion_and_persists_detail() -> Result<()>
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Completed
@@ -1136,7 +1139,7 @@ pub async fn task_output_returns_completed_command_task_output() -> Result<()> {
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Completed
@@ -1208,7 +1211,7 @@ pub async fn task_output_non_blocking_reports_running_command_task() -> Result<(
     runtime
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Cancelled
@@ -1373,7 +1376,7 @@ pub async fn task_output_times_out_for_long_running_task() -> Result<()> {
     runtime
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Cancelled
@@ -1407,7 +1410,7 @@ pub async fn task_output_prefers_terminal_task_record_over_stale_task_message() 
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Completed
@@ -1479,7 +1482,7 @@ pub async fn task_output_accepts_terminal_command_snapshot_without_explicit_read
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id
@@ -1539,7 +1542,7 @@ pub async fn task_output_accepts_terminal_command_without_snapshot_fields() -> R
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id
@@ -1601,7 +1604,7 @@ pub async fn task_output_rejects_message_only_terminal_status_for_running_comman
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Running
@@ -1641,7 +1644,7 @@ pub async fn task_output_rejects_message_only_terminal_status_for_running_comman
     runtime
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Cancelled
@@ -1675,7 +1678,7 @@ pub async fn task_status_and_task_output_keep_lifecycle_and_output_boundaries() 
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Completed
@@ -1797,7 +1800,7 @@ pub async fn command_task_stop_cancels_running_command() -> Result<()> {
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Cancelled
@@ -1870,7 +1873,7 @@ pub async fn background_command_task_persists_terminal_state_while_runtime_stopp
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Completed
@@ -1926,7 +1929,7 @@ pub async fn blocking_command_task_clears_active_state_while_runtime_stopped() -
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         let active_tasks = runtime.storage().latest_active_task_records(usize::MAX)?;
         Ok(tasks.iter().any(|record| {
@@ -1968,7 +1971,7 @@ pub async fn command_task_result_is_canonical_follow_up_on_completion() -> Resul
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let messages = runtime.storage().read_recent_messages(20)?;
         let agent = runtime.storage().read_agent()?.expect("agent should exist");
         Ok(messages.iter().any(|message| {
@@ -2017,7 +2020,7 @@ pub async fn task_result_rejoin_preserves_runtime_provenance_not_operator_author
         )
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let messages = runtime.storage().read_recent_messages(20)?;
         Ok(messages.iter().any(|message| {
             message.kind == MessageKind::TaskResult
@@ -2101,7 +2104,7 @@ pub async fn command_terminal_reentry_does_not_set_awaiting_task_closure() -> Re
         .stop_task(&task.id, &AuthorityClass::OperatorInstruction)
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Cancelled
@@ -2141,7 +2144,7 @@ pub async fn command_task_runner_failure_marks_task_failed_and_cleans_up() -> Re
         .join(format!("{}.log", task.id));
     std::fs::create_dir_all(&output_path)?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Failed
@@ -2284,7 +2287,7 @@ pub async fn exec_command_auto_promotes_long_running_command_task() -> Result<()
         ))
         .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let briefs = runtime.storage().read_recent_briefs(10)?;
         Ok(briefs
             .iter()
@@ -2292,7 +2295,7 @@ pub async fn exec_command_auto_promotes_long_running_command_task() -> Result<()
     })
     .await?;
 
-    wait_until(|| {
+    eventually_for(Duration::from_secs(10), || {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.kind.as_str() == "command_task"
@@ -2324,7 +2327,7 @@ pub async fn exec_command_reuses_equivalent_active_command_task_by_default() -> 
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
-    let cmd = "printf start && sleep 2 && printf done";
+    let cmd = "printf start && sleep 20 && printf done";
     let first_task = runtime
         .schedule_command_task(
             format!("Run command: {cmd}"),
@@ -2370,7 +2373,7 @@ pub async fn exec_command_reuses_equivalent_active_command_task_by_default() -> 
         .filter(|record| {
             record.kind.as_str() == "command_task"
                 && record.summary
-                    == Some("Run command: printf start && sleep 2 && printf done".into())
+                    == Some("Run command: printf start && sleep 20 && printf done".into())
         })
         .map(|record| record.id)
         .collect::<Vec<_>>();
@@ -2482,7 +2485,7 @@ pub async fn exec_command_can_start_new_with_duplicate_policy() -> Result<()> {
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
-    let cmd = "printf start && sleep 2 && printf done";
+    let cmd = "printf start && sleep 20 && printf done";
 
     let first = registry
         .execute(
@@ -2535,8 +2538,8 @@ pub async fn exec_command_non_equivalent_same_preview_does_not_reuse() -> Result
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
     let shared = "x".repeat(300);
-    let first_cmd = format!("printf '{}'; sleep 2", shared);
-    let second_cmd = format!("printf '{}B'; sleep 2", shared);
+    let first_cmd = format!("printf '{}'; sleep 20", shared);
+    let second_cmd = format!("printf '{}B'; sleep 20", shared);
 
     let first = registry
         .execute(

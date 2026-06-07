@@ -502,6 +502,7 @@ impl AppStorage {
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.tasks().upsert(task)?;
+            return self.mark_memory_index_dirty();
         }
         self.append_jsonl(&self.tasks_path, task)?;
         self.mark_memory_index_dirty()
@@ -515,6 +516,7 @@ impl AppStorage {
                 .as_deref()
                 == Some(record.id.as_str());
             runtime_db.work_items().upsert(record, current_focus)?;
+            return self.mark_memory_index_dirty();
         }
         self.append_jsonl(&self.work_items_path, record)?;
         self.mark_memory_index_dirty()
@@ -535,6 +537,7 @@ impl AppStorage {
     pub fn append_timer(&self, timer: &TimerRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.timers().upsert(timer)?;
+            return Ok(());
         }
         self.append_jsonl(&self.timers_path, timer)
     }
@@ -591,6 +594,7 @@ impl AppStorage {
     pub fn append_queue_entry(&self, record: &QueueEntryRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.queue_entries().upsert(record)?;
+            return Ok(());
         }
         self.append_jsonl(&self.queue_entries_path, record)
     }
@@ -614,6 +618,11 @@ impl AppStorage {
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.wait_conditions().upsert(&wait_condition)?;
+            append_jsonl_bytes(&self.waiting_intents_path, &waiting_intent_bytes)?;
+            if let Some(event) = event.as_ref() {
+                self.append_event_with_append_mutex_held(event)?;
+            }
+            return Ok(());
         }
         append_jsonl_bytes(&self.waiting_intents_path, &waiting_intent_bytes)?;
         append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)?;
@@ -633,6 +642,10 @@ impl AppStorage {
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.wait_conditions().upsert(record)?;
+            if let Some(event) = event.as_ref() {
+                self.append_event_with_append_mutex_held(event)?;
+            }
+            return Ok(());
         }
         append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)?;
         if let Some(event) = event.as_ref() {
@@ -642,6 +655,10 @@ impl AppStorage {
     }
 
     pub fn append_external_trigger(&self, record: &ExternalTriggerRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.external_triggers().upsert(record)?;
+            return Ok(());
+        }
         self.append_jsonl(&self.external_triggers_path, record)
     }
 
@@ -672,6 +689,7 @@ impl AppStorage {
     pub fn append_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.workspace_entries().upsert(entry)?;
+            return self.mark_memory_index_dirty();
         }
         self.append_jsonl(&self.workspaces_path, entry)?;
         self.mark_memory_index_dirty()
@@ -680,6 +698,7 @@ impl AppStorage {
     pub fn append_workspace_occupancy(&self, entry: &WorkspaceOccupancyRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.workspace_occupancies().upsert(entry)?;
+            return Ok(());
         }
         self.append_jsonl(&self.occupancies_path, entry)
     }
@@ -687,6 +706,7 @@ impl AppStorage {
     pub fn append_agent_identity(&self, entry: &AgentIdentityRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.agent_identities().upsert(entry)?;
+            return Ok(());
         }
         self.append_jsonl(&self.agent_identities_path, entry)
     }
@@ -981,10 +1001,16 @@ impl AppStorage {
     }
 
     pub fn read_recent_tasks(&self, limit: usize) -> Result<Vec<TaskRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(take_recent(runtime_db.tasks().latest_all()?, limit));
+        }
         read_recent_jsonl(&self.tasks_path, limit)
     }
 
     pub fn read_recent_work_items(&self, limit: usize) -> Result<Vec<WorkItemRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(take_recent(runtime_db.work_items().latest_all()?, limit));
+        }
         read_recent_jsonl(&self.work_items_path, limit)
     }
 
@@ -1072,6 +1098,14 @@ impl AppStorage {
         &self,
         limit: usize,
     ) -> Result<Vec<ExternalTriggerRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return Ok(take_recent(
+                    runtime_db.external_triggers().latest_for_agent(&agent_id)?,
+                    limit,
+                ));
+            }
+        }
         read_recent_jsonl(&self.external_triggers_path, limit)
     }
 
@@ -1145,6 +1179,9 @@ impl AppStorage {
     }
 
     pub fn latest_task_records_from_recent(&self, history_limit: usize) -> Result<Vec<TaskRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(take_recent(runtime_db.tasks().latest_all()?, history_limit));
+        }
         let records = self.read_recent_tasks(history_limit)?;
         let mut latest = std::collections::BTreeMap::<String, TaskRecord>::new();
         for record in records {
@@ -1344,6 +1381,9 @@ impl AppStorage {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<WorkItemRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.work_items().latest_for_agent(agent_id, limit);
+        }
         if limit == 0 || !self.work_items_path.exists() {
             return Ok(Vec::new());
         }
@@ -1363,24 +1403,30 @@ impl AppStorage {
     }
 
     pub fn work_queue_prompt_projection(&self) -> Result<WorkQueuePromptProjection> {
-        if !self.work_items_path.exists() {
+        let db_enabled = self.scheduler_control_plane_db()?.is_some();
+        if !db_enabled && !self.work_items_path.exists() {
             return Ok(WorkQueuePromptProjection::default());
         }
         let current_work_item_id = self
             .read_agent()?
             .and_then(|agent| agent.current_work_item_id);
-
-        let content = fs::read_to_string(&self.work_items_path)
-            .with_context(|| format!("failed to read {}", self.work_items_path.display()))?;
         let mut latest = std::collections::HashMap::<String, WorkItemRecord>::new();
-        for line in content.lines().rev().filter(|line| !line.trim().is_empty()) {
-            let record: WorkItemRecord = serde_json::from_str(line).with_context(|| {
-                format!(
-                    "failed to decode line from {}",
-                    self.work_items_path.display()
-                )
-            })?;
-            latest.entry(record.id.clone()).or_insert(record);
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            for record in runtime_db.work_items().latest_all()? {
+                latest.insert(record.id.clone(), record);
+            }
+        } else {
+            let content = fs::read_to_string(&self.work_items_path)
+                .with_context(|| format!("failed to read {}", self.work_items_path.display()))?;
+            for line in content.lines().rev().filter(|line| !line.trim().is_empty()) {
+                let record: WorkItemRecord = serde_json::from_str(line).with_context(|| {
+                    format!(
+                        "failed to decode line from {}",
+                        self.work_items_path.display()
+                    )
+                })?;
+                latest.entry(record.id.clone()).or_insert(record);
+            }
         }
 
         let current = current_work_item_id
@@ -1746,6 +1792,9 @@ impl AppStorage {
     }
 
     pub fn latest_work_item(&self, work_item_id: &str) -> Result<Option<WorkItemRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.work_items().latest(work_item_id);
+        }
         if !self.work_items_path.exists() {
             return Ok(None);
         }
@@ -2565,10 +2614,11 @@ mod tests {
 
     use crate::types::{
         AgentState, AgentStatus, AuthorityClass, BriefKind, CallbackDeliveryMode,
-        EpisodeBoundaryReason, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        QueueEntryRecord, QueueEntryStatus, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus,
-        TodoItem, TodoItemState, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind,
-        WorkItemPlanStatus, WorkItemState,
+        EpisodeBoundaryReason, ExternalTriggerScope, ExternalTriggerStatus, MessageBody,
+        MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
+        TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TodoItem, TodoItemState,
+        ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, WorkItemPlanStatus,
+        WorkItemState,
     };
 
     use super::*;
@@ -2826,15 +2876,9 @@ mod tests {
         storage.append_timer(&later_timer).unwrap();
         storage.append_timer(&latest_timer).unwrap();
 
-        assert!(fs::read_to_string(&storage.wait_conditions_path)
-            .unwrap()
-            .contains("\"wait-1\""));
-        assert!(fs::read_to_string(&storage.queue_entries_path)
-            .unwrap()
-            .contains("\"msg-1\""));
-        assert!(fs::read_to_string(&storage.timers_path)
-            .unwrap()
-            .contains("\"timer-1\""));
+        assert!(!storage.wait_conditions_path.exists());
+        assert!(!storage.queue_entries_path.exists());
+        assert!(!storage.timers_path.exists());
 
         fs::write(
             &storage.wait_conditions_path,
@@ -2899,6 +2943,191 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["timer-2", "timer-3"]
         );
+    }
+
+    #[test]
+    fn runtime_db_state_writes_skip_live_jsonl_after_cutover() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        runtime_db.tasks().import_legacy(Vec::new()).unwrap();
+        runtime_db
+            .work_items()
+            .import_legacy(Vec::new(), None)
+            .unwrap();
+        runtime_db
+            .wait_conditions()
+            .import_legacy(Vec::new())
+            .unwrap();
+        runtime_db
+            .queue_entries()
+            .import_legacy(Vec::new())
+            .unwrap();
+        runtime_db.timers().import_legacy(Vec::new()).unwrap();
+        runtime_db
+            .external_triggers()
+            .import_legacy(Vec::new())
+            .unwrap();
+        runtime_db
+            .workspace_entries()
+            .import_legacy(Vec::new())
+            .unwrap();
+        runtime_db
+            .workspace_occupancies()
+            .import_legacy(Vec::new())
+            .unwrap();
+        runtime_db
+            .agent_identities()
+            .import_legacy(Vec::new())
+            .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+
+        let now = Utc::now();
+        let task = TaskRecord {
+            id: "task-db-only".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("db only task".into()),
+            detail: None,
+            recovery: None,
+        };
+        let work_item = WorkItemRecord::new("default", "db only work", WorkItemState::Open);
+        let wait_condition = WaitConditionRecord {
+            id: "wait-db-only".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(work_item.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("pr-1".into()),
+            waiting_for: "checks".into(),
+            wake_sources: vec![],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        };
+        let queue_entry = QueueEntryRecord {
+            message_id: "message-db-only".into(),
+            agent_id: "default".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        let timer = TimerRecord {
+            id: "timer-db-only".into(),
+            agent_id: "default".into(),
+            created_at: now,
+            duration_ms: 1000,
+            interval_ms: None,
+            repeat: false,
+            status: crate::types::TimerStatus::Active,
+            summary: Some("timer".into()),
+            next_fire_at: Some(now + chrono::Duration::seconds(1)),
+            last_fired_at: None,
+            fire_count: 0,
+        };
+        let trigger = ExternalTriggerRecord {
+            external_trigger_id: "trigger-db-only".into(),
+            target_agent_id: "default".into(),
+            waiting_intent_id: None,
+            scope: ExternalTriggerScope::Agent,
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            trigger_url: Some("http://localhost/callback".into()),
+            token_hash: "token-hash".into(),
+            status: ExternalTriggerStatus::Active,
+            created_at: now,
+            revoked_at: None,
+            last_delivered_at: None,
+            delivery_count: 0,
+        };
+        let mut workspace =
+            WorkspaceEntry::new("ws-db-only", std::path::PathBuf::from("/repo"), None);
+        workspace.workspace_alias = Some("repo".into());
+        workspace.updated_at = now;
+        let occupancy = WorkspaceOccupancyRecord {
+            occupancy_id: "occ-db-only".into(),
+            execution_root_id: "root-db-only".into(),
+            workspace_id: workspace.workspace_id.clone(),
+            holder_agent_id: "default".into(),
+            access_mode: crate::system::types::WorkspaceAccessMode::ExclusiveWrite,
+            acquired_at: now,
+            released_at: None,
+        };
+        let identity = AgentIdentityRecord::new(
+            "default",
+            crate::types::AgentKind::Named,
+            crate::types::AgentVisibility::Public,
+            crate::types::AgentOwnership::SelfOwned,
+            crate::types::AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+
+        storage.append_task(&task).unwrap();
+        storage.append_work_item(&work_item).unwrap();
+        storage.append_wait_condition(&wait_condition).unwrap();
+        storage.append_queue_entry(&queue_entry).unwrap();
+        storage.append_timer(&timer).unwrap();
+        storage.append_external_trigger(&trigger).unwrap();
+        storage.append_workspace_entry(&workspace).unwrap();
+        storage.append_workspace_occupancy(&occupancy).unwrap();
+        storage.append_agent_identity(&identity).unwrap();
+
+        for file_name in [
+            "tasks.jsonl",
+            "work_items.jsonl",
+            "wait_conditions.jsonl",
+            "queue_entries.jsonl",
+            "timers.jsonl",
+            "external_triggers.jsonl",
+            "workspaces.jsonl",
+            "workspace_occupancies.jsonl",
+            "agent_identities.jsonl",
+        ] {
+            assert!(
+                !storage.ledger_dir().join(file_name).exists(),
+                "{file_name} should not be a live compat export after db cutover"
+            );
+        }
+
+        assert_eq!(
+            storage.latest_task_record("task-db-only").unwrap(),
+            Some(task)
+        );
+        assert_eq!(
+            storage.latest_work_item(&work_item.id).unwrap(),
+            Some(work_item)
+        );
+        assert_eq!(
+            storage.latest_wait_conditions().unwrap(),
+            vec![wait_condition]
+        );
+        assert_eq!(storage.latest_queue_entries().unwrap(), vec![queue_entry]);
+        assert_eq!(storage.latest_timer_records().unwrap(), vec![timer]);
+        assert_eq!(storage.latest_external_triggers().unwrap(), vec![trigger]);
+        assert_eq!(storage.latest_workspace_entries().unwrap(), vec![workspace]);
+        assert_eq!(
+            storage.latest_workspace_occupancies().unwrap(),
+            vec![occupancy]
+        );
+        assert_eq!(storage.latest_agent_identities().unwrap(), vec![identity]);
     }
 
     #[test]

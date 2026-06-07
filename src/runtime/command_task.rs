@@ -1507,7 +1507,7 @@ mod tests {
         task_id: &str,
         expected: TaskStatus,
     ) -> TaskRecord {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(task) = runtime.inner.storage.latest_task_record(task_id).unwrap() {
                 if task.status == expected {

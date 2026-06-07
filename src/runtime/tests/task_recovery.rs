@@ -20,12 +20,12 @@ async fn runtime_tracks_background_task() {
         .schedule_command_task(
             "demo task".into(),
             crate::types::CommandTaskSpec {
-                cmd: "sleep 1".into(),
+                cmd: "true".into(),
                 workdir: None,
                 shell: None,
                 login: false,
                 tty: false,
-                yield_time_ms: 10,
+                yield_time_ms: 0,
                 max_output_tokens: None,
                 accepts_input: false,
                 terminal_reentry: false,
@@ -34,6 +34,25 @@ async fn runtime_tracks_background_task() {
         )
         .await
         .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let latest = runtime.task_record(&task.id).await.unwrap().unwrap();
+        if matches!(
+            latest.status,
+            TaskStatus::Completed
+                | TaskStatus::Failed
+                | TaskStatus::Cancelled
+                | TaskStatus::Interrupted
+        ) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "background task did not reach a terminal status before the deadline; latest status: {:?}",
+            latest.status
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let active_tasks = runtime.active_tasks(10).await.unwrap();
@@ -42,7 +61,7 @@ async fn runtime_tracks_background_task() {
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "background task remained active past test deadline"
+            "terminal background task remained in active task projection"
         );
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }

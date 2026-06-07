@@ -102,18 +102,18 @@ pub struct StorageDomainSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacyJsonlPosture {
     Disabled,
-    CompatExport,
+    DebugExportOnly,
     AuditMirror,
-    ImportSource,
+    LegacyImportOnly,
 }
 
 impl LegacyJsonlPosture {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
-            Self::CompatExport => "compat_export",
+            Self::DebugExportOnly => "debug_export_only",
             Self::AuditMirror => "audit_mirror",
-            Self::ImportSource => "import_source",
+            Self::LegacyImportOnly => "legacy_import_only",
         }
     }
 }
@@ -3660,52 +3660,52 @@ impl RuntimeDb {
             ExpectedStorageDomain {
                 domain: "agent_states",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "workspace_entries",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "workspace_occupancies",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "agent_identities",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "work_items",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "tasks",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "external_triggers",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "wait_conditions",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "queue_entries",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "timers",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "turn_records",
@@ -3715,22 +3715,22 @@ impl RuntimeDb {
             ExpectedStorageDomain {
                 domain: "messages",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "transcript_entries",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "evidence",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "audit_events",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
         ]
     }

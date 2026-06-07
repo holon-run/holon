@@ -1112,6 +1112,16 @@ impl RuntimeHandle {
                 task_detail["worktree"] = worktree_detail;
             }
         }
+        if task_detail.get("workspace_mode").is_none() {
+            if let Some(workspace_mode) = task_detail_for_result.get("workspace_mode").cloned() {
+                task_detail["workspace_mode"] = workspace_mode;
+            }
+        }
+        if task_detail.get("wait_policy").is_none() {
+            if let Some(wait_policy) = task_detail_for_result.get("wait_policy").cloned() {
+                task_detail["wait_policy"] = wait_policy;
+            }
+        }
 
         if worktree {
             if let Some(worktree) = task_detail.get("worktree").cloned() {
