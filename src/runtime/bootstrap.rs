@@ -431,13 +431,18 @@ fn prepare_runtime_storage(
         )),
     };
 
+    let workspace_entries_complete = storage_domain_complete(&runtime_db, "workspace_entries")?;
     if let Some(workspace) = initial_workspace_entry.as_ref() {
         let known = storage.latest_workspace_entries()?;
         if !known
             .iter()
             .any(|entry| entry.workspace_id == workspace.workspace_id)
         {
-            storage.append_workspace_entry(workspace)?;
+            if workspace_entries_complete {
+                runtime_db.workspace_entries().upsert(workspace)?;
+            } else {
+                storage.append_workspace_entry(workspace)?;
+            }
         }
     }
 
@@ -447,7 +452,7 @@ fn prepare_runtime_storage(
             .agent_states()
             .import_legacy(recovered_agent_for_import.clone())?;
     }
-    if !storage_domain_complete(&runtime_db, "workspace_entries")? {
+    if !workspace_entries_complete {
         runtime_db
             .workspace_entries()
             .import_legacy(storage.read_recent_workspace_entries(usize::MAX)?)?;
