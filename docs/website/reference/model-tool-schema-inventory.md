@@ -38,6 +38,15 @@ Each built-in tool entry records:
 | `experimental` | Surface is available but may change while the runtime contract is still settling. |
 | `deprecated` | Surface remains for compatibility but should not be introduced into new workflows. |
 
+## Naming policy
+
+Holon-native built-in tool names use PascalCase with action-first names. Use
+`List*` for collection reads, `Get*` for single-resource or snapshot reads, and
+explicit verbs such as `Send*`, `Stop*`, `Create*`, or `Update*` for control or
+mutation. Legacy aliases may remain accepted by the dispatcher during a
+migration window, but the checked-in inventory advertises the canonical
+model-facing name.
+
 ## Versioning policy
 
 The top-level `version` field versions the inventory format, not every tool

@@ -79,7 +79,7 @@ pub fn model_tool_schema_inventory() -> Result<Value> {
 fn tool_stability_level(name: &str) -> &'static str {
     match name {
         "CreateExternalTrigger" | "CancelExternalTrigger" => "deprecated",
-        "ApplyPatch" | "ExecCommand" | "ExecCommandBatch" | "Sleep" | "WaitFor" | "TaskList"
+        "ApplyPatch" | "ExecCommand" | "ExecCommandBatch" | "Sleep" | "WaitFor" | "ListTasks"
         | "TaskStatus" | "TaskInput" | "TaskOutput" | "TaskStop" | "CreateWorkItem"
         | "PickWorkItem" | "GetWorkItem" | "ListWorkItems" | "UpdateWorkItem"
         | "CompleteWorkItem" | "UseWorkspace" | "AgentGet" | "Enqueue" | "SpawnAgent"
@@ -107,7 +107,7 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         "WaitFor" => "WaitForResult",
         "SpawnAgent" => "SpawnAgentResult",
         "TaskInput" => "TaskInputResult",
-        "TaskList" => "Vec<TaskDigest>",
+        "ListTasks" => "ListTasksResult",
         "TaskOutput" => "TaskOutputResult",
         "TaskStatus" => "TaskStatusResult",
         "TaskStop" => "TaskStopResult",
@@ -127,7 +127,7 @@ fn tool_model_rendering_contract(name: &str) -> &'static str {
 
 fn related_surfaces_for_tool(name: &str) -> Vec<&'static str> {
     match name {
-        "ExecCommand" | "ExecCommandBatch" | "TaskInput" | "TaskList" | "TaskOutput"
+        "ExecCommand" | "ExecCommandBatch" | "TaskInput" | "ListTasks" | "TaskOutput"
         | "TaskStatus" | "TaskStop" => {
             vec!["CLI task/process wrappers", "HTTP control-plane task APIs"]
         }

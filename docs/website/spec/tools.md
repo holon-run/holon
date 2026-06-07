@@ -65,7 +65,7 @@ registry and machine-readable schema inventory.
 |------|---------|
 | `ExecCommand` | Start a shell command |
 | `ExecCommandBatch` | Run bounded sequential command batch |
-| `TaskList` | Compact active-task digest |
+| `ListTasks` | Compact active-task digest with bounded output |
 | `TaskStatus` | Single-task lifecycle snapshot |
 | `TaskOutput` | Bounded output preview with optional blocking |
 | `TaskInput` | Send input to interactive task |

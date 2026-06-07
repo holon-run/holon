@@ -1027,12 +1027,112 @@ async fn latest_task_list_entries_filters_to_active_statuses_only() {
         .unwrap();
 
     let entries = runtime
-        .latest_task_list_entries_for_agent("default")
+        .latest_task_list_entries_for_agent("default", usize::MAX)
         .await
         .unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].id, "task-active-1");
     assert_eq!(entries[0].status, TaskStatus::Running);
+}
+
+#[tokio::test]
+async fn list_tasks_tool_returns_bounded_metadata_and_accepts_legacy_alias() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    for index in 0..3 {
+        let task = TaskRecord {
+            id: format!("task-active-{index}"),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some(format!("active task {index}")),
+            detail: Some(serde_json::json!({
+                "task_status": "running",
+                "wait_policy": "background"
+            })),
+            recovery: None,
+        };
+        runtime.storage().append_task(&task).unwrap();
+        runtime.inner.runtime_db.tasks().upsert(&task).unwrap();
+    }
+    let other_agent_task = TaskRecord {
+        id: "task-other-agent".into(),
+        agent_id: "other-agent".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Running,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: None,
+        summary: Some("other agent task".into()),
+        detail: Some(serde_json::json!({
+            "task_status": "running",
+            "wait_policy": "background"
+        })),
+        recovery: None,
+    };
+    runtime.storage().append_task(&other_agent_task).unwrap();
+    runtime
+        .inner
+        .runtime_db
+        .tasks()
+        .upsert(&other_agent_task)
+        .unwrap();
+
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (result, _) = registry
+        .execute(
+            &runtime,
+            "other-agent",
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "list-tasks".into(),
+                name: "ListTasks".into(),
+                input: serde_json::json!({ "limit": 1 }),
+            },
+        )
+        .await
+        .unwrap();
+    let payload = result.envelope.result.expect("ListTasks result");
+    assert_eq!(payload["total_active"], 3);
+    assert_eq!(payload["returned"], 1);
+    assert_eq!(payload["limit"], 1);
+    assert_eq!(payload["tasks"].as_array().unwrap().len(), 1);
+    assert_ne!(payload["tasks"][0]["id"], "task-other-agent");
+
+    let (legacy_result, _) = registry
+        .execute(
+            &runtime,
+            "other-agent",
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "legacy-task-list".into(),
+                name: "TaskList".into(),
+                input: serde_json::json!({ "limit": 200 }),
+            },
+        )
+        .await
+        .unwrap();
+    let legacy_payload = legacy_result.envelope.result.expect("TaskList result");
+    assert_eq!(legacy_payload["total_active"], 3);
+    assert_eq!(legacy_payload["returned"], 3);
+    assert_eq!(legacy_payload["limit"], 100);
+    assert_eq!(legacy_payload["tasks"].as_array().unwrap().len(), 3);
 }
 
 #[tokio::test]

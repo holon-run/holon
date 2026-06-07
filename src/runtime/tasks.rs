@@ -1323,18 +1323,20 @@ impl RuntimeHandle {
 
     pub async fn latest_task_list_entries(&self) -> Result<Vec<TaskListEntry>> {
         let agent_id = self.agent_id().await?;
-        self.latest_task_list_entries_for_agent(&agent_id).await
+        self.latest_task_list_entries_for_agent(&agent_id, usize::MAX)
+            .await
     }
 
     pub async fn latest_task_list_entries_for_agent(
         &self,
         agent_id: &str,
+        limit: usize,
     ) -> Result<Vec<TaskListEntry>> {
         Ok(self
             .inner
             .runtime_db
             .tasks()
-            .active_for_agent(agent_id, usize::MAX)?
+            .active_for_agent(agent_id, limit)?
             .into_iter()
             .map(|task| {
                 let wait_policy = task.wait_policy();

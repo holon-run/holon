@@ -2010,6 +2010,8 @@ fn tool_friendly_label(tool_name: &str, failed: bool) -> &'static str {
         ("UpdateWorkItem", true) => "Update work item failed",
         ("CompleteWorkItem", false) => "Completed work item",
         ("CompleteWorkItem", true) => "Complete work item failed",
+        ("ListTasks", false) => "Listed tasks",
+        ("ListTasks", true) => "List tasks failed",
         ("TaskList", false) => "Listed tasks",
         ("TaskList", true) => "List tasks failed",
         ("TaskOutput", false) => "Read task output",
@@ -2043,6 +2045,7 @@ fn tool_friendly_label_is_generic(tool_name: &str) -> bool {
             | "CreateWorkItem"
             | "UpdateWorkItem"
             | "CompleteWorkItem"
+            | "ListTasks"
             | "TaskList"
             | "TaskOutput"
             | "SpawnAgent"
@@ -2756,6 +2759,7 @@ mod tests {
         let context = OperatorPresentationContext::default();
         let samples = [
             ("ExecCommandBatch", "Command batch finished"),
+            ("ListTasks", "Listed tasks"),
             ("TaskList", "Listed tasks"),
             ("TaskOutput", "Read task output"),
             ("SpawnAgent", "Started child agent"),
