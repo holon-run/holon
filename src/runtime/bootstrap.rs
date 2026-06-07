@@ -516,7 +516,7 @@ fn prepare_runtime_storage(
     }
 
     storage.enable_scheduler_control_plane_db(runtime_db.clone())?;
-    let snapshot = storage.recovery_snapshot()?;
+    let snapshot = storage.recovery_snapshot(&agent_id)?;
     let mut queue = RuntimeQueue::default();
     for message in &snapshot.replay_messages {
         queue.push(message.clone());

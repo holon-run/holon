@@ -1967,7 +1967,7 @@ impl AppStorage {
         Ok(latest.into_values().collect())
     }
 
-    pub fn recovery_snapshot(&self) -> Result<RecoverySnapshot> {
+    pub fn recovery_snapshot(&self, agent_id: &str) -> Result<RecoverySnapshot> {
         let agent = self.read_agent()?;
         let mut messages_by_id = std::collections::BTreeMap::new();
         for message in self.read_all_messages()? {
@@ -1995,11 +1995,13 @@ impl AppStorage {
             _ => left.created_at.cmp(&right.created_at),
         });
 
-        let active_tasks = self.latest_active_task_records(usize::MAX)?;
+        let active_tasks = self.latest_active_task_records_for_agent(agent_id, usize::MAX)?;
         let active_timers = self
             .latest_timer_records()?
             .into_iter()
-            .filter(|record| record.status == crate::types::TimerStatus::Active)
+            .filter(|record| {
+                record.agent_id == agent_id && record.status == crate::types::TimerStatus::Active
+            })
             .collect();
         let work_items = self.latest_work_items()?;
         let work_item_delegations = self.latest_work_item_delegations()?;
@@ -4875,7 +4877,7 @@ mod tests {
             })
             .unwrap();
 
-        let snapshot = storage.recovery_snapshot().unwrap();
+        let snapshot = storage.recovery_snapshot("default").unwrap();
         assert_eq!(snapshot.replay_messages.len(), 2);
         assert_eq!(snapshot.replay_messages[0].id, queued.id);
         assert_eq!(snapshot.replay_messages[1].id, dequeued.id);
@@ -4930,7 +4932,7 @@ mod tests {
                 .unwrap();
         }
 
-        let snapshot = storage.recovery_snapshot().unwrap();
+        let snapshot = storage.recovery_snapshot("default").unwrap();
         assert_eq!(
             snapshot
                 .replay_messages
@@ -4990,7 +4992,7 @@ mod tests {
                 .unwrap();
         }
 
-        let snapshot = storage.recovery_snapshot().unwrap();
+        let snapshot = storage.recovery_snapshot("default").unwrap();
         assert_eq!(
             snapshot
                 .replay_messages
@@ -4999,6 +5001,42 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![later.id.as_str(), earlier.id.as_str()]
         );
+    }
+
+    #[test]
+    fn recovery_snapshot_scopes_active_tasks_to_agent() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+        let task = |id: &str, agent_id: &str, offset: i64| TaskRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            kind: TaskKind::ChildAgentTask,
+            status: TaskStatus::Running,
+            created_at: now + chrono::Duration::seconds(offset),
+            updated_at: now + chrono::Duration::seconds(offset),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some(id.into()),
+            detail: None,
+            recovery: Some(TaskRecoverySpec::ChildAgentTask {
+                summary: id.into(),
+                prompt: "resume".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+                workspace_mode: crate::types::ChildAgentWorkspaceMode::Worktree,
+            }),
+        };
+
+        storage
+            .append_task(&task("parent-task", "default", 0))
+            .unwrap();
+        storage
+            .append_task(&task("child-task", "child", 1))
+            .unwrap();
+
+        let snapshot = storage.recovery_snapshot("child").unwrap();
+        assert_eq!(snapshot.active_tasks.len(), 1);
+        assert_eq!(snapshot.active_tasks[0].id, "child-task");
     }
 
     #[test]
@@ -5114,7 +5152,7 @@ mod tests {
 
         storage.append_work_item(&work_item).unwrap();
 
-        let snapshot = storage.recovery_snapshot().unwrap();
+        let snapshot = storage.recovery_snapshot("default").unwrap();
         assert_eq!(snapshot.work_items.len(), 1);
         assert_eq!(snapshot.work_items[0].id, work_item.id);
         assert_eq!(

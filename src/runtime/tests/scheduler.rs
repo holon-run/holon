@@ -456,7 +456,7 @@ fn assert_scheduler_fixture(name: &str) {
         expected.turn_terminal_kind,
         "{name}: turn terminal kind"
     );
-    let snapshot = storage.recovery_snapshot().unwrap();
+    let snapshot = storage.recovery_snapshot(&agent.id).unwrap();
     let replay_message_ids = snapshot
         .replay_messages
         .into_iter()
