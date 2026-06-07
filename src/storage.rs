@@ -721,7 +721,6 @@ impl AppStorage {
     pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.agent_states().upsert(agent)?;
-            return Ok(());
         }
         let content = serde_json::to_vec_pretty(agent)?;
         let tmp_path = self
@@ -741,7 +740,9 @@ impl AppStorage {
     pub fn read_agent(&self) -> Result<Option<AgentState>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db.agent_states().latest(&agent_id);
+                if let Some(agent) = runtime_db.agent_states().latest(&agent_id)? {
+                    return Ok(Some(agent));
+                }
             }
         }
         self.read_agent_file()
@@ -1161,6 +1162,17 @@ impl AppStorage {
     }
 
     pub fn latest_active_task_records(&self, limit: usize) -> Result<Vec<TaskRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(take_recent(
+                runtime_db
+                    .tasks()
+                    .latest_all()?
+                    .into_iter()
+                    .filter(|record| is_active_task_status(&record.status))
+                    .collect(),
+                limit,
+            ));
+        }
         if limit == 0 || !self.tasks_path.exists() {
             return Ok(Vec::new());
         }
@@ -1204,6 +1216,9 @@ impl AppStorage {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<TaskRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.tasks().active_for_agent(agent_id, limit);
+        }
         if limit == 0 || !self.tasks_path.exists() {
             return Ok(Vec::new());
         }
@@ -1246,6 +1261,12 @@ impl AppStorage {
     }
 
     pub fn active_task_count_for_agent(&self, agent_id: &str) -> Result<usize> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(runtime_db
+                .tasks()
+                .active_for_agent(agent_id, usize::MAX)?
+                .len());
+        }
         if !self.tasks_path.exists() {
             return Ok(0);
         }
@@ -1267,6 +1288,9 @@ impl AppStorage {
     }
 
     pub fn latest_task_record(&self, task_id: &str) -> Result<Option<TaskRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.tasks().latest(task_id);
+        }
         if !self.tasks_path.exists() {
             return Ok(None);
         }
@@ -3506,6 +3530,35 @@ mod tests {
         assert_eq!(restored.status, AgentStatus::Asleep);
         assert!(dir.path().join(".holon/state/agent.json").is_file());
         assert!(!dir.path().join("agent.json").exists());
+    }
+
+    #[test]
+    fn write_agent_with_runtime_db_keeps_legacy_agent_json_export_current() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        runtime_db
+            .agent_states()
+            .import_legacy(storage.read_agent_file().unwrap())
+            .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        let mut agent = AgentState::new("default");
+        agent.status = AgentStatus::Stopped;
+        agent.turn_index = 7;
+        storage.write_agent(&agent).unwrap();
+
+        let reopened_without_db = AppStorage::new(dir.path()).unwrap();
+        let restored = reopened_without_db.read_agent().unwrap().unwrap();
+        assert_eq!(restored.status, AgentStatus::Stopped);
+        assert_eq!(restored.turn_index, 7);
     }
 
     #[test]

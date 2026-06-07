@@ -2197,6 +2197,7 @@ fn upsert_work_item_tx(
 fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
     let kind = record.kind.as_str();
     let status = enum_string(&record.status)?;
+    let status_phase = i64::from(task_status_phase(&record.status));
     let child_agent_id = task_detail_string(&record.detail, "child_agent_id");
     let parent_agent_id = child_agent_id.as_ref().map(|_| record.agent_id.clone());
     let input_target = task_detail_string(&record.detail, "input_target");
@@ -2235,7 +2236,13 @@ fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
             completed_at = excluded.completed_at,
             last_message_id = excluded.last_message_id,
             payload_json = excluded.payload_json
-         WHERE excluded.revision >= tasks.revision",
+         WHERE excluded.revision > tasks.revision
+            OR (excluded.revision = tasks.revision AND ?20 >= CASE tasks.status
+                WHEN 'queued' THEN 0
+                WHEN 'running' THEN 1
+                WHEN 'cancelling' THEN 2
+                ELSE 3
+            END)",
         params![
             record.id,
             record.agent_id,
@@ -2256,9 +2263,22 @@ fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<()> {
             completed_at,
             record.parent_message_id,
             payload_json,
+            status_phase,
         ],
     )?;
     Ok(())
+}
+
+fn task_status_phase(status: &TaskStatus) -> u8 {
+    match status {
+        TaskStatus::Queued => 0,
+        TaskStatus::Running => 1,
+        TaskStatus::Cancelling => 2,
+        TaskStatus::Completed
+        | TaskStatus::Failed
+        | TaskStatus::Cancelled
+        | TaskStatus::Interrupted => 3,
+    }
 }
 
 fn upsert_wait_condition_tx(tx: &Transaction<'_>, record: &WaitConditionRecord) -> Result<()> {

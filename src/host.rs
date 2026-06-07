@@ -1118,8 +1118,15 @@ impl RuntimeHost {
         child_turn_baseline: u64,
         worktree: bool,
     ) -> Result<ChildTaskTerminalResult> {
-        let runtime = self.get_or_create_agent(child_agent_id).await?;
         let storage = AppStorage::new(self.agent_data_dir(child_agent_id))?;
+        if let Some(result) = self
+            .completed_child_terminal_from_storage(&storage, child_agent_id, child_turn_baseline)
+            .await?
+        {
+            self.archive_private_agent(child_agent_id).await?;
+            return Ok(result);
+        }
+        let runtime = self.get_or_create_agent(child_agent_id).await?;
         loop {
             let state = runtime.agent_state().await?;
             let events = storage.read_recent_events(32)?;
@@ -1227,6 +1234,60 @@ impl RuntimeHost {
                 task_detail,
             });
         }
+    }
+
+    async fn completed_child_terminal_from_storage(
+        &self,
+        storage: &AppStorage,
+        child_agent_id: &str,
+        child_turn_baseline: u64,
+    ) -> Result<Option<ChildTaskTerminalResult>> {
+        let Some(state) = storage.read_agent()? else {
+            return Ok(None);
+        };
+        let Some(terminal) = state
+            .last_turn_terminal
+            .as_ref()
+            .filter(|record| record.turn_index == state.turn_index)
+            .filter(|record| record.turn_index > child_turn_baseline)
+            .cloned()
+        else {
+            return Ok(None);
+        };
+
+        let mut status = if terminal.kind.is_failure() {
+            TaskStatus::Failed
+        } else {
+            TaskStatus::Completed
+        };
+        if state.status == AgentStatus::Stopped {
+            status = TaskStatus::Cancelled;
+        }
+        let text = terminal
+            .last_assistant_message
+            .or_else(|| {
+                if status == TaskStatus::Failed {
+                    state
+                        .last_runtime_failure
+                        .as_ref()
+                        .map(|failure| failure.summary.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        Ok(Some(ChildTaskTerminalResult {
+            status,
+            text,
+            task_detail: Some(json!({
+                "child_agent_id": child_agent_id,
+                "child_kind": AgentKind::Child,
+                "child_visibility": AgentVisibility::Private,
+                "child_ownership": AgentOwnership::ParentSupervised,
+                "child_profile_preset": AgentProfilePreset::PrivateChild,
+            })),
+        }))
     }
 
     pub(crate) fn agent_data_dir(&self, agent_id: &str) -> PathBuf {
