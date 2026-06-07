@@ -216,14 +216,6 @@ Recent turns:
   - produced briefs:
     - Result: Focused prompt projection test passed.
 
-## recent_messages
-Recent messages:
-- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt] Run the focused prompt projection test.
-
-## latest_result
-Latest completed result:
-Focused prompt projection test passed.
-
 ## current_input
 Current input:
 - [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt]
@@ -374,22 +366,6 @@ Recent turns:
   - current relation: a task-result continuation
   - current input: Command task completed successfully: cargo test runtime_flow
   - current work item: work_runtime_flow :: Track runtime flow
-
-## recent_messages
-Recent messages:
-- [operator][cli_prompt][local_process][operator_instruction][OperatorPrompt] Run cargo test runtime_flow and report back.
-
-## latest_result
-Latest completed result:
-Captured completion report promotion.
-
-## recent_briefs
-Recent briefs:
-- [Ack] Started cargo test runtime_flow.
-
-## recent_tool_executions
-Recent tool executions:
-- [trusted_system][Success] Run command: cargo test runtime_flow
 
 ## continuation_context
 Continuation context:

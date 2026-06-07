@@ -385,58 +385,6 @@ pub fn build_context_with_default_external_ingress(
         );
     }
 
-    if let Some(content) = render_recent_messages_with_budget(&messages, remaining_budget) {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
-            turn_section("recent_messages", content),
-        );
-    }
-
-    let latest_result_id = briefs
-        .iter()
-        .rev()
-        .find(|brief| matches!(brief.kind, crate::types::BriefKind::Result))
-        .map(|brief| brief.id.clone());
-    if let Some(last_result) = latest_result_id
-        .as_deref()
-        .and_then(|id| briefs.iter().find(|brief| brief.id == id))
-    {
-        let latest_result_budget = remaining_budget;
-        let latest_result_content = truncate_section_content(
-            "Latest completed result:\n",
-            &last_result.text,
-            latest_result_budget,
-            Some("\n[truncated latest result]"),
-        );
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
-            turn_section("latest_result", latest_result_content),
-        );
-    }
-
-    let recent_briefs = briefs
-        .iter()
-        .filter(|brief| latest_result_id.as_deref() != Some(brief.id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    if let Some(content) = render_recent_briefs_with_budget(&recent_briefs, remaining_budget) {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
-            turn_section("recent_briefs", content),
-        );
-    }
-
-    if let Some(content) = render_recent_tools_with_budget(&tools, remaining_budget) {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
-            turn_section("recent_tool_executions", content),
-        );
-    }
-
     let continuation_pushed =
         if let Some(content) = continuation_context(current_message, continuation) {
             push_budgeted_section(
@@ -683,10 +631,6 @@ fn render_message(message: &MessageEnvelope) -> String {
         message_header(message),
         body_preview(&message.body)
     )
-}
-
-fn render_brief(brief: &BriefRecord) -> String {
-    format!("- [{:?}] {}", brief.kind, brief.text)
 }
 
 fn render_current_work_item(
@@ -1605,29 +1549,6 @@ fn truncate_section_content(
     )
 }
 
-fn render_recent_messages_with_budget(
-    messages: &[MessageEnvelope],
-    budget: usize,
-) -> Option<String> {
-    render_budgeted_lines(
-        "Recent messages:",
-        messages
-            .iter()
-            .filter(|message| include_in_prompt_context(message))
-            .map(render_message)
-            .collect(),
-        budget,
-    )
-}
-
-fn render_recent_briefs_with_budget(briefs: &[BriefRecord], budget: usize) -> Option<String> {
-    render_budgeted_lines(
-        "Recent briefs:",
-        briefs.iter().map(render_brief).collect(),
-        budget,
-    )
-}
-
 fn render_recent_turns_with_budget(
     turn_records: &[TurnRecord],
     messages: &[MessageEnvelope],
@@ -1652,21 +1573,16 @@ fn render_recent_turns_with_budget(
     let latest_operator_for_continuation = (!is_trusted_operator_input(current_message))
         .then(|| latest_trusted_operator_input(messages, current_message))
         .flatten();
-    let mut rendered_turns = messages
+    let projected_messages = messages
         .iter()
         .filter(|message| include_in_prompt_context(message))
         .filter(|message| {
             latest_operator_for_continuation
                 .is_none_or(|operator| !same_message_identity(message, operator))
         })
-        .filter(|message| {
-            briefs
-                .iter()
-                .any(|brief| brief_matches_message(brief, message))
-                || tools
-                    .iter()
-                    .any(|tool| tool_execution_matches_message(tool, message))
-        })
+        .collect::<Vec<_>>();
+    let mut rendered_turns = projected_messages
+        .iter()
         .map(|message| render_turn_projection(message, briefs, tools, None))
         .collect::<Vec<_>>();
 
@@ -1679,12 +1595,75 @@ fn render_recent_turns_with_budget(
             current_work_item,
         ));
     }
+    let matched_messages = messages
+        .iter()
+        .filter(|message| include_in_prompt_context(message))
+        .collect::<Vec<_>>();
+    if let Some(orphan_evidence) =
+        render_unmatched_recent_evidence_turn(briefs, tools, &matched_messages)
+    {
+        rendered_turns.push(orphan_evidence);
+    }
 
     if rendered_turns.is_empty() {
         return None;
     }
 
     render_budgeted_lines("Recent turns:", rendered_turns, budget)
+}
+
+fn render_unmatched_recent_evidence_turn(
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    messages: &[&MessageEnvelope],
+) -> Option<String> {
+    let unmatched_briefs = briefs
+        .iter()
+        .filter(|brief| {
+            !messages
+                .iter()
+                .any(|message| brief_matches_message(brief, message))
+        })
+        .map(|brief| {
+            format!(
+                "    - {:?}: {}",
+                brief.kind,
+                sanitize_inline(&truncate_text(&brief.text, 160))
+            )
+        })
+        .collect::<Vec<_>>();
+    let unmatched_tools = tools
+        .iter()
+        .filter(|tool| {
+            !messages
+                .iter()
+                .any(|message| tool_execution_matches_message(tool, message))
+        })
+        .map(render_recent_tool_execution)
+        .collect::<Vec<_>>();
+
+    if unmatched_briefs.is_empty() && unmatched_tools.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec![
+        "- Turn unmatched recent evidence:".to_string(),
+        "  - trigger: unavailable in recent message window".to_string(),
+    ];
+    if !unmatched_briefs.is_empty() {
+        lines.push("  - produced briefs:".to_string());
+        lines.extend(unmatched_briefs);
+    }
+    if !unmatched_tools.is_empty() {
+        lines.push("  - tool executions:".to_string());
+        lines.extend(
+            unmatched_tools
+                .into_iter()
+                .map(|tool| format!("    {tool}")),
+        );
+    }
+
+    Some(lines.join("\n"))
 }
 
 fn render_turn_records_with_budget(
@@ -2068,14 +2047,6 @@ fn turn_trigger_summary_label(trigger: &crate::types::TurnTriggerSummary) -> &'s
 
 fn sanitize_inline(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn render_recent_tools_with_budget(tools: &[ToolExecutionRecord], budget: usize) -> Option<String> {
-    render_budgeted_lines(
-        "Recent tool executions:",
-        tools.iter().map(render_recent_tool_execution).collect(),
-        budget,
-    )
 }
 
 fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
@@ -2929,11 +2900,11 @@ mod tests {
     }
 
     #[test]
-    fn build_context_includes_latest_result_and_generic_context_contract() {
+    fn build_context_folds_latest_result_into_recent_turns_and_keeps_generic_context_contract() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
-        let prior_message = MessageEnvelope::new(
+        let mut prior_message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
@@ -2943,6 +2914,7 @@ mod tests {
                 text: "fix the failing benchmark".to_string(),
             },
         );
+        prior_message.turn_id = Some("turn-benchmark".to_string());
         storage.append_message(&prior_message).unwrap();
 
         let result_brief = BriefRecord::new(
@@ -2959,7 +2931,7 @@ mod tests {
             agent_id: "default".to_string(),
             work_item_id: Some("work_123".to_string()),
             turn_index: 0,
-            turn_id: None,
+            turn_id: Some("turn-benchmark".to_string()),
             tool_name: "ExecCommand".to_string(),
             created_at: chrono::Utc::now(),
             completed_at: Some(chrono::Utc::now()),
@@ -3007,14 +2979,19 @@ mod tests {
         )
         .unwrap();
 
-        let latest_result = built
+        let recent_turns = built
             .sections
             .iter()
-            .find(|section| section.name == "latest_result")
-            .expect("latest result section should be present");
-        assert!(latest_result
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section should be present");
+        assert!(recent_turns
             .content
             .contains("Updated benchmark summary reporting"));
+        assert!(recent_turns.content.contains("Verified with cargo test"));
+        assert!(!built
+            .sections
+            .iter()
+            .any(|section| section.name == "latest_result"));
 
         let context_contract = built
             .sections
@@ -3027,6 +3004,105 @@ mod tests {
         assert!(context_contract
             .content
             .contains("current work item objective first"));
+    }
+
+    #[test]
+    fn build_context_preserves_orphan_recent_evidence_in_recent_turns_fallback() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        storage
+            .append_message(&MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "Patch the prompt context fallback.".to_string(),
+                },
+            ))
+            .unwrap();
+
+        storage
+            .append_brief(&BriefRecord::new(
+                "default",
+                BriefKind::Result,
+                "Orphan result brief should still be visible.",
+                None,
+                None,
+            ))
+            .unwrap();
+
+        let tool_record = ToolExecutionRecord {
+            id: "tool-orphan".to_string(),
+            agent_id: "default".to_string(),
+            work_item_id: Some("work_orphan".to_string()),
+            turn_index: 0,
+            turn_id: None,
+            tool_name: "ExecCommand".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 123,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": "cargo test context::tests::orphan_recent_evidence"}),
+            output: json!({"exit_code": 0}),
+            summary: "verified orphan recent evidence fallback".to_string(),
+            invocation_surface: None,
+        };
+        storage.append_tool_execution(&tool_record).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue".to_string(),
+            },
+        );
+
+        let session = AgentState::new("default");
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 4,
+                recent_briefs: 4,
+                prompt_budget_estimated_tokens: 8192,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let recent_turns = built
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section should be present");
+        assert!(recent_turns
+            .content
+            .contains("- Turn unmatched recent evidence:"));
+        assert!(recent_turns
+            .content
+            .contains("Orphan result brief should still be visible."));
+        assert!(recent_turns
+            .content
+            .contains("verified orphan recent evidence fallback"));
+        assert!(!built
+            .sections
+            .iter()
+            .any(|section| section.name == "latest_result"));
+        assert!(!built
+            .sections
+            .iter()
+            .any(|section| section.name == "recent_tool_executions"));
     }
 
     #[test]
@@ -3098,9 +3174,39 @@ mod tests {
     }
 
     #[test]
-    fn build_context_does_not_repeat_latest_result_in_recent_briefs() {
+    fn build_context_folds_briefs_into_recent_turns_without_parallel_brief_section() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
+
+        let prior_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "previous request".to_string(),
+            },
+        );
+        storage.append_message(&prior_message).unwrap();
+        storage
+            .append_brief(&BriefRecord::new(
+                "default",
+                BriefKind::Ack,
+                "Acknowledged the request.",
+                Some(prior_message.id.clone()),
+                None,
+            ))
+            .unwrap();
+        storage
+            .append_brief(&BriefRecord::new(
+                "default",
+                BriefKind::Result,
+                "Unique latest result content.",
+                Some(prior_message.id.clone()),
+                None,
+            ))
+            .unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -3112,24 +3218,6 @@ mod tests {
                 text: "continue".to_string(),
             },
         );
-        storage
-            .append_brief(&BriefRecord::new(
-                "default",
-                BriefKind::Ack,
-                "Acknowledged the request.",
-                Some(current_message.id.clone()),
-                None,
-            ))
-            .unwrap();
-        storage
-            .append_brief(&BriefRecord::new(
-                "default",
-                BriefKind::Result,
-                "Unique latest result content.",
-                Some(current_message.id.clone()),
-                None,
-            ))
-            .unwrap();
 
         let session = AgentState::new("default");
         let built = build_context(
@@ -3148,23 +3236,23 @@ mod tests {
         )
         .unwrap();
 
-        let latest_result = built
+        let recent_turns = built
             .sections
             .iter()
-            .find(|section| section.name == "latest_result")
-            .expect("latest result section should be present");
-        assert!(latest_result
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section should be present");
+        assert!(recent_turns
             .content
             .contains("Unique latest result content."));
-        let recent_briefs = built
+        assert!(recent_turns.content.contains("Acknowledged the request."));
+        assert!(!built
             .sections
             .iter()
-            .find(|section| section.name == "recent_briefs")
-            .expect("non-result brief should still be present");
-        assert!(!recent_briefs
-            .content
-            .contains("Unique latest result content."));
-        assert!(recent_briefs.content.contains("Acknowledged the request."));
+            .any(|section| section.name == "recent_briefs"));
+        assert!(!built
+            .sections
+            .iter()
+            .any(|section| section.name == "latest_result"));
     }
 
     #[test]
@@ -3217,15 +3305,15 @@ mod tests {
         )
         .unwrap();
 
-        let recent_messages = built
+        let recent_turns = built
             .sections
             .iter()
-            .find(|section| section.name == "recent_messages")
-            .expect("recent messages section should be present");
-        assert!(!recent_messages.content.contains("message-8"));
-        assert!(!recent_messages.content.contains("message-11"));
-        assert!(recent_messages.content.contains("message-12"));
-        assert!(recent_messages.content.contains("message-19"));
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section should be present");
+        assert!(!recent_turns.content.contains("message-8"));
+        assert!(!recent_turns.content.contains("message-11"));
+        assert!(recent_turns.content.contains("message-12"));
+        assert!(recent_turns.content.contains("message-19"));
     }
 
     #[test]
@@ -3372,7 +3460,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
-        let prior_message = MessageEnvelope::new(
+        let mut prior_message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator { actor_id: None },
@@ -3382,6 +3470,7 @@ mod tests {
                 text: "check whether the wake path is stable".to_string(),
             },
         );
+        prior_message.turn_id = Some("turn-wake-path".to_string());
         storage.append_message(&prior_message).unwrap();
 
         storage
@@ -3399,7 +3488,7 @@ mod tests {
                 agent_id: "default".to_string(),
                 work_item_id: None,
                 turn_index: 0,
-                turn_id: None,
+                turn_id: Some("turn-wake-path".to_string()),
                 tool_name: "ExecCommand".to_string(),
                 created_at: chrono::Utc::now(),
                 completed_at: Some(chrono::Utc::now()),
@@ -3459,19 +3548,21 @@ mod tests {
         assert!(!working_memory.content.contains("Latest verified result"));
         assert!(!working_memory.content.contains("cargo test wake_path"));
 
-        let recent_briefs = built
+        let recent_turns = built
             .sections
             .iter()
-            .find(|section| section.name == "recent_briefs")
-            .expect("recent briefs section should be present");
-        assert!(recent_briefs.content.contains("still inconclusive"));
-
-        let recent_tools = built
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section should be present");
+        assert!(recent_turns.content.contains("still inconclusive"));
+        assert!(recent_turns.content.contains("cargo test wake_path"));
+        assert!(!built
             .sections
             .iter()
-            .find(|section| section.name == "recent_tool_executions")
-            .expect("recent tool executions section should be present");
-        assert!(recent_tools.content.contains("cargo test wake_path"));
+            .any(|section| section.name == "recent_briefs"));
+        assert!(!built
+            .sections
+            .iter()
+            .any(|section| section.name == "recent_tool_executions"));
     }
 
     #[test]
@@ -4362,7 +4453,7 @@ mod tests {
     }
 
     #[test]
-    fn build_context_omits_system_tick_from_recent_messages() {
+    fn build_context_omits_system_tick_from_recent_turns() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
@@ -4410,14 +4501,14 @@ mod tests {
         )
         .unwrap();
 
-        let recent_messages = built
+        let recent_turns = built
             .sections
             .iter()
-            .find(|section| section.name == "recent_messages")
-            .expect("recent_messages section should be present");
-        assert!(recent_messages.content.contains("hello"));
-        assert!(!recent_messages.content.contains("SystemTick"));
-        assert!(!recent_messages.content.contains("wake hint: changed"));
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section should be present");
+        assert!(recent_turns.content.contains("hello"));
+        assert!(!recent_turns.content.contains("SystemTick"));
+        assert!(!recent_turns.content.contains("wake hint: changed"));
     }
 
     #[test]
@@ -4696,12 +4787,12 @@ mod tests {
             .content
             .contains("Preserve this trimmed operator intent."));
 
-        let recent_messages = built
+        let recent_turns = built
             .sections
             .iter()
-            .find(|section| section.name == "recent_messages")
-            .expect("recent_messages section should be present");
-        assert!(!recent_messages
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section should be present");
+        assert!(!recent_turns
             .content
             .contains("Preserve this trimmed operator intent."));
     }
