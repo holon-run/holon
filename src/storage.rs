@@ -439,6 +439,14 @@ impl AppStorage {
                 .append(sink.agent_id.as_deref(), &event)?;
             return Ok(());
         }
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if runtime_db.storage_domain_is_complete("audit_events", "db")? {
+                runtime_db
+                    .audit_events()
+                    .append(self.current_agent_id()?.as_deref(), &event)?;
+                return Ok(());
+            }
+        }
         let line = serde_json::to_string(&event)?;
         let mut bytes = Vec::with_capacity(line.len() + 1);
         bytes.extend_from_slice(line.as_bytes());
@@ -2581,6 +2589,44 @@ mod tests {
         let events = storage.read_recent_events(10).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "db_canonical_event");
+        assert_eq!(events[0].event_seq, 1);
+        let legacy_len_after = std::fs::metadata(&storage.events_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        assert_eq!(legacy_len_after, legacy_len_before);
+    }
+
+    #[test]
+    fn audit_events_use_runtime_db_after_cutover_before_sink_is_enabled() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("agent-test")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        runtime_db
+            .audit_events()
+            .import_legacy(Some("agent-test"), Vec::new())
+            .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+
+        let legacy_len_before = std::fs::metadata(&storage.events_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        storage
+            .append_event(&AuditEvent::new(
+                "db_canonical_bootstrap_event",
+                serde_json::json!({ "source": "bootstrap_gap" }),
+            ))
+            .unwrap();
+
+        let events = storage.read_recent_events(10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "db_canonical_bootstrap_event");
         assert_eq!(events[0].event_seq, 1);
         let legacy_len_after = std::fs::metadata(&storage.events_path)
             .map(|metadata| metadata.len())
