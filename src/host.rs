@@ -176,7 +176,7 @@ impl RuntimeHost {
         seed_builtin_templates_for_home(&config.home_dir)?;
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-        let registry = RuntimeRegistry::new(config)?;
+        let registry = RuntimeRegistry::new(config, runtime_db.clone())?;
         let host = Self {
             inner: Arc::new(HostInner {
                 registry,

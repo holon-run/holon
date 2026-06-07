@@ -343,7 +343,7 @@ impl AppStorage {
     }
 
     fn current_agent_id(&self) -> Result<Option<String>> {
-        if let Some(agent) = self.read_agent()? {
+        if let Some(agent) = self.read_agent_file()? {
             return Ok(Some(agent.id));
         }
         let parent_is_agents_dir = self
@@ -670,15 +670,24 @@ impl AppStorage {
     }
 
     pub fn append_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.workspace_entries().upsert(entry)?;
+        }
         self.append_jsonl(&self.workspaces_path, entry)?;
         self.mark_memory_index_dirty()
     }
 
     pub fn append_workspace_occupancy(&self, entry: &WorkspaceOccupancyRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.workspace_occupancies().upsert(entry)?;
+        }
         self.append_jsonl(&self.occupancies_path, entry)
     }
 
     pub fn append_agent_identity(&self, entry: &AgentIdentityRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.agent_identities().upsert(entry)?;
+        }
         self.append_jsonl(&self.agent_identities_path, entry)
     }
 
@@ -710,6 +719,10 @@ impl AppStorage {
     }
 
     pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.agent_states().upsert(agent)?;
+            return Ok(());
+        }
         let content = serde_json::to_vec_pretty(agent)?;
         let tmp_path = self
             .agent_path
@@ -726,6 +739,15 @@ impl AppStorage {
     }
 
     pub fn read_agent(&self) -> Result<Option<AgentState>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db.agent_states().latest(&agent_id);
+            }
+        }
+        self.read_agent_file()
+    }
+
+    fn read_agent_file(&self) -> Result<Option<AgentState>> {
         let path = if self.agent_path.exists() {
             &self.agent_path
         } else {
@@ -1085,6 +1107,12 @@ impl AppStorage {
     }
 
     pub fn read_recent_workspace_entries(&self, limit: usize) -> Result<Vec<WorkspaceEntry>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(take_recent(
+                runtime_db.workspace_entries().latest_all()?,
+                limit,
+            ));
+        }
         read_recent_jsonl(&self.workspaces_path, limit)
     }
 
@@ -1092,10 +1120,22 @@ impl AppStorage {
         &self,
         limit: usize,
     ) -> Result<Vec<WorkspaceOccupancyRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(take_recent(
+                runtime_db.workspace_occupancies().latest_all()?,
+                limit,
+            ));
+        }
         read_recent_jsonl(&self.occupancies_path, limit)
     }
 
     pub fn read_recent_agent_identities(&self, limit: usize) -> Result<Vec<AgentIdentityRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return Ok(take_recent(
+                runtime_db.agent_identities().latest_all()?,
+                limit,
+            ));
+        }
         read_recent_jsonl(&self.agent_identities_path, limit)
     }
 
@@ -2137,6 +2177,17 @@ fn read_recent_jsonl<T: DeserializeOwned>(path: &Path, limit: usize) -> Result<V
         .into_iter()
         .map(|line| serde_json::from_str::<T>(&line).map_err(Into::into))
         .collect()
+}
+
+fn take_recent<T>(mut records_desc: Vec<T>, limit: usize) -> Vec<T> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    if records_desc.len() > limit {
+        records_desc.truncate(limit);
+    }
+    records_desc.reverse();
+    records_desc
 }
 
 fn read_jsonl_from<T: DeserializeOwned>(

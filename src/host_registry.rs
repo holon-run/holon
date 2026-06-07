@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use crate::{
     config::AppConfig,
     ids,
+    runtime_db::RuntimeDb,
     storage::AppStorage,
     system::WorkspaceAccessMode,
     types::{AgentIdentityRecord, WorkspaceEntry, WorkspaceOccupancyRecord},
@@ -24,8 +25,40 @@ struct RuntimeRegistryInner {
 }
 
 impl RuntimeRegistry {
-    pub(crate) fn new(config: AppConfig) -> Result<Self> {
+    pub(crate) fn new(config: AppConfig, runtime_db: RuntimeDb) -> Result<Self> {
         let host_storage = AppStorage::new(config.home_dir.join("host"))?;
+        let legacy_workspace_entries = host_storage.read_recent_workspace_entries(usize::MAX)?;
+        let legacy_workspace_occupancies =
+            host_storage.read_recent_workspace_occupancies(usize::MAX)?;
+        let legacy_agent_identities = host_storage.read_recent_agent_identities(usize::MAX)?;
+        if !runtime_db.storage_domain_is_complete("workspace_entries", "db")? {
+            runtime_db
+                .workspace_entries()
+                .import_legacy(legacy_workspace_entries.clone())?;
+        } else {
+            for record in &legacy_workspace_entries {
+                runtime_db.workspace_entries().upsert(record)?;
+            }
+        }
+        if !runtime_db.storage_domain_is_complete("workspace_occupancies", "db")? {
+            runtime_db
+                .workspace_occupancies()
+                .import_legacy(legacy_workspace_occupancies.clone())?;
+        } else {
+            for record in &legacy_workspace_occupancies {
+                runtime_db.workspace_occupancies().upsert(record)?;
+            }
+        }
+        if !runtime_db.storage_domain_is_complete("agent_identities", "db")? {
+            runtime_db
+                .agent_identities()
+                .import_legacy(legacy_agent_identities.clone())?;
+        } else {
+            for record in &legacy_agent_identities {
+                runtime_db.agent_identities().upsert(record)?;
+            }
+        }
+        host_storage.enable_scheduler_control_plane_db(runtime_db)?;
         let agent_identities = host_storage
             .latest_agent_identities()?
             .into_iter()

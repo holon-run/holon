@@ -442,6 +442,26 @@ fn prepare_runtime_storage(
     }
 
     let recovered_agent_for_import = storage.read_agent()?;
+    if !storage_domain_complete(&runtime_db, "agent_states")? {
+        runtime_db
+            .agent_states()
+            .import_legacy(recovered_agent_for_import.clone())?;
+    }
+    if !storage_domain_complete(&runtime_db, "workspace_entries")? {
+        runtime_db
+            .workspace_entries()
+            .import_legacy(storage.read_recent_workspace_entries(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "workspace_occupancies")? {
+        runtime_db
+            .workspace_occupancies()
+            .import_legacy(storage.read_recent_workspace_occupancies(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "agent_identities")? {
+        runtime_db
+            .agent_identities()
+            .import_legacy(storage.read_recent_agent_identities(usize::MAX)?)?;
+    }
     if !storage_domain_complete(&runtime_db, "work_items")? {
         let mut legacy_work_items = storage.read_recent_work_items(usize::MAX)?;
         for record in &mut legacy_work_items {
