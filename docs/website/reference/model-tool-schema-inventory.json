@@ -287,16 +287,26 @@
       "stability": "stable"
     },
     {
-      "description": "List active tasks for the current agent as compact digest entries.",
+      "description": "List active tasks with bounded output.",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "limit": {
+            "default": null,
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
         "required": [],
         "type": "object"
       },
-      "name": "TaskList",
+      "name": "ListTasks",
       "related_surfaces": [
         "CLI task/process wrappers",
         "HTTP control-plane task APIs"
@@ -305,7 +315,7 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "Vec<TaskDigest>"
+        "success_result": "ListTasksResult"
       },
       "stability": "stable"
     },

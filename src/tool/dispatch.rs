@@ -234,7 +234,7 @@ fn tool_invocation_surface(call: &ToolCall) -> Option<String> {
 }
 
 fn is_model_facing_tool(name: &str) -> bool {
-    name != "Sleep"
+    name != "Sleep" && name != "TaskList"
 }
 
 fn tool_result_summary(result: &ToolResult) -> String {
@@ -342,6 +342,7 @@ mod tests {
             "AgentGet",
             "WaitFor",
             "SpawnAgent",
+            "ListTasks",
             "TaskInput",
             "TaskOutput",
             "CreateWorkItem",
@@ -610,6 +611,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(names.iter().any(|name| name == "TaskOutput"));
+        assert!(names.iter().any(|name| name == "ListTasks"));
         assert!(names.iter().any(|name| name == "TaskInput"));
         assert!(names.iter().any(|name| name == "CreateWorkItem"));
         assert!(names.iter().any(|name| name == "PickWorkItem"));
@@ -621,6 +623,7 @@ mod tests {
         assert!(names.iter().any(|name| name == "MemoryGet"));
         assert!(names.iter().all(|name| name != "CreateExternalTrigger"));
         assert!(names.iter().all(|name| name != "CancelExternalTrigger"));
+        assert!(names.iter().all(|name| name != "TaskList"));
         assert!(names.iter().any(|name| name == "ApplyPatch"));
         assert!(names.iter().any(|name| name == "WebFetch"));
         assert!(names.iter().any(|name| name == "WebSearch"));
@@ -642,6 +645,8 @@ mod tests {
         assert_eq!(family_for("Sleep"), ToolCapabilityFamily::CoreAgent);
         assert_eq!(family_for("MemorySearch"), ToolCapabilityFamily::CoreAgent);
         assert_eq!(family_for("MemoryGet"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(family_for("ListTasks"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(family_for("TaskList"), ToolCapabilityFamily::CoreAgent);
         assert_eq!(
             family_for("CreateWorkItem"),
             ToolCapabilityFamily::CoreAgent
@@ -684,6 +689,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(names.iter().all(|name| name != "Sleep"));
+        assert!(names.iter().all(|name| name != "TaskList"));
         assert_eq!(
             registry.family_for_tool("Sleep").unwrap(),
             Some(ToolCapabilityFamily::CoreAgent)

@@ -66,11 +66,15 @@ Holon-native built-in tool names should default to:
 
 - PascalCase
 - no namespace prefix
+- action-first names:
+  - `List*` for collection reads
+  - `Get*` for single-resource or snapshot reads
+  - explicit verbs such as `Send*`, `Stop*`, `Create*`, and `Update*` for
+    control or mutation
 
 Examples of the intended direction:
 
-- `CreateTask`
-- `TaskList`
+- `ListTasks`
 - `CreateExternalTrigger`
 - `UseWorkspace`
 - `ExecCommand`

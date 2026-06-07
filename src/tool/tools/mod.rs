@@ -52,6 +52,7 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         enqueue::definition()?,
         spawn_agent::definition()?,
         task_list::definition()?,
+        task_list::legacy_definition()?,
         task_status::definition()?,
         task_input::definition()?,
         task_output::definition()?,
@@ -108,6 +109,9 @@ pub(crate) async fn execute_builtin_tool(
         }
         task_list::NAME => {
             task_list::execute(runtime, agent_id, authority_class, &call.input).await
+        }
+        task_list::LEGACY_NAME => {
+            task_list::execute_legacy(runtime, agent_id, authority_class, &call.input).await
         }
         task_status::NAME => {
             task_status::execute(runtime, agent_id, authority_class, &call.input).await

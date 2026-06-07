@@ -86,7 +86,7 @@ scheduler blocking decisions.
 
 | Tool | Purpose |
 |------|---------|
-| `TaskList` | Compact active-task digest (non-terminal tasks only) |
+| `ListTasks` | Compact active-task digest (non-terminal tasks only) with bounded output |
 | `TaskStatus` | Single-task lifecycle snapshot with metadata |
 | `TaskOutput` | Bounded output preview with optional `block=true` |
 | `TaskInput` | Send stdin/follow-up input to an interactive task |
@@ -94,7 +94,7 @@ scheduler blocking decisions.
 
 **Key contract:**
 
-- `TaskList` excludes terminal tasks; use `TaskStatus` for historical detail.
+- `ListTasks` excludes terminal tasks; use `TaskStatus` for historical detail.
 - `TaskOutput` returns a bounded `output_preview` plus artifact refs for full
   output; it is for inspection, not polling.
 - `TaskInput` accepts input only for tasks created with interactive
