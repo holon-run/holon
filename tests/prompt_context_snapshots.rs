@@ -348,19 +348,30 @@ fn sanitize_file_stem(input: &str) -> String {
 }
 
 fn sanitize_prompt_dump(rendered: &str) -> String {
-    rendered
-        .split_whitespace()
-        .map(|token| {
-            if token.contains("/callbacks/wake/") {
-                "$WAKE_CALLBACK_URL".to_string()
-            } else {
-                token.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace(" ## ", "\n\n## ")
-        .replace(" - ", "\n- ")
+    let mut sanitized = String::with_capacity(rendered.len());
+    for token in rendered.split_inclusive(char::is_whitespace) {
+        let token_body = token.trim_end_matches(char::is_whitespace);
+        let trailing_whitespace = &token[token_body.len()..];
+        if token_body.contains("/callbacks/") {
+            sanitized.push_str("$CALLBACK_URL");
+        } else {
+            sanitized.push_str(token_body);
+        }
+        sanitized.push_str(trailing_whitespace);
+    }
+    sanitized
+}
+
+#[test]
+fn sanitize_prompt_dump_preserves_formatting_and_redacts_callback_tokens() {
+    let rendered = "## default_external_ingress\n  - url: http://127.0.0.1:7878/callbacks/wake/wake-secret\n\t- enqueue: http://127.0.0.1:7878/callbacks/enqueue/enqueue-secret\n  - keep: http://127.0.0.1:7878/not-secret\n";
+
+    let sanitized = sanitize_prompt_dump(rendered);
+
+    assert_eq!(
+        sanitized,
+        "## default_external_ingress\n  - url: $CALLBACK_URL\n\t- enqueue: $CALLBACK_URL\n  - keep: http://127.0.0.1:7878/not-secret\n"
+    );
 }
 
 fn append_work_item_todo(
