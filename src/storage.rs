@@ -315,6 +315,17 @@ impl AppStorage {
                     .max_transcript_seq(agent_id.as_deref())?,
             );
         }
+        {
+            let mut counter = self
+                .event_seq_counter
+                .lock()
+                .map_err(|_| anyhow::anyhow!("event sequence counter mutex poisoned"))?;
+            *counter = (*counter).max(
+                runtime_db
+                    .audit_events()
+                    .max_event_seq(agent_id.as_deref())?,
+            );
+        }
         let mut guard = self
             .scheduler_control_plane_db
             .lock()
@@ -396,9 +407,24 @@ impl AppStorage {
             briefs: file_activity_marker(&self.briefs_path)?,
             tasks: file_activity_marker(&self.tasks_path)?,
             tools: file_activity_marker(&self.tools_path)?,
-            events: file_activity_marker(&self.events_path)?,
+            events: self.audit_events_activity_marker()?,
             transcript: file_activity_marker(&self.transcript_path)?,
         })
+    }
+
+    fn audit_events_activity_marker(&self) -> Result<FileActivityMarker> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            let latest_seq = runtime_db
+                .audit_events()
+                .latest_event_seq(self.current_agent_id()?.as_deref())?
+                .unwrap_or(0);
+            return Ok(FileActivityMarker {
+                exists: latest_seq > 0,
+                len: latest_seq,
+                modified_unix_ms: u128::from(latest_seq),
+            });
+        }
+        file_activity_marker(&self.events_path)
     }
 
     pub fn append_event(&self, event: &AuditEvent) -> Result<()> {
@@ -417,11 +443,6 @@ impl AppStorage {
             .map_err(|_| anyhow::anyhow!("event sequence counter mutex poisoned"))?;
         *counter += 1;
         event.event_seq = *counter;
-        let line = serde_json::to_string(&event)?;
-        let mut bytes = Vec::with_capacity(line.len() + 1);
-        bytes.extend_from_slice(line.as_bytes());
-        bytes.push(b'\n');
-        append_jsonl_bytes(&self.events_path, &bytes)?;
         if let Some(sink) = self
             .audit_event_index
             .lock()
@@ -431,7 +452,21 @@ impl AppStorage {
             sink.runtime_db
                 .audit_events()
                 .append(sink.agent_id.as_deref(), &event)?;
+            return Ok(());
         }
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if runtime_db.storage_domain_is_complete("audit_events", "db")? {
+                runtime_db
+                    .audit_events()
+                    .append(self.current_agent_id()?.as_deref(), &event)?;
+                return Ok(());
+            }
+        }
+        let line = serde_json::to_string(&event)?;
+        let mut bytes = Vec::with_capacity(line.len() + 1);
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+        append_jsonl_bytes(&self.events_path, &bytes)?;
         Ok(())
     }
 
@@ -702,10 +737,24 @@ impl AppStorage {
     }
 
     pub fn read_recent_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .audit_events()
+                .recent(self.current_agent_id()?.as_deref(), limit);
+        }
         read_recent_jsonl(&self.events_path, limit)
     }
 
+    pub(crate) fn read_legacy_events_jsonl(&self) -> Result<Vec<AuditEvent>> {
+        read_recent_jsonl(&self.events_path, usize::MAX)
+    }
+
     pub fn latest_event_seq(&self) -> Result<Option<u64>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .audit_events()
+                .latest_event_seq(self.current_agent_id()?.as_deref());
+        }
         let mut latest = None;
         scan_jsonl_reverse::<AuditEvent, _>(&self.events_path, |event| {
             latest = Some(event.event_seq);
@@ -725,6 +774,65 @@ impl AppStorage {
     where
         F: FnMut(&AuditEvent) -> bool,
     {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if limit == 0 {
+                return Ok(EventLogPage {
+                    events: Vec::new(),
+                    has_older: false,
+                    has_newer: false,
+                });
+            }
+            let descending = matches!(order, EventLogPageOrder::Desc);
+            let mut page = Vec::with_capacity(limit.saturating_add(1).min(1024));
+            let agent_id = self.current_agent_id()?;
+            let chunk_limit = limit.saturating_add(1).clamp(64, 1024);
+            let mut next_before_seq = before_seq;
+            let mut next_after_seq = after_seq;
+            loop {
+                let chunk = runtime_db.audit_events().range(
+                    agent_id.as_deref(),
+                    next_before_seq,
+                    next_after_seq,
+                    descending,
+                    chunk_limit,
+                )?;
+                let Some(last_seq) = chunk.last().map(|event| event.event_seq) else {
+                    break;
+                };
+                for event in chunk {
+                    if matches(&event) {
+                        page.push(event);
+                    }
+                    if page.len() > limit {
+                        break;
+                    }
+                }
+                if page.len() > limit {
+                    break;
+                }
+                if descending {
+                    next_before_seq = Some(last_seq);
+                } else {
+                    next_after_seq = Some(last_seq);
+                }
+            }
+            let has_more = page.len() > limit;
+            if has_more {
+                page.truncate(limit);
+            }
+            return Ok(match order {
+                EventLogPageOrder::Desc => EventLogPage {
+                    events: page,
+                    has_older: has_more,
+                    has_newer: false,
+                },
+                EventLogPageOrder::Asc => EventLogPage {
+                    events: page,
+                    has_older: false,
+                    has_newer: has_more,
+                },
+            });
+        }
         if limit == 0 || !self.events_path.exists() {
             return Ok(EventLogPage {
                 events: Vec::new(),
@@ -2460,6 +2568,85 @@ mod tests {
         assert_eq!(indexed.len(), 1);
         assert_eq!(indexed[0].kind, "live_event");
         assert_eq!(indexed[0].event_seq, 1);
+    }
+
+    #[test]
+    fn audit_events_use_runtime_db_after_cutover_without_live_jsonl_append() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("agent-test")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        runtime_db
+            .audit_events()
+            .import_legacy(Some("agent-test"), Vec::new())
+            .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+        storage
+            .enable_audit_event_index(runtime_db.clone(), Some("agent-test".to_string()))
+            .unwrap();
+
+        let legacy_len_before = std::fs::metadata(&storage.events_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        storage
+            .append_event(&AuditEvent::new(
+                "db_canonical_event",
+                serde_json::json!({ "source": "runtime_db" }),
+            ))
+            .unwrap();
+
+        let events = storage.read_recent_events(10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "db_canonical_event");
+        assert_eq!(events[0].event_seq, 1);
+        let legacy_len_after = std::fs::metadata(&storage.events_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        assert_eq!(legacy_len_after, legacy_len_before);
+    }
+
+    #[test]
+    fn audit_events_use_runtime_db_after_cutover_before_sink_is_enabled() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("agent-test")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        runtime_db
+            .audit_events()
+            .import_legacy(Some("agent-test"), Vec::new())
+            .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+
+        let legacy_len_before = std::fs::metadata(&storage.events_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        storage
+            .append_event(&AuditEvent::new(
+                "db_canonical_bootstrap_event",
+                serde_json::json!({ "source": "bootstrap_gap" }),
+            ))
+            .unwrap();
+
+        let events = storage.read_recent_events(10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "db_canonical_bootstrap_event");
+        assert_eq!(events[0].event_seq, 1);
+        let legacy_len_after = std::fs::metadata(&storage.events_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        assert_eq!(legacy_len_after, legacy_len_before);
     }
 
     #[test]

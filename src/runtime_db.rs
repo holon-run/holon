@@ -1196,19 +1196,128 @@ impl AuditEventSink<'_> {
     }
 
     pub fn import_legacy(&self, agent_id: Option<&str>, events: Vec<AuditEvent>) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete("audit_events", "jsonl+db-index")?
-        {
+        if self.db.storage_domain_is_complete("audit_events", "db")? {
             return Ok(());
         }
         self.db
-            .run_storage_domain_import("audit_events", "jsonl", "jsonl+db-index", |tx| {
+            .run_storage_domain_import("audit_events", "jsonl", "db", |tx| {
                 for event in &events {
                     insert_audit_event_tx(tx, agent_id, event)?;
                 }
                 Ok(serde_json::json!({ "imported_records": events.len() }))
             })
+    }
+
+    pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<AuditEvent>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut sql = String::from("SELECT data_json FROM audit_events");
+        if agent_id.is_some() {
+            sql.push_str(" WHERE agent_id = ?1");
+        }
+        sql.push_str(" ORDER BY COALESCE(event_seq, 0) DESC, created_at DESC LIMIT ?");
+        let mut statement = connection.prepare(&sql)?;
+        let mut events = if let Some(agent_id) = agent_id {
+            statement
+                .query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?
+                .map(|row| {
+                    let payload = row?;
+                    serde_json::from_str(&payload).map_err(Into::into)
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            statement
+                .query_map(params![limit], |row| row.get::<_, String>(0))?
+                .map(|row| {
+                    let payload = row?;
+                    serde_json::from_str(&payload).map_err(Into::into)
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        events.reverse();
+        Ok(events)
+    }
+
+    pub fn latest_event_seq(&self, agent_id: Option<&str>) -> Result<Option<u64>> {
+        let connection = self.db.connection()?;
+        let value = if let Some(agent_id) = agent_id {
+            connection.query_row(
+                "SELECT MAX(event_seq) FROM audit_events WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )?
+        } else {
+            connection.query_row("SELECT MAX(event_seq) FROM audit_events", [], |row| {
+                row.get::<_, Option<i64>>(0)
+            })?
+        };
+        value
+            .map(|seq| u64::try_from(seq).context("stored audit event sequence is negative"))
+            .transpose()
+    }
+
+    pub fn max_event_seq(&self, agent_id: Option<&str>) -> Result<u64> {
+        Ok(self.latest_event_seq(agent_id)?.unwrap_or(0))
+    }
+
+    pub fn range(
+        &self,
+        agent_id: Option<&str>,
+        before_seq: Option<u64>,
+        after_seq: Option<u64>,
+        descending: bool,
+        limit: usize,
+    ) -> Result<Vec<AuditEvent>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let lower = i64::try_from(after_seq.unwrap_or(0))
+            .context("audit event lower cursor exceeds SQLite integer range")?;
+        let upper = before_seq
+            .map(|seq| {
+                i64::try_from(seq).context("audit event upper cursor exceeds SQLite integer range")
+            })
+            .transpose()?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut sql =
+            String::from("SELECT data_json FROM audit_events WHERE COALESCE(event_seq, 0) > ?1");
+        if upper.is_some() {
+            sql.push_str(" AND COALESCE(event_seq, 0) < ?2");
+        }
+        if agent_id.is_some() {
+            let param_index = if upper.is_some() { 3 } else { 2 };
+            sql.push_str(&format!(" AND agent_id = ?{param_index}"));
+        }
+        if descending {
+            sql.push_str(" ORDER BY COALESCE(event_seq, 0) DESC, created_at DESC");
+        } else {
+            sql.push_str(" ORDER BY COALESCE(event_seq, 0) ASC, created_at ASC");
+        }
+        let limit_param_index = 2 + usize::from(upper.is_some()) + usize::from(agent_id.is_some());
+        sql.push_str(&format!(" LIMIT ?{limit_param_index}"));
+        let mut statement = connection.prepare(&sql)?;
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(lower)];
+        if let Some(upper) = upper {
+            params.push(Box::new(upper));
+        }
+        if let Some(agent_id) = agent_id {
+            params.push(Box::new(agent_id.to_owned()));
+        }
+        params.push(Box::new(limit));
+        let events = statement
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                row.get::<_, String>(0)
+            })?
+            .map(|row| {
+                let payload = row?;
+                serde_json::from_str(&payload).map_err(Into::into)
+            })
+            .collect();
+        events
     }
 
     pub fn page_after(
@@ -1227,13 +1336,15 @@ impl AuditEventSink<'_> {
         if agent_id.is_some() {
             sql.push_str(" AND agent_id = ?2");
         }
-        sql.push_str(" ORDER BY event_seq ASC, created_at ASC LIMIT ");
-        sql.push_str(&limit.to_string());
+        let limit_param_index = if agent_id.is_some() { 3 } else { 2 };
+        sql.push_str(&format!(
+            " ORDER BY event_seq ASC, created_at ASC LIMIT ?{limit_param_index}"
+        ));
         let mut statement = connection.prepare(&sql)?;
         if let Some(agent_id) = agent_id {
             let after_event_seq = i64::try_from(after_event_seq)
                 .context("audit event cursor exceeds SQLite integer range")?;
-            let rows = statement.query_map(params![after_event_seq, agent_id], |row| {
+            let rows = statement.query_map(params![after_event_seq, agent_id, limit], |row| {
                 row.get::<_, String>(0)
             })?;
             rows.map(|row| {
@@ -1244,8 +1355,9 @@ impl AuditEventSink<'_> {
         } else {
             let after_event_seq = i64::try_from(after_event_seq)
                 .context("audit event cursor exceeds SQLite integer range")?;
-            let rows =
-                statement.query_map(params![after_event_seq], |row| row.get::<_, String>(0))?;
+            let rows = statement.query_map(params![after_event_seq, limit], |row| {
+                row.get::<_, String>(0)
+            })?;
             rows.map(|row| {
                 let payload = row?;
                 serde_json::from_str(&payload).map_err(Into::into)
@@ -3109,8 +3221,8 @@ impl RuntimeDb {
             },
             ExpectedStorageDomain {
                 domain: "audit_events",
-                canonical_source: "jsonl+db-index",
-                legacy_jsonl_posture: LegacyJsonlPosture::AuditMirror,
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
             },
         ]
     }
@@ -3789,6 +3901,46 @@ mod tests {
     }
 
     #[test]
+    fn audit_event_import_failure_is_retryable_and_idempotent() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut invalid = AuditEvent::new("legacy_audit", serde_json::json!({ "n": 1 }));
+        invalid.id = "audit-1".into();
+        invalid.event_seq = u64::MAX;
+
+        let error = db
+            .audit_events()
+            .import_legacy(Some("agent-a"), vec![invalid])
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("importing legacy storage domain audit_events"));
+        let failed = db
+            .storage_domain("audit_events")?
+            .expect("failed storage domain row");
+        assert_eq!(failed.import_status, "failed");
+
+        let mut valid = AuditEvent::new("legacy_audit", serde_json::json!({ "n": 1 }));
+        valid.id = "audit-1".into();
+        valid.event_seq = 7;
+        db.audit_events()
+            .import_legacy(Some("agent-a"), vec![valid.clone()])?;
+        db.audit_events()
+            .import_legacy(Some("agent-a"), vec![valid])?;
+
+        let complete = db
+            .storage_domain("audit_events")?
+            .expect("complete storage domain row");
+        assert_eq!(complete.import_status, "complete");
+        assert_eq!(complete.canonical_source, "db");
+        let imported = db.audit_events().recent(Some("agent-a"), 10)?;
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].id, "audit-1");
+        assert_eq!(imported[0].event_seq, 7);
+        Ok(())
+    }
+
+    #[test]
     fn cutover_diagnostics_detect_missing_failed_and_mixed_sources() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -3809,7 +3961,7 @@ mod tests {
             )?;
             upsert_storage_domain(tx, "external_triggers", "complete", "db", None)?;
             upsert_storage_domain(tx, "evidence", "complete", "db", None)?;
-            upsert_storage_domain(tx, "audit_events", "complete", "jsonl+db-index", None)?;
+            upsert_storage_domain(tx, "audit_events", "complete", "db", None)?;
             Ok(())
         })?;
 
