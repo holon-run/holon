@@ -4787,15 +4787,14 @@ mod tests {
             .content
             .contains("Preserve this trimmed operator intent."));
 
-        if let Some(recent_turns) = built
+        let recent_turns = built
             .sections
             .iter()
             .find(|section| section.name == "recent_turns")
-        {
-            assert!(!recent_turns
-                .content
-                .contains("Preserve this trimmed operator intent."));
-        }
+            .expect("recent_turns section should be present");
+        assert!(!recent_turns
+            .content
+            .contains("Preserve this trimmed operator intent."));
     }
 
     #[test]
