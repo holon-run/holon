@@ -407,9 +407,24 @@ impl AppStorage {
             briefs: file_activity_marker(&self.briefs_path)?,
             tasks: file_activity_marker(&self.tasks_path)?,
             tools: file_activity_marker(&self.tools_path)?,
-            events: file_activity_marker(&self.events_path)?,
+            events: self.audit_events_activity_marker()?,
             transcript: file_activity_marker(&self.transcript_path)?,
         })
+    }
+
+    fn audit_events_activity_marker(&self) -> Result<FileActivityMarker> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            let latest_seq = runtime_db
+                .audit_events()
+                .latest_event_seq(self.current_agent_id()?.as_deref())?
+                .unwrap_or(0);
+            return Ok(FileActivityMarker {
+                exists: latest_seq > 0,
+                len: latest_seq,
+                modified_unix_ms: u128::from(latest_seq),
+            });
+        }
+        file_activity_marker(&self.events_path)
     }
 
     pub fn append_event(&self, event: &AuditEvent) -> Result<()> {
