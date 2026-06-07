@@ -102,18 +102,18 @@ pub struct StorageDomainSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacyJsonlPosture {
     Disabled,
-    CompatExport,
+    DebugExportOnly,
     AuditMirror,
-    ImportSource,
+    LegacyImportOnly,
 }
 
 impl LegacyJsonlPosture {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
-            Self::CompatExport => "compat_export",
+            Self::DebugExportOnly => "debug_export_only",
             Self::AuditMirror => "audit_mirror",
-            Self::ImportSource => "import_source",
+            Self::LegacyImportOnly => "legacy_import_only",
         }
     }
 }
@@ -471,6 +471,28 @@ impl ExternalTriggerRepository<'_> {
              ORDER BY created_at DESC, external_trigger_id ASC",
         )?;
         let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_external_trigger_payload(&row?))
+            .collect()
+    }
+
+    pub fn latest_for_agent_limit(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ExternalTriggerRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM external_triggers
+             WHERE target_agent_id = ?1
+             ORDER BY created_at DESC, external_trigger_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
         rows.map(|row| decode_external_trigger_payload(&row?))
             .collect()
     }
@@ -3660,52 +3682,52 @@ impl RuntimeDb {
             ExpectedStorageDomain {
                 domain: "agent_states",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "workspace_entries",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "workspace_occupancies",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "agent_identities",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "work_items",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "tasks",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "external_triggers",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "wait_conditions",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "queue_entries",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "timers",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::CompatExport,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "turn_records",
@@ -3715,22 +3737,22 @@ impl RuntimeDb {
             ExpectedStorageDomain {
                 domain: "messages",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "transcript_entries",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "evidence",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: "audit_events",
                 canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::ImportSource,
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
         ]
     }
@@ -4764,6 +4786,44 @@ mod tests {
                 .count(),
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn external_trigger_latest_for_agent_limit_uses_bounded_recent_results() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.external_triggers().import_legacy(Vec::new())?;
+
+        for index in 0..4 {
+            db.external_triggers().upsert(&external_trigger_record(
+                &format!("trigger-{index}"),
+                "agent-a",
+                ExternalTriggerStatus::Revoked,
+                index,
+            ))?;
+        }
+        db.external_triggers().upsert(&external_trigger_record(
+            "trigger-other-agent",
+            "agent-b",
+            ExternalTriggerStatus::Revoked,
+            10,
+        ))?;
+
+        let recent = db
+            .external_triggers()
+            .latest_for_agent_limit("agent-a", 2)?;
+        assert_eq!(
+            recent
+                .into_iter()
+                .map(|record| record.external_trigger_id)
+                .collect::<Vec<_>>(),
+            vec!["trigger-3", "trigger-2"]
+        );
+        assert!(db
+            .external_triggers()
+            .latest_for_agent_limit("agent-a", 0)?
+            .is_empty());
         Ok(())
     }
 

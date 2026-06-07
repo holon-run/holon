@@ -660,7 +660,7 @@ pub async fn worktree_subagent_task_creates_dedicated_per_task_worktree() -> Res
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
-    wait_until(|| {
+    wait_until_async_for(Duration::from_secs(10), || async {
         let briefs = runtime.storage().read_recent_briefs(20)?;
         Ok(briefs
             .iter()
@@ -786,7 +786,7 @@ pub async fn worktree_child_agent_task_records_workspace_mode() -> Result<()> {
             holon::types::ChildAgentWorkspaceMode::Worktree,
         )
         .await?;
-    wait_until(|| {
+    wait_until_async_for(Duration::from_secs(10), || async {
         let briefs = runtime.storage().read_recent_briefs(20)?;
         Ok(briefs
             .iter()
@@ -865,7 +865,7 @@ pub async fn worktree_subagent_task_returns_metadata_to_parent_session() -> Resu
         )
         .await?;
 
-    wait_until(|| {
+    wait_until_async_for(Duration::from_secs(10), || async {
         let briefs = runtime.storage().read_recent_briefs(20)?;
         Ok(briefs.iter().any(|brief| {
             brief.text.contains("Worktree path:")
@@ -943,7 +943,7 @@ pub async fn worktree_subagent_task_auto_removes_worktree_when_no_changes_wt104(
         .await?;
 
     // Wait for task to complete
-    wait_until(|| {
+    wait_until_async_for(Duration::from_secs(10), || async {
         let tasks = runtime.storage().latest_task_records()?;
         Ok(tasks.iter().any(|record| {
             record.id == task.id && record.status == holon::types::TaskStatus::Completed

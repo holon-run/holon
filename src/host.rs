@@ -701,13 +701,26 @@ impl RuntimeHost {
         })
     }
 
-    pub fn public_agent_activity_snapshots(&self) -> Result<Vec<PublicAgentActivitySnapshot>> {
+    pub async fn public_agent_activity_snapshots(
+        &self,
+    ) -> Result<Vec<PublicAgentActivitySnapshot>> {
         self.ensure_default_agent_identity()?;
         let mut snapshots = Vec::new();
         for identity in self.agent_identity_records()?.into_iter().filter(|record| {
             record.status == AgentRegistryStatus::Active
                 && record.visibility == AgentVisibility::Public
         }) {
+            if let Some(runtime) = self.loaded_runtime(&identity.agent_id).await {
+                let state = runtime.agent_state().await?;
+                let active_task_count = runtime.active_tasks(usize::MAX).await?.len();
+                snapshots.push(PublicAgentActivitySnapshot {
+                    agent_id: identity.agent_id,
+                    status: state.status.clone(),
+                    active_task_count,
+                    last_runtime_failure: state.last_runtime_failure,
+                });
+                continue;
+            }
             let storage = AppStorage::new(self.agent_data_dir(&identity.agent_id))?;
             let state = storage
                 .read_agent()?
@@ -1841,7 +1854,7 @@ mod tests {
             .expect("release-bot should still be listed");
         assert_eq!(
             loaded_release_bot.scheduling_posture.posture,
-            AgentSchedulingPosture::Unknown
+            AgentSchedulingPosture::Idle
         );
 
         host.unload_runtime("release-bot").await;

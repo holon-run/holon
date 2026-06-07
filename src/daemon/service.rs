@@ -270,7 +270,7 @@ impl RuntimeServiceHandle {
 }
 
 pub async fn runtime_activity_summary(host: &RuntimeHost) -> Result<RuntimeActivitySummary> {
-    let agents = host.public_agent_activity_snapshots()?;
+    let agents = host.public_agent_activity_snapshots().await?;
     let active_task_count = agents
         .iter()
         .map(|agent| agent.active_task_count)

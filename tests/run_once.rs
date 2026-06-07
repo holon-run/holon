@@ -924,7 +924,7 @@ async fn run_once_no_wait_stops_unfinished_command_tasks_before_exit() -> Result
     let workspace_dir = tempdir()?.keep();
     let host = RuntimeHost::new_with_provider(
         test_config(workspace_dir, home_dir),
-        Arc::new(CommandTaskProvider::new("sleep 5")),
+        Arc::new(CommandTaskProvider::new("sleep 60")),
     )?;
 
     let response = run_once_with_host(
@@ -939,10 +939,14 @@ async fn run_once_no_wait_stops_unfinished_command_tasks_before_exit() -> Result
     assert_eq!(response.final_status, RunFinalStatus::Completed);
     assert_eq!(response.tasks.len(), 1);
     assert_eq!(response.tasks[0].task.kind, "command_task");
-    assert!(matches!(
-        response.tasks[0].task.status,
-        TaskStatus::Cancelling | TaskStatus::Cancelled
-    ));
+    assert!(
+        matches!(
+            response.tasks[0].task.status,
+            TaskStatus::Cancelling | TaskStatus::Cancelled
+        ),
+        "unexpected task status: {:?}",
+        response.tasks[0].task.status
+    );
     Ok(())
 }
 

@@ -908,6 +908,7 @@ pub async fn runtime_status(
     let last_failure = state
         .host
         .public_agent_activity_snapshots()
+        .await
         .map_err(error_response)?
         .into_iter()
         .filter_map(|agent| agent.last_runtime_failure)

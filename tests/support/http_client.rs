@@ -372,8 +372,8 @@ pub async fn agent_list_entries_tolerate_unloaded_agent_with_corrupt_work_queue(
         .find(|entry| entry["identity"]["agent_id"] == "corrupt-list")
         .expect("corrupt-list entry should be present");
     assert_eq!(
-        corrupt_entry["status"], "stopped",
-        "unloaded agent without agent.json should not be shown as booting"
+        corrupt_entry["status"], "asleep",
+        "unloaded agent should use canonical RuntimeDb state and ignore corrupt legacy work queue"
     );
 
     let mut client_config = config;
