@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::{
     memory::index::enqueue_memory_index_upsert,
     runtime_db::RuntimeDb,
-    tool::helpers::command_receipt_source_ref,
+    tool::helpers::{command_output_source_ref, command_receipt_source_ref},
     types::{
         AgentIdentityRecord, AgentPostureProjection, AgentSchedulingPosture, AgentState,
         AgentStatus, AuditEvent, BriefRecord, ContextEpisodeRecord, DeliverySummaryRecord,
@@ -794,6 +794,15 @@ impl AppStorage {
                         &source_ref,
                         &source_ref,
                     )?;
+                    for stream in ["stdout", "stderr", "output"] {
+                        let source_ref = command_output_source_ref(&record.id, None, stream);
+                        enqueue_memory_index_upsert(
+                            self,
+                            "tool_command_output",
+                            &source_ref,
+                            &source_ref,
+                        )?;
+                    }
                 }
             }
             "ExecCommandBatch" => {
@@ -808,6 +817,16 @@ impl AppStorage {
                                 &source_ref,
                                 &source_ref,
                             )?;
+                            for stream in ["stdout", "stderr", "output"] {
+                                let source_ref =
+                                    command_output_source_ref(&record.id, Some(offset + 1), stream);
+                                enqueue_memory_index_upsert(
+                                    self,
+                                    "tool_command_output",
+                                    &source_ref,
+                                    &source_ref,
+                                )?;
+                            }
                         }
                     }
                 }

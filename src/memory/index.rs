@@ -15,7 +15,9 @@ use crate::{
     agent_template::{agent_memory_operator_path, agent_memory_self_path},
     runtime_db::{EvidenceKind, RuntimeDb},
     storage::AppStorage,
-    tool::helpers::{command_digest, command_preview, command_receipt_source_ref},
+    tool::helpers::{
+        command_digest, command_output_source_ref, command_preview, command_receipt_source_ref,
+    },
     types::{
         BriefRecord, CommandTaskStatusSnapshot, ContextEpisodeRecord, TaskRecord, TaskStatus,
         ToolExecutionRecord, WorkItemRecord, WorkspaceEntry,
@@ -903,7 +905,9 @@ fn document_for_pending_source(
         "context_episode" => context_episode_document_by_id(storage, &source.source_id),
         "work_item" => work_item_document_by_id(storage, &source.source_id),
         "task" => task_document_by_id(storage, &source.source_id),
-        "tool_command_receipt" => command_receipt_document_by_ref(storage, &source.source_ref),
+        "tool_command_receipt" | "tool_command_output" => {
+            command_tool_execution_document_by_ref(storage, &source.source_ref)
+        }
         _ => Ok(None),
     }
 }
@@ -1400,18 +1404,21 @@ fn command_execution_documents(
             "ExecCommand" => {
                 if let Some(cmd) = record.input.get("cmd").and_then(Value::as_str) {
                     documents.push(command_receipt_document(&record, None, None, cmd));
+                    documents.extend(command_output_documents(&record, None));
                 }
             }
             "ExecCommandBatch" => {
                 if let Some(items) = record.input.get("items").and_then(Value::as_array) {
                     for (offset, item) in items.iter().enumerate() {
                         if let Some(cmd) = item.get("cmd").and_then(Value::as_str) {
+                            let index = offset + 1;
                             documents.push(command_receipt_document(
                                 &record,
-                                Some(offset + 1),
+                                Some(index),
                                 Some(item),
                                 cmd,
                             ));
+                            documents.extend(command_output_documents(&record, Some(index)));
                         }
                     }
                 }
@@ -1422,12 +1429,11 @@ fn command_execution_documents(
     Ok(documents)
 }
 
-fn command_receipt_document_by_ref(
+fn command_tool_execution_document_by_ref(
     storage: &AppStorage,
     source_ref: &str,
 ) -> Result<Option<MemoryDocument>> {
-    let Some((tool_execution_id, batch_item_index)) = parse_command_receipt_source_ref(source_ref)
-    else {
+    let Some(parsed_ref) = parse_tool_execution_source_ref(source_ref) else {
         return Ok(None);
     };
     let runtime_db = storage.runtime_db()?;
@@ -1437,7 +1443,7 @@ fn command_receipt_document_by_ref(
             .payload_by_id(
                 EvidenceKind::ToolExecution,
                 &storage_agent_id(storage),
-                &tool_execution_id,
+                &parsed_ref.tool_execution_id,
             )?
             .map(|row| serde_json::from_str::<ToolExecutionRecord>(&row.payload_json))
             .transpose()?
@@ -1445,18 +1451,22 @@ fn command_receipt_document_by_ref(
         storage
             .read_recent_tool_executions(usize::MAX)?
             .into_iter()
-            .find(|record| record.id == tool_execution_id)
+            .find(|record| record.id == parsed_ref.tool_execution_id)
     };
     let Some(record) = record else {
         return Ok(None);
     };
-    match (record.tool_name.as_str(), batch_item_index) {
-        ("ExecCommand", None) => Ok(record
+    match (
+        record.tool_name.as_str(),
+        parsed_ref.batch_item_index,
+        parsed_ref.selector,
+    ) {
+        ("ExecCommand", None, ToolExecutionRefSelector::Cmd) => Ok(record
             .input
             .get("cmd")
             .and_then(Value::as_str)
             .map(|cmd| command_receipt_document(&record, None, None, cmd))),
-        ("ExecCommandBatch", Some(index)) => Ok(record
+        ("ExecCommandBatch", Some(index), ToolExecutionRefSelector::Cmd) => Ok(record
             .input
             .get("items")
             .and_then(Value::as_array)
@@ -1466,17 +1476,185 @@ fn command_receipt_document_by_ref(
                     .and_then(Value::as_str)
                     .map(|cmd| command_receipt_document(&record, Some(index), Some(item), cmd))
             })),
+        ("ExecCommand", None, ToolExecutionRefSelector::Output(stream)) => {
+            Ok(command_output_document(&record, None, stream))
+        }
+        ("ExecCommandBatch", Some(index), ToolExecutionRefSelector::Output(stream)) => {
+            Ok(command_output_document(&record, Some(index), stream))
+        }
         _ => Ok(None),
     }
 }
 
-fn parse_command_receipt_source_ref(source_ref: &str) -> Option<(String, Option<usize>)> {
+#[derive(Debug, Clone, Copy)]
+enum ToolExecutionRefSelector {
+    Cmd,
+    Output(&'static str),
+}
+
+struct ParsedToolExecutionRef {
+    tool_execution_id: String,
+    batch_item_index: Option<usize>,
+    selector: ToolExecutionRefSelector,
+}
+
+fn parse_tool_execution_source_ref(source_ref: &str) -> Option<ParsedToolExecutionRef> {
     let rest = source_ref.strip_prefix("tool_execution:")?;
-    let rest = rest.strip_suffix(":cmd")?;
-    if let Some((tool_execution_id, index)) = rest.rsplit_once(":batch_item:") {
-        return Some((tool_execution_id.to_string(), Some(index.parse().ok()?)));
+    if let Some((tool_execution_id, tail)) = rest.rsplit_once(":batch_item:") {
+        let (index, selector) = tail.split_once(':')?;
+        return Some(ParsedToolExecutionRef {
+            tool_execution_id: tool_execution_id.to_string(),
+            batch_item_index: Some(index.parse().ok()?),
+            selector: parse_tool_execution_selector(selector)?,
+        });
     }
-    Some((rest.to_string(), None))
+    let (tool_execution_id, selector) = rest.rsplit_once(':')?;
+    Some(ParsedToolExecutionRef {
+        tool_execution_id: tool_execution_id.to_string(),
+        batch_item_index: None,
+        selector: parse_tool_execution_selector(selector)?,
+    })
+}
+
+fn parse_tool_execution_selector(selector: &str) -> Option<ToolExecutionRefSelector> {
+    match selector {
+        "cmd" => Some(ToolExecutionRefSelector::Cmd),
+        "stdout" => Some(ToolExecutionRefSelector::Output("stdout")),
+        "stderr" => Some(ToolExecutionRefSelector::Output("stderr")),
+        "output" => Some(ToolExecutionRefSelector::Output("output")),
+        _ => None,
+    }
+}
+
+fn command_output_documents(
+    record: &ToolExecutionRecord,
+    batch_item_index: Option<usize>,
+) -> Vec<MemoryDocument> {
+    ["stdout", "stderr", "output"]
+        .into_iter()
+        .filter_map(|stream| command_output_document(record, batch_item_index, stream))
+        .collect()
+}
+
+fn command_output_document(
+    record: &ToolExecutionRecord,
+    batch_item_index: Option<usize>,
+    stream: &'static str,
+) -> Option<MemoryDocument> {
+    let output = command_output_envelope(record, batch_item_index, stream)?;
+    let source_ref = command_output_source_ref(&record.id, batch_item_index, stream);
+    let title = match batch_item_index {
+        Some(index) => format!("{} {stream} output item {}", record.tool_name, index),
+        None => format!("{} {stream} output", record.tool_name),
+    };
+    let body = serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string());
+    let preview = output
+        .get("preview")
+        .and_then(Value::as_str)
+        .or_else(|| output.get("content").and_then(Value::as_str))
+        .unwrap_or("");
+    Some(MemoryDocument {
+        source_ref,
+        source_kind: "tool_command_output".into(),
+        scope_kind: "agent".into(),
+        workspace_id: None,
+        agent_id: record.agent_id.clone(),
+        source_path: None,
+        title,
+        sanitized_excerpt: format!(
+            "tool_execution_id={} tool_name={} selector={} batch_item_index={:?} preview={}",
+            record.id,
+            record.tool_name,
+            stream,
+            batch_item_index,
+            truncate_chars(preview, 240).0
+        ),
+        body,
+        metadata: json!({
+            "tool_execution_id": record.id,
+            "tool_name": record.tool_name,
+            "turn_index": record.turn_index,
+            "work_item_id": record.work_item_id,
+            "batch_item_index": batch_item_index,
+            "selector": stream,
+            "governance_surface": "runtime_evidence",
+            "provenance_class": "tool_execution_record",
+            "trust_class": "runtime_evidence",
+        }),
+        updated_at: record.completed_at.unwrap_or(record.created_at),
+    })
+}
+
+fn command_output_envelope(
+    record: &ToolExecutionRecord,
+    batch_item_index: Option<usize>,
+    stream: &'static str,
+) -> Option<Value> {
+    let output = match (record.tool_name.as_str(), batch_item_index) {
+        ("ExecCommand", None) => record
+            .output
+            .get("result")
+            .or_else(|| {
+                record
+                    .output
+                    .get("envelope")
+                    .and_then(|value| value.get("result"))
+            })
+            .unwrap_or(&record.output),
+        ("ExecCommandBatch", Some(index)) => record
+            .output
+            .get("items")
+            .and_then(Value::as_array)
+            .and_then(|items| items.get(index - 1))
+            .and_then(|item| item.get("result"))?,
+        _ => return None,
+    };
+    let content = match stream {
+        "stdout" => output.get("stdout_preview").and_then(Value::as_str),
+        "stderr" => output.get("stderr_preview").and_then(Value::as_str),
+        "output" => output
+            .get("stdout_preview")
+            .and_then(Value::as_str)
+            .or_else(|| output.get("stderr_preview").and_then(Value::as_str))
+            .or_else(|| output.get("initial_output_preview").and_then(Value::as_str)),
+        _ => None,
+    };
+    let artifact_key = match stream {
+        "stdout" => Some("stdout_artifact"),
+        "stderr" => Some("stderr_artifact"),
+        _ => None,
+    };
+    let artifact = artifact_key
+        .and_then(|key| output.get(key).and_then(Value::as_u64))
+        .and_then(|index| {
+            output
+                .get("artifacts")
+                .and_then(Value::as_array)
+                .and_then(|artifacts| artifacts.get(index as usize))
+        })
+        .cloned();
+    let available = content.is_some() || artifact.is_some();
+    Some(json!({
+        "source_type": "tool_command_output",
+        "tool_execution_id": record.id,
+        "tool_name": record.tool_name,
+        "batch_item_index": batch_item_index,
+        "selector": stream,
+        "status": record.status,
+        "disposition": output.get("disposition").and_then(Value::as_str).unwrap_or("unknown"),
+        "content": content,
+        "preview": content.unwrap_or(""),
+        "output_available": available,
+        "availability": if available { "available" } else { "output_unavailable" },
+        "truncated": output.get("truncated").and_then(Value::as_bool).unwrap_or(false)
+            || output.get("initial_output_truncated").and_then(Value::as_bool).unwrap_or(false),
+        "artifact": artifact,
+        "message": if available {
+            "Output evidence recovered from the tool execution record. If artifact is present, use that pointer for full bytes rather than expecting MemoryGet to stream them."
+        } else {
+            "No persisted output evidence is available for this tool execution stream; older records may contain command input only."
+        },
+    }))
 }
 
 fn command_receipt_document(

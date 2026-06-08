@@ -179,6 +179,19 @@ pub(crate) fn command_receipt_source_ref(
     }
 }
 
+pub(crate) fn command_output_source_ref(
+    tool_execution_id: &str,
+    batch_item_index: Option<usize>,
+    stream: &str,
+) -> String {
+    match batch_item_index {
+        Some(index) => {
+            format!("tool_execution:{tool_execution_id}:batch_item:{index}:{stream}")
+        }
+        None => format!("tool_execution:{tool_execution_id}:{stream}"),
+    }
+}
+
 pub(crate) fn command_cost_diagnostics(
     cmd: &str,
     effective_max_output_tokens: u64,

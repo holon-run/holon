@@ -2065,10 +2065,13 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
             .and_then(Value::as_str)
             .map(|cmd| {
                 format!(
-                    "{prefix} tool_execution_id={} cmd_digest={} cmd_ref={} cmd_preview={}",
+                    "{prefix} tool_execution_id={} cmd_digest={} cmd_ref={} stdout_ref={} stderr_ref={} output_ref={} cmd_preview={}",
                     record.id,
                     crate::tool::helpers::command_digest(cmd),
                     crate::tool::helpers::command_receipt_source_ref(&record.id, None),
+                    crate::tool::helpers::command_output_source_ref(&record.id, None, "stdout"),
+                    crate::tool::helpers::command_output_source_ref(&record.id, None, "stderr"),
+                    crate::tool::helpers::command_output_source_ref(&record.id, None, "output"),
                     crate::tool::helpers::command_preview(cmd)
                 )
             })
@@ -2084,9 +2087,12 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
                     let cmd = item.get("cmd").and_then(Value::as_str)?;
                     let index = offset + 1;
                     Some(format!(
-                        "{{index={index}, cmd_digest={}, cmd_ref={}, cmd_preview={}}}",
+                        "{{index={index}, cmd_digest={}, cmd_ref={}, stdout_ref={}, stderr_ref={}, output_ref={}, cmd_preview={}}}",
                         crate::tool::helpers::command_digest(cmd),
                         crate::tool::helpers::command_receipt_source_ref(&record.id, Some(index)),
+                        crate::tool::helpers::command_output_source_ref(&record.id, Some(index), "stdout"),
+                        crate::tool::helpers::command_output_source_ref(&record.id, Some(index), "stderr"),
+                        crate::tool::helpers::command_output_source_ref(&record.id, Some(index), "output"),
                         crate::tool::helpers::command_preview(cmd)
                     ))
                 })
@@ -3207,6 +3213,9 @@ mod tests {
 
         assert!(rendered.contains("tool_execution_id=tool-context-1246"));
         assert!(rendered.contains("cmd_ref=tool_execution:tool-context-1246:cmd"));
+        assert!(rendered.contains("stdout_ref=tool_execution:tool-context-1246:stdout"));
+        assert!(rendered.contains("stderr_ref=tool_execution:tool-context-1246:stderr"));
+        assert!(rendered.contains("output_ref=tool_execution:tool-context-1246:output"));
         assert!(rendered.contains("cmd_digest="));
         assert!(rendered.contains("[omitted: command contains heredoc or inline script]"));
         assert!(!rendered.contains("context_receipt_middle_1246"));
@@ -3246,6 +3255,12 @@ mod tests {
         assert!(
             rendered.contains("cmd_ref=tool_execution:tool-context-batch-1246:batch_item:2:cmd")
         );
+        assert!(rendered
+            .contains("stdout_ref=tool_execution:tool-context-batch-1246:batch_item:1:stdout"));
+        assert!(rendered
+            .contains("stderr_ref=tool_execution:tool-context-batch-1246:batch_item:2:stderr"));
+        assert!(rendered
+            .contains("output_ref=tool_execution:tool-context-batch-1246:batch_item:2:output"));
         assert!(rendered.contains("cmd_digest="));
         assert!(!rendered.contains("hidden_batch_1246"));
     }

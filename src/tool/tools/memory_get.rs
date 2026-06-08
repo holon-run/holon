@@ -42,7 +42,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<MemoryGetArgs>(
             NAME,
-            "Fetch exact bounded Holon memory content by a source_ref copied verbatim from MemorySearch results or from runtime prompt refs such as brief_ref/cmd_ref. Do not invent source_ref values or use MemoryGet for skill paths, file paths, or URLs.",
+            "Fetch exact bounded Holon memory content by a source_ref copied verbatim from MemorySearch results or from runtime prompt refs such as brief_ref/cmd_ref/stdout_ref/stderr_ref/output_ref. Do not invent source_ref values or use MemoryGet for skill paths, file paths, or URLs.",
         )?,
     })
 }
@@ -67,7 +67,7 @@ pub(crate) async fn execute(
             "reason": "source_ref was syntactically valid but is not present in the current visible memory index",
         }))
         .with_recovery_hint(
-            "call MemorySearch again and pass one of its returned source_ref values verbatim, or copy an available prompt source_ref such as brief_ref/cmd_ref verbatim",
+            "call MemorySearch again and pass one of its returned source_ref values verbatim, or copy an available prompt source_ref such as brief_ref/cmd_ref/stdout_ref/stderr_ref/output_ref verbatim",
         )
         .into());
     };
@@ -129,21 +129,28 @@ fn validate_source_ref(source_ref: String) -> Result<String> {
 fn validate_tool_execution_source_ref(source_ref: &str, suffix: &str) -> Result<String> {
     let parts = suffix.split(':').collect::<Vec<_>>();
     let valid = match parts.as_slice() {
-        [tool_execution_id, "cmd"] => valid_source_ref_segment(tool_execution_id),
-        [tool_execution_id, "batch_item", index, "cmd"] => {
+        [tool_execution_id, selector] => {
+            valid_source_ref_segment(tool_execution_id) && valid_tool_execution_selector(selector)
+        }
+        [tool_execution_id, "batch_item", index, selector] => {
             valid_source_ref_segment(tool_execution_id)
                 && !index.is_empty()
                 && index.chars().all(|ch| ch.is_ascii_digit())
+                && valid_tool_execution_selector(selector)
         }
         _ => false,
     };
     if !valid {
         return Err(invalid_source_ref_error(
             source_ref,
-            "tool_execution source_ref must match tool_execution:<id>:cmd or tool_execution:<id>:batch_item:<index>:cmd",
+            "tool_execution source_ref must match tool_execution:<id>:{cmd,stdout,stderr,output} or tool_execution:<id>:batch_item:<index>:{cmd,stdout,stderr,output}",
         ));
     }
     Ok(source_ref.to_string())
+}
+
+fn valid_tool_execution_selector(selector: &str) -> bool {
+    matches!(selector, "cmd" | "stdout" | "stderr" | "output")
 }
 
 fn valid_source_ref_segment(segment: &str) -> bool {
@@ -224,7 +231,13 @@ mod tests {
             "work_item:work_123",
             "task:task_123",
             "tool_execution:tool-123:cmd",
+            "tool_execution:tool-123:stdout",
+            "tool_execution:tool-123:stderr",
+            "tool_execution:tool-123:output",
             "tool_execution:tool-123:batch_item:2:cmd",
+            "tool_execution:tool-123:batch_item:2:stdout",
+            "tool_execution:tool-123:batch_item:2:stderr",
+            "tool_execution:tool-123:batch_item:2:output",
         ] {
             assert_eq!(
                 validate_source_ref(source_ref.to_string()).unwrap(),
@@ -248,6 +261,8 @@ mod tests {
             "tool_execution:tool-123",
             "tool_execution:tool-123:batch_item:abc:cmd",
             "tool_execution:tool-123:batch_item:2",
+            "tool_execution:tool-123:batch_item:2:artifact",
+            "tool_execution:tool-123:artifact",
         ] {
             let error = tool_error(validate_source_ref(source_ref.to_string()).unwrap_err());
             assert_eq!(error.kind, "invalid_tool_input");
@@ -362,6 +377,68 @@ mod tests {
         assert!(content.contains("\"workdir\": \"src\""));
         assert!(content.contains("\"yield_time_ms\": 1000"));
         assert!(content.contains("\"max_output_tokens\": 1200"));
+    }
+
+    #[tokio::test]
+    async fn memory_get_tool_accepts_command_output_source_refs() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("done")),
+            "default".into(),
+            ContextConfig::default(),
+        )
+        .unwrap();
+        runtime
+            .storage()
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-output-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 0,
+                turn_id: None,
+                tool_name: "ExecCommand".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 10,
+                authority_class: AuthorityClass::OperatorInstruction,
+                status: ToolExecutionStatus::Success,
+                input: json!({"cmd": "printf memory_get_stdout_1246"}),
+                output: json!({
+                    "disposition": "completed",
+                    "exit_status": 0,
+                    "stdout_preview": "memory_get_stdout_1246\n",
+                    "stderr_preview": "",
+                    "truncated": false,
+                    "artifacts": []
+                }),
+                summary: "command exited with status 0".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let result = execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &json!({
+                "source_ref": "tool_execution:tool-output-1246:stdout"
+            }),
+        )
+        .await
+        .unwrap();
+        let content = result.envelope.result.unwrap()["memory"]["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert!(content.contains("\"selector\": \"stdout\""));
+        assert!(content.contains("memory_get_stdout_1246"));
+        assert!(content.contains("\"output_available\": true"));
     }
 
     #[tokio::test]
