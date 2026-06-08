@@ -107,7 +107,15 @@ pub fn build_context_with_default_external_ingress(
     let continuation_anchor_messages = storage.read_all_messages()?;
     let mut briefs = storage.read_recent_briefs(config.recent_briefs)?;
     let mut tools = storage.read_recent_tool_executions(config.recent_messages)?;
-    let turn_records = storage.read_recent_turns(config.recent_messages)?;
+    let mut turn_records = storage.read_recent_turns(config.recent_messages)?;
+    if turn_records.is_empty() {
+        turn_records = synthesize_legacy_recent_turn_records(
+            &messages,
+            &briefs,
+            &tools,
+            config.recent_messages,
+        );
+    }
     hydrate_recent_turn_references(
         storage,
         &turn_records,
@@ -534,6 +542,106 @@ fn hydrate_recent_turn_references(
     });
 
     Ok(())
+}
+
+fn synthesize_legacy_recent_turn_records(
+    messages: &[MessageEnvelope],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    limit: usize,
+) -> Vec<TurnRecord> {
+    let mut records = messages
+        .iter()
+        .filter(|message| !matches!(message.kind, MessageKind::SystemTick))
+        .filter_map(|message| {
+            let message_turn_id = message.turn_id.as_deref().map(str::trim);
+            let message_seq = message.message_seq.filter(|seq| *seq != 0);
+            let produced_brief_ids = briefs
+                .iter()
+                .filter(|brief| {
+                    legacy_brief_matches_message(brief, message, message_turn_id, message_seq)
+                })
+                .map(|brief| brief.id.clone())
+                .collect::<Vec<_>>();
+
+            let tool_execution_ids = tools
+                .iter()
+                .filter(|tool| legacy_tool_matches_message(tool, message_turn_id, message_seq))
+                .map(|tool| tool.id.clone())
+                .collect::<Vec<_>>();
+
+            if produced_brief_ids.is_empty() && tool_execution_ids.is_empty() {
+                return None;
+            }
+
+            let turn_index = message_seq.unwrap_or(0);
+            let turn_id = message_seq
+                .map(|seq| format!("legacy-message-seq-{seq}"))
+                .or_else(|| {
+                    message_turn_id
+                        .filter(|turn_id| !turn_id.is_empty())
+                        .map(|turn_id| format!("legacy-turn-id-{turn_id}"))
+                })
+                .unwrap_or_else(|| format!("legacy-message-{}", message.id));
+            let mut record = TurnRecord::new(&message.agent_id, turn_id, turn_index);
+            record.trigger = Some(crate::types::TurnTriggerSummary::from_message(message));
+            record.input_message_ids = vec![message.id.clone()];
+            record.produced_brief_ids = produced_brief_ids;
+            record.tool_execution_ids = tool_execution_ids;
+            record.created_at = message.created_at;
+            Some(record)
+        })
+        .collect::<Vec<_>>();
+
+    if records.len() > limit {
+        records = records.split_off(records.len() - limit);
+    }
+    records
+}
+
+fn legacy_brief_matches_message(
+    brief: &BriefRecord,
+    message: &MessageEnvelope,
+    message_turn_id: Option<&str>,
+    message_seq: Option<u64>,
+) -> bool {
+    brief.related_message_id.as_deref() == Some(message.id.as_str())
+        || legacy_turn_identity_matches(
+            brief.turn_id.as_deref(),
+            brief.turn_index,
+            message_turn_id,
+            message_seq,
+        )
+}
+
+fn legacy_tool_matches_message(
+    tool: &ToolExecutionRecord,
+    message_turn_id: Option<&str>,
+    message_seq: Option<u64>,
+) -> bool {
+    legacy_turn_identity_matches(
+        tool.turn_id.as_deref(),
+        Some(tool.turn_index),
+        message_turn_id,
+        message_seq,
+    )
+}
+
+fn legacy_turn_identity_matches(
+    evidence_turn_id: Option<&str>,
+    evidence_turn_index: Option<u64>,
+    message_turn_id: Option<&str>,
+    message_seq: Option<u64>,
+) -> bool {
+    evidence_turn_id
+        .map(str::trim)
+        .filter(|turn_id| !turn_id.is_empty())
+        .zip(message_turn_id.filter(|turn_id| !turn_id.is_empty()))
+        .is_some_and(|(evidence_turn_id, message_turn_id)| evidence_turn_id == message_turn_id)
+        || evidence_turn_index
+            .filter(|turn_index| *turn_index != 0)
+            .zip(message_seq)
+            .is_some_and(|(evidence_turn_index, message_seq)| evidence_turn_index == message_seq)
 }
 
 fn message_header(message: &MessageEnvelope) -> String {
@@ -1774,6 +1882,7 @@ fn render_turn_record_projection(
     tools: &[ToolExecutionRecord],
     continuation: Option<&MessageEnvelope>,
 ) -> Option<String> {
+    let is_legacy_synthetic_record = record.turn_id.starts_with("legacy-");
     let trigger_message = record
         .input_message_ids
         .iter()
@@ -1787,13 +1896,17 @@ fn render_turn_record_projection(
         });
     let mut lines = vec![format!(
         "- Turn {}:",
-        if record.turn_index != 0 {
+        if is_legacy_synthetic_record && record.turn_index != 0 {
+            format!("message_seq {}", record.turn_index)
+        } else if record.turn_index != 0 {
             format!("turn_index {}", record.turn_index)
         } else {
             record.turn_id.clone()
         }
     )];
-    lines.push(format!("  - turn_id: {}", sanitize_inline(&record.turn_id)));
+    if !is_legacy_synthetic_record {
+        lines.push(format!("  - turn_id: {}", sanitize_inline(&record.turn_id)));
+    }
     if let Some(trigger_message) = trigger_message {
         lines.push(format!(
             "  - trigger: {}",
@@ -1900,7 +2013,12 @@ fn render_current_continuation_turn_record_projection(
 fn turn_record_matches_message(record: &TurnRecord, message: &MessageEnvelope) -> bool {
     if let Some(turn_id) = message.turn_id.as_deref().map(str::trim) {
         if !turn_id.is_empty() {
-            return turn_id == record.turn_id.trim();
+            if turn_id == record.turn_id.trim() {
+                return true;
+            }
+            if !record.turn_id.starts_with("legacy-") {
+                return false;
+            }
         }
     }
 
