@@ -306,6 +306,36 @@ pub(crate) fn invalid_response_error(
     )
 }
 
+pub(crate) fn invalid_response_error_with_trace(
+    context: &str,
+    stage: &str,
+    provider: &str,
+    model_ref: Option<&str>,
+    url: Option<&str>,
+    error: impl std::fmt::Display,
+    trace: Option<&ProviderHttpTraceRequest>,
+) -> anyhow::Error {
+    let error = error.to_string();
+    provider_transport_error(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::InvalidResponse,
+            disposition: RetryDisposition::FailFast,
+        },
+        None,
+        Some(ProviderTransportDiagnostics {
+            stage: stage.to_string(),
+            provider: Some(provider.to_string()),
+            model_ref: model_ref.map(ToString::to_string),
+            url: url.map(sanitize_transport_url),
+            status: None,
+            reqwest: None,
+            http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            source_chain: vec![error.clone()],
+        }),
+        format!("{context}: {error}"),
+    )
+}
+
 pub(crate) fn timeout_transport_error_with_trace(
     context: &str,
     stage: &str,

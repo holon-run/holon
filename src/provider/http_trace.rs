@@ -62,6 +62,14 @@ struct ProviderHttpTraceRequestState {
 }
 
 impl ProviderHttpTrace {
+    #[cfg(test)]
+    pub(crate) fn failure_only_for_tests(home_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            home_dir: home_dir.into(),
+            mode: ProviderHttpTraceMode::FailureOnly,
+        }
+    }
+
     pub(crate) fn from_env(home_dir: impl Into<PathBuf>) -> Option<Self> {
         let mode = if std::env::var(PROVIDER_HTTP_TRACE_ENV).ok().as_deref() == Some("1") {
             ProviderHttpTraceMode::All
@@ -476,6 +484,43 @@ mod tests {
             .expect("failure diagnostics should write trace");
         assert_eq!(diagnostics.mode, "failure_only");
         assert!(std::path::Path::new(&diagnostics.path).exists());
+    }
+
+    #[test]
+    fn provider_http_failure_trace_flushes_request_for_protocol_diagnostics() {
+        let home = tempfile::tempdir().unwrap();
+        let trace = ProviderHttpTrace {
+            home_dir: home.path().to_path_buf(),
+            mode: super::ProviderHttpTraceMode::FailureOnly,
+        };
+        let request = trace
+            .begin_request(
+                Some("agent/one"),
+                "anthropic",
+                Some("anthropic/mimo"),
+                "https://api.example.com/v1/messages",
+                "messages",
+                &[("authorization", "Bearer secret".into())],
+                &json!({
+                    "model": "mimo",
+                    "messages": [{ "role": "user", "content": "use a tool" }],
+                    "tools": [{ "name": "ExecCommand" }]
+                }),
+            )
+            .expect("trace should be created");
+        request.write_response_body(
+            r#"{"content":[{"type":"text","text":"<tool_call><function=ExecCommand>{}</function></tool_call>"}],"stop_reason":"tool_use"}"#,
+        );
+
+        let diagnostics = request
+            .diagnostics(None)
+            .expect("protocol diagnostics should write trace");
+        let trace_text = fs::read_to_string(diagnostics.path).unwrap();
+        assert!(trace_text.contains("\"type\":\"request\""));
+        assert!(trace_text.contains("\"type\":\"response_body\""));
+        assert!(trace_text.contains("\"name\":\"ExecCommand\""));
+        assert!(trace_text.contains("[REDACTED]"));
+        assert!(!trace_text.contains("Bearer secret"));
     }
 
     #[test]

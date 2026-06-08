@@ -29,7 +29,7 @@ use crate::{
 use super::{build_http_client, request_send_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
-    invalid_response_error,
+    invalid_response_error, invalid_response_error_with_trace,
 };
 
 #[derive(Clone)]
@@ -43,6 +43,8 @@ pub struct AnthropicProvider {
     context_management: AnthropicContextManagementConfig,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     trace_home_dir: PathBuf,
+    #[cfg(test)]
+    http_trace_override: Option<ProviderHttpTrace>,
 }
 
 #[derive(Debug, Serialize)]
@@ -169,7 +171,15 @@ impl AnthropicProvider {
             context_management: provider_config.context_management.clone(),
             builtin_web_search: provider_config.builtin_web_search.clone(),
             trace_home_dir: trace_home_dir.to_path_buf(),
+            #[cfg(test)]
+            http_trace_override: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_http_trace_for_tests(mut self, trace: ProviderHttpTrace) -> Self {
+        self.http_trace_override = Some(trace);
+        self
     }
 }
 
@@ -208,6 +218,12 @@ impl AgentProvider for AnthropicProvider {
                 "context-management-2025-06-27".to_string(),
             ));
         }
+        #[cfg(test)]
+        let trace = self
+            .http_trace_override
+            .clone()
+            .or_else(|| ProviderHttpTrace::from_env(self.trace_home_dir.clone()));
+        #[cfg(not(test))]
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         let request_trace = trace.and_then(|trace| {
             trace.begin_request(
@@ -306,6 +322,28 @@ impl AgentProvider for AnthropicProvider {
                 parsed.stop_reason.as_deref(),
                 tools_available,
             );
+        }
+        if anthropic_response_has_text_form_tool_call_violation(
+            &parsed.content,
+            parsed.stop_reason.as_deref(),
+            tools_available,
+        ) {
+            warn!(
+                provider = %self.provider_id,
+                model = %self.model,
+                stop_reason = ?parsed.stop_reason,
+                tools_available,
+                "anthropic response stopped for tool_use but returned only text-form tool-call markup"
+            );
+            return Err(invalid_response_error_with_trace(
+                "invalid Anthropic tool response",
+                "response_protocol",
+                "anthropic",
+                Some(&model_ref),
+                Some(url.as_str()),
+                "stop_reason=tool_use without native tool_use block; text block contains tool-call-looking markup",
+                request_trace.as_ref(),
+            ));
         }
         let blocks = parsed
             .content
@@ -868,6 +906,43 @@ fn warn_unsupported_anthropic_response_block(
         tools_available,
         "anthropic response contained unsupported content block"
     );
+}
+
+fn anthropic_response_has_text_form_tool_call_violation(
+    blocks: &[ApiResponseBlock],
+    stop_reason: Option<&str>,
+    tools_available: bool,
+) -> bool {
+    if stop_reason != Some("tool_use") || !tools_available {
+        return false;
+    }
+    let mut has_text_form_tool_call = false;
+    for block in blocks {
+        if block.kind == "tool_use" {
+            return false;
+        }
+        if block.kind == "text"
+            && block
+                .text
+                .as_deref()
+                .is_some_and(text_contains_tool_call_markup)
+        {
+            has_text_form_tool_call = true;
+        }
+    }
+    has_text_form_tool_call
+}
+
+fn text_contains_tool_call_markup(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    lowered.contains("<tool_call")
+        || lowered.contains("<function=")
+        || lowered.contains("<function name=")
+        || lowered.contains("&lt;tool_call")
+        || lowered.contains("&lt;function=")
+        || lowered.contains("&lt;function name=")
+        || text.contains("<｜｜DSML｜｜tool_calls>")
+        || text.contains("<｜｜DSML｜｜invoke")
 }
 
 fn api_response_block_to_model(block: ApiResponseBlock) -> Option<ModelBlock> {
@@ -1519,6 +1594,98 @@ mod tests {
             }
             other => panic!("unexpected block: {other:?}"),
         }
+    }
+
+    #[test]
+    fn anthropic_response_flags_text_form_tool_call_violation() {
+        let blocks = vec![ApiResponseBlock {
+            kind: "text".to_string(),
+            text: Some(
+                r#"<tool_call>
+<function=ExecCommand>
+{"cmd":"echo ok"}
+</function>
+</tool_call>"#
+                    .to_string(),
+            ),
+            thinking: None,
+            signature: None,
+            data: None,
+            id: None,
+            name: None,
+            input: None,
+        }];
+
+        assert!(anthropic_response_has_text_form_tool_call_violation(
+            &blocks,
+            Some("tool_use"),
+            true,
+        ));
+        assert!(!anthropic_response_has_text_form_tool_call_violation(
+            &blocks,
+            Some("end_turn"),
+            true,
+        ));
+        assert!(!anthropic_response_has_text_form_tool_call_violation(
+            &blocks,
+            Some("tool_use"),
+            false,
+        ));
+    }
+
+    #[test]
+    fn anthropic_response_flags_html_escaped_text_form_tool_call_violation() {
+        let blocks = vec![ApiResponseBlock {
+            kind: "text".to_string(),
+            text: Some(
+                "&lt;tool_call&gt;&lt;function=ExecCommand&gt;{}&lt;/function&gt;&lt;/tool_call&gt;"
+                    .to_string(),
+            ),
+            thinking: None,
+            signature: None,
+            data: None,
+            id: None,
+            name: None,
+            input: None,
+        }];
+
+        assert!(anthropic_response_has_text_form_tool_call_violation(
+            &blocks,
+            Some("tool_use"),
+            true,
+        ));
+    }
+
+    #[test]
+    fn anthropic_response_native_tool_use_is_not_text_form_violation() {
+        let blocks = vec![
+            ApiResponseBlock {
+                kind: "text".to_string(),
+                text: Some("<tool_call>ignored text</tool_call>".to_string()),
+                thinking: None,
+                signature: None,
+                data: None,
+                id: None,
+                name: None,
+                input: None,
+            },
+            ApiResponseBlock {
+                kind: "tool_use".to_string(),
+                text: None,
+                thinking: None,
+                signature: None,
+                data: None,
+                id: Some("toolu_1".to_string()),
+                name: Some("ExecCommand".to_string()),
+                input: Some(json!({ "cmd": "echo ok" })),
+            },
+        ];
+
+        assert!(!anthropic_response_has_text_form_tool_call_violation(
+            &blocks,
+            Some("tool_use"),
+            true,
+        ));
     }
 
     #[test]
