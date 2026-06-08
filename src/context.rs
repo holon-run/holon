@@ -2229,7 +2229,10 @@ fn build_relevant_episode_memory_section(
 }
 
 fn recent_turn_window_start(turn_records: &[crate::types::TurnRecord]) -> Option<u64> {
-    turn_records.iter().map(|turn| turn.turn_index).min()
+    turn_records
+        .iter()
+        .filter_map(|turn| (turn.turn_index != 0).then_some(turn.turn_index))
+        .min()
 }
 
 fn episode_is_before_recent_turn_window(
@@ -5524,6 +5527,14 @@ mod tests {
 
         assert!(section.content.contains("ep_archived"));
         assert!(!section.content.contains("ep_recent_overlap"));
+    }
+
+    #[test]
+    fn recent_turn_window_start_ignores_zero_sentinel_turn_index() {
+        let sentinel = crate::types::TurnRecord::new("default", "turn-zero", 0);
+        let recent = crate::types::TurnRecord::new("default", "turn-recent", 6);
+
+        assert_eq!(recent_turn_window_start(&[sentinel, recent]), Some(6));
     }
 
     #[test]
