@@ -12,10 +12,11 @@ use sha2::{Digest, Sha256};
 
 use crate::types::{
     AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, CallbackDeliveryMode,
-    DeliverySummaryRecord, ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus,
-    MessageEnvelope, QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord, TimerStatus,
-    ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord, WorkItemRecord,
-    WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
+    ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord, ExternalTriggerScope,
+    ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord,
+    TimerStatus, ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord,
+    WorkItemDelegationRecord, WorkItemRecord, WorkItemState, WorkingMemoryDelta, WorkspaceEntry,
+    WorkspaceOccupancyRecord,
 };
 
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
@@ -85,6 +86,18 @@ pub struct WorkspaceOccupancyRepository<'a> {
 }
 
 pub struct AgentIdentityRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct WorkItemDelegationRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct WorkingMemoryDeltaRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct ContextEpisodeRepository<'a> {
     db: &'a RuntimeDb,
 }
 
@@ -423,6 +436,150 @@ impl AgentIdentityRepository<'_> {
             .optional()?
             .map(|payload| decode_agent_identity_payload(&payload))
             .transpose()
+    }
+}
+
+impl WorkItemDelegationRepository<'_> {
+    pub fn import_legacy(&self, records: Vec<WorkItemDelegationRecord>) -> Result<()> {
+        if self
+            .db
+            .storage_domain_is_complete("work_item_delegations", "db")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("work_item_delegations", "jsonl", "db", |tx| {
+                let latest = reduce_work_item_delegation_records(records);
+                for record in latest.values() {
+                    upsert_work_item_delegation_tx(tx, record)?;
+                }
+                Ok(serde_json::json!({ "imported_records": latest.len() }))
+            })
+    }
+
+    pub fn upsert(&self, record: &WorkItemDelegationRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_work_item_delegation_tx(tx, record))
+    }
+
+    pub fn latest_all(&self) -> Result<Vec<WorkItemDelegationRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM work_item_delegations
+             ORDER BY updated_at DESC, created_at DESC, delegation_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_work_item_delegation_payload(&row?))
+            .collect()
+    }
+
+    pub fn recent(&self, limit: usize) -> Result<Vec<WorkItemDelegationRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM work_item_delegations
+             ORDER BY updated_at DESC, created_at DESC, delegation_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+        let mut records: Vec<_> = rows
+            .map(|row| decode_work_item_delegation_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
+    }
+}
+
+impl WorkingMemoryDeltaRepository<'_> {
+    pub fn import_legacy(&self, records: Vec<WorkingMemoryDelta>) -> Result<()> {
+        if self
+            .db
+            .storage_domain_is_complete("working_memory_deltas", "db")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("working_memory_deltas", "jsonl", "db", |tx| {
+                let imported_records = records.len();
+                for record in records {
+                    upsert_working_memory_delta_tx(tx, &record)?;
+                }
+                Ok(serde_json::json!({ "imported_records": imported_records }))
+            })
+    }
+
+    pub fn upsert(&self, record: &WorkingMemoryDelta) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_working_memory_delta_tx(tx, record))
+    }
+
+    pub fn recent(&self, limit: usize) -> Result<Vec<WorkingMemoryDelta>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM working_memory_deltas
+             ORDER BY created_at DESC, memory_delta_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+        let mut records: Vec<_> = rows
+            .map(|row| decode_working_memory_delta_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
+    }
+}
+
+impl ContextEpisodeRepository<'_> {
+    pub fn import_legacy(&self, records: Vec<ContextEpisodeRecord>) -> Result<()> {
+        if self
+            .db
+            .storage_domain_is_complete("context_episodes", "db")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("context_episodes", "jsonl", "db", |tx| {
+                let latest = reduce_context_episode_records(records);
+                for record in latest.values() {
+                    upsert_context_episode_tx(tx, record)?;
+                }
+                Ok(serde_json::json!({ "imported_records": latest.len() }))
+            })
+    }
+
+    pub fn upsert(&self, record: &ContextEpisodeRecord) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_context_episode_tx(tx, record))
+    }
+
+    pub fn recent(&self, limit: usize) -> Result<Vec<ContextEpisodeRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM context_episodes
+             ORDER BY ended_at DESC, started_at DESC, episode_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+        let mut records: Vec<_> = rows
+            .map(|row| decode_context_episode_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 }
 
@@ -2154,6 +2311,115 @@ fn truncate_string_in_place(value: &mut String, max_bytes: usize) {
     value.truncate(boundary);
 }
 
+fn upsert_work_item_delegation_tx(
+    tx: &Transaction<'_>,
+    record: &WorkItemDelegationRecord,
+) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let state = enum_string(&record.state)?;
+    tx.execute(
+        "INSERT INTO work_item_delegations (
+            delegation_id, parent_agent_id, parent_work_item_id, child_agent_id,
+            child_work_item_id, state, created_at, updated_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(delegation_id) DO UPDATE SET
+            parent_agent_id = excluded.parent_agent_id,
+            parent_work_item_id = excluded.parent_work_item_id,
+            child_agent_id = excluded.child_agent_id,
+            child_work_item_id = excluded.child_work_item_id,
+            state = excluded.state,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            payload_json = excluded.payload_json
+         WHERE excluded.updated_at >= work_item_delegations.updated_at",
+        params![
+            record.delegation_id,
+            record.parent_agent_id,
+            record.parent_work_item_id,
+            record.child_agent_id,
+            record.child_work_item_id,
+            state,
+            timestamp(record.created_at),
+            timestamp(record.updated_at),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_working_memory_delta_tx(tx: &Transaction<'_>, record: &WorkingMemoryDelta) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let reason = enum_string(&record.reason)?;
+    let memory_delta_id = format!(
+        "memory-delta-{}-{}-{}",
+        record.from_revision, record.to_revision, record.created_at_turn
+    );
+    tx.execute(
+        "INSERT INTO working_memory_deltas (
+            memory_delta_id, from_revision, to_revision, created_at_turn, reason,
+            created_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(memory_delta_id) DO UPDATE SET
+            from_revision = excluded.from_revision,
+            to_revision = excluded.to_revision,
+            created_at_turn = excluded.created_at_turn,
+            reason = excluded.reason,
+            created_at = excluded.created_at,
+            payload_json = excluded.payload_json",
+        params![
+            memory_delta_id,
+            record.from_revision as i64,
+            record.to_revision as i64,
+            record.created_at_turn as i64,
+            reason,
+            timestamp_from_turn(record.created_at_turn),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let boundary_reason = enum_string(&record.boundary_reason)?;
+    tx.execute(
+        "INSERT INTO context_episodes (
+            episode_id, agent_id, workspace_id, work_item_id, boundary_reason,
+            start_turn_index, end_turn_index, started_at, ended_at, summary, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(episode_id) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            workspace_id = excluded.workspace_id,
+            work_item_id = excluded.work_item_id,
+            boundary_reason = excluded.boundary_reason,
+            start_turn_index = excluded.start_turn_index,
+            end_turn_index = excluded.end_turn_index,
+            started_at = excluded.started_at,
+            ended_at = excluded.ended_at,
+            summary = excluded.summary,
+            payload_json = excluded.payload_json
+         WHERE excluded.ended_at >= context_episodes.ended_at",
+        params![
+            record.id,
+            record.agent_id,
+            record.workspace_id,
+            record.current_work_item_id,
+            boundary_reason,
+            record.start_turn_index as i64,
+            record.end_turn_index as i64,
+            timestamp(record.created_at),
+            timestamp(record.finalized_at),
+            record.summary,
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
+fn timestamp_from_turn(turn_index: u64) -> String {
+    format!("turn:{turn_index:020}")
+}
+
 fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerRecord) -> Result<()> {
     let payload_json = serde_json::to_string(record)?;
     let status = enum_string(&record.status)?;
@@ -2861,6 +3127,36 @@ fn reduce_task_records(records: Vec<TaskRecord>) -> BTreeMap<String, TaskRecord>
     latest
 }
 
+fn reduce_work_item_delegation_records(
+    records: Vec<WorkItemDelegationRecord>,
+) -> BTreeMap<String, WorkItemDelegationRecord> {
+    let mut latest = BTreeMap::<String, WorkItemDelegationRecord>::new();
+    for record in records {
+        let should_replace = latest
+            .get(&record.delegation_id)
+            .is_none_or(|existing| record.updated_at >= existing.updated_at);
+        if should_replace {
+            latest.insert(record.delegation_id.clone(), record);
+        }
+    }
+    latest
+}
+
+fn reduce_context_episode_records(
+    records: Vec<ContextEpisodeRecord>,
+) -> BTreeMap<String, ContextEpisodeRecord> {
+    let mut latest = BTreeMap::<String, ContextEpisodeRecord>::new();
+    for record in records {
+        let should_replace = latest
+            .get(&record.id)
+            .is_none_or(|existing| record.finalized_at >= existing.finalized_at);
+        if should_replace {
+            latest.insert(record.id.clone(), record);
+        }
+    }
+    latest
+}
+
 fn reduce_workspace_entry_records(
     records: Vec<WorkspaceEntry>,
 ) -> BTreeMap<String, WorkspaceEntry> {
@@ -2972,6 +3268,18 @@ fn decode_agent_identity_payload(payload: &str) -> Result<AgentIdentityRecord> {
 
 fn decode_work_item_payload(payload: &str) -> Result<WorkItemRecord> {
     serde_json::from_str(payload).context("decoding work item payload from runtime db")
+}
+
+fn decode_work_item_delegation_payload(payload: &str) -> Result<WorkItemDelegationRecord> {
+    serde_json::from_str(payload).context("decoding work item delegation payload from runtime db")
+}
+
+fn decode_working_memory_delta_payload(payload: &str) -> Result<WorkingMemoryDelta> {
+    serde_json::from_str(payload).context("decoding working memory delta payload from runtime db")
+}
+
+fn decode_context_episode_payload(payload: &str) -> Result<ContextEpisodeRecord> {
+    serde_json::from_str(payload).context("decoding context episode payload from runtime db")
 }
 
 fn decode_external_trigger_payload(payload: &str) -> Result<ExternalTriggerRecord> {
@@ -3627,6 +3935,60 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_agent_seq_created
   ON audit_events(agent_id, event_seq, created_at);
 "#,
     },
+    Migration {
+        version: 11,
+        name: "memory_episode_delegation_domains",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS work_item_delegations (
+  delegation_id TEXT PRIMARY KEY,
+  parent_agent_id TEXT NOT NULL,
+  parent_work_item_id TEXT NOT NULL,
+  child_agent_id TEXT NOT NULL,
+  child_work_item_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS working_memory_deltas (
+  memory_delta_id TEXT PRIMARY KEY,
+  from_revision INTEGER NOT NULL,
+  to_revision INTEGER NOT NULL,
+  created_at_turn INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS context_episodes (
+  episode_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  work_item_id TEXT,
+  boundary_reason TEXT NOT NULL,
+  start_turn_index INTEGER NOT NULL,
+  end_turn_index INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_item_delegations_parent
+  ON work_item_delegations(parent_agent_id, parent_work_item_id);
+CREATE INDEX IF NOT EXISTS idx_work_item_delegations_child
+  ON work_item_delegations(child_agent_id, child_work_item_id);
+CREATE INDEX IF NOT EXISTS idx_work_item_delegations_state
+  ON work_item_delegations(state);
+CREATE INDEX IF NOT EXISTS idx_working_memory_deltas_revision
+  ON working_memory_deltas(to_revision, created_at);
+CREATE INDEX IF NOT EXISTS idx_context_episodes_agent_turn
+  ON context_episodes(agent_id, end_turn_index);
+CREATE INDEX IF NOT EXISTS idx_context_episodes_work_item
+  ON context_episodes(work_item_id);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -3734,6 +4096,18 @@ impl RuntimeDb {
         AgentIdentityRepository { db: self }
     }
 
+    pub fn work_item_delegations(&self) -> WorkItemDelegationRepository<'_> {
+        WorkItemDelegationRepository { db: self }
+    }
+
+    pub fn working_memory_deltas(&self) -> WorkingMemoryDeltaRepository<'_> {
+        WorkingMemoryDeltaRepository { db: self }
+    }
+
+    pub fn context_episodes(&self) -> ContextEpisodeRepository<'_> {
+        ContextEpisodeRepository { db: self }
+    }
+
     pub const fn expected_storage_domains() -> &'static [ExpectedStorageDomain] {
         &[
             ExpectedStorageDomain {
@@ -3758,6 +4132,21 @@ impl RuntimeDb {
             },
             ExpectedStorageDomain {
                 domain: "work_items",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
+            },
+            ExpectedStorageDomain {
+                domain: "work_item_delegations",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
+            },
+            ExpectedStorageDomain {
+                domain: "working_memory_deltas",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
+            },
+            ExpectedStorageDomain {
+                domain: "context_episodes",
                 canonical_source: "db",
                 legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },

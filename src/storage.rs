@@ -533,6 +533,10 @@ impl AppStorage {
     }
 
     pub fn append_work_item_delegation(&self, record: &WorkItemDelegationRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.work_item_delegations().upsert(record)?;
+            return Ok(());
+        }
         self.append_jsonl(&self.work_item_delegations_path, record)
     }
 
@@ -680,10 +684,18 @@ impl AppStorage {
     }
 
     pub fn append_working_memory_delta(&self, record: &WorkingMemoryDelta) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.working_memory_deltas().upsert(record)?;
+            return Ok(());
+        }
         self.append_jsonl(&self.working_memory_deltas_path, record)
     }
 
     pub fn append_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.context_episodes().upsert(record)?;
+            return self.enqueue_memory_index_context_episode(record);
+        }
         self.append_jsonl(&self.context_episodes_path, record)?;
         self.enqueue_memory_index_context_episode(record)
     }
@@ -1101,6 +1113,9 @@ impl AppStorage {
         &self,
         limit: usize,
     ) -> Result<Vec<WorkItemDelegationRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.work_item_delegations().recent(limit);
+        }
         read_recent_jsonl(&self.work_item_delegations_path, limit)
     }
 
@@ -1204,10 +1219,16 @@ impl AppStorage {
         &self,
         limit: usize,
     ) -> Result<Vec<WorkingMemoryDelta>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.working_memory_deltas().recent(limit);
+        }
         read_recent_jsonl(&self.working_memory_deltas_path, limit)
     }
 
     pub fn read_recent_context_episodes(&self, limit: usize) -> Result<Vec<ContextEpisodeRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.context_episodes().recent(limit);
+        }
         read_recent_jsonl(&self.context_episodes_path, limit)
     }
 
@@ -2693,7 +2714,7 @@ mod tests {
         MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
         TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TodoItem, TodoItemState,
         ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, WorkItemPlanStatus,
-        WorkItemState,
+        WorkItemState, WorkingMemoryUpdateReason,
     };
 
     use super::*;
@@ -3427,6 +3448,95 @@ mod tests {
             Some("delivery evidence".into())
         );
         assert_eq!(storage.count_briefs().unwrap(), 1);
+    }
+
+    #[test]
+    fn runtime_db_memory_episode_and_delegation_writes_skip_live_jsonl_after_cutover() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        let delegation = WorkItemDelegationRecord::new(
+            "parent-agent",
+            "parent-work",
+            "child-agent",
+            "child-work",
+        );
+        let memory_delta = WorkingMemoryDelta {
+            from_revision: 1,
+            to_revision: 2,
+            created_at_turn: 7,
+            reason: WorkingMemoryUpdateReason::TaskRejoined,
+            changed_fields: vec!["pending_followups".into()],
+            summary_lines: vec!["updated pending follow-ups".into()],
+        };
+        let now = Utc::now();
+        let episode = ContextEpisodeRecord {
+            id: "ep_db_only".into(),
+            agent_id: "default".into(),
+            workspace_id: "agent_home".into(),
+            created_at: now,
+            finalized_at: now + chrono::Duration::seconds(1),
+            start_turn_index: 3,
+            end_turn_index: 4,
+            start_message_count: 6,
+            end_message_count: 8,
+            boundary_reason: EpisodeBoundaryReason::TaskRejoined,
+            current_work_item_id: Some("work-db-only".into()),
+            objective: Some("migrate remaining domains".into()),
+            work_summary: None,
+            scope_hints: Vec::new(),
+            source_turn_ids: vec!["turn-1".into()],
+            source_refs: Vec::new(),
+            generated_by: None,
+            operator_intents: Vec::new(),
+            runtime_facts: Vec::new(),
+            task_results: Vec::new(),
+            unresolved_items: Vec::new(),
+            model_inferences: Vec::new(),
+            summary: "episode summary".into(),
+            working_set_files: Vec::new(),
+            commands: Vec::new(),
+            verification: Vec::new(),
+            decisions: Vec::new(),
+            carry_forward: Vec::new(),
+            waiting_on: Vec::new(),
+        };
+
+        storage.append_work_item_delegation(&delegation).unwrap();
+        storage.append_working_memory_delta(&memory_delta).unwrap();
+        storage.append_context_episode(&episode).unwrap();
+
+        for file_name in [
+            "work_item_delegations.jsonl",
+            "working_memory_deltas.jsonl",
+            "context_episodes.jsonl",
+        ] {
+            assert!(
+                !storage.ledger_dir().join(file_name).exists(),
+                "{file_name} should not be a live compat export after db cutover"
+            );
+        }
+
+        assert_eq!(
+            storage.read_recent_work_item_delegations(10).unwrap(),
+            vec![delegation]
+        );
+        assert_eq!(
+            storage.read_recent_working_memory_deltas(10).unwrap(),
+            vec![memory_delta]
+        );
+        assert_eq!(
+            storage.read_recent_context_episodes(10).unwrap(),
+            vec![episode]
+        );
     }
 
     #[test]

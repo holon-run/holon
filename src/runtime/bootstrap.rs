@@ -514,6 +514,21 @@ fn prepare_runtime_storage(
             .transcript_entries()
             .import_legacy(storage.read_all_transcript()?)?;
     }
+    if !storage_domain_complete(&runtime_db, "work_item_delegations")? {
+        runtime_db
+            .work_item_delegations()
+            .import_legacy(storage.read_recent_work_item_delegations(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "working_memory_deltas")? {
+        runtime_db
+            .working_memory_deltas()
+            .import_legacy(storage.read_recent_working_memory_deltas(usize::MAX)?)?;
+    }
+    if !storage_domain_complete(&runtime_db, "context_episodes")? {
+        runtime_db
+            .context_episodes()
+            .import_legacy(storage.read_recent_context_episodes(usize::MAX)?)?;
+    }
 
     storage.enable_scheduler_control_plane_db(runtime_db.clone())?;
     let snapshot = storage.recovery_snapshot(&agent_id)?;
