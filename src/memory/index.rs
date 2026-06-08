@@ -561,12 +561,23 @@ impl MemoryIndex {
     }
 
     fn has_backfill_checkpoints_for_agent(&self, agent_id: &str) -> Result<bool> {
-        let count: i64 = self.connection.query_row(
-            "SELECT COUNT(*) FROM memory_index_checkpoints WHERE agent_id = ?1 AND cursor = ?2",
-            params![agent_id, MEMORY_INDEX_BACKFILL_CURSOR],
-            |row| row.get(0),
-        )?;
-        Ok(count as usize >= all_backfill_source_kinds().len())
+        for source_kind in all_backfill_source_kinds() {
+            let exists = self
+                .connection
+                .query_row(
+                    "SELECT 1 FROM memory_index_checkpoints
+                     WHERE agent_id = ?1 AND source_kind = ?2 AND cursor = ?3
+                     LIMIT 1",
+                    params![agent_id, source_kind, MEMORY_INDEX_BACKFILL_CURSOR],
+                    |_| Ok(true),
+                )
+                .optional()?
+                .unwrap_or(false);
+            if !exists {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn has_current_source_state_for_agent(&self, agent_id: &str) -> Result<bool> {
@@ -1036,19 +1047,20 @@ fn brief_document(storage: &AppStorage, brief: BriefRecord) -> MemoryDocument {
 
 fn brief_document_by_id(storage: &AppStorage, brief_id: &str) -> Result<Option<MemoryDocument>> {
     let runtime_db = storage.runtime_db()?;
-    let briefs = if let Some(runtime_db) = runtime_db.as_ref() {
+    let brief = if let Some(runtime_db) = runtime_db.as_ref() {
         runtime_db
             .evidence()
-            .recent_payloads(EvidenceKind::Brief, &storage_agent_id(storage), usize::MAX)?
-            .into_iter()
-            .map(|row| serde_json::from_str::<BriefRecord>(&row.payload_json).map_err(Into::into))
-            .collect::<Result<Vec<_>>>()?
+            .payload_by_id(EvidenceKind::Brief, &storage_agent_id(storage), brief_id)?
+            .map(|row| serde_json::from_str::<BriefRecord>(&row.payload_json))
+            .transpose()?
     } else {
-        storage.read_recent_briefs(usize::MAX)?
+        storage
+            .read_recent_briefs(usize::MAX)?
+            .into_iter()
+            .find(|brief| brief.id == brief_id)
     };
-    Ok(briefs
-        .into_iter()
-        .find(|brief| brief.id == brief_id && !brief.text.trim().is_empty())
+    Ok(brief
+        .filter(|brief| !brief.text.trim().is_empty())
         .map(|brief| brief_document(storage, brief)))
 }
 
@@ -1419,26 +1431,23 @@ fn command_receipt_document_by_ref(
         return Ok(None);
     };
     let runtime_db = storage.runtime_db()?;
-    let records = if let Some(runtime_db) = runtime_db.as_ref() {
+    let record = if let Some(runtime_db) = runtime_db.as_ref() {
         runtime_db
             .evidence()
-            .recent_payloads(
+            .payload_by_id(
                 EvidenceKind::ToolExecution,
                 &storage_agent_id(storage),
-                usize::MAX,
+                &tool_execution_id,
             )?
-            .into_iter()
-            .map(|row| {
-                serde_json::from_str::<ToolExecutionRecord>(&row.payload_json).map_err(Into::into)
-            })
-            .collect::<Result<Vec<_>>>()?
+            .map(|row| serde_json::from_str::<ToolExecutionRecord>(&row.payload_json))
+            .transpose()?
     } else {
-        storage.read_recent_tool_executions(usize::MAX)?
+        storage
+            .read_recent_tool_executions(usize::MAX)?
+            .into_iter()
+            .find(|record| record.id == tool_execution_id)
     };
-    let Some(record) = records
-        .into_iter()
-        .find(|record| record.id == tool_execution_id)
-    else {
+    let Some(record) = record else {
         return Ok(None);
     };
     match (record.tool_name.as_str(), batch_item_index) {
@@ -2620,6 +2629,47 @@ mod tests {
             .unwrap()
             .has_current_source_state_for_agent("default")
             .unwrap());
+    }
+
+    #[test]
+    fn extra_checkpoint_rows_do_not_hide_missing_required_backfill_kind() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .append_brief(&brief_with_workspace(
+                "default",
+                BriefKind::Result,
+                "checkpoint required kind sentinel",
+                "ws-holon",
+            ))
+            .unwrap();
+        rebuild_memory_index(&storage, Some("ws-holon")).unwrap();
+
+        let index = MemoryIndex::open(&storage).unwrap();
+        index
+            .connection
+            .execute(
+                "DELETE FROM memory_index_checkpoints
+                 WHERE agent_id = ?1 AND source_kind = ?2",
+                params!["default", all_backfill_source_kinds()[0]],
+            )
+            .unwrap();
+        index
+            .connection
+            .execute(
+                "INSERT INTO memory_index_checkpoints (agent_id, source_kind, cursor, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "default",
+                    "future_unknown_kind",
+                    MEMORY_INDEX_BACKFILL_CURSOR,
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+            .unwrap();
+
+        assert!(!index.has_backfill_checkpoints_for_agent("default").unwrap());
     }
 
     #[test]
