@@ -344,7 +344,7 @@ impl AppStorage {
             .clone())
     }
 
-    fn current_agent_id(&self) -> Result<Option<String>> {
+    pub(crate) fn current_agent_id(&self) -> Result<Option<String>> {
         if let Some(agent) = self.read_agent_file()? {
             return Ok(Some(agent.id));
         }
@@ -3455,13 +3455,16 @@ mod tests {
 
         assert_eq!(storage.read_recent_briefs(10).unwrap(), vec![brief]);
         assert_eq!(storage.count_briefs().unwrap(), 1);
-        assert!(storage
-            .shared_indexes_dir()
-            .join(format!(
-                "memory.{}.dirty",
-                memory_index_agent_key("default")
-            ))
-            .exists());
+        let index = rusqlite::Connection::open(storage.shared_indexes_dir().join("memory.sqlite3"))
+            .unwrap();
+        let pending_agent_id: String = index
+            .query_row(
+                "SELECT agent_id FROM memory_index_pending_sources WHERE source_kind = 'brief'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending_agent_id, "default");
     }
 
     #[test]

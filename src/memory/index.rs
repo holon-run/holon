@@ -263,6 +263,12 @@ impl MemoryIndex {
         })?;
         let connection = Connection::open(memory_index_path(storage))?;
         let index = Self { connection };
+        index.connection.execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA busy_timeout = 5000;
+            "#,
+        )?;
         index.ensure_schema()?;
         Ok(index)
     }
@@ -1457,12 +1463,11 @@ fn command_receipt_document_by_ref(
 
 fn parse_command_receipt_source_ref(source_ref: &str) -> Option<(String, Option<usize>)> {
     let rest = source_ref.strip_prefix("tool_execution:")?;
-    let (tool_execution_id, suffix) = rest.split_once(":cmd")?;
-    if suffix.is_empty() {
-        return Some((tool_execution_id.to_string(), None));
+    let rest = rest.strip_suffix(":cmd")?;
+    if let Some((tool_execution_id, index)) = rest.rsplit_once(":batch_item:") {
+        return Some((tool_execution_id.to_string(), Some(index.parse().ok()?)));
     }
-    let index = suffix.strip_prefix(":batch_item:")?.parse::<usize>().ok()?;
-    Some((tool_execution_id.to_string(), Some(index)))
+    Some((rest.to_string(), None))
 }
 
 fn command_receipt_document(
@@ -1478,8 +1483,9 @@ fn command_receipt_document(
         None => format!("{} command receipt", record.tool_name),
     };
     let preview = command_preview(cmd);
+    let input_json = batch_item_input.unwrap_or(&record.input).to_owned();
     let input_json =
-        serde_json::to_string_pretty(&record.input).unwrap_or_else(|_| record.input.to_string());
+        serde_json::to_string_pretty(&input_json).unwrap_or_else(|_| input_json.to_string());
     let batch_item_input = batch_item_input
         .map(|value| serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()));
     let body = format!(
@@ -1541,10 +1547,9 @@ fn todo_item_state_label(state: crate::types::TodoItemState) -> &'static str {
 
 fn storage_agent_id(storage: &AppStorage) -> String {
     storage
-        .read_agent()
+        .current_agent_id()
         .ok()
         .flatten()
-        .map(|agent| agent.id)
         .unwrap_or_else(|| "unknown".into())
 }
 
@@ -2768,5 +2773,80 @@ mod tests {
             .expect("batch command receipt should be retrievable");
         assert!(memory.content.contains(second_command));
         assert!(!memory.content.contains(first_command));
+    }
+
+    #[test]
+    fn pending_exec_command_batch_item_upsert_resolves_tool_execution_record() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .append_brief(&brief_with_workspace(
+                "default",
+                BriefKind::Result,
+                "seed before pending batch command receipt",
+                "ws-holon",
+            ))
+            .unwrap();
+        rebuild_memory_index(&storage, Some("ws-holon")).unwrap();
+
+        let first_command = "echo first_pending_batch_1246";
+        let second_command = "python - <<'PY'\nprint('pending_batch_receipt_middle_1246')\nPY";
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-pending-batch-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 0,
+                turn_id: None,
+                tool_name: "ExecCommandBatch".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 20,
+                authority_class: crate::types::AuthorityClass::OperatorInstruction,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: json!({
+                    "items": [
+                        {"cmd": first_command},
+                        {"cmd": second_command}
+                    ]
+                }),
+                output: json!({"completed_count": 2}),
+                summary: "ExecCommandBatch completed 2/2 items".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let source_ref = "tool_execution:tool-pending-batch-1246:batch_item:2:cmd";
+        assert!(MemoryIndex::open(&storage)
+            .unwrap()
+            .pending_sources_for_agent("default")
+            .unwrap()
+            .iter()
+            .any(|source| source.source_ref == source_ref));
+
+        let results = search_memory(
+            &storage,
+            "pending_batch_receipt_middle_1246",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        let result = results
+            .iter()
+            .find(|result| result.source_ref == source_ref)
+            .expect("pending batch item receipt should be incrementally indexed");
+        assert_eq!(result.metadata["batch_item_index"].as_u64(), Some(2));
+        let memory = get_memory(&storage, source_ref, None, Some("ws-holon"))
+            .unwrap()
+            .expect("pending batch command receipt should be retrievable");
+        assert!(memory.content.contains(second_command));
+        assert!(!memory.content.contains(first_command));
+        assert!(MemoryIndex::open(&storage)
+            .unwrap()
+            .pending_sources_for_agent("default")
+            .unwrap()
+            .is_empty());
     }
 }
