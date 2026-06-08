@@ -2,9 +2,10 @@
 title: RFC: Debug Prompt JSON Envelope
 date: 2026-06-08
 status: draft
+Handle: rfc-debug-prompt-json-envelope
 ---
 
-# Debug Prompt JSON Envelope
+# RFC: Debug Prompt JSON Envelope
 
 ## Summary
 
@@ -65,7 +66,7 @@ that contributed to the final prompt.
       ],
       "inclusion": {
         "state": "included",
-        "reason": "current continuation chain"
+        "reason": "current_continuation_chain"
       },
       "priority": "high",
       "budget": {
