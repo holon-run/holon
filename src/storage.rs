@@ -13,7 +13,9 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
 use crate::{
+    memory::index::enqueue_memory_index_upsert,
     runtime_db::RuntimeDb,
+    tool::helpers::command_receipt_source_ref,
     types::{
         AgentIdentityRecord, AgentPostureProjection, AgentSchedulingPosture, AgentState,
         AgentStatus, AuditEvent, BriefRecord, ContextEpisodeRecord, DeliverySummaryRecord,
@@ -473,10 +475,10 @@ impl AppStorage {
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.evidence().append_brief(brief)?;
-            return self.mark_memory_index_dirty();
+            return self.enqueue_memory_index_brief(brief);
         }
         self.append_jsonl(&self.briefs_path, brief)?;
-        self.mark_memory_index_dirty()
+        self.enqueue_memory_index_brief(brief)
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
@@ -502,10 +504,10 @@ impl AppStorage {
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.tasks().upsert(task)?;
-            return self.mark_memory_index_dirty();
+            return self.enqueue_memory_index_task(task);
         }
         self.append_jsonl(&self.tasks_path, task)?;
-        self.mark_memory_index_dirty()
+        self.enqueue_memory_index_task(task)
     }
 
     pub fn append_work_item(&self, record: &WorkItemRecord) -> Result<()> {
@@ -516,10 +518,10 @@ impl AppStorage {
                 .as_deref()
                 == Some(record.id.as_str());
             runtime_db.work_items().upsert(record, current_focus)?;
-            return self.mark_memory_index_dirty();
+            return self.enqueue_memory_index_work_item(record);
         }
         self.append_jsonl(&self.work_items_path, record)?;
-        self.mark_memory_index_dirty()
+        self.enqueue_memory_index_work_item(record)
     }
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
@@ -549,7 +551,7 @@ impl AppStorage {
                 record.tool_name.as_str(),
                 "ExecCommand" | "ExecCommandBatch"
             ) {
-                self.mark_memory_index_dirty()?;
+                self.enqueue_memory_index_tool_execution(record)?;
             }
             return Ok(());
         }
@@ -558,7 +560,7 @@ impl AppStorage {
             record.tool_name.as_str(),
             "ExecCommand" | "ExecCommandBatch"
         ) {
-            self.mark_memory_index_dirty()?;
+            self.enqueue_memory_index_tool_execution(record)?;
         }
         Ok(())
     }
@@ -683,16 +685,16 @@ impl AppStorage {
 
     pub fn append_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
         self.append_jsonl(&self.context_episodes_path, record)?;
-        self.mark_memory_index_dirty()
+        self.enqueue_memory_index_context_episode(record)
     }
 
     pub fn append_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.workspace_entries().upsert(entry)?;
-            return self.mark_memory_index_dirty();
+            return self.enqueue_memory_index_workspace_entry(entry);
         }
         self.append_jsonl(&self.workspaces_path, entry)?;
-        self.mark_memory_index_dirty()
+        self.enqueue_memory_index_workspace_entry(entry)
     }
 
     pub fn append_workspace_occupancy(&self, entry: &WorkspaceOccupancyRecord) -> Result<()> {
@@ -732,6 +734,75 @@ impl AppStorage {
         }
         fs::create_dir_all(self.shared_indexes_dir())?;
         fs::write(&dirty_path, b"dirty").with_context(|| "failed to mark memory index dirty")
+    }
+
+    fn enqueue_memory_index_brief(&self, brief: &BriefRecord) -> Result<()> {
+        enqueue_memory_index_upsert(self, "brief", &brief.id, &format!("brief:{}", brief.id))
+    }
+
+    fn enqueue_memory_index_task(&self, task: &TaskRecord) -> Result<()> {
+        enqueue_memory_index_upsert(self, "task", &task.id, &format!("task:{}", task.id))
+    }
+
+    fn enqueue_memory_index_work_item(&self, record: &WorkItemRecord) -> Result<()> {
+        enqueue_memory_index_upsert(
+            self,
+            "work_item",
+            &record.id,
+            &format!("work_item:{}", record.id),
+        )
+    }
+
+    fn enqueue_memory_index_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
+        enqueue_memory_index_upsert(
+            self,
+            "context_episode",
+            &record.id,
+            &format!("episode:{}", record.id),
+        )
+    }
+
+    fn enqueue_memory_index_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
+        enqueue_memory_index_upsert(
+            self,
+            "workspace_profile",
+            &entry.workspace_id,
+            &format!("workspace_profile:{}", entry.workspace_id),
+        )
+    }
+
+    fn enqueue_memory_index_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
+        match record.tool_name.as_str() {
+            "ExecCommand" => {
+                if record.input.get("cmd").and_then(Value::as_str).is_some() {
+                    let source_ref = command_receipt_source_ref(&record.id, None);
+                    enqueue_memory_index_upsert(
+                        self,
+                        "tool_command_receipt",
+                        &source_ref,
+                        &source_ref,
+                    )?;
+                }
+            }
+            "ExecCommandBatch" => {
+                if let Some(items) = record.input.get("items").and_then(Value::as_array) {
+                    for (offset, item) in items.iter().enumerate() {
+                        if item.get("cmd").and_then(Value::as_str).is_some() {
+                            let source_ref =
+                                command_receipt_source_ref(&record.id, Some(offset + 1));
+                            enqueue_memory_index_upsert(
+                                self,
+                                "tool_command_receipt",
+                                &source_ref,
+                                &source_ref,
+                            )?;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn storage_agent_id(&self) -> Result<String> {

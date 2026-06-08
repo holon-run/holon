@@ -27,11 +27,8 @@ const DIRTY_FILENAME: &str = "memory.dirty";
 const SEARCH_LIMIT_MAX: usize = 50;
 const GET_CHARS_DEFAULT: usize = 12_000;
 const GET_CHARS_MAX: usize = 50_000;
-const REBUILD_BRIEF_LIMIT: usize = 500;
-const REBUILD_EPISODE_LIMIT: usize = 500;
-const REBUILD_WORK_ITEM_LIMIT: usize = 500;
-const REBUILD_COMMAND_RECEIPT_LIMIT: usize = 500;
-const REBUILD_TASK_HISTORY_LIMIT: usize = 500;
+const MEMORY_INDEX_DOCUMENT_SCHEMA_VERSION: i64 = 1;
+const MEMORY_INDEX_BACKFILL_CURSOR: &str = "full";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +90,24 @@ pub fn rebuild_memory_index(storage: &AppStorage, active_workspace_id: Option<&s
     index.rebuild(storage, active_workspace_id)
 }
 
+pub(crate) fn enqueue_memory_index_upsert(
+    storage: &AppStorage,
+    source_kind: &str,
+    source_id: &str,
+    source_ref: &str,
+) -> Result<()> {
+    let index = MemoryIndex::open(storage)?;
+    index.enqueue_source(
+        &storage_agent_id(storage),
+        source_kind,
+        source_id,
+        source_ref,
+        "upsert",
+        None,
+        "source_write",
+    )
+}
+
 pub fn repair_memory_index_for_paths(storage: &AppStorage, changed_paths: &[String]) -> Result<()> {
     let known = known_memory_markdown_sources(storage);
     if !changed_paths.iter().any(|path| {
@@ -145,10 +160,13 @@ fn ensure_memory_index_current(
     let agent_id = storage_agent_id(storage);
     if !index_file_exists
         || memory_index_is_dirty(storage)
+        || !index.has_backfill_checkpoints_for_agent(&agent_id)?
+        || !index.has_current_source_state_for_agent(&agent_id)?
         || !index.has_any_documents_for_agent(&agent_id)?
     {
         index.rebuild(storage, active_workspace_id)?;
     } else {
+        index.consume_pending_sources(storage)?;
         repair_known_markdown_sources(storage, &index)?;
     }
     Ok(index)
@@ -281,6 +299,37 @@ impl MemoryIndex {
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_documents_fts
             USING fts5(document_key UNINDEXED, title, body, sanitized_excerpt, tokenize='unicode61');
+            CREATE TABLE IF NOT EXISTS memory_index_pending_sources (
+                document_key TEXT PRIMARY KEY,
+                source_ref TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                source_updated_at TEXT,
+                reason TEXT,
+                enqueued_at TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT
+            );
+            CREATE TABLE IF NOT EXISTS memory_index_source_state (
+                document_key TEXT PRIMARY KEY,
+                source_ref TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                source_updated_at TEXT,
+                content_hash TEXT,
+                indexed_at TEXT NOT NULL,
+                index_schema_version INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_index_checkpoints (
+                agent_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                cursor TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (agent_id, source_kind)
+            );
             "#,
         )?;
         Ok(())
@@ -325,8 +374,36 @@ impl MemoryIndex {
             "DELETE FROM memory_documents WHERE agent_id = ?1",
             [&agent_id],
         )?;
+        transaction.execute(
+            "DELETE FROM memory_index_source_state WHERE agent_id = ?1",
+            [&agent_id],
+        )?;
         for document in collect_documents(storage, active_workspace_id)? {
             upsert_document_tx(&transaction, &document)?;
+            upsert_source_state_tx(
+                &transaction,
+                &document,
+                source_id_from_ref(&document.source_ref),
+            )?;
+        }
+        transaction.execute(
+            "DELETE FROM memory_index_pending_sources WHERE agent_id = ?1",
+            [&agent_id],
+        )?;
+        for source_kind in all_backfill_source_kinds() {
+            transaction.execute(
+                "INSERT INTO memory_index_checkpoints (agent_id, source_kind, cursor, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(agent_id, source_kind) DO UPDATE SET
+                    cursor=excluded.cursor,
+                    updated_at=excluded.updated_at",
+                params![
+                    agent_id,
+                    source_kind,
+                    MEMORY_INDEX_BACKFILL_CURSOR,
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
         }
         transaction.commit()?;
         clear_memory_index_dirty(storage)?;
@@ -334,7 +411,12 @@ impl MemoryIndex {
     }
 
     fn upsert_document(&self, document: &MemoryDocument) -> Result<()> {
-        upsert_document_tx(&self.connection, document)
+        upsert_document_tx(&self.connection, document)?;
+        upsert_source_state_tx(
+            &self.connection,
+            document,
+            source_id_from_ref(&document.source_ref),
+        )
     }
 
     fn delete_document(&self, agent_id: &str, source_ref: &str) -> Result<()> {
@@ -347,7 +429,120 @@ impl MemoryIndex {
             "DELETE FROM memory_documents WHERE document_key = ?1",
             [document_key.as_str()],
         )?;
+        self.connection.execute(
+            "DELETE FROM memory_index_source_state WHERE document_key = ?1",
+            [document_key.as_str()],
+        )?;
         Ok(())
+    }
+
+    fn enqueue_source(
+        &self,
+        agent_id: &str,
+        source_kind: &str,
+        source_id: &str,
+        source_ref: &str,
+        operation: &str,
+        source_updated_at: Option<DateTime<Utc>>,
+        reason: &str,
+    ) -> Result<()> {
+        let document_key = document_key_for(agent_id, source_ref);
+        self.connection.execute(
+            r#"
+            INSERT INTO memory_index_pending_sources (
+                document_key, source_ref, agent_id, source_kind, source_id, operation,
+                source_updated_at, reason, enqueued_at, attempts, last_error
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL)
+            ON CONFLICT(document_key) DO UPDATE SET
+                source_ref=excluded.source_ref,
+                agent_id=excluded.agent_id,
+                source_kind=excluded.source_kind,
+                source_id=excluded.source_id,
+                operation=excluded.operation,
+                source_updated_at=excluded.source_updated_at,
+                reason=excluded.reason,
+                enqueued_at=excluded.enqueued_at
+            "#,
+            params![
+                document_key,
+                source_ref,
+                agent_id,
+                source_kind,
+                source_id,
+                operation,
+                source_updated_at.map(|dt| dt.to_rfc3339()),
+                reason,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn consume_pending_sources(&mut self, storage: &AppStorage) -> Result<()> {
+        let agent_id = storage_agent_id(storage);
+        let pending = self.pending_sources_for_agent(&agent_id)?;
+        for source in pending {
+            let transaction = self.connection.transaction()?;
+            let result = if source.operation == "delete" {
+                delete_document_tx(&transaction, &source.document_key)
+            } else {
+                match document_for_pending_source(storage, &source)? {
+                    Some(document) => {
+                        let hash = content_hash(&document.body);
+                        let existing_hash = transaction
+                            .query_row(
+                                "SELECT content_hash FROM memory_index_source_state WHERE document_key = ?1",
+                                [&source.document_key],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .optional()?;
+                        if existing_hash.as_deref() != Some(hash.as_str()) {
+                            upsert_document_tx(&transaction, &document)?;
+                        }
+                        upsert_source_state_tx(&transaction, &document, &source.source_id)
+                    }
+                    None => delete_document_tx(&transaction, &source.document_key),
+                }
+            };
+            match result {
+                Ok(()) => {
+                    transaction.execute(
+                        "DELETE FROM memory_index_pending_sources WHERE document_key = ?1",
+                        [&source.document_key],
+                    )?;
+                    transaction.commit()?;
+                }
+                Err(error) => {
+                    transaction.execute(
+                        "UPDATE memory_index_pending_sources
+                         SET attempts = attempts + 1, last_error = ?2
+                         WHERE document_key = ?1",
+                        params![source.document_key, error.to_string()],
+                    )?;
+                    transaction.commit()?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn pending_sources_for_agent(&self, agent_id: &str) -> Result<Vec<PendingSource>> {
+        let mut statement = self.connection.prepare(
+            "SELECT document_key, source_ref, agent_id, source_kind, source_id, operation
+             FROM memory_index_pending_sources
+             WHERE agent_id = ?1
+             ORDER BY enqueued_at ASC, document_key ASC",
+        )?;
+        let rows = statement.query_map([agent_id], |row| {
+            Ok(PendingSource {
+                document_key: row.get(0)?,
+                source_ref: row.get(1)?,
+                source_kind: row.get(3)?,
+                source_id: row.get(4)?,
+                operation: row.get(5)?,
+            })
+        })?;
+        rows.map(|row| row.map_err(Into::into)).collect()
     }
 
     fn has_any_documents_for_agent(&self, agent_id: &str) -> Result<bool> {
@@ -357,6 +552,33 @@ impl MemoryIndex {
             |row| row.get(0),
         )?;
         Ok(count > 0)
+    }
+
+    fn has_backfill_checkpoints_for_agent(&self, agent_id: &str) -> Result<bool> {
+        let count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM memory_index_checkpoints WHERE agent_id = ?1 AND cursor = ?2",
+            params![agent_id, MEMORY_INDEX_BACKFILL_CURSOR],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize >= all_backfill_source_kinds().len())
+    }
+
+    fn has_current_source_state_for_agent(&self, agent_id: &str) -> Result<bool> {
+        let stale: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM memory_index_source_state
+             WHERE agent_id = ?1 AND index_schema_version != ?2",
+            params![agent_id, MEMORY_INDEX_DOCUMENT_SCHEMA_VERSION],
+            |row| row.get(0),
+        )?;
+        if stale > 0 {
+            return Ok(false);
+        }
+        let states: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM memory_index_source_state WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get(0),
+        )?;
+        Ok(states > 0)
     }
 
     fn document_hash(&self, agent_id: &str, source_ref: &str) -> Result<Option<String>> {
@@ -482,6 +704,15 @@ impl MemoryIndex {
     }
 }
 
+#[derive(Debug, Clone)]
+struct PendingSource {
+    document_key: String,
+    source_ref: String,
+    source_kind: String,
+    source_id: String,
+    operation: String,
+}
+
 fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Result<()> {
     let metadata_json = serde_json::to_string(&document.metadata)?;
     let hash = content_hash(&document.body);
@@ -544,12 +775,83 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
     Ok(())
 }
 
+fn upsert_source_state_tx(
+    connection: &Connection,
+    document: &MemoryDocument,
+    source_id: &str,
+) -> Result<()> {
+    connection.execute(
+        r#"
+        INSERT INTO memory_index_source_state (
+            document_key, source_ref, agent_id, source_kind, source_id, source_updated_at,
+            content_hash, indexed_at, index_schema_version
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        ON CONFLICT(document_key) DO UPDATE SET
+            source_ref=excluded.source_ref,
+            agent_id=excluded.agent_id,
+            source_kind=excluded.source_kind,
+            source_id=excluded.source_id,
+            source_updated_at=excluded.source_updated_at,
+            content_hash=excluded.content_hash,
+            indexed_at=excluded.indexed_at,
+            index_schema_version=excluded.index_schema_version
+        "#,
+        params![
+            document_key(document),
+            document.source_ref,
+            document.agent_id,
+            document.source_kind,
+            source_id,
+            document.updated_at.to_rfc3339(),
+            content_hash(&document.body),
+            Utc::now().to_rfc3339(),
+            MEMORY_INDEX_DOCUMENT_SCHEMA_VERSION,
+        ],
+    )?;
+    Ok(())
+}
+
+fn delete_document_tx(connection: &Connection, document_key: &str) -> Result<()> {
+    connection.execute(
+        "DELETE FROM memory_documents_fts WHERE document_key = ?1",
+        [document_key],
+    )?;
+    connection.execute(
+        "DELETE FROM memory_documents WHERE document_key = ?1",
+        [document_key],
+    )?;
+    connection.execute(
+        "DELETE FROM memory_index_source_state WHERE document_key = ?1",
+        [document_key],
+    )?;
+    Ok(())
+}
+
 fn document_key(document: &MemoryDocument) -> String {
     document_key_for(&document.agent_id, &document.source_ref)
 }
 
 fn document_key_for(agent_id: &str, source_ref: &str) -> String {
     format!("{agent_id}:{source_ref}")
+}
+
+fn all_backfill_source_kinds() -> &'static [&'static str] {
+    &[
+        "agent_memory_markdown",
+        "workspace_profile",
+        "brief",
+        "context_episode",
+        "work_item",
+        "task",
+        "tool_command_receipt",
+    ]
+}
+
+fn source_id_from_ref(source_ref: &str) -> &str {
+    source_ref
+        .split_once(':')
+        .map(|(_, source_id)| source_id)
+        .unwrap_or(source_ref)
 }
 
 fn collect_documents(
@@ -566,6 +868,27 @@ fn collect_documents(
     documents.extend(task_documents(storage, runtime_db.as_ref())?);
     documents.extend(command_execution_documents(storage, runtime_db.as_ref())?);
     Ok(documents)
+}
+
+fn document_for_pending_source(
+    storage: &AppStorage,
+    source: &PendingSource,
+) -> Result<Option<MemoryDocument>> {
+    match source.source_kind.as_str() {
+        "agent_memory_markdown" => known_memory_markdown_sources(storage)
+            .into_iter()
+            .find(|known| known.source_ref == source.source_ref)
+            .map(|known| agent_memory_document(storage, known.name, known.title, &known.path))
+            .transpose()
+            .map(|value| value.flatten()),
+        "workspace_profile" => workspace_profile_document_by_id(storage, &source.source_id),
+        "brief" => brief_document_by_id(storage, &source.source_id),
+        "context_episode" => context_episode_document_by_id(storage, &source.source_id),
+        "work_item" => work_item_document_by_id(storage, &source.source_id),
+        "task" => task_document_by_id(storage, &source.source_id),
+        "tool_command_receipt" => command_receipt_document_by_ref(storage, &source.source_ref),
+        _ => Ok(None),
+    }
 }
 
 fn agent_memory_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
@@ -651,6 +974,15 @@ fn workspace_profile_documents(storage: &AppStorage) -> Result<Vec<MemoryDocumen
         .collect())
 }
 
+fn workspace_profile_document_by_id(
+    storage: &AppStorage,
+    workspace_id: &str,
+) -> Result<Option<MemoryDocument>> {
+    Ok(workspace_profile_documents(storage)?
+        .into_iter()
+        .find(|document| document.workspace_id.as_deref() == Some(workspace_id)))
+}
+
 fn brief_documents(
     storage: &AppStorage,
     runtime_db: Option<&RuntimeDb>,
@@ -658,16 +990,12 @@ fn brief_documents(
     let briefs = if let Some(runtime_db) = runtime_db {
         runtime_db
             .evidence()
-            .recent_payloads(
-                EvidenceKind::Brief,
-                &storage_agent_id(storage),
-                REBUILD_BRIEF_LIMIT,
-            )?
+            .recent_payloads(EvidenceKind::Brief, &storage_agent_id(storage), usize::MAX)?
             .into_iter()
             .map(|row| serde_json::from_str::<BriefRecord>(&row.payload_json).map_err(Into::into))
             .collect::<Result<Vec<_>>>()?
     } else {
-        storage.read_recent_briefs(REBUILD_BRIEF_LIMIT)?
+        storage.read_recent_briefs(usize::MAX)?
     };
     Ok(briefs
         .into_iter()
@@ -700,9 +1028,27 @@ fn brief_document(storage: &AppStorage, brief: BriefRecord) -> MemoryDocument {
     }
 }
 
+fn brief_document_by_id(storage: &AppStorage, brief_id: &str) -> Result<Option<MemoryDocument>> {
+    let runtime_db = storage.runtime_db()?;
+    let briefs = if let Some(runtime_db) = runtime_db.as_ref() {
+        runtime_db
+            .evidence()
+            .recent_payloads(EvidenceKind::Brief, &storage_agent_id(storage), usize::MAX)?
+            .into_iter()
+            .map(|row| serde_json::from_str::<BriefRecord>(&row.payload_json).map_err(Into::into))
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        storage.read_recent_briefs(usize::MAX)?
+    };
+    Ok(briefs
+        .into_iter()
+        .find(|brief| brief.id == brief_id && !brief.text.trim().is_empty())
+        .map(|brief| brief_document(storage, brief)))
+}
+
 fn context_episode_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
     Ok(storage
-        .read_recent_context_episodes(REBUILD_EPISODE_LIMIT)?
+        .read_recent_context_episodes(usize::MAX)?
         .into_iter()
         .filter(|episode| !episode.summary.trim().is_empty())
         .map(episode_document)
@@ -748,6 +1094,17 @@ fn episode_document(episode: ContextEpisodeRecord) -> MemoryDocument {
     }
 }
 
+fn context_episode_document_by_id(
+    storage: &AppStorage,
+    episode_id: &str,
+) -> Result<Option<MemoryDocument>> {
+    Ok(storage
+        .read_recent_context_episodes(usize::MAX)?
+        .into_iter()
+        .find(|episode| episode.id == episode_id && !episode.summary.trim().is_empty())
+        .map(episode_document))
+}
+
 fn work_item_documents(
     storage: &AppStorage,
     runtime_db: Option<&RuntimeDb>,
@@ -755,13 +1112,13 @@ fn work_item_documents(
     let latest = if let Some(runtime_db) = runtime_db {
         runtime_db
             .work_items()
-            .latest_for_agent(&storage_agent_id(storage), REBUILD_WORK_ITEM_LIMIT)?
+            .latest_for_agent(&storage_agent_id(storage), usize::MAX)?
             .into_iter()
             .map(|item| (item.id.clone(), item))
             .collect()
     } else {
         let mut latest = BTreeMap::<String, WorkItemRecord>::new();
-        for item in storage.read_recent_work_items(REBUILD_WORK_ITEM_LIMIT)? {
+        for item in storage.read_recent_work_items(usize::MAX)? {
             latest.insert(item.id.clone(), item);
         }
         latest
@@ -791,6 +1148,23 @@ fn work_item_document(item: WorkItemRecord) -> MemoryDocument {
         }),
         updated_at: item.updated_at,
     }
+}
+
+fn work_item_document_by_id(
+    storage: &AppStorage,
+    work_item_id: &str,
+) -> Result<Option<MemoryDocument>> {
+    let runtime_db = storage.runtime_db()?;
+    let item = if let Some(runtime_db) = runtime_db.as_ref() {
+        runtime_db.work_items().latest(work_item_id)?
+    } else {
+        storage
+            .read_recent_work_items(usize::MAX)?
+            .into_iter()
+            .rev()
+            .find(|item| item.id == work_item_id)
+    };
+    Ok(item.map(work_item_document))
 }
 
 fn work_item_document_body(item: &WorkItemRecord) -> String {
@@ -827,9 +1201,9 @@ fn task_documents(
     let tasks = if let Some(runtime_db) = runtime_db {
         runtime_db
             .tasks()
-            .latest_for_agent(&storage_agent_id(storage), REBUILD_TASK_HISTORY_LIMIT)?
+            .latest_for_agent(&storage_agent_id(storage), usize::MAX)?
     } else {
-        storage.latest_task_records_from_recent(REBUILD_TASK_HISTORY_LIMIT)?
+        storage.latest_task_records_from_recent(usize::MAX)?
     };
     Ok(tasks.into_iter().map(task_document).collect())
 }
@@ -908,6 +1282,16 @@ fn task_document(task: TaskRecord) -> MemoryDocument {
     }
 }
 
+fn task_document_by_id(storage: &AppStorage, task_id: &str) -> Result<Option<MemoryDocument>> {
+    let runtime_db = storage.runtime_db()?;
+    let task = if let Some(runtime_db) = runtime_db.as_ref() {
+        runtime_db.tasks().latest(task_id)?
+    } else {
+        storage.latest_task_record(task_id)?
+    };
+    Ok(task.map(task_document))
+}
+
 fn task_document_body(
     task: &TaskRecord,
     task_kind: &str,
@@ -983,7 +1367,7 @@ fn command_execution_documents(
             .recent_payloads(
                 EvidenceKind::ToolExecution,
                 &storage_agent_id(storage),
-                REBUILD_COMMAND_RECEIPT_LIMIT,
+                usize::MAX,
             )?
             .into_iter()
             .map(|row| {
@@ -991,7 +1375,7 @@ fn command_execution_documents(
             })
             .collect::<Result<Vec<_>>>()?
     } else {
-        storage.read_recent_tool_executions(REBUILD_COMMAND_RECEIPT_LIMIT)?
+        storage.read_recent_tool_executions(usize::MAX)?
     };
     for record in records {
         match record.tool_name.as_str() {
@@ -1018,6 +1402,67 @@ fn command_execution_documents(
         }
     }
     Ok(documents)
+}
+
+fn command_receipt_document_by_ref(
+    storage: &AppStorage,
+    source_ref: &str,
+) -> Result<Option<MemoryDocument>> {
+    let Some((tool_execution_id, batch_item_index)) = parse_command_receipt_source_ref(source_ref)
+    else {
+        return Ok(None);
+    };
+    let runtime_db = storage.runtime_db()?;
+    let records = if let Some(runtime_db) = runtime_db.as_ref() {
+        runtime_db
+            .evidence()
+            .recent_payloads(
+                EvidenceKind::ToolExecution,
+                &storage_agent_id(storage),
+                usize::MAX,
+            )?
+            .into_iter()
+            .map(|row| {
+                serde_json::from_str::<ToolExecutionRecord>(&row.payload_json).map_err(Into::into)
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        storage.read_recent_tool_executions(usize::MAX)?
+    };
+    let Some(record) = records
+        .into_iter()
+        .find(|record| record.id == tool_execution_id)
+    else {
+        return Ok(None);
+    };
+    match (record.tool_name.as_str(), batch_item_index) {
+        ("ExecCommand", None) => Ok(record
+            .input
+            .get("cmd")
+            .and_then(Value::as_str)
+            .map(|cmd| command_receipt_document(&record, None, None, cmd))),
+        ("ExecCommandBatch", Some(index)) => Ok(record
+            .input
+            .get("items")
+            .and_then(Value::as_array)
+            .and_then(|items| items.get(index - 1))
+            .and_then(|item| {
+                item.get("cmd")
+                    .and_then(Value::as_str)
+                    .map(|cmd| command_receipt_document(&record, Some(index), Some(item), cmd))
+            })),
+        _ => Ok(None),
+    }
+}
+
+fn parse_command_receipt_source_ref(source_ref: &str) -> Option<(String, Option<usize>)> {
+    let rest = source_ref.strip_prefix("tool_execution:")?;
+    let (tool_execution_id, suffix) = rest.split_once(":cmd")?;
+    if suffix.is_empty() {
+        return Some((tool_execution_id.to_string(), None));
+    }
+    let index = suffix.strip_prefix(":batch_item:")?.parse::<usize>().ok()?;
+    Some((tool_execution_id.to_string(), Some(index)))
 }
 
 fn command_receipt_document(
@@ -1957,7 +2402,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_search_task_index_uses_bounded_recent_task_history() {
+    fn memory_search_task_index_full_backfill_indexes_older_task_history() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
@@ -1976,7 +2421,7 @@ mod tests {
                 0,
             ))
             .unwrap();
-        for index in 0..REBUILD_TASK_HISTORY_LIMIT {
+        for index in 0..8 {
             storage
                 .append_task(&task_record(
                     &format!("task-recent-bound-{index}"),
@@ -1997,11 +2442,179 @@ mod tests {
         let old_results = search_memory(&storage, "outside_bound_1270", 10, None, false).unwrap();
         assert!(old_results
             .iter()
-            .all(|result| result.source_ref != "task:task-outside-bound-1270"));
-        let recent_results = search_memory(&storage, "recent_bound_499", 10, None, false).unwrap();
+            .any(|result| result.source_ref == "task:task-outside-bound-1270"));
+        let recent_results = search_memory(&storage, "recent_bound_7", 10, None, false).unwrap();
         assert!(recent_results
             .iter()
-            .any(|result| result.source_ref == "task:task-recent-bound-499"));
+            .any(|result| result.source_ref == "task:task-recent-bound-7"));
+    }
+
+    #[test]
+    fn pending_source_queue_incrementally_upserts_new_brief_after_backfill() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+
+        storage
+            .append_brief(&brief_with_workspace(
+                "default",
+                BriefKind::Result,
+                "initial incremental queue seed",
+                "ws-holon",
+            ))
+            .unwrap();
+        rebuild_memory_index(&storage, Some("ws-holon")).unwrap();
+
+        let fresh = brief_with_workspace(
+            "default",
+            BriefKind::Result,
+            "fresh pending source queue sentinel",
+            "ws-holon",
+        );
+        let fresh_ref = format!("brief:{}", fresh.id);
+        storage.append_brief(&fresh).unwrap();
+
+        let index = MemoryIndex::open(&storage).unwrap();
+        assert!(index
+            .pending_sources_for_agent("default")
+            .unwrap()
+            .iter()
+            .any(|source| source.source_ref == fresh_ref));
+
+        let results = search_memory(
+            &storage,
+            "pending source queue",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        assert!(results.iter().any(|result| result.source_ref == fresh_ref));
+        assert!(MemoryIndex::open(&storage)
+            .unwrap()
+            .pending_sources_for_agent("default")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn pending_delete_removes_stale_document_and_source_state() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        fs::write(
+            agent_memory_self_path(dir.path()),
+            "temporary delete stale index sentinel",
+        )
+        .unwrap();
+        rebuild_memory_index(&storage, None).unwrap();
+        assert!(get_memory(&storage, "agent_memory:self", None, None)
+            .unwrap()
+            .is_some());
+        fs::remove_file(agent_memory_self_path(dir.path())).unwrap();
+
+        let index = MemoryIndex::open(&storage).unwrap();
+        index
+            .enqueue_source(
+                "default",
+                "agent_memory_markdown",
+                "self",
+                "agent_memory:self",
+                "delete",
+                None,
+                "test_delete",
+            )
+            .unwrap();
+
+        let _ = search_memory(&storage, "temporary delete stale", 10, None, false).unwrap();
+        assert!(get_memory(&storage, "agent_memory:self", None, None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn missing_checkpoint_forces_full_backfill_recovery() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        storage
+            .append_brief(&brief_with_workspace(
+                "default",
+                BriefKind::Result,
+                "checkpoint recovery sentinel",
+                "ws-holon",
+            ))
+            .unwrap();
+        rebuild_memory_index(&storage, Some("ws-holon")).unwrap();
+
+        let index = MemoryIndex::open(&storage).unwrap();
+        index
+            .connection
+            .execute(
+                "DELETE FROM memory_documents WHERE agent_id = ?1",
+                ["default"],
+            )
+            .unwrap();
+        index
+            .connection
+            .execute(
+                "DELETE FROM memory_index_checkpoints WHERE agent_id = ?1",
+                ["default"],
+            )
+            .unwrap();
+        drop(index);
+
+        let results =
+            search_memory(&storage, "checkpoint recovery", 10, Some("ws-holon"), false).unwrap();
+        assert!(results.iter().any(|result| result.kind == "brief"));
+        assert!(MemoryIndex::open(&storage)
+            .unwrap()
+            .has_backfill_checkpoints_for_agent("default")
+            .unwrap());
+    }
+
+    #[test]
+    fn stale_source_state_schema_forces_rebuild() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        storage
+            .append_brief(&brief_with_workspace(
+                "default",
+                BriefKind::Result,
+                "schema version rebuild sentinel",
+                "ws-holon",
+            ))
+            .unwrap();
+        rebuild_memory_index(&storage, Some("ws-holon")).unwrap();
+
+        let index = MemoryIndex::open(&storage).unwrap();
+        index
+            .connection
+            .execute(
+                "UPDATE memory_index_source_state SET index_schema_version = 0 WHERE agent_id = ?1",
+                ["default"],
+            )
+            .unwrap();
+        drop(index);
+
+        let results = search_memory(
+            &storage,
+            "schema version rebuild",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        assert!(results.iter().any(|result| result.kind == "brief"));
+        assert!(MemoryIndex::open(&storage)
+            .unwrap()
+            .has_current_source_state_for_agent("default")
+            .unwrap());
     }
 
     #[test]
