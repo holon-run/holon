@@ -31,6 +31,9 @@ A Holon prompt is assembled from several sections with different jobs:
 These sections are not separate sources of truth competing with each other.
 They are projections of runtime evidence. The durable ledger remains the audit
 trail; the prompt is the budgeted view used for the next model decision.
+When sections overlap, the current work item is the task lifecycle source of
+truth. Relevant episode memory is historical evidence and should not override
+the active work item's objective, plan, todo list, or waiting state.
 
 ## Turns Are the Causal Unit
 
@@ -83,6 +86,12 @@ When older turn ranges age out of the hot prompt budget, Holon can archive them
 as structured episodes. An episode records the covered turn range, source turn
 IDs, source references, decisions, results, verification, unresolved items,
 operator intents, and model inferences.
+
+By default, prompt assembly recalls only episodes whose covered turn range is
+older than the `recent_turns` window. Recent turns provide the high-fidelity
+view of current interaction; episodes provide the compressed mid-term archive
+for turns no longer shown directly. Diagnostic modes may choose to show both,
+but ordinary prompts should avoid replaying the same turn evidence twice.
 
 Model-generated summaries may help describe an episode, but they are evidence,
 not authority. They do not change the trust level of an input, overwrite
