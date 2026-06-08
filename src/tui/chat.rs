@@ -904,11 +904,7 @@ fn assistant_message_from_event(
     event: &crate::tui::projection::ProjectionEventRecord,
 ) -> Option<String> {
     match event.kind.as_str() {
-        "assistant_round_recorded" => event
-            .presentation
-            .body
-            .clone()
-            .or_else(|| event.payload.get("text_preview").and_then(non_empty_value)),
+        "assistant_round_recorded" => event.payload.get("text_preview").and_then(non_empty_value),
         "provider_round_completed" => None,
         _ if is_progress_event(event) => event.presentation.body.clone(),
         _ => None,
@@ -1354,6 +1350,20 @@ mod tests {
             assistant_message_from_event(&assistant).as_deref(),
             Some("I will inspect the event path first.")
         );
+    }
+
+    #[test]
+    fn assistant_round_tool_request_is_not_activity_message() {
+        let assistant = event(
+            "assistant_round_recorded",
+            "Assistant requested tools: ExecCommand",
+            json!({
+                "text_preview": null,
+                "tool_names": ["ExecCommand"]
+            }),
+        );
+
+        assert!(assistant_message_from_event(&assistant).is_none());
     }
 
     #[test]
