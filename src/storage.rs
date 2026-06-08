@@ -1042,6 +1042,19 @@ impl AppStorage {
         read_recent_jsonl(&self.briefs_path, limit)
     }
 
+    pub fn read_brief_by_id(&self, brief_id: &str) -> Result<Option<BriefRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .evidence()
+                .brief_by_id(&self.storage_agent_id()?, brief_id);
+        }
+        Ok(
+            read_recent_jsonl::<BriefRecord>(&self.briefs_path, usize::MAX)?
+                .into_iter()
+                .find(|brief| brief.id == brief_id),
+        )
+    }
+
     pub fn read_recent_messages(&self, limit: usize) -> Result<Vec<MessageEnvelope>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             return runtime_db
@@ -1049,6 +1062,19 @@ impl AppStorage {
                 .recent(self.current_agent_id()?.as_deref(), limit);
         }
         read_recent_jsonl(&self.messages_path, limit)
+    }
+
+    pub fn read_message_by_id(&self, message_id: &str) -> Result<Option<MessageEnvelope>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .messages()
+                .by_id(self.current_agent_id()?.as_deref(), message_id);
+        }
+        Ok(
+            read_recent_jsonl::<MessageEnvelope>(&self.messages_path, usize::MAX)?
+                .into_iter()
+                .find(|message| message.id == message_id),
+        )
     }
 
     /// Reads messages at or after `offset`, then returns only the most recent
@@ -1133,6 +1159,19 @@ impl AppStorage {
                 .recent_tool_executions(&self.storage_agent_id()?, limit);
         }
         read_recent_jsonl(&self.tools_path, limit)
+    }
+
+    pub fn read_tool_execution_by_id(&self, tool_id: &str) -> Result<Option<ToolExecutionRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .evidence()
+                .tool_execution_by_id(&self.storage_agent_id()?, tool_id);
+        }
+        Ok(
+            read_recent_jsonl::<ToolExecutionRecord>(&self.tools_path, usize::MAX)?
+                .into_iter()
+                .find(|tool| tool.id == tool_id),
+        )
     }
 
     pub fn read_recent_turns(&self, limit: usize) -> Result<Vec<TurnRecord>> {

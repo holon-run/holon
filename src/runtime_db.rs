@@ -1221,6 +1221,40 @@ impl MessageRepository<'_> {
             .collect()
     }
 
+    pub fn by_id(
+        &self,
+        agent_id: Option<&str>,
+        message_id: &str,
+    ) -> Result<Option<MessageEnvelope>> {
+        let connection = self.db.connection()?;
+        let payload = if let Some(agent_id) = agent_id {
+            connection
+                .query_row(
+                    "SELECT payload_json
+                     FROM messages
+                     WHERE agent_id = ?1 AND message_id = ?2
+                     LIMIT 1",
+                    params![agent_id, message_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+        } else {
+            connection
+                .query_row(
+                    "SELECT payload_json
+                     FROM messages
+                     WHERE message_id = ?1
+                     LIMIT 1",
+                    [message_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+        };
+        payload
+            .map(|payload| decode_message_payload(&payload))
+            .transpose()
+    }
+
     pub fn count(&self, agent_id: Option<&str>) -> Result<usize> {
         let connection = self.db.connection()?;
         let count: i64 = if let Some(agent_id) = agent_id {
@@ -1545,6 +1579,12 @@ impl EvidenceRepository<'_> {
             .collect()
     }
 
+    pub fn brief_by_id(&self, agent_id: &str, brief_id: &str) -> Result<Option<BriefRecord>> {
+        self.payload_by_id(EvidenceKind::Brief, agent_id, brief_id)?
+            .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
+            .transpose()
+    }
+
     pub fn recent_tool_executions(
         &self,
         agent_id: &str,
@@ -1554,6 +1594,16 @@ impl EvidenceRepository<'_> {
             .into_iter()
             .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
             .collect()
+    }
+
+    pub fn tool_execution_by_id(
+        &self,
+        agent_id: &str,
+        tool_id: &str,
+    ) -> Result<Option<ToolExecutionRecord>> {
+        self.payload_by_id(EvidenceKind::ToolExecution, agent_id, tool_id)?
+            .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
+            .transpose()
     }
 
     pub fn recent_delivery_summaries(
