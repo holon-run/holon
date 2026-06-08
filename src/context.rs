@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
 use serde_json::Value;
@@ -102,12 +102,27 @@ pub fn build_context_with_default_external_ingress(
     config: &ContextConfig,
     default_external_ingress_override: Option<&ExternalTriggerRecord>,
 ) -> Result<BuiltContext> {
-    let messages =
+    let mut messages =
         storage.read_messages_from(agent.compacted_message_count, config.recent_messages)?;
     let continuation_anchor_messages = storage.read_all_messages()?;
-    let briefs = storage.read_recent_briefs(config.recent_briefs)?;
-    let tools = storage.read_recent_tool_executions(config.recent_messages)?;
-    let turn_records = storage.read_recent_turns(config.recent_messages)?;
+    let mut briefs = storage.read_recent_briefs(config.recent_briefs)?;
+    let mut tools = storage.read_recent_tool_executions(config.recent_messages)?;
+    let mut turn_records = storage.read_recent_turns(config.recent_messages)?;
+    if turn_records.is_empty() {
+        turn_records = synthesize_legacy_recent_turn_records(
+            &messages,
+            &briefs,
+            &tools,
+            config.recent_messages,
+        );
+    }
+    hydrate_recent_turn_references(
+        storage,
+        &turn_records,
+        &mut messages,
+        &mut briefs,
+        &mut tools,
+    )?;
     let transcript = storage.read_recent_transcript(config.recent_messages)?;
     let active_waiting_intents = storage
         .latest_waiting_intents()?
@@ -421,6 +436,214 @@ pub fn build_context_with_default_external_ingress(
     );
 
     Ok(BuiltContext { sections })
+}
+
+fn hydrate_recent_turn_references(
+    storage: &AppStorage,
+    turn_records: &[TurnRecord],
+    messages: &mut Vec<MessageEnvelope>,
+    briefs: &mut Vec<BriefRecord>,
+    tools: &mut Vec<ToolExecutionRecord>,
+) -> Result<()> {
+    let mut message_ids = messages
+        .iter()
+        .map(|message| message.id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut brief_ids = briefs
+        .iter()
+        .map(|brief| brief.id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut tool_ids = tools
+        .iter()
+        .map(|tool| tool.id.clone())
+        .collect::<BTreeSet<_>>();
+
+    for record in turn_records {
+        for message_id in &record.input_message_ids {
+            if message_ids.contains(message_id) {
+                continue;
+            }
+            if let Some(message) = storage.read_message_by_id(message_id)? {
+                message_ids.insert(message.id.clone());
+                messages.push(message);
+            } else {
+                tracing::warn!(
+                    turn_id = %record.turn_id,
+                    message_id = %message_id,
+                    "recent_turns turn record references missing input message"
+                );
+            }
+        }
+
+        if let Some(message_id) = record
+            .trigger
+            .as_ref()
+            .and_then(|trigger| trigger.message_id.as_ref())
+        {
+            if !message_ids.contains(message_id) {
+                if let Some(message) = storage.read_message_by_id(message_id)? {
+                    message_ids.insert(message.id.clone());
+                    messages.push(message);
+                } else {
+                    tracing::warn!(
+                        turn_id = %record.turn_id,
+                        message_id = %message_id,
+                        "recent_turns turn record references missing trigger message"
+                    );
+                }
+            }
+        }
+
+        for brief_id in &record.produced_brief_ids {
+            if brief_ids.contains(brief_id) {
+                continue;
+            }
+            if let Some(brief) = storage.read_brief_by_id(brief_id)? {
+                brief_ids.insert(brief.id.clone());
+                briefs.push(brief);
+            } else {
+                tracing::warn!(
+                    turn_id = %record.turn_id,
+                    brief_id = %brief_id,
+                    "recent_turns turn record references missing brief"
+                );
+            }
+        }
+
+        for tool_id in &record.tool_execution_ids {
+            if tool_ids.contains(tool_id) {
+                continue;
+            }
+            if let Some(tool) = storage.read_tool_execution_by_id(tool_id)? {
+                tool_ids.insert(tool.id.clone());
+                tools.push(tool);
+            } else {
+                tracing::warn!(
+                    turn_id = %record.turn_id,
+                    tool_id = %tool_id,
+                    "recent_turns turn record references missing tool execution"
+                );
+            }
+        }
+    }
+
+    messages.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    briefs.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    tools.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    Ok(())
+}
+
+fn synthesize_legacy_recent_turn_records(
+    messages: &[MessageEnvelope],
+    briefs: &[BriefRecord],
+    tools: &[ToolExecutionRecord],
+    limit: usize,
+) -> Vec<TurnRecord> {
+    let mut records = messages
+        .iter()
+        .filter(|message| !matches!(message.kind, MessageKind::SystemTick))
+        .filter_map(|message| {
+            let message_turn_id = message.turn_id.as_deref().map(str::trim);
+            let message_seq = message.message_seq.filter(|seq| *seq != 0);
+            let produced_brief_ids = briefs
+                .iter()
+                .filter(|brief| {
+                    legacy_brief_matches_message(brief, message, message_turn_id, message_seq)
+                })
+                .map(|brief| brief.id.clone())
+                .collect::<Vec<_>>();
+
+            let tool_execution_ids = tools
+                .iter()
+                .filter(|tool| legacy_tool_matches_message(tool, message_turn_id, message_seq))
+                .map(|tool| tool.id.clone())
+                .collect::<Vec<_>>();
+
+            if produced_brief_ids.is_empty() && tool_execution_ids.is_empty() {
+                return None;
+            }
+
+            let turn_index = message_seq.unwrap_or(0);
+            let turn_id = message_seq
+                .map(|seq| format!("legacy-message-seq-{seq}"))
+                .or_else(|| {
+                    message_turn_id
+                        .filter(|turn_id| !turn_id.is_empty())
+                        .map(|turn_id| format!("legacy-turn-id-{turn_id}"))
+                })
+                .unwrap_or_else(|| format!("legacy-message-{}", message.id));
+            let mut record = TurnRecord::new(&message.agent_id, turn_id, turn_index);
+            record.trigger = Some(crate::types::TurnTriggerSummary::from_message(message));
+            record.input_message_ids = vec![message.id.clone()];
+            record.produced_brief_ids = produced_brief_ids;
+            record.tool_execution_ids = tool_execution_ids;
+            record.created_at = message.created_at;
+            Some(record)
+        })
+        .collect::<Vec<_>>();
+
+    if records.len() > limit {
+        records = records.split_off(records.len() - limit);
+    }
+    records
+}
+
+fn legacy_brief_matches_message(
+    brief: &BriefRecord,
+    message: &MessageEnvelope,
+    message_turn_id: Option<&str>,
+    message_seq: Option<u64>,
+) -> bool {
+    brief.related_message_id.as_deref() == Some(message.id.as_str())
+        || legacy_turn_identity_matches(
+            brief.turn_id.as_deref(),
+            brief.turn_index,
+            message_turn_id,
+            message_seq,
+        )
+}
+
+fn legacy_tool_matches_message(
+    tool: &ToolExecutionRecord,
+    message_turn_id: Option<&str>,
+    message_seq: Option<u64>,
+) -> bool {
+    legacy_turn_identity_matches(
+        tool.turn_id.as_deref(),
+        Some(tool.turn_index),
+        message_turn_id,
+        message_seq,
+    )
+}
+
+fn legacy_turn_identity_matches(
+    evidence_turn_id: Option<&str>,
+    evidence_turn_index: Option<u64>,
+    message_turn_id: Option<&str>,
+    message_seq: Option<u64>,
+) -> bool {
+    evidence_turn_id
+        .map(str::trim)
+        .filter(|turn_id| !turn_id.is_empty())
+        .zip(message_turn_id.filter(|turn_id| !turn_id.is_empty()))
+        .is_some_and(|(evidence_turn_id, message_turn_id)| evidence_turn_id == message_turn_id)
+        || evidence_turn_index
+            .filter(|turn_index| *turn_index != 0)
+            .zip(message_seq)
+            .is_some_and(|(evidence_turn_index, message_seq)| evidence_turn_index == message_seq)
 }
 
 fn message_header(message: &MessageEnvelope) -> String {
@@ -1587,7 +1810,7 @@ fn render_recent_turns_with_budget(
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
-    if let Some(rendered) = render_turn_records_with_budget(
+    render_turn_records_with_budget(
         turn_records,
         messages,
         briefs,
@@ -1595,98 +1818,7 @@ fn render_recent_turns_with_budget(
         current_message,
         current_work_item,
         budget,
-    ) {
-        return Some(rendered);
-    }
-
-    let latest_operator_for_continuation = (!is_trusted_operator_input(current_message))
-        .then(|| latest_trusted_operator_input(messages, current_message))
-        .flatten();
-    let projected_messages = messages
-        .iter()
-        .filter(|message| include_in_prompt_context(message))
-        .filter(|message| {
-            latest_operator_for_continuation
-                .is_none_or(|operator| !same_message_identity(message, operator))
-        })
-        .collect::<Vec<_>>();
-    let mut rendered_turns = projected_messages
-        .iter()
-        .map(|message| render_turn_projection(message, briefs, tools, None))
-        .collect::<Vec<_>>();
-
-    if let Some(operator) = latest_operator_for_continuation {
-        rendered_turns.push(render_current_continuation_turn_projection(
-            current_message,
-            operator,
-            briefs,
-            tools,
-            current_work_item,
-        ));
-    }
-    let matched_messages = messages
-        .iter()
-        .filter(|message| include_in_prompt_context(message))
-        .collect::<Vec<_>>();
-    if let Some(orphan_evidence) =
-        render_unmatched_recent_evidence_turn(briefs, tools, &matched_messages)
-    {
-        rendered_turns.push(orphan_evidence);
-    }
-
-    if rendered_turns.is_empty() {
-        return None;
-    }
-
-    render_budgeted_lines("Recent turns:", rendered_turns, budget)
-}
-
-fn render_unmatched_recent_evidence_turn(
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
-    messages: &[&MessageEnvelope],
-) -> Option<String> {
-    let unmatched_briefs = briefs
-        .iter()
-        .filter(|brief| {
-            !messages
-                .iter()
-                .any(|message| brief_matches_message(brief, message))
-        })
-        .map(render_recent_turn_brief_line)
-        .collect::<Vec<_>>();
-    let unmatched_tools = tools
-        .iter()
-        .filter(|tool| {
-            !messages
-                .iter()
-                .any(|message| tool_execution_matches_message(tool, message))
-        })
-        .map(render_recent_tool_execution)
-        .collect::<Vec<_>>();
-
-    if unmatched_briefs.is_empty() && unmatched_tools.is_empty() {
-        return None;
-    }
-
-    let mut lines = vec![
-        "- Turn unmatched recent evidence:".to_string(),
-        "  - trigger: unavailable in recent message window".to_string(),
-    ];
-    if !unmatched_briefs.is_empty() {
-        lines.push("  - produced briefs:".to_string());
-        lines.extend(unmatched_briefs);
-    }
-    if !unmatched_tools.is_empty() {
-        lines.push("  - tool executions:".to_string());
-        lines.extend(
-            unmatched_tools
-                .into_iter()
-                .map(|tool| format!("    {tool}")),
-        );
-    }
-
-    Some(lines.join("\n"))
+    )
 }
 
 fn render_turn_records_with_budget(
@@ -1735,14 +1867,6 @@ fn render_turn_records_with_budget(
             ) {
                 rendered_turns.push(rendered);
             }
-        } else {
-            rendered_turns.push(render_current_continuation_turn_projection(
-                current_message,
-                operator,
-                briefs,
-                tools,
-                current_work_item,
-            ));
         }
     }
 
@@ -1760,6 +1884,7 @@ fn render_turn_record_projection(
     tools: &[ToolExecutionRecord],
     continuation: Option<&MessageEnvelope>,
 ) -> Option<String> {
+    let is_legacy_synthetic_record = record.turn_id.starts_with("legacy-");
     let trigger_message = record
         .input_message_ids
         .iter()
@@ -1773,13 +1898,17 @@ fn render_turn_record_projection(
         });
     let mut lines = vec![format!(
         "- Turn {}:",
-        if record.turn_index != 0 {
+        if is_legacy_synthetic_record && record.turn_index != 0 {
+            format!("message_seq {}", record.turn_index)
+        } else if record.turn_index != 0 {
             format!("turn_index {}", record.turn_index)
         } else {
             record.turn_id.clone()
         }
     )];
-    lines.push(format!("  - turn_id: {}", sanitize_inline(&record.turn_id)));
+    if !is_legacy_synthetic_record {
+        lines.push(format!("  - turn_id: {}", sanitize_inline(&record.turn_id)));
+    }
     if let Some(trigger_message) = trigger_message {
         lines.push(format!(
             "  - trigger: {}",
@@ -1787,11 +1916,11 @@ fn render_turn_record_projection(
         ));
     } else if let Some(trigger) = &record.trigger {
         lines.push(format!(
-            "  - trigger: {} (message not in recent window)",
+            "  - trigger: {}",
             turn_trigger_summary_label(trigger)
         ));
     } else {
-        lines.push("  - trigger: unavailable in recent message window".to_string());
+        lines.push("  - trigger: unavailable".to_string());
     }
     if let Some(continuation) = continuation {
         lines.push(format!(
@@ -1883,126 +2012,25 @@ fn render_current_continuation_turn_record_projection(
     Some(rendered)
 }
 
-fn render_turn_projection(
-    message: &MessageEnvelope,
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
-    continuation: Option<&MessageEnvelope>,
-) -> String {
-    let mut lines = vec![format!(
-        "- Turn {}:",
-        message
-            .message_seq
-            .map(|seq| format!("message_seq {seq}"))
-            .unwrap_or_else(|| message.id.clone())
-    )];
-    lines.push(format!("  - trigger: {}", turn_trigger_label(message)));
-    if let Some(continuation) = continuation {
-        lines.push(format!(
-            "  - continues input: {}",
-            message
-                .message_seq
-                .map(|seq| format!("message_seq {seq}"))
-                .unwrap_or_else(|| message.id.clone())
-        ));
-        lines.push(format!(
-            "  - continuation trigger: {}",
-            turn_trigger_label(continuation)
-        ));
-    }
-    lines.push(render_recent_turn_input_line(message));
-
-    let related_briefs = briefs
-        .iter()
-        .filter(|brief| brief_matches_message(brief, message))
-        .map(render_recent_turn_brief_line)
-        .collect::<Vec<_>>();
-    if !related_briefs.is_empty() {
-        lines.push("  - produced briefs:".to_string());
-        lines.extend(related_briefs);
-    }
-
-    let related_tools = tools
-        .iter()
-        .filter(|tool| tool_execution_matches_message(tool, message))
-        .map(render_recent_tool_execution)
-        .collect::<Vec<_>>();
-    if !related_tools.is_empty() {
-        lines.push("  - tool executions:".to_string());
-        lines.extend(related_tools.into_iter().map(|tool| format!("    {tool}")));
-    }
-
-    lines.join("\n")
-}
-
-fn render_current_continuation_turn_projection(
-    current_message: &MessageEnvelope,
-    operator: &MessageEnvelope,
-    briefs: &[BriefRecord],
-    tools: &[ToolExecutionRecord],
-    current_work_item: Option<&WorkItemRecord>,
-) -> String {
-    let mut rendered = render_turn_projection(operator, briefs, tools, Some(current_message));
-    let mut lines = vec![
-        format!(
-            "  - current relation: {}",
-            runtime_continuation_label(current_message)
-        ),
-        format!(
-            "  - current input: {}",
-            sanitize_inline(&body_preview(&current_message.body))
-        ),
-    ];
-    if let Some(work_item) = current_work_item {
-        lines.push(format!(
-            "  - current work item: {} :: {}",
-            sanitize_inline(&work_item.id),
-            sanitize_inline(&truncate_text(&work_item.objective, 160))
-        ));
-    }
-    rendered.push('\n');
-    rendered.push_str(&lines.join("\n"));
-    rendered
-}
-
 fn turn_record_matches_message(record: &TurnRecord, message: &MessageEnvelope) -> bool {
-    message
-        .turn_id
-        .as_deref()
-        .is_some_and(|turn_id| !turn_id.trim().is_empty() && turn_id.trim() == record.turn_id)
-        || record.input_message_ids.iter().any(|id| id == &message.id)
+    if let Some(turn_id) = message.turn_id.as_deref().map(str::trim) {
+        if !turn_id.is_empty() {
+            if turn_id == record.turn_id.trim() {
+                return true;
+            }
+            if !record.turn_id.starts_with("legacy-") {
+                return false;
+            }
+        }
+    }
+
+    record.input_message_ids.iter().any(|id| id == &message.id)
         || record
             .trigger
             .as_ref()
             .and_then(|trigger| trigger.message_id.as_ref())
             .is_some_and(|id| id == &message.id)
-}
-
-fn brief_matches_message(brief: &BriefRecord, message: &MessageEnvelope) -> bool {
-    match (&brief.turn_id, &message.turn_id) {
-        (Some(brief_turn_id), Some(message_turn_id))
-            if !brief_turn_id.trim().is_empty() && !message_turn_id.trim().is_empty() =>
-        {
-            brief_turn_id.trim() == message_turn_id.trim()
-        }
-        _ => {
-            brief.related_message_id.as_deref() == Some(message.id.as_str())
-                || brief
-                    .turn_index
-                    .is_some_and(|turn_index| message.message_seq == Some(turn_index))
-        }
-    }
-}
-
-fn tool_execution_matches_message(tool: &ToolExecutionRecord, message: &MessageEnvelope) -> bool {
-    match (&tool.turn_id, &message.turn_id) {
-        (Some(tool_turn_id), Some(message_turn_id))
-            if !tool_turn_id.trim().is_empty() && !message_turn_id.trim().is_empty() =>
-        {
-            tool_turn_id.trim() == message_turn_id.trim()
-        }
-        _ => tool.turn_index != 0 && message.message_seq == Some(tool.turn_index),
-    }
+        || record.turn_index != 0 && message.message_seq == Some(record.turn_index)
 }
 
 fn turn_trigger_label(message: &MessageEnvelope) -> &'static str {
@@ -2580,6 +2608,19 @@ mod tests {
 
     use super::*;
 
+    fn append_turn_for_message(
+        storage: &AppStorage,
+        message: &MessageEnvelope,
+        turn_id: &str,
+        turn_index: usize,
+    ) -> TurnRecord {
+        let mut turn = TurnRecord::new(&message.agent_id, turn_id, turn_index as u64);
+        turn.input_message_ids = vec![message.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(message));
+        storage.append_turn(&turn).unwrap();
+        turn
+    }
+
     #[test]
     fn turn_projection_budget_applies_ratio_floor_and_ceiling() {
         let ratio = ContextConfig {
@@ -2761,9 +2802,145 @@ mod tests {
             .content
             .clone();
         assert!(recent_turns.contains("- Turn turn_index 2:"));
-        assert!(recent_turns.contains("message not in recent window"));
+        assert!(recent_turns.contains("  - trigger: trusted operator input"));
         assert!(recent_turns.contains("Rendered without trigger hydration."));
         assert!(recent_turns.contains("brief_ref=brief:brief-missing-trigger"));
+    }
+
+    #[test]
+    fn recent_turns_hydrates_turn_record_references_outside_recent_windows() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        let mut operator = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Hydrate this older turn input by id.".into(),
+            },
+        );
+        operator.turn_id = Some("turn-hydrated".into());
+        storage.append_message(&operator).unwrap();
+
+        for idx in 0..4 {
+            storage
+                .append_message(&MessageEnvelope::new(
+                    "default",
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator {
+                        actor_id: Some("operator:test".into()),
+                    },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: format!("newer message {idx}"),
+                    },
+                ))
+                .unwrap();
+        }
+
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Hydrated brief by turn record id.",
+            Some(operator.id.clone()),
+            None,
+        );
+        brief.id = "brief-hydrated".into();
+        brief.turn_id = Some("turn-hydrated".into());
+        storage.append_brief(&brief).unwrap();
+
+        let tool = ToolExecutionRecord {
+            id: "tool-hydrated".to_string(),
+            agent_id: "default".to_string(),
+            work_item_id: None,
+            turn_index: 3,
+            turn_id: Some("turn-hydrated".to_string()),
+            tool_name: "ExecCommand".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 123,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": "echo hydrated"}),
+            output: json!({"exit_code": 0}),
+            summary: "hydrated tool execution by turn record id".to_string(),
+            invocation_surface: None,
+        };
+        storage.append_tool_execution(&tool).unwrap();
+
+        for idx in 0..4 {
+            storage
+                .append_brief(&BriefRecord::new(
+                    "default",
+                    BriefKind::Result,
+                    &format!("newer brief {idx}"),
+                    None,
+                    None,
+                ))
+                .unwrap();
+        }
+
+        let mut turn = TurnRecord::new("default", "turn-hydrated", 3);
+        turn.input_message_ids = vec![operator.id.clone()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.tool_execution_ids = vec![tool.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&operator));
+        storage.append_turn(&turn).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue.".into(),
+            },
+        );
+        let context = build_context(
+            &storage,
+            &AgentState::new("default"),
+            &execution_snapshot_for(&AgentState::new("default")),
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 2,
+                recent_briefs: 2,
+                prompt_budget_estimated_tokens: 8192,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let recent_turns = context
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section")
+            .content
+            .clone();
+        assert!(recent_turns.contains("- Turn turn_index 3:"));
+        assert!(recent_turns.contains("Hydrate this older turn input by id."));
+        assert!(recent_turns.contains("Hydrated brief by turn record id."));
+        assert!(recent_turns.contains("hydrated tool execution by turn record id"));
     }
 
     #[test]
@@ -2798,6 +2975,11 @@ mod tests {
         );
         brief.id = "brief-full-operator-input".into();
         storage.append_brief(&brief).unwrap();
+        let mut turn = TurnRecord::new("default", "turn-full-operator-input", 1);
+        turn.input_message_ids = vec![operator.id.clone()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&operator));
+        storage.append_turn(&turn).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -3097,6 +3279,15 @@ mod tests {
         };
         storage.append_tool_execution(&tool_record).unwrap();
 
+        let mut turn = TurnRecord::new("default", "turn-benchmark", 1);
+        turn.input_message_ids = vec![prior_message.id.clone()];
+        turn.produced_brief_ids = vec![result_brief.id.clone()];
+        turn.tool_execution_ids = vec![tool_record.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &prior_message,
+        ));
+        storage.append_turn(&turn).unwrap();
+
         let current_message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -3159,7 +3350,7 @@ mod tests {
     }
 
     #[test]
-    fn build_context_preserves_orphan_recent_evidence_in_recent_turns_fallback() {
+    fn build_context_does_not_render_recent_turns_from_orphan_recent_evidence() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
@@ -3233,20 +3424,10 @@ mod tests {
         )
         .unwrap();
 
-        let recent_turns = built
+        assert!(!built
             .sections
             .iter()
-            .find(|section| section.name == "recent_turns")
-            .expect("recent_turns section should be present");
-        assert!(recent_turns
-            .content
-            .contains("- Turn unmatched recent evidence:"));
-        assert!(recent_turns
-            .content
-            .contains("Orphan result brief should still be visible."));
-        assert!(recent_turns
-            .content
-            .contains("verified orphan recent evidence fallback"));
+            .any(|section| section.name == "recent_turns"));
         assert!(!built
             .sections
             .iter()
@@ -3390,24 +3571,29 @@ mod tests {
             },
         );
         storage.append_message(&prior_message).unwrap();
-        storage
-            .append_brief(&BriefRecord::new(
-                "default",
-                BriefKind::Ack,
-                "Acknowledged the request.",
-                Some(prior_message.id.clone()),
-                None,
-            ))
-            .unwrap();
-        storage
-            .append_brief(&BriefRecord::new(
-                "default",
-                BriefKind::Result,
-                "Unique latest result content.",
-                Some(prior_message.id.clone()),
-                None,
-            ))
-            .unwrap();
+        let ack = BriefRecord::new(
+            "default",
+            BriefKind::Ack,
+            "Acknowledged the request.",
+            Some(prior_message.id.clone()),
+            None,
+        );
+        storage.append_brief(&ack).unwrap();
+        let result = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Unique latest result content.",
+            Some(prior_message.id.clone()),
+            None,
+        );
+        storage.append_brief(&result).unwrap();
+        let mut turn = TurnRecord::new("default", "turn-previous", 1);
+        turn.input_message_ids = vec![prior_message.id.clone()];
+        turn.produced_brief_ids = vec![ack.id.clone(), result.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &prior_message,
+        ));
+        storage.append_turn(&turn).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -3461,18 +3647,25 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         for idx in 0..20 {
-            storage
-                .append_message(&MessageEnvelope::new(
-                    "default",
-                    MessageKind::OperatorPrompt,
-                    MessageOrigin::Operator { actor_id: None },
-                    AuthorityClass::OperatorInstruction,
-                    Priority::Normal,
-                    MessageBody::Text {
-                        text: format!("message-{idx}"),
-                    },
-                ))
-                .unwrap();
+            let message = MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: format!("message-{idx}"),
+                },
+            );
+            storage.append_message(&message).unwrap();
+            if idx >= 12 {
+                append_turn_for_message(
+                    &storage,
+                    &message,
+                    &format!("turn-message-{idx}"),
+                    idx + 1,
+                );
+            }
         }
 
         let current_message = MessageEnvelope::new(
@@ -3674,34 +3867,40 @@ mod tests {
         prior_message.turn_id = Some("turn-wake-path".to_string());
         storage.append_message(&prior_message).unwrap();
 
-        storage
-            .append_brief(&BriefRecord::new(
-                "default",
-                BriefKind::Failure,
-                "Tried cargo test wake_path, but the result is still inconclusive.",
-                Some(prior_message.id.clone()),
-                None,
-            ))
-            .unwrap();
-        storage
-            .append_tool_execution(&ToolExecutionRecord {
-                id: "tool-raw-evidence".to_string(),
-                agent_id: "default".to_string(),
-                work_item_id: None,
-                turn_index: 0,
-                turn_id: Some("turn-wake-path".to_string()),
-                tool_name: "ExecCommand".to_string(),
-                created_at: chrono::Utc::now(),
-                completed_at: Some(chrono::Utc::now()),
-                duration_ms: 42,
-                authority_class: AuthorityClass::OperatorInstruction,
-                status: ToolExecutionStatus::Success,
-                input: json!({"cmd": "cargo test wake_path"}),
-                output: json!({"exit_code": 1}),
-                summary: "cargo test wake_path still flakes under load".to_string(),
-                invocation_surface: None,
-            })
-            .unwrap();
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Failure,
+            "Tried cargo test wake_path, but the result is still inconclusive.",
+            Some(prior_message.id.clone()),
+            None,
+        );
+        storage.append_brief(&brief).unwrap();
+        let tool = ToolExecutionRecord {
+            id: "tool-raw-evidence".to_string(),
+            agent_id: "default".to_string(),
+            work_item_id: None,
+            turn_index: 0,
+            turn_id: Some("turn-wake-path".to_string()),
+            tool_name: "ExecCommand".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 42,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": "cargo test wake_path"}),
+            output: json!({"exit_code": 1}),
+            summary: "cargo test wake_path still flakes under load".to_string(),
+            invocation_surface: None,
+        };
+        storage.append_tool_execution(&tool).unwrap();
+        let mut turn = TurnRecord::new("default", "turn-wake-path", 1);
+        turn.input_message_ids = vec![prior_message.id.clone()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.tool_execution_ids = vec![tool.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &prior_message,
+        ));
+        storage.append_turn(&turn).unwrap();
 
         let current_message = MessageEnvelope::new(
             "default",
@@ -4669,6 +4868,7 @@ mod tests {
             },
         );
         storage.append_message(&operator_message).unwrap();
+        append_turn_for_message(&storage, &operator_message, "turn-operator-hello", 1);
 
         let system_tick = MessageEnvelope::new(
             "default",
@@ -4944,6 +5144,12 @@ mod tests {
                 },
             );
             storage.append_message(&runtime_message).unwrap();
+            append_turn_for_message(
+                &storage,
+                &runtime_message,
+                &format!("turn-runtime-status-{idx}"),
+                idx + 2,
+            );
         }
 
         let mut recovery = MessageEnvelope::new(
@@ -5897,7 +6103,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_execution_matches_message_uses_turn_id_then_legacy_turn_index() {
+    fn turn_record_matches_message_uses_turn_id_then_legacy_turn_index_and_input_ids() {
         let mut message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -5911,37 +6117,26 @@ mod tests {
         message.message_seq = Some(4);
         message.turn_id = Some("turn-current".into());
 
-        let mut tool = ToolExecutionRecord {
-            id: "tool-1".into(),
-            agent_id: "default".into(),
-            work_item_id: None,
-            turn_index: 4,
-            turn_id: Some("turn-current".into()),
-            tool_name: "ExecCommand".into(),
-            created_at: chrono::Utc::now(),
-            completed_at: Some(chrono::Utc::now()),
-            duration_ms: 10,
-            authority_class: AuthorityClass::OperatorInstruction,
-            status: ToolExecutionStatus::Success,
-            input: json!({"cmd": "cargo test"}),
-            output: json!({"exit_code": 0}),
-            summary: "cargo test".into(),
-            invocation_surface: None,
-        };
+        let mut record = TurnRecord::new("default", " turn-current ", 4);
 
-        tool.turn_id = Some(" turn-current ".into());
-        assert!(tool_execution_matches_message(&tool, &message));
+        assert!(turn_record_matches_message(&record, &message));
 
-        tool.turn_id = Some("turn-other".into());
-        assert!(!tool_execution_matches_message(&tool, &message));
+        record.turn_id = "turn-other".into();
+        assert!(!turn_record_matches_message(&record, &message));
 
-        tool.turn_id = None;
+        record.turn_id = String::new();
         message.turn_id = None;
-        assert!(tool_execution_matches_message(&tool, &message));
+        assert!(turn_record_matches_message(&record, &message));
+
+        message.message_seq = Some(5);
+        assert!(!turn_record_matches_message(&record, &message));
+
+        record.input_message_ids = vec![message.id.clone()];
+        assert!(turn_record_matches_message(&record, &message));
     }
 
     #[test]
-    fn brief_matches_message_uses_turn_id_then_legacy_refs() {
+    fn turn_record_matches_message_ignores_zero_legacy_turn_index() {
         let mut message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -5949,32 +6144,14 @@ mod tests {
             AuthorityClass::OperatorInstruction,
             Priority::Normal,
             MessageBody::Text {
-                text: "finish work".into(),
+                text: "run tests".into(),
             },
         );
-        message.id = "msg-1".into();
-        message.message_seq = Some(4);
-        message.turn_id = Some("turn-current".into());
+        message.message_seq = Some(0);
 
-        let mut brief = BriefRecord::new(
-            "default",
-            BriefKind::Result,
-            "done",
-            Some("msg-1".into()),
-            None,
-        );
-        brief.turn_index = Some(4);
-        brief.turn_id = Some("turn-current".into());
+        let record = TurnRecord::new("default", "", 4);
 
-        brief.turn_id = Some(" turn-current ".into());
-        assert!(brief_matches_message(&brief, &message));
-
-        brief.turn_id = Some("turn-other".into());
-        assert!(!brief_matches_message(&brief, &message));
-
-        brief.turn_id = None;
-        message.turn_id = None;
-        assert!(brief_matches_message(&brief, &message));
+        assert!(!turn_record_matches_message(&record, &message));
     }
 
     fn execution_snapshot_for(session: &AgentState) -> ExecutionSnapshot {
