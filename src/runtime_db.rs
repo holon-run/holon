@@ -1319,6 +1319,30 @@ impl EvidenceRepository<'_> {
         Ok(records)
     }
 
+    pub fn payload_by_id(
+        &self,
+        kind: EvidenceKind,
+        agent_id: &str,
+        evidence_id: &str,
+    ) -> Result<Option<EvidencePayloadRow>> {
+        let sql = format!(
+            "SELECT payload_json
+             FROM {}
+             WHERE agent_id = ?1 AND evidence_id = ?2
+             LIMIT 1",
+            kind.table_name()
+        );
+        let connection = self.db.connection()?;
+        connection
+            .query_row(&sql, params![agent_id, evidence_id], |row| {
+                Ok(EvidencePayloadRow {
+                    payload_json: row.get(0)?,
+                })
+            })
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn recent_briefs(&self, agent_id: &str, limit: usize) -> Result<Vec<BriefRecord>> {
         self.recent_payloads(EvidenceKind::Brief, agent_id, limit)?
             .into_iter()
