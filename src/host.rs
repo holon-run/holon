@@ -1476,8 +1476,15 @@ fn repair_host_agent_legacy_evidence_import(
         let storage = AppStorage::new(agent_home)?;
         match storage.read_all_messages() {
             Ok(messages) => {
-                let db_count = runtime_db.messages().count(Some(agent_id.as_str()))?;
-                if db_count < messages.len() {
+                let legacy_max_seq = messages
+                    .iter()
+                    .filter_map(|message| message.message_seq)
+                    .max()
+                    .unwrap_or_default();
+                let db_max_seq = runtime_db
+                    .messages()
+                    .max_message_seq(Some(agent_id.as_str()))?;
+                if db_max_seq < legacy_max_seq {
                     runtime_db.messages().upsert_many(&messages)?;
                 }
             }
@@ -1491,10 +1498,15 @@ fn repair_host_agent_legacy_evidence_import(
         }
         match storage.read_all_transcript() {
             Ok(entries) => {
-                let db_count = runtime_db
+                let legacy_max_seq = entries
+                    .iter()
+                    .filter_map(|entry| entry.transcript_seq)
+                    .max()
+                    .unwrap_or_default();
+                let db_max_seq = runtime_db
                     .transcript_entries()
-                    .count(Some(agent_id.as_str()))?;
-                if db_count < entries.len() {
+                    .max_transcript_seq(Some(agent_id.as_str()))?;
+                if db_max_seq < legacy_max_seq {
                     runtime_db.transcript_entries().upsert_many(&entries)?;
                 }
             }

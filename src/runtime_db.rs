@@ -1165,22 +1165,6 @@ impl TranscriptRepository<'_> {
         }
     }
 
-    pub fn count(&self, agent_id: Option<&str>) -> Result<usize> {
-        let connection = self.db.connection()?;
-        let count: i64 = if let Some(agent_id) = agent_id {
-            connection.query_row(
-                "SELECT COUNT(*) FROM transcript_entries WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get(0),
-            )?
-        } else {
-            connection.query_row("SELECT COUNT(*) FROM transcript_entries", [], |row| {
-                row.get(0)
-            })?
-        };
-        Ok(usize::try_from(count).unwrap_or(usize::MAX))
-    }
-
     pub fn max_transcript_seq(&self, agent_id: Option<&str>) -> Result<u64> {
         let connection = self.db.connection()?;
         let max_seq: Option<i64> = if let Some(agent_id) = agent_id {
