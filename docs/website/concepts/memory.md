@@ -77,7 +77,9 @@ the runtime finalizes the builder into an immutable **episode record** and
 stores it.
 
 Archived episodes are selected into prompt context by relevance and budget,
-not rendered in full by default.
+not rendered in full by default. Default prompt assembly treats episodes as a
+mid-term archive: it excludes episodes that overlap the `recent_turns` window
+so recent turn evidence is not duplicated by a summary of the same turns.
 
 ### Context Assembly
 
@@ -130,6 +132,9 @@ Memory is tightly coupled to work items:
   plan, todo list, and blocked status.
 - **Episode records** are scoped to work items. When a work item completes,
   its accumulated evidence becomes an archived episode.
+- If a current work item and an episode both match the prompt, the work item
+  remains authoritative for current objective, plan, todo, and wait state; the
+  episode is supporting historical evidence.
 - **MemorySearch** indexes across completed episodes, making past work
   findable by content rather than by timestamp alone.
 

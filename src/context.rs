@@ -181,17 +181,6 @@ pub fn build_context_with_default_external_ingress(
         }
     }
 
-    if let Some(section) = build_relevant_episode_memory_section(
-        &episodes,
-        agent,
-        current_work_item,
-        current_message,
-        config,
-        remaining_budget,
-    ) {
-        push_budgeted_section(&mut sections, &mut remaining_budget, section);
-    }
-
     if let Some(delta) = &agent.working_memory.pending_working_memory_delta {
         if let Some(content) = render_working_memory_delta_with_budget(delta, remaining_budget) {
             push_budgeted_section(
@@ -211,6 +200,19 @@ pub fn build_context_with_default_external_ingress(
                 render_current_work_item(work_item, storage.data_dir(), &active_waiting_intents),
             ),
         );
+    }
+
+    let recent_turn_window_start = recent_turn_window_start(&turn_records);
+    if let Some(section) = build_relevant_episode_memory_section(
+        &episodes,
+        agent,
+        current_work_item,
+        current_message,
+        config,
+        remaining_budget,
+        recent_turn_window_start,
+    ) {
+        push_budgeted_section(&mut sections, &mut remaining_budget, section);
     }
 
     if let Some(work_item) = current_work_item {
@@ -2147,6 +2149,7 @@ fn build_relevant_episode_memory_section(
     current_message: &MessageEnvelope,
     config: &ContextConfig,
     budget: usize,
+    recent_turn_window_start: Option<u64>,
 ) -> Option<PromptSection> {
     if episodes.is_empty() || config.max_relevant_episodes == 0 || budget == 0 {
         return None;
@@ -2181,6 +2184,9 @@ fn build_relevant_episode_memory_section(
     let mut ranked = episodes
         .iter()
         .enumerate()
+        .filter(|(_, episode)| {
+            episode_is_before_recent_turn_window(episode, recent_turn_window_start)
+        })
         .map(|(index, episode)| {
             let recency_index = episode_count.saturating_sub(index + 1);
             (
@@ -2220,6 +2226,19 @@ fn build_relevant_episode_memory_section(
         "relevant_episode_memory",
         format!("Relevant episode memory:\n{}", blocks.join("\n")),
     ))
+}
+
+fn recent_turn_window_start(turn_records: &[crate::types::TurnRecord]) -> Option<u64> {
+    turn_records.iter().map(|turn| turn.turn_index).min()
+}
+
+fn episode_is_before_recent_turn_window(
+    episode: &ContextEpisodeRecord,
+    recent_turn_window_start: Option<u64>,
+) -> bool {
+    recent_turn_window_start
+        .map(|start| episode.end_turn_index < start)
+        .unwrap_or(true)
 }
 
 fn render_episode_block(episode: &ContextEpisodeRecord) -> String {
@@ -5395,6 +5414,7 @@ mod tests {
                 ..ContextConfig::default()
             },
             120,
+            None,
         )
         .expect("relevant episode memory section should be present");
 
@@ -5416,6 +5436,199 @@ mod tests {
             .content
             .contains("keep behavior unchanged outside the wake path"));
         assert!(!episode_section.content.contains("ep_old"));
+    }
+
+    #[test]
+    fn build_context_excludes_episode_overlapping_recent_turn_window() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        let archived_episode = ContextEpisodeRecord {
+            id: "ep_archived".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            created_at: chrono::Utc::now(),
+            finalized_at: chrono::Utc::now(),
+            start_turn_index: 1,
+            end_turn_index: 2,
+            start_message_count: 1,
+            end_message_count: 4,
+            boundary_reason: EpisodeBoundaryReason::HardTurnCap,
+            current_work_item_id: Some("work_wake".into()),
+            objective: Some("Fix wake path".into()),
+            work_summary: Some("wake path patching".into()),
+            scope_hints: vec![],
+            source_turn_ids: vec![],
+            source_refs: vec![],
+            generated_by: None,
+            operator_intents: vec![],
+            runtime_facts: vec![],
+            task_results: vec![],
+            unresolved_items: vec![],
+            model_inferences: vec![],
+            summary: "Archived wake path evidence from older turns.".into(),
+            working_set_files: vec!["src/runtime.rs".into()],
+            commands: vec![],
+            verification: vec![],
+            decisions: vec![],
+            carry_forward: vec![],
+            waiting_on: vec![],
+        };
+        storage.append_context_episode(&archived_episode).unwrap();
+
+        let overlapping_episode = ContextEpisodeRecord {
+            id: "ep_recent_overlap".into(),
+            start_turn_index: 4,
+            end_turn_index: 5,
+            summary: "Recent wake path evidence already covered by recent_turns.".into(),
+            ..archived_episode.clone()
+        };
+        storage
+            .append_context_episode(&overlapping_episode)
+            .unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue fixing the wake path in src/runtime.rs.".to_string(),
+            },
+        );
+
+        let mut session = AgentState::new("default");
+        session.working_memory.current_working_memory = WorkingMemorySnapshot {
+            current_work_item_id: Some("work_wake".into()),
+            objective: Some("Fix wake path".into()),
+            work_summary: Some("wake path patching".into()),
+            working_set_files: vec!["src/runtime.rs".into()],
+            ..WorkingMemorySnapshot::default()
+        };
+
+        let episodes = storage.read_recent_context_episodes(4).unwrap();
+        let section = build_relevant_episode_memory_section(
+            &episodes,
+            &session,
+            None,
+            &current_message,
+            &ContextConfig {
+                max_relevant_episodes: 3,
+                ..ContextConfig::default()
+            },
+            240,
+            Some(4),
+        )
+        .expect("archived episode should still be recalled");
+
+        assert!(section.content.contains("ep_archived"));
+        assert!(!section.content.contains("ep_recent_overlap"));
+    }
+
+    #[test]
+    fn build_context_orders_work_item_before_relevant_episode_memory() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        let mut work_item =
+            crate::types::WorkItemRecord::new("default", "Fix wake path", WorkItemState::Open);
+        work_item.id = "work_wake".into();
+        work_item.plan_status = crate::types::WorkItemPlanStatus::Ready;
+        storage.append_work_item(&work_item).unwrap();
+
+        let mut agent = AgentState::new("default");
+        agent.current_work_item_id = Some(work_item.id.clone());
+        agent.working_memory.current_working_memory = WorkingMemorySnapshot {
+            current_work_item_id: Some(work_item.id.clone()),
+            objective: Some("Fix wake path".into()),
+            work_summary: Some("wake path patching".into()),
+            working_set_files: vec!["src/runtime.rs".into()],
+            ..WorkingMemorySnapshot::default()
+        };
+        storage.write_agent(&agent).unwrap();
+
+        storage
+            .append_context_episode(&ContextEpisodeRecord {
+                id: "ep_archived".into(),
+                agent_id: "default".into(),
+                workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+                created_at: chrono::Utc::now(),
+                finalized_at: chrono::Utc::now(),
+                start_turn_index: 1,
+                end_turn_index: 2,
+                start_message_count: 1,
+                end_message_count: 4,
+                boundary_reason: EpisodeBoundaryReason::HardTurnCap,
+                current_work_item_id: Some(work_item.id.clone()),
+                objective: Some("Fix wake path".into()),
+                work_summary: Some("wake path patching".into()),
+                scope_hints: vec![],
+                source_turn_ids: vec![],
+                source_refs: vec![],
+                generated_by: None,
+                operator_intents: vec![],
+                runtime_facts: vec![],
+                task_results: vec![],
+                unresolved_items: vec![],
+                model_inferences: vec![],
+                summary: "Archived wake path evidence from older turns.".into(),
+                working_set_files: vec!["src/runtime.rs".into()],
+                commands: vec![],
+                verification: vec![],
+                decisions: vec![],
+                carry_forward: vec![],
+                waiting_on: vec![],
+            })
+            .unwrap();
+
+        storage
+            .append_turn(&TurnRecord::new("default", "turn-4", 4))
+            .unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue fixing the wake path in src/runtime.rs.".to_string(),
+            },
+        );
+
+        let built = build_context(
+            &storage,
+            &agent,
+            &execution_snapshot_for(&agent),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 4,
+                recent_episode_candidates: 4,
+                max_relevant_episodes: 2,
+                prompt_budget_estimated_tokens: 2048,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let names = built
+            .sections
+            .iter()
+            .map(|section| section.name.as_str())
+            .collect::<Vec<_>>();
+        let work_item_index = names
+            .iter()
+            .position(|name| *name == "current_work_item")
+            .expect("current_work_item section");
+        let episode_index = names
+            .iter()
+            .position(|name| *name == "relevant_episode_memory")
+            .expect("relevant_episode_memory section");
+
+        assert!(work_item_index < episode_index);
     }
 
     #[test]
