@@ -1970,6 +1970,11 @@ impl AppStorage {
         &self,
         child_agent_id: &str,
     ) -> Result<Option<WorkItemDelegationRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .work_item_delegations()
+                .latest_for_child(child_agent_id);
+        }
         read_latest_jsonl_matching(
             &self.work_item_delegations_path,
             |record: &WorkItemDelegationRecord| record.child_agent_id == child_agent_id,
@@ -3527,7 +3532,13 @@ mod tests {
 
         assert_eq!(
             storage.read_recent_work_item_delegations(10).unwrap(),
-            vec![delegation]
+            vec![delegation.clone()]
+        );
+        assert_eq!(
+            storage
+                .latest_work_item_delegation_for_child("child-agent")
+                .unwrap(),
+            Some(delegation)
         );
         assert_eq!(
             storage.read_recent_working_memory_deltas(10).unwrap(),

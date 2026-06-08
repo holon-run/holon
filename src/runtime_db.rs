@@ -493,6 +493,26 @@ impl WorkItemDelegationRepository<'_> {
         records.reverse();
         Ok(records)
     }
+
+    pub fn latest_for_child(
+        &self,
+        child_agent_id: &str,
+    ) -> Result<Option<WorkItemDelegationRecord>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT payload_json
+                 FROM work_item_delegations
+                 WHERE child_agent_id = ?1
+                 ORDER BY updated_at DESC, created_at DESC, delegation_id ASC
+                 LIMIT 1",
+                [child_agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|payload| decode_work_item_delegation_payload(&payload))
+            .transpose()
+    }
 }
 
 impl WorkingMemoryDeltaRepository<'_> {
