@@ -5,33 +5,10 @@ use std::sync::{Arc, Mutex};
 use super::support::*;
 use super::*;
 use crate::config::{AnthropicCacheStrategy, ProviderId};
-use crate::provider::provider_transport_diagnostics;
+use crate::provider::{http_trace::ProviderHttpTrace, provider_transport_diagnostics};
 use axum::{http::HeaderMap, routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::path::Path;
-
-struct ScopedEnv {
-    key: String,
-    original: Option<String>,
-}
-
-impl Drop for ScopedEnv {
-    fn drop(&mut self) {
-        match self.original.as_ref() {
-            Some(value) => std::env::set_var(&self.key, value),
-            None => std::env::remove_var(&self.key),
-        }
-    }
-}
-
-fn scoped_env(key: &str, value: &str) -> ScopedEnv {
-    let original = std::env::var(key).ok();
-    std::env::set_var(key, value);
-    ScopedEnv {
-        key: key.to_string(),
-        original,
-    }
-}
 
 #[tokio::test]
 async fn anthropic_request_lowers_prompt_frame_blocks_to_cache_control() {
@@ -135,9 +112,11 @@ async fn anthropic_text_form_tool_call_protocol_failure_writes_failure_trace() {
         .get_mut(&ProviderId::anthropic())
         .unwrap()
         .base_url = base_url;
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
-
-    let _env_guard = scoped_env("HOLON_PROVIDER_HTTP_FAILURE_TRACE", "1");
+    let provider = AnthropicProvider::from_config(&fixture.config)
+        .unwrap()
+        .with_http_trace_for_tests(ProviderHttpTrace::failure_only_for_tests(
+            fixture.config.home_dir.clone(),
+        ));
     let error = provider
         .complete_turn(ProviderTurnRequest::plain(
             "use a tool",

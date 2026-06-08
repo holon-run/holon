@@ -43,6 +43,8 @@ pub struct AnthropicProvider {
     context_management: AnthropicContextManagementConfig,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     trace_home_dir: PathBuf,
+    #[cfg(test)]
+    http_trace_override: Option<ProviderHttpTrace>,
 }
 
 #[derive(Debug, Serialize)]
@@ -169,7 +171,15 @@ impl AnthropicProvider {
             context_management: provider_config.context_management.clone(),
             builtin_web_search: provider_config.builtin_web_search.clone(),
             trace_home_dir: trace_home_dir.to_path_buf(),
+            #[cfg(test)]
+            http_trace_override: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_http_trace_for_tests(mut self, trace: ProviderHttpTrace) -> Self {
+        self.http_trace_override = Some(trace);
+        self
     }
 }
 
@@ -208,6 +218,12 @@ impl AgentProvider for AnthropicProvider {
                 "context-management-2025-06-27".to_string(),
             ));
         }
+        #[cfg(test)]
+        let trace = self
+            .http_trace_override
+            .clone()
+            .or_else(|| ProviderHttpTrace::from_env(self.trace_home_dir.clone()));
+        #[cfg(not(test))]
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         let request_trace = trace.and_then(|trace| {
             trace.begin_request(
@@ -922,6 +938,9 @@ fn text_contains_tool_call_markup(text: &str) -> bool {
     lowered.contains("<tool_call")
         || lowered.contains("<function=")
         || lowered.contains("<function name=")
+        || lowered.contains("&lt;tool_call")
+        || lowered.contains("&lt;function=")
+        || lowered.contains("&lt;function name=")
         || text.contains("<｜｜DSML｜｜tool_calls>")
         || text.contains("<｜｜DSML｜｜invoke")
 }
@@ -1611,6 +1630,29 @@ mod tests {
             &blocks,
             Some("tool_use"),
             false,
+        ));
+    }
+
+    #[test]
+    fn anthropic_response_flags_html_escaped_text_form_tool_call_violation() {
+        let blocks = vec![ApiResponseBlock {
+            kind: "text".to_string(),
+            text: Some(
+                "&lt;tool_call&gt;&lt;function=ExecCommand&gt;{}&lt;/function&gt;&lt;/tool_call&gt;"
+                    .to_string(),
+            ),
+            thinking: None,
+            signature: None,
+            data: None,
+            id: None,
+            name: None,
+            input: None,
+        }];
+
+        assert!(anthropic_response_has_text_form_tool_call_violation(
+            &blocks,
+            Some("tool_use"),
+            true,
         ));
     }
 

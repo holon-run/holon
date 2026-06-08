@@ -62,6 +62,14 @@ struct ProviderHttpTraceRequestState {
 }
 
 impl ProviderHttpTrace {
+    #[cfg(test)]
+    pub(crate) fn failure_only_for_tests(home_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            home_dir: home_dir.into(),
+            mode: ProviderHttpTraceMode::FailureOnly,
+        }
+    }
+
     pub(crate) fn from_env(home_dir: impl Into<PathBuf>) -> Option<Self> {
         let mode = if std::env::var(PROVIDER_HTTP_TRACE_ENV).ok().as_deref() == Some("1") {
             ProviderHttpTraceMode::All
