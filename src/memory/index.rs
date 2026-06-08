@@ -1502,9 +1502,10 @@ fn parse_tool_execution_source_ref(source_ref: &str) -> Option<ParsedToolExecuti
     let rest = source_ref.strip_prefix("tool_execution:")?;
     if let Some((tool_execution_id, tail)) = rest.rsplit_once(":batch_item:") {
         let (index, selector) = tail.split_once(':')?;
+        let index = index.parse().ok().filter(|index| *index >= 1)?;
         return Some(ParsedToolExecutionRef {
             tool_execution_id: tool_execution_id.to_string(),
-            batch_item_index: Some(index.parse().ok()?),
+            batch_item_index: Some(index),
             selector: parse_tool_execution_selector(selector)?,
         });
     }
@@ -1603,10 +1604,18 @@ fn command_output_envelope(
             .unwrap_or(&record.output),
         ("ExecCommandBatch", Some(index)) => record
             .output
+            .get("result")
+            .or_else(|| {
+                record
+                    .output
+                    .get("envelope")
+                    .and_then(|value| value.get("result"))
+            })
+            .unwrap_or(&record.output)
             .get("items")
             .and_then(Value::as_array)
             .and_then(|items| items.get(index - 1))
-            .and_then(|item| item.get("result"))?,
+            .map(|item| item.get("result").unwrap_or(item))?,
         _ => return None,
     };
     let content = match stream {
@@ -3076,5 +3085,102 @@ mod tests {
             .pending_sources_for_agent("default")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn command_output_resolves_exec_command_batch_envelope_items() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-batch-output-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 0,
+                turn_id: None,
+                tool_name: "ExecCommandBatch".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 20,
+                authority_class: crate::types::AuthorityClass::OperatorInstruction,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: json!({
+                    "items": [
+                        {"cmd": "echo first"},
+                        {"cmd": "echo second"}
+                    ]
+                }),
+                output: json!({
+                    "envelope": {
+                        "result": {
+                            "items": [
+                                {"result": {"stdout_preview": "first_batch_output_1246\n", "stderr_preview": "", "truncated": false, "artifacts": []}},
+                                {"result": {"stdout_preview": "second_batch_output_1246\n", "stderr_preview": "", "truncated": false, "artifacts": []}}
+                            ]
+                        }
+                    }
+                }),
+                summary: "ExecCommandBatch completed 2/2 items".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let memory = get_memory(
+            &storage,
+            "tool_execution:tool-batch-output-1246:batch_item:2:stdout",
+            None,
+            Some("ws-holon"),
+        )
+        .unwrap()
+        .expect("batch command output should be retrievable");
+
+        assert!(memory.content.contains("second_batch_output_1246"));
+        assert!(!memory.content.contains("first_batch_output_1246"));
+    }
+
+    #[test]
+    fn command_output_indexes_unavailable_batch_item_without_result() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-batch-unavailable-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 0,
+                turn_id: None,
+                tool_name: "ExecCommandBatch".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 20,
+                authority_class: crate::types::AuthorityClass::OperatorInstruction,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: json!({"items": [{"cmd": "echo skipped"}]}),
+                output: json!({
+                    "result": {
+                        "items": [
+                            {"disposition": "skipped"}
+                        ]
+                    }
+                }),
+                summary: "ExecCommandBatch completed 0/1 items".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let memory = get_memory(
+            &storage,
+            "tool_execution:tool-batch-unavailable-1246:batch_item:1:stdout",
+            None,
+            Some("ws-holon"),
+        )
+        .unwrap()
+        .expect("unavailable batch command output should still be retrievable");
+
+        assert!(memory
+            .content
+            .contains("\"availability\": \"output_unavailable\""));
     }
 }

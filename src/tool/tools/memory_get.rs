@@ -134,8 +134,7 @@ fn validate_tool_execution_source_ref(source_ref: &str, suffix: &str) -> Result<
         }
         [tool_execution_id, "batch_item", index, selector] => {
             valid_source_ref_segment(tool_execution_id)
-                && !index.is_empty()
-                && index.chars().all(|ch| ch.is_ascii_digit())
+                && valid_batch_item_index(index)
                 && valid_tool_execution_selector(selector)
         }
         _ => false,
@@ -151,6 +150,10 @@ fn validate_tool_execution_source_ref(source_ref: &str, suffix: &str) -> Result<
 
 fn valid_tool_execution_selector(selector: &str) -> bool {
     matches!(selector, "cmd" | "stdout" | "stderr" | "output")
+}
+
+fn valid_batch_item_index(index: &str) -> bool {
+    index.parse::<usize>().is_ok_and(|index| index >= 1) && !index.starts_with('0')
 }
 
 fn valid_source_ref_segment(segment: &str) -> bool {
@@ -259,6 +262,8 @@ mod tests {
             "episode:../ledger/episode-1",
             "work_item:work_123?raw=true",
             "tool_execution:tool-123",
+            "tool_execution:tool-123:batch_item:0:cmd",
+            "tool_execution:tool-123:batch_item:02:cmd",
             "tool_execution:tool-123:batch_item:abc:cmd",
             "tool_execution:tool-123:batch_item:2",
             "tool_execution:tool-123:batch_item:2:artifact",

@@ -2051,6 +2051,57 @@ fn sanitize_inline(value: &str) -> String {
     sanitized
 }
 
+fn command_output_refs(record: &ToolExecutionRecord, batch_item_index: Option<usize>) -> String {
+    let output = match (record.tool_name.as_str(), batch_item_index) {
+        ("ExecCommand", None) => record
+            .output
+            .get("result")
+            .or_else(|| {
+                record
+                    .output
+                    .get("envelope")
+                    .and_then(|value| value.get("result"))
+            })
+            .unwrap_or(&record.output),
+        ("ExecCommandBatch", Some(index)) => match record
+            .output
+            .get("result")
+            .or_else(|| {
+                record
+                    .output
+                    .get("envelope")
+                    .and_then(|value| value.get("result"))
+            })
+            .unwrap_or(&record.output)
+            .get("items")
+            .and_then(Value::as_array)
+            .and_then(|items| items.get(index.saturating_sub(1)))
+        {
+            Some(item) => item.get("result").unwrap_or(item),
+            None => return String::new(),
+        },
+        _ => return String::new(),
+    };
+    let has_output_evidence = [
+        "stdout_preview",
+        "stderr_preview",
+        "initial_output_preview",
+        "stdout_artifact",
+        "stderr_artifact",
+    ]
+    .iter()
+    .any(|key| output.get(key).is_some());
+    if !has_output_evidence {
+        return String::new();
+    }
+    format!(
+        " stdout_ref={} stderr_ref={} output_ref={}",
+        crate::tool::helpers::command_output_source_ref(&record.id, batch_item_index, "stdout"),
+        crate::tool::helpers::command_output_source_ref(&record.id, batch_item_index, "stderr"),
+        crate::tool::helpers::command_output_source_ref(&record.id, batch_item_index, "output")
+    )
+}
+
 fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
     let prefix = format!(
         "- [{}][{:?}] {}",
@@ -2065,13 +2116,11 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
             .and_then(Value::as_str)
             .map(|cmd| {
                 format!(
-                    "{prefix} tool_execution_id={} cmd_digest={} cmd_ref={} stdout_ref={} stderr_ref={} output_ref={} cmd_preview={}",
+                    "{prefix} tool_execution_id={} cmd_digest={} cmd_ref={}{} cmd_preview={}",
                     record.id,
                     crate::tool::helpers::command_digest(cmd),
                     crate::tool::helpers::command_receipt_source_ref(&record.id, None),
-                    crate::tool::helpers::command_output_source_ref(&record.id, None, "stdout"),
-                    crate::tool::helpers::command_output_source_ref(&record.id, None, "stderr"),
-                    crate::tool::helpers::command_output_source_ref(&record.id, None, "output"),
+                    command_output_refs(record, None),
                     crate::tool::helpers::command_preview(cmd)
                 )
             })
@@ -2087,12 +2136,10 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
                     let cmd = item.get("cmd").and_then(Value::as_str)?;
                     let index = offset + 1;
                     Some(format!(
-                        "{{index={index}, cmd_digest={}, cmd_ref={}, stdout_ref={}, stderr_ref={}, output_ref={}, cmd_preview={}}}",
+                        "{{index={index}, cmd_digest={}, cmd_ref={},{} cmd_preview={}}}",
                         crate::tool::helpers::command_digest(cmd),
                         crate::tool::helpers::command_receipt_source_ref(&record.id, Some(index)),
-                        crate::tool::helpers::command_output_source_ref(&record.id, Some(index), "stdout"),
-                        crate::tool::helpers::command_output_source_ref(&record.id, Some(index), "stderr"),
-                        crate::tool::helpers::command_output_source_ref(&record.id, Some(index), "output"),
+                        command_output_refs(record, Some(index)),
                         crate::tool::helpers::command_preview(cmd)
                     ))
                 })
@@ -3204,7 +3251,12 @@ mod tests {
             authority_class: AuthorityClass::OperatorInstruction,
             status: ToolExecutionStatus::Success,
             input: json!({"cmd": command}),
-            output: json!({"exit_code": 0}),
+            output: json!({
+                "exit_code": 0,
+                "stdout_preview": "context_stdout_1246\n",
+                "stderr_preview": "",
+                "artifacts": []
+            }),
             summary: "command exited with status 0".to_string(),
             invocation_surface: None,
         };
@@ -3241,7 +3293,14 @@ mod tests {
                     {"cmd": "node - <<'NODE'\nconsole.log('hidden_batch_1246')\nNODE"}
                 ]
             }),
-            output: json!({"completed_count": 2}),
+            output: json!({
+                "result": {
+                    "items": [
+                        {"result": {"stdout_preview": "foo\n", "stderr_preview": "", "artifacts": []}},
+                        {"result": {"stdout_preview": "hidden_batch_1246\n", "stderr_preview": "", "artifacts": []}}
+                    ]
+                }
+            }),
             summary: "ExecCommandBatch completed 2/2 items".to_string(),
             invocation_surface: None,
         };
@@ -3263,6 +3322,34 @@ mod tests {
             .contains("output_ref=tool_execution:tool-context-batch-1246:batch_item:2:output"));
         assert!(rendered.contains("cmd_digest="));
         assert!(!rendered.contains("hidden_batch_1246"));
+    }
+
+    #[test]
+    fn recent_tool_context_omits_output_refs_without_output_evidence() {
+        let record = ToolExecutionRecord {
+            id: "tool-context-old-1246".to_string(),
+            agent_id: "default".to_string(),
+            work_item_id: None,
+            turn_index: 0,
+            turn_id: None,
+            tool_name: "ExecCommand".to_string(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 123,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": "echo old_context_1246"}),
+            output: json!({"exit_code": 0}),
+            summary: "command exited with status 0".to_string(),
+            invocation_surface: None,
+        };
+
+        let rendered = render_recent_tool_execution(&record);
+
+        assert!(rendered.contains("cmd_ref=tool_execution:tool-context-old-1246:cmd"));
+        assert!(!rendered.contains("stdout_ref="));
+        assert!(!rendered.contains("stderr_ref="));
+        assert!(!rendered.contains("output_ref="));
     }
 
     #[test]
