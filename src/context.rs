@@ -1166,16 +1166,43 @@ fn activation_state_label(state: crate::types::SkillActivationState) -> &'static
 }
 
 fn body_preview(body: &MessageBody) -> String {
-    let text = match body {
-        MessageBody::Text { text } => text.clone(),
-        MessageBody::Json { value } => value.to_string(),
-        MessageBody::Brief { text, .. } => text.clone(),
-    };
+    let text = message_body_text(body);
     if text.chars().count() <= 160 {
         text
     } else {
         format!("{}...", text.chars().take(160).collect::<String>())
     }
+}
+
+fn message_body_text(body: &MessageBody) -> String {
+    match body {
+        MessageBody::Text { text } => text.clone(),
+        MessageBody::Json { value } => value.to_string(),
+        MessageBody::Brief { text, .. } => text.clone(),
+    }
+}
+
+fn render_recent_turn_input_line(message: &MessageEnvelope) -> String {
+    if is_trusted_operator_input(message) {
+        format!(
+            "  - operator input: {}",
+            sanitize_inline(&message_body_text(&message.body))
+        )
+    } else {
+        format!(
+            "  - input: {}",
+            sanitize_inline(&body_preview(&message.body))
+        )
+    }
+}
+
+fn render_recent_turn_brief_line(brief: &BriefRecord) -> String {
+    format!(
+        "    - {:?}: {} brief_ref=brief:{}",
+        brief.kind,
+        sanitize_inline(&truncate_text(&brief.text, 160)),
+        sanitize_inline(&brief.id)
+    )
 }
 
 fn render_current_input_body_with_budget(
@@ -1624,13 +1651,7 @@ fn render_unmatched_recent_evidence_turn(
                 .iter()
                 .any(|message| brief_matches_message(brief, message))
         })
-        .map(|brief| {
-            format!(
-                "    - {:?}: {}",
-                brief.kind,
-                sanitize_inline(&truncate_text(&brief.text, 160))
-            )
-        })
+        .map(render_recent_turn_brief_line)
         .collect::<Vec<_>>();
     let unmatched_tools = tools
         .iter()
@@ -1793,30 +1814,14 @@ fn render_turn_record_projection(
         ));
     }
     if let Some(trigger_message) = trigger_message {
-        if is_trusted_operator_input(trigger_message) {
-            lines.push(format!(
-                "  - operator asked: {}",
-                sanitize_inline(&body_preview(&trigger_message.body))
-            ));
-        } else {
-            lines.push(format!(
-                "  - input: {}",
-                sanitize_inline(&body_preview(&trigger_message.body))
-            ));
-        }
+        lines.push(render_recent_turn_input_line(trigger_message));
     }
 
     let related_briefs = record
         .produced_brief_ids
         .iter()
         .filter_map(|id| briefs.iter().find(|brief| brief.id == *id))
-        .map(|brief| {
-            format!(
-                "    - {:?}: {}",
-                brief.kind,
-                sanitize_inline(&truncate_text(&brief.text, 160))
-            )
-        })
+        .map(render_recent_turn_brief_line)
         .collect::<Vec<_>>();
     if !related_briefs.is_empty() {
         lines.push("  - produced briefs:".to_string());
@@ -1903,28 +1908,12 @@ fn render_turn_projection(
             turn_trigger_label(continuation)
         ));
     }
-    if is_trusted_operator_input(message) {
-        lines.push(format!(
-            "  - operator asked: {}",
-            sanitize_inline(&body_preview(&message.body))
-        ));
-    } else {
-        lines.push(format!(
-            "  - input: {}",
-            sanitize_inline(&body_preview(&message.body))
-        ));
-    }
+    lines.push(render_recent_turn_input_line(message));
 
     let related_briefs = briefs
         .iter()
         .filter(|brief| brief_matches_message(brief, message))
-        .map(|brief| {
-            format!(
-                "    - {:?}: {}",
-                brief.kind,
-                sanitize_inline(&truncate_text(&brief.text, 160))
-            )
-        })
+        .map(render_recent_turn_brief_line)
         .collect::<Vec<_>>();
     if !related_briefs.is_empty() {
         lines.push("  - produced briefs:".to_string());
@@ -2608,7 +2597,9 @@ mod tests {
             .clone();
         assert!(recent_turns.contains("- Turn turn_index 1:"));
         assert!(recent_turns.contains("  - turn_id: turn-db-context"));
+        assert!(recent_turns.contains("  - operator input: Use the database turn spine."));
         assert!(recent_turns.contains("Rendered from DB turn record."));
+        assert!(recent_turns.contains("brief_ref=brief:brief-db-context"));
     }
 
     #[test]
@@ -2684,6 +2675,79 @@ mod tests {
         assert!(recent_turns.contains("- Turn turn_index 2:"));
         assert!(recent_turns.contains("message not in recent window"));
         assert!(recent_turns.contains("Rendered without trigger hydration."));
+        assert!(recent_turns.contains("brief_ref=brief:brief-missing-trigger"));
+    }
+
+    #[test]
+    fn recent_turns_renders_full_operator_input_with_brief_ref() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let long_tail = "final-token-visible-after-old-preview-limit";
+        let operator_text = format!(
+            "{} {long_tail}",
+            "Please preserve this operator input in recent turns.".repeat(8)
+        );
+
+        let operator = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: operator_text.clone(),
+            },
+        );
+        storage.append_message(&operator).unwrap();
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "Rendered full operator input.",
+            Some(operator.id.clone()),
+            None,
+        );
+        brief.id = "brief-full-operator-input".into();
+        storage.append_brief(&brief).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue.".into(),
+            },
+        );
+        let context = build_context(
+            &storage,
+            &AgentState::new("default"),
+            &execution_snapshot_for(&AgentState::new("default")),
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                prompt_budget_estimated_tokens: 8192,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+        let recent_turns = context
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section")
+            .content
+            .clone();
+
+        assert!(recent_turns.contains("  - operator input: "));
+        assert!(recent_turns.contains(long_tail));
+        assert!(!recent_turns.contains("  - operator asked: "));
+        assert!(recent_turns.contains("brief_ref=brief:brief-full-operator-input"));
     }
 
     #[test]

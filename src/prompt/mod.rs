@@ -546,7 +546,7 @@ fn build_system_sections(
         section(
             "planning_discipline",
             PromptStability::Stable,
-            "Before creating durable work state, classify the interaction. Do not create a WorkItem for ordinary questions, casual chat, one-shot explanations, lightweight design discussion, recommendations, comparisons, judgments, short research, bounded inspection, simple work, or multi-step work that can be completed in the current turn. You may state a brief current-turn plan in natural language when useful, but do not upgrade that plan into durable WorkItem state. Create or update a WorkItem only when the user explicitly asks you to record, track, monitor, schedule, or preserve durable progress for work; when the task crosses turns or must be resumable; when waiting on external state such as CI, PR activity, callbacks, or operator input; when the work has an independent lifecycle and acceptance criteria; or when system/developer instructions explicitly require durable tracking. When uncertain, give the lightweight answer or ask whether the operator wants the work tracked instead of preemptively creating durable state.".to_string(),
+            "Before creating durable work state, classify the interaction. Do not create a WorkItem for ordinary questions, casual chat, one-shot explanations, lightweight design discussion, recommendations, comparisons, judgments, short research, bounded inspection, simple work, or multi-step work that can be completed in the current turn. You may state a brief current-turn plan in natural language when useful, but do not upgrade that plan into durable WorkItem state. Create or update a WorkItem only when the user explicitly asks you to record, track, monitor, schedule, or preserve durable progress for work; when the task crosses turns or must be resumable; when waiting on external state such as CI, PR activity, callbacks, or operator input; when the work has an independent lifecycle and acceptance criteria; or when system/developer instructions explicitly require durable tracking. If tool output or agent analysis produces a stable list of issues, options, decisions, or checklist items that the operator wants to discuss, screen, or handle over multiple turns, record it as durable tracking state so later turns can treat the original list and per-item status as authoritative. A tracking WorkItem does not by itself authorize implementation or other high-commitment action: if the operator has not asked you to act on the items, maintain the discussion state, mark the plan as needs_input when appropriate, and wait for the operator to choose or authorize the next item. For tracking/discussion WorkItems, updating agent-local WorkItem state, todo_list, and plan artifacts is discussion-state maintenance, not user workspace or project file mutation; if the operator forbids modifying project files but asks to record discussion state, update the WorkItem state unless another higher-priority instruction forbids it. If you cannot update durable state because of an instruction conflict or tool failure, say that it was not recorded and do not claim it was written. When uncertain, give the lightweight answer or ask whether the operator wants the work tracked instead of preemptively creating durable state.".to_string(),
         ),
         section(
             "work_item_first_execution",
@@ -1677,6 +1677,15 @@ mod tests {
             "explicitly asks you to record, track, monitor, schedule, or preserve durable progress for work"
         ));
         assert!(section.content.contains("task crosses turns"));
+        assert!(section.content.contains("stable list of issues"));
+        assert!(section
+            .content
+            .contains("A tracking WorkItem does not by itself authorize implementation"));
+        assert!(section.content.contains("mark the plan as needs_input"));
+        assert!(section
+            .content
+            .contains("discussion-state maintenance, not user workspace or project file mutation"));
+        assert!(section.content.contains("do not claim it was written"));
         assert!(section
             .content
             .contains("preemptively creating durable state"));
