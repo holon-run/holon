@@ -42,7 +42,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<MemoryGetArgs>(
             NAME,
-            "Fetch exact bounded Holon memory content by a source_ref copied verbatim from MemorySearch.results[].source_ref. Do not invent source_ref values or use MemoryGet for skill paths, file paths, or URLs.",
+            "Fetch exact bounded Holon memory content by a source_ref copied verbatim from MemorySearch results or from runtime prompt refs such as brief_ref/cmd_ref. Do not invent source_ref values or use MemoryGet for skill paths, file paths, or URLs.",
         )?,
     })
 }
@@ -67,7 +67,7 @@ pub(crate) async fn execute(
             "reason": "source_ref was syntactically valid but is not present in the current visible memory index",
         }))
         .with_recovery_hint(
-            "call MemorySearch again and pass one of its returned source_ref values verbatim",
+            "call MemorySearch again and pass one of its returned source_ref values verbatim, or copy an available prompt source_ref such as brief_ref/cmd_ref verbatim",
         )
         .into());
     };

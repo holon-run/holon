@@ -410,13 +410,15 @@ fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
         AdmissionContext::LocalProcess,
     );
     storage.append_message(&previous_operator)?;
-    storage.append_brief(&BriefRecord::new(
+    let mut result_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
         "Focused prompt projection test passed.",
         Some(previous_operator.id.clone()),
         None,
-    ))?;
+    );
+    result_brief.id = "brief_focused_prompt_projection".into();
+    storage.append_brief(&result_brief)?;
 
     let current_message = MessageEnvelope::new(
         "default",
@@ -460,9 +462,9 @@ Current input relation: current_input is the latest trusted operator input.
 Recent turns:
 - Turn message_seq 1:
   - trigger: trusted operator input
-  - operator asked: Run the focused prompt projection test.
+  - operator input: Run the focused prompt projection test.
   - produced briefs:
-    - Result: Focused prompt projection test passed.
+    - Result: Focused prompt projection test passed. brief_ref=brief:brief_focused_prompt_projection
 
 ## current_input
 Current input:
@@ -497,13 +499,15 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
     let mut operator_message_with_turn = operator_message.clone();
     operator_message_with_turn.turn_id = Some("turn_op_test".into());
     storage.append_message(&operator_message_with_turn)?;
-    storage.append_brief(&BriefRecord::new(
+    let mut ack_brief = BriefRecord::new(
         "default",
         BriefKind::Ack,
         "Started cargo test runtime_flow.",
         Some(operator_message.id.clone()),
         Some("task_exec_1".into()),
-    ))?;
+    );
+    ack_brief.id = "brief_started_runtime_flow".into();
+    storage.append_brief(&ack_brief)?;
     let mut turn_index_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
@@ -511,6 +515,7 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
         None,
         None,
     );
+    turn_index_brief.id = "brief_completion_report_promotion".into();
     turn_index_brief.turn_index = Some(1);
     storage.append_brief(&turn_index_brief)?;
     storage.append_tool_execution(&ToolExecutionRecord {
@@ -605,10 +610,10 @@ Recent turns:
   - trigger: trusted operator input
   - continues input: message_seq 1
   - continuation trigger: a task-result continuation
-  - operator asked: Run cargo test runtime_flow and report back.
+  - operator input: Run cargo test runtime_flow and report back.
   - produced briefs:
-    - Ack: Started cargo test runtime_flow.
-    - Result: Captured completion report promotion.
+    - Ack: Started cargo test runtime_flow. brief_ref=brief:brief_started_runtime_flow
+    - Result: Captured completion report promotion. brief_ref=brief:brief_completion_report_promotion
   - tool executions:
     - [trusted_system][Success] Run command: cargo test runtime_flow
   - current relation: a task-result continuation
@@ -1947,6 +1952,214 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
     assert!(
         phrase_count(&rendered, "Evaluate context continuity for issue 1634") <= 2,
         "authoritative work objective should not be copied throughout the context:\n{rendered}"
+    );
+    Ok(())
+}
+
+#[test]
+fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_discussion(
+) -> Result<()> {
+    let dir = tempdir()?;
+    let storage = AppStorage::new(dir.path())?;
+
+    let initial_issue_list = [
+        "alpha: turn-local projection repeats stable runtime guidance",
+        "beta: tool conclusions may drift when only recent_turns preserves them",
+        "gamma: item-by-item discussion can lose the next requested issue",
+        "delta: continuation sections duplicate or blur resume semantics",
+        "epsilon: callback capability redaction must remain explicit",
+    ];
+
+    let mut work_item = WorkItemRecord::new(
+        "default",
+        "Evaluate prompt context issue-list continuity",
+        WorkItemState::Open,
+    );
+    work_item.id = "work_issue_list_continuity".into();
+    storage.append_work_item(&work_item)?;
+    append_work_item_todo(
+        &storage,
+        work_item.id.clone(),
+        vec![
+            TodoItem {
+                text: "alpha: turn-local projection repeats stable runtime guidance".into(),
+                state: TodoItemState::Completed,
+            },
+            TodoItem {
+                text: "beta: tool conclusions may drift when only recent_turns preserves them"
+                    .into(),
+                state: TodoItemState::Completed,
+            },
+            TodoItem {
+                text: "gamma: item-by-item discussion can lose the next requested issue".into(),
+                state: TodoItemState::Completed,
+            },
+            TodoItem {
+                text: "delta: continuation sections duplicate or blur resume semantics".into(),
+                state: TodoItemState::Pending,
+            },
+            TodoItem {
+                text: "epsilon: callback capability redaction must remain explicit".into(),
+                state: TodoItemState::Pending,
+            },
+        ],
+    )?;
+
+    let first_operator = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Analyze prompt context improvements and list five stable issues.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    storage.append_message(&first_operator)?;
+    storage.append_tool_execution(&ToolExecutionRecord {
+        id: "tool_issue_list_analysis".into(),
+        agent_id: "default".into(),
+        work_item_id: Some(work_item.id.clone()),
+        turn_index: 1,
+        turn_id: Some("turn_issue_list_analysis".into()),
+        tool_name: "ExecCommand".into(),
+        created_at: Utc::now(),
+        completed_at: Some(Utc::now()),
+        duration_ms: 95,
+        authority_class: AuthorityClass::RuntimeInstruction,
+        status: ToolExecutionStatus::Success,
+        input: json!({ "cmd": "rg -n \"build_effective_prompt|recent_turns\" src tests" }),
+        output: json!({ "exit_status": 0 }),
+        summary: "Inspected prompt projection and produced a five-item issue list.".into(),
+        invocation_surface: Some("commentary".into()),
+    })?;
+    storage.append_brief(&BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "Initial issue list was promoted into the active work item and working memory.",
+        Some(first_operator.id.clone()),
+        None,
+    ))?;
+
+    for (turn_index, (prompt, result)) in [
+        (
+            "Discuss alpha and mark it resolved.",
+            "Resolved alpha without restating the full issue list.",
+        ),
+        (
+            "Now discuss beta and mark it resolved.",
+            "Resolved beta without restating the full issue list.",
+        ),
+        (
+            "Continue with gamma and mark it resolved.",
+            "Resolved gamma without restating the full issue list.",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let operator = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("operator:jolestar".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: prompt.into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::CliPrompt,
+            AdmissionContext::LocalProcess,
+        );
+        storage.append_message(&operator)?;
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            result,
+            Some(operator.id.clone()),
+            None,
+        );
+        brief.turn_index = Some((turn_index + 2) as u64);
+        storage.append_brief(&brief)?;
+    }
+
+    let current_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator:jolestar".into()),
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Before handling delta, recall the original five issues and mark alpha/beta/gamma discussed while delta/epsilon remain open.".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+
+    let mut session = AgentState::new("default");
+    session.current_work_item_id = Some(work_item.id.clone());
+    session.working_memory.current_working_memory = WorkingMemorySnapshot {
+        current_work_item_id: Some(work_item.id.clone()),
+        objective: Some(work_item.objective.clone()),
+        work_summary: Some(
+            "original prompt-context issue list is authoritative in work state".into(),
+        ),
+        plan: Some("Use the active work item todo list as the authoritative issue list.".into()),
+        ..WorkingMemorySnapshot::default()
+    };
+
+    let rendered = render_context_snapshot_named(
+        &storage,
+        &session,
+        &current_message,
+        None,
+        Some("multi_turn_context_issue_list_continuity"),
+    )?;
+    let diagnostics = analyze_context(&rendered);
+    let working_memory =
+        section_content(&rendered, "working_memory").expect("working memory section");
+    let current_work_item =
+        section_content(&rendered, "current_work_item").expect("current work section");
+    let recent_turns = section_content(&rendered, "recent_turns").expect("recent turns section");
+    let current_input = section_content(&rendered, "current_input").expect("current input");
+
+    for issue in initial_issue_list {
+        assert!(
+            working_memory.contains(issue) || current_work_item.contains(issue),
+            "initial issue should remain in authoritative state: {issue}\n{rendered}"
+        );
+    }
+    assert!(current_work_item.contains("[completed] alpha:"));
+    assert!(current_work_item.contains("[completed] beta:"));
+    assert!(current_work_item.contains("[completed] gamma:"));
+    assert!(current_work_item.contains("[pending] delta:"));
+    assert!(current_work_item.contains("[pending] epsilon:"));
+    assert!(current_input.contains("Before handling delta"));
+    assert!(current_input.contains("alpha/beta/gamma discussed"));
+    assert!(
+        !recent_turns.contains("Initial issue list:"),
+        "recent_turns should not be the authoritative carrier for the original list:\n{rendered}"
+    );
+    assert!(
+        diagnostics.section_share("recent_turns") < 0.45,
+        "recent_turns should not dominate issue-list continuity: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics.repeated_line_ratio < 0.10,
+        "line duplication should stay low: {diagnostics:?}"
     );
     Ok(())
 }
