@@ -479,6 +479,43 @@ mod tests {
     }
 
     #[test]
+    fn provider_http_failure_trace_flushes_request_for_protocol_diagnostics() {
+        let home = tempfile::tempdir().unwrap();
+        let trace = ProviderHttpTrace {
+            home_dir: home.path().to_path_buf(),
+            mode: super::ProviderHttpTraceMode::FailureOnly,
+        };
+        let request = trace
+            .begin_request(
+                Some("agent/one"),
+                "anthropic",
+                Some("anthropic/mimo"),
+                "https://api.example.com/v1/messages",
+                "messages",
+                &[("authorization", "Bearer secret".into())],
+                &json!({
+                    "model": "mimo",
+                    "messages": [{ "role": "user", "content": "use a tool" }],
+                    "tools": [{ "name": "ExecCommand" }]
+                }),
+            )
+            .expect("trace should be created");
+        request.write_response_body(
+            r#"{"content":[{"type":"text","text":"<tool_call><function=ExecCommand>{}</function></tool_call>"}],"stop_reason":"tool_use"}"#,
+        );
+
+        let diagnostics = request
+            .diagnostics(None)
+            .expect("protocol diagnostics should write trace");
+        let trace_text = fs::read_to_string(diagnostics.path).unwrap();
+        assert!(trace_text.contains("\"type\":\"request\""));
+        assert!(trace_text.contains("\"type\":\"response_body\""));
+        assert!(trace_text.contains("\"name\":\"ExecCommand\""));
+        assert!(trace_text.contains("[REDACTED]"));
+        assert!(!trace_text.contains("Bearer secret"));
+    }
+
+    #[test]
     fn provider_http_failure_trace_keeps_buffer_when_trace_file_cannot_be_created() {
         let home = tempfile::tempdir().unwrap();
         let home_file = home.path().join("not-a-directory");

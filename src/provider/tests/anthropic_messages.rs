@@ -5,8 +5,33 @@ use std::sync::{Arc, Mutex};
 use super::support::*;
 use super::*;
 use crate::config::{AnthropicCacheStrategy, ProviderId};
+use crate::provider::provider_transport_diagnostics;
 use axum::{http::HeaderMap, routing::post, Json, Router};
 use serde_json::{json, Value};
+use std::path::Path;
+
+struct ScopedEnv {
+    key: String,
+    original: Option<String>,
+}
+
+impl Drop for ScopedEnv {
+    fn drop(&mut self) {
+        match self.original.as_ref() {
+            Some(value) => std::env::set_var(&self.key, value),
+            None => std::env::remove_var(&self.key),
+        }
+    }
+}
+
+fn scoped_env(key: &str, value: &str) -> ScopedEnv {
+    let original = std::env::var(key).ok();
+    std::env::set_var(key, value);
+    ScopedEnv {
+        key: key.to_string(),
+        original,
+    }
+}
 
 #[tokio::test]
 async fn anthropic_request_lowers_prompt_frame_blocks_to_cache_control() {
@@ -79,6 +104,75 @@ async fn anthropic_request_lowers_prompt_frame_blocks_to_cache_control() {
         body["messages"][0]["content"][0]["cache_control"],
         json!({ "type": "ephemeral" })
     );
+}
+
+#[tokio::test]
+async fn anthropic_text_form_tool_call_protocol_failure_writes_failure_trace() {
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(|| async {
+            Json(json!({
+                "content": [{
+                    "type": "text",
+                    "text": "<tool_call><function=ExecCommand>{\"cmd\":\"echo ok\"}</function></tool_call>"
+                }],
+                "stop_reason": "tool_use",
+                "usage": { "input_tokens": 4, "output_tokens": 2 }
+            }))
+        }),
+    ))
+    .await;
+    let mut fixture = test_config(
+        "anthropic/claude-sonnet-4-6",
+        &[],
+        None,
+        Some("anthropic-token"),
+        false,
+    );
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::anthropic())
+        .unwrap()
+        .base_url = base_url;
+    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+
+    let _env_guard = scoped_env("HOLON_PROVIDER_HTTP_FAILURE_TRACE", "1");
+    let error = provider
+        .complete_turn(ProviderTurnRequest::plain(
+            "use a tool",
+            Vec::new(),
+            vec![crate::tool::ToolSpec {
+                name: "ExecCommand".into(),
+                description: "Run a command".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "cmd": { "type": "string" }
+                    },
+                    "required": ["cmd"]
+                }),
+                freeform_grammar: None,
+            }],
+        ))
+        .await
+        .expect_err("text-form tool calls with stop_reason=tool_use should fail");
+
+    let diagnostics =
+        provider_transport_diagnostics(&error).expect("error should include diagnostics");
+    assert_eq!(diagnostics.stage, "response_protocol");
+    assert_eq!(diagnostics.provider.as_deref(), Some("anthropic"));
+    let trace = diagnostics
+        .http_trace
+        .as_ref()
+        .expect("failure trace should be written");
+    assert_eq!(trace.mode, "failure_only");
+    assert!(Path::new(&trace.path).exists());
+    let trace_text = std::fs::read_to_string(&trace.path).unwrap();
+    assert!(trace_text.contains("\"type\":\"request\""));
+    assert!(trace_text.contains("\"type\":\"response_body\""));
+    assert!(trace_text.contains("\"name\":\"ExecCommand\""));
+    assert!(!trace_text.contains("anthropic-token"));
 }
 
 #[tokio::test]
