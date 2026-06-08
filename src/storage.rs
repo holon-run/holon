@@ -1048,11 +1048,15 @@ impl AppStorage {
                 .evidence()
                 .brief_by_id(&self.storage_agent_id()?, brief_id);
         }
-        Ok(
-            read_recent_jsonl::<BriefRecord>(&self.briefs_path, usize::MAX)?
-                .into_iter()
-                .find(|brief| brief.id == brief_id),
-        )
+        let mut found = None;
+        scan_jsonl_reverse::<BriefRecord, _>(&self.briefs_path, |brief| {
+            if brief.id == brief_id {
+                found = Some(brief);
+                return false;
+            }
+            true
+        })?;
+        Ok(found)
     }
 
     pub fn read_recent_messages(&self, limit: usize) -> Result<Vec<MessageEnvelope>> {
@@ -1070,11 +1074,15 @@ impl AppStorage {
                 .messages()
                 .by_id(self.current_agent_id()?.as_deref(), message_id);
         }
-        Ok(
-            read_recent_jsonl::<MessageEnvelope>(&self.messages_path, usize::MAX)?
-                .into_iter()
-                .find(|message| message.id == message_id),
-        )
+        let mut found = None;
+        scan_jsonl_reverse::<MessageEnvelope, _>(&self.messages_path, |message| {
+            if message.id == message_id {
+                found = Some(message);
+                return false;
+            }
+            true
+        })?;
+        Ok(found)
     }
 
     /// Reads messages at or after `offset`, then returns only the most recent
@@ -1167,11 +1175,15 @@ impl AppStorage {
                 .evidence()
                 .tool_execution_by_id(&self.storage_agent_id()?, tool_id);
         }
-        Ok(
-            read_recent_jsonl::<ToolExecutionRecord>(&self.tools_path, usize::MAX)?
-                .into_iter()
-                .find(|tool| tool.id == tool_id),
-        )
+        let mut found = None;
+        scan_jsonl_reverse::<ToolExecutionRecord, _>(&self.tools_path, |tool| {
+            if tool.id == tool_id {
+                found = Some(tool);
+                return false;
+            }
+            true
+        })?;
+        Ok(found)
     }
 
     pub fn read_recent_turns(&self, limit: usize) -> Result<Vec<TurnRecord>> {
