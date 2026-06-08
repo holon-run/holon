@@ -933,6 +933,15 @@ impl MessageRepository<'_> {
         self.db.transaction(|tx| upsert_message_tx(tx, message))
     }
 
+    pub fn upsert_many(&self, messages: &[MessageEnvelope]) -> Result<()> {
+        self.db.transaction(|tx| {
+            for message in messages {
+                upsert_message_tx(tx, message)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<MessageEnvelope>> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -1090,6 +1099,15 @@ impl TranscriptRepository<'_> {
             .transaction(|tx| upsert_transcript_entry_tx(tx, entry))
     }
 
+    pub fn upsert_many(&self, entries: &[TranscriptEntry]) -> Result<()> {
+        self.db.transaction(|tx| {
+            for entry in entries {
+                upsert_transcript_entry_tx(tx, entry)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<TranscriptEntry>> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -1145,6 +1163,22 @@ impl TranscriptRepository<'_> {
             rows.map(|row| decode_transcript_entry_payload(&row?))
                 .collect()
         }
+    }
+
+    pub fn count(&self, agent_id: Option<&str>) -> Result<usize> {
+        let connection = self.db.connection()?;
+        let count: i64 = if let Some(agent_id) = agent_id {
+            connection.query_row(
+                "SELECT COUNT(*) FROM transcript_entries WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?
+        } else {
+            connection.query_row("SELECT COUNT(*) FROM transcript_entries", [], |row| {
+                row.get(0)
+            })?
+        };
+        Ok(usize::try_from(count).unwrap_or(usize::MAX))
     }
 
     pub fn max_transcript_seq(&self, agent_id: Option<&str>) -> Result<u64> {
@@ -1411,6 +1445,15 @@ impl AuditEventSink<'_> {
             .transaction(|tx| insert_audit_event_tx(tx, agent_id, event))
     }
 
+    pub fn append_many(&self, agent_id: Option<&str>, events: &[AuditEvent]) -> Result<()> {
+        self.db.transaction(|tx| {
+            for event in events {
+                insert_audit_event_tx(tx, agent_id, event)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn import_legacy(&self, agent_id: Option<&str>, events: Vec<AuditEvent>) -> Result<()> {
         if self.db.storage_domain_is_complete("audit_events", "db")? {
             return Ok(());
@@ -1434,7 +1477,7 @@ impl AuditEventSink<'_> {
         if agent_id.is_some() {
             sql.push_str(" WHERE agent_id = ?1");
         }
-        sql.push_str(" ORDER BY COALESCE(event_seq, 0) DESC, created_at DESC LIMIT ?");
+        sql.push_str(" ORDER BY event_seq DESC, created_at DESC LIMIT ?");
         let mut statement = connection.prepare(&sql)?;
         let mut events = if let Some(agent_id) = agent_id {
             statement
@@ -1499,19 +1542,18 @@ impl AuditEventSink<'_> {
             .transpose()?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
-        let mut sql =
-            String::from("SELECT data_json FROM audit_events WHERE COALESCE(event_seq, 0) > ?1");
+        let mut sql = String::from("SELECT data_json FROM audit_events WHERE event_seq > ?1");
         if upper.is_some() {
-            sql.push_str(" AND COALESCE(event_seq, 0) < ?2");
+            sql.push_str(" AND event_seq < ?2");
         }
         if agent_id.is_some() {
             let param_index = if upper.is_some() { 3 } else { 2 };
             sql.push_str(&format!(" AND agent_id = ?{param_index}"));
         }
         if descending {
-            sql.push_str(" ORDER BY COALESCE(event_seq, 0) DESC, created_at DESC");
+            sql.push_str(" ORDER BY event_seq DESC, created_at DESC");
         } else {
-            sql.push_str(" ORDER BY COALESCE(event_seq, 0) ASC, created_at ASC");
+            sql.push_str(" ORDER BY event_seq ASC, created_at ASC");
         }
         let limit_param_index = 2 + usize::from(upper.is_some()) + usize::from(agent_id.is_some());
         sql.push_str(&format!(" LIMIT ?{limit_param_index}"));
@@ -1547,8 +1589,7 @@ impl AuditEventSink<'_> {
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
-        let mut sql =
-            String::from("SELECT data_json FROM audit_events WHERE COALESCE(event_seq, 0) > ?1");
+        let mut sql = String::from("SELECT data_json FROM audit_events WHERE event_seq > ?1");
         if agent_id.is_some() {
             sql.push_str(" AND agent_id = ?2");
         }
@@ -3594,6 +3635,14 @@ CREATE INDEX IF NOT EXISTS idx_agent_identities_status
   ON agent_identities(status);
 "#,
     },
+    Migration {
+        version: 10,
+        name: "audit_events_agent_seq_index",
+        sql: r#"
+CREATE INDEX IF NOT EXISTS idx_audit_events_agent_seq_created
+  ON audit_events(agent_id, event_seq, created_at);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -3880,6 +3929,17 @@ impl RuntimeDb {
             return Ok(false);
         };
         Ok(snapshot.import_status == "complete" && snapshot.canonical_source == canonical_source)
+    }
+
+    pub(crate) fn mark_storage_domain_complete(
+        &self,
+        domain: &'static str,
+        canonical_source: &'static str,
+        checkpoint: serde_json::Value,
+    ) -> Result<()> {
+        self.transaction(|tx| {
+            upsert_storage_domain(tx, domain, "complete", canonical_source, Some(checkpoint))
+        })
     }
 
     fn run_storage_domain_import(

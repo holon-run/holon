@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     future::Future,
     path::{Path, PathBuf},
@@ -59,6 +59,7 @@ pub struct RuntimeHost {
 pub(crate) const TEMP_AGENT_PREFIX: &str = "tmp_";
 const TEMP_RUN_AGENT_PREFIX: &str = "tmp_run_";
 const TEMP_CHILD_AGENT_PREFIX: &str = "tmp_child_";
+const HOST_AGENT_LEGACY_EVIDENCE_REPAIR_DOMAIN: &str = "host_agent_legacy_evidence_repair";
 // Give runtime loops a short cleanup window while keeping daemon stop bounded.
 #[cfg(not(test))]
 const HOST_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
@@ -152,6 +153,7 @@ impl RuntimeHost {
     pub fn prepare_runtime_storage(config: &AppConfig) -> Result<()> {
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+        import_host_registry_domains(config, &runtime_db)?;
         RuntimeHandle::prepare_runtime_storage(
             config.default_agent_id.clone(),
             config.agent_root_dir().join(&config.default_agent_id),
@@ -1403,6 +1405,148 @@ impl RuntimeHost {
     }
 }
 
+fn import_host_registry_domains(config: &AppConfig, runtime_db: &RuntimeDb) -> Result<()> {
+    let host_storage = AppStorage::new(config.home_dir.join("host"))?;
+    if !runtime_db.storage_domain_is_complete("workspace_entries", "db")? {
+        runtime_db
+            .workspace_entries()
+            .import_legacy(host_storage.read_recent_workspace_entries(usize::MAX)?)?;
+    }
+    if !runtime_db.storage_domain_is_complete("workspace_occupancies", "db")? {
+        runtime_db
+            .workspace_occupancies()
+            .import_legacy(host_storage.read_recent_workspace_occupancies(usize::MAX)?)?;
+    }
+    if !runtime_db.storage_domain_is_complete("agent_identities", "db")? {
+        runtime_db
+            .agent_identities()
+            .import_legacy(host_storage.read_recent_agent_identities(usize::MAX)?)?;
+    } else {
+        repair_completed_host_agent_identity_import(&host_storage, runtime_db)?;
+    }
+    repair_host_agent_legacy_evidence_import(config, &host_storage, runtime_db)?;
+    Ok(())
+}
+
+fn repair_completed_host_agent_identity_import(
+    host_storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+) -> Result<()> {
+    let host_identities = host_storage.latest_agent_identities()?;
+    if host_identities.is_empty() {
+        return Ok(());
+    }
+    let db_identities = runtime_db
+        .agent_identities()
+        .latest_all()?
+        .into_iter()
+        .map(|record| (record.agent_id.clone(), record.updated_at))
+        .collect::<BTreeMap<_, _>>();
+    for record in host_identities {
+        let should_repair = db_identities
+            .get(&record.agent_id)
+            .is_none_or(|db_updated_at| record.updated_at > *db_updated_at);
+        if should_repair {
+            runtime_db.agent_identities().upsert(&record)?;
+        }
+    }
+    Ok(())
+}
+
+fn repair_host_agent_legacy_evidence_import(
+    config: &AppConfig,
+    host_storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+) -> Result<()> {
+    if runtime_db.storage_domain_is_complete(HOST_AGENT_LEGACY_EVIDENCE_REPAIR_DOMAIN, "db")? {
+        return Ok(());
+    }
+    let mut agent_ids = host_storage
+        .latest_agent_identities()?
+        .into_iter()
+        .map(|record| record.agent_id)
+        .collect::<BTreeSet<_>>();
+    agent_ids.insert(config.default_agent_id.clone());
+
+    for agent_id in &agent_ids {
+        let agent_home = config.agent_root_dir().join(agent_id.as_str());
+        if !agent_home.exists() {
+            continue;
+        }
+        let storage = AppStorage::new(agent_home)?;
+        match storage.read_all_messages() {
+            Ok(messages) => {
+                let db_count = runtime_db.messages().count(Some(agent_id.as_str()))?;
+                if db_count < messages.len() {
+                    runtime_db.messages().upsert_many(&messages)?;
+                }
+            }
+            Err(error) => {
+                warn!(
+                    agent_id = %agent_id,
+                    error = %error,
+                    "failed to repair legacy message import for agent"
+                );
+            }
+        }
+        match storage.read_all_transcript() {
+            Ok(entries) => {
+                let db_count = runtime_db
+                    .transcript_entries()
+                    .count(Some(agent_id.as_str()))?;
+                if db_count < entries.len() {
+                    runtime_db.transcript_entries().upsert_many(&entries)?;
+                }
+            }
+            Err(error) => {
+                warn!(
+                    agent_id = %agent_id,
+                    error = %error,
+                    "failed to repair legacy transcript import for agent"
+                );
+            }
+        }
+        match storage.latest_event_seq() {
+            Ok(Some(legacy_latest_seq)) => {
+                let db_latest_seq = runtime_db
+                    .audit_events()
+                    .latest_event_seq(Some(agent_id.as_str()))?
+                    .unwrap_or_default();
+                if db_latest_seq < legacy_latest_seq {
+                    match storage.read_legacy_events_jsonl() {
+                        Ok(events) => {
+                            runtime_db
+                                .audit_events()
+                                .append_many(Some(agent_id.as_str()), &events)?;
+                        }
+                        Err(error) => {
+                            warn!(
+                                agent_id = %agent_id,
+                                error = %error,
+                                "failed to repair legacy audit event import for agent"
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(
+                    agent_id = %agent_id,
+                    error = %error,
+                    "failed to inspect legacy audit event import for agent"
+                );
+            }
+        }
+    }
+    runtime_db.mark_storage_domain_complete(
+        HOST_AGENT_LEGACY_EVIDENCE_REPAIR_DOMAIN,
+        "db",
+        json!({ "scanned_agents": agent_ids.len() }),
+    )?;
+    Ok(())
+}
+
 impl RuntimeHostBridge {
     fn host(&self) -> Result<RuntimeHost> {
         let inner = self
@@ -1658,6 +1802,7 @@ mod tests {
         config::{provider_registry_for_tests, ControlAuthMode, ModelRef},
         provider::{AgentProvider, ProviderTurnRequest, ProviderTurnResponse, StubProvider},
         runtime::RuntimeHandle,
+        runtime_db::RuntimeDb,
         storage::AppStorage,
         system::WorkspaceProjectionKind,
         types::{
@@ -1837,6 +1982,208 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(listed.contains(&host.config().default_agent_id));
         assert!(listed.contains(&"release-bot".to_string()));
+    }
+
+    #[tokio::test]
+    async fn pre_server_prepare_does_not_empty_cutover_host_agent_registry() {
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host_storage = AppStorage::new(config.home_dir.join("host")).unwrap();
+        host_storage
+            .append_agent_identity(&AgentIdentityRecord::new(
+                "release-bot",
+                AgentKind::Named,
+                AgentVisibility::Public,
+                AgentOwnership::SelfOwned,
+                AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            ))
+            .unwrap();
+
+        RuntimeHost::prepare_runtime_storage(&config).unwrap();
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+                .unwrap();
+        assert!(
+            runtime_db
+                .storage_domain_is_complete("agent_identities", "db")
+                .unwrap(),
+            "pre-server preparation should complete host-wide agent identity import from host storage"
+        );
+        assert_eq!(
+            runtime_db
+                .agent_identities()
+                .latest("release-bot")
+                .unwrap()
+                .expect("release-bot identity should be imported before per-agent preparation")
+                .agent_id,
+            "release-bot"
+        );
+
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok"))).unwrap();
+        let listed = host
+            .list_agent_entries()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.identity.agent_id)
+            .collect::<Vec<_>>();
+        assert!(listed.contains(&"release-bot".to_string()));
+        assert!(listed.contains(&host.config().default_agent_id));
+    }
+
+    #[tokio::test]
+    async fn pre_server_prepare_repairs_completed_empty_host_agent_registry_cutover() {
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host_storage = AppStorage::new(config.home_dir.join("host")).unwrap();
+        host_storage
+            .append_agent_identity(&AgentIdentityRecord::new(
+                "release-bot",
+                AgentKind::Named,
+                AgentVisibility::Public,
+                AgentOwnership::SelfOwned,
+                AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            ))
+            .unwrap();
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+                .unwrap();
+        runtime_db
+            .agent_identities()
+            .import_legacy(Vec::new())
+            .unwrap();
+        assert!(runtime_db
+            .storage_domain_is_complete("agent_identities", "db")
+            .unwrap());
+        assert!(runtime_db
+            .agent_identities()
+            .latest("release-bot")
+            .unwrap()
+            .is_none());
+
+        RuntimeHost::prepare_runtime_storage(&config).unwrap();
+
+        assert_eq!(
+            runtime_db
+                .agent_identities()
+                .latest("release-bot")
+                .unwrap()
+                .expect("release-bot identity should be repaired from host storage")
+                .agent_id,
+            "release-bot"
+        );
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok"))).unwrap();
+        let listed = host
+            .list_agent_entries()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.identity.agent_id)
+            .collect::<Vec<_>>();
+        assert!(listed.contains(&"release-bot".to_string()));
+    }
+
+    #[tokio::test]
+    async fn pre_server_prepare_repairs_completed_empty_agent_message_cutover() {
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host_storage = AppStorage::new(config.home_dir.join("host")).unwrap();
+        host_storage
+            .append_agent_identity(&AgentIdentityRecord::new(
+                "release-bot",
+                AgentKind::Named,
+                AgentVisibility::Public,
+                AgentOwnership::SelfOwned,
+                AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            ))
+            .unwrap();
+        let agent_storage = AppStorage::new(config.agent_root_dir().join("release-bot")).unwrap();
+        let message = MessageEnvelope::new(
+            "release-bot",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "legacy message".into(),
+            },
+        );
+        agent_storage.append_message(&message).unwrap();
+        let transcript = TranscriptEntry::new(
+            "release-bot",
+            TranscriptEntryKind::IncomingMessage,
+            Some(1),
+            Some(message.id.clone()),
+            json!({"text": "legacy message"}),
+        );
+        agent_storage.append_transcript_entry(&transcript).unwrap();
+        agent_storage
+            .append_event(&crate::types::AuditEvent::new(
+                "legacy_chat_event",
+                json!({"text": "legacy message"}),
+            ))
+            .unwrap();
+
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+                .unwrap();
+        runtime_db.messages().import_legacy(Vec::new()).unwrap();
+        runtime_db
+            .transcript_entries()
+            .import_legacy(Vec::new())
+            .unwrap();
+        runtime_db
+            .audit_events()
+            .import_legacy(Some("release-bot"), Vec::new())
+            .unwrap();
+        assert_eq!(runtime_db.messages().count(Some("release-bot")).unwrap(), 0);
+        assert_eq!(
+            runtime_db
+                .transcript_entries()
+                .all(Some("release-bot"))
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            runtime_db
+                .audit_events()
+                .recent(Some("release-bot"), 10)
+                .unwrap()
+                .len(),
+            0
+        );
+
+        RuntimeHost::prepare_runtime_storage(&config).unwrap();
+
+        assert_eq!(runtime_db.messages().count(Some("release-bot")).unwrap(), 1);
+        assert_eq!(
+            runtime_db
+                .transcript_entries()
+                .all(Some("release-bot"))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            runtime_db
+                .audit_events()
+                .recent(Some("release-bot"), 10)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
