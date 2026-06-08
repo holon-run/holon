@@ -2035,7 +2035,20 @@ fn turn_trigger_summary_label(trigger: &crate::types::TurnTriggerSummary) -> &'s
 }
 
 fn sanitize_inline(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
+    let mut sanitized = String::with_capacity(value.len());
+    let mut pending_space = false;
+    for ch in value.chars() {
+        if ch.is_whitespace() {
+            pending_space = !sanitized.is_empty();
+        } else {
+            if pending_space {
+                sanitized.push(' ');
+                pending_space = false;
+            }
+            sanitized.push(ch);
+        }
+    }
+    sanitized
 }
 
 fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {

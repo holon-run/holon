@@ -323,7 +323,10 @@ async fn max_output_mutation_tool_call_is_rejected_without_side_effects() {
         "http://127.0.0.1:7878".into(),
         provider.clone(),
         "default".into(),
-        context_config(),
+        ContextConfig {
+            prompt_budget_estimated_tokens: 65_536,
+            ..context_config()
+        },
     )
     .unwrap();
 
