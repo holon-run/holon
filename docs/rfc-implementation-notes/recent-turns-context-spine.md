@@ -129,10 +129,11 @@ the digest rarely helps model-facing continuity.
 
 Older recent turns do not expand command batches or repeat full per-tool
 metadata by default. They render a small aggregate line with total,
-success/error/promoted counts, plus `tool_execution:<id>` refs. Older failed,
+success/error/promoted counts, plus retrievable refs such as
+`tool_execution:<id>:output`. Older failed, non-zero-exit,
 promoted/running, truncated, or artifact-producing tool executions may add one
-compact alert row with the status, summary, task id, and retrieval refs needed
-for follow-up inspection.
+compact alert row with the status, exit status, summary, task id, and retrieval
+refs needed for follow-up inspection.
 
 The target `TurnRecord`-first renderer should keep the same operator-facing
 shape but use the durable turn record as the join spine. A full turn can be

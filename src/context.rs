@@ -2166,8 +2166,8 @@ fn tool_result_payload(record: &ToolExecutionRecord) -> &Value {
         .unwrap_or(&record.output)
 }
 
-fn tool_execution_ref(record: &ToolExecutionRecord) -> String {
-    format!("tool_execution:{}", record.id)
+fn tool_execution_rollup_ref(record: &ToolExecutionRecord) -> String {
+    crate::tool::helpers::command_output_source_ref(&record.id, None, "output")
 }
 
 fn status_label(status: &ToolExecutionStatus) -> &'static str {
@@ -2188,6 +2188,17 @@ fn command_task_id(record: &ToolExecutionRecord) -> Option<&str> {
         .get("task_handle")
         .and_then(|handle| handle.get("task_id"))
         .and_then(Value::as_str)
+}
+
+fn command_exit_status(record: &ToolExecutionRecord) -> Option<i64> {
+    tool_result_payload(record)
+        .get("exit_status")
+        .or_else(|| tool_result_payload(record).get("exit_code"))
+        .and_then(Value::as_i64)
+}
+
+fn command_has_nonzero_exit_status(record: &ToolExecutionRecord) -> bool {
+    command_exit_status(record).is_some_and(|status| status != 0)
 }
 
 fn value_has_artifact(value: &Value) -> bool {
@@ -2219,12 +2230,20 @@ fn value_is_truncated(value: &Value) -> bool {
 
 fn tool_execution_needs_old_turn_alert(record: &ToolExecutionRecord) -> bool {
     matches!(record.status, ToolExecutionStatus::Error)
+        || command_has_nonzero_exit_status(record)
+        || (record.tool_name == "ExecCommandBatch" && batch_item_counts(record).failed > 0)
         || matches!(
             command_disposition(record),
             Some("promoted_to_task" | "already_running")
         )
         || value_is_truncated(tool_result_payload(record))
         || value_has_artifact(tool_result_payload(record))
+}
+
+fn tool_execution_needs_old_turn_failure_count(record: &ToolExecutionRecord) -> bool {
+    matches!(record.status, ToolExecutionStatus::Error)
+        || command_has_nonzero_exit_status(record)
+        || (record.tool_name == "ExecCommandBatch" && batch_item_counts(record).failed > 0)
 }
 
 #[derive(Default)]
@@ -2279,11 +2298,11 @@ fn render_recent_tool_execution_rollup(records: &[&ToolExecutionRecord]) -> Vec<
     let total = records.len();
     let success = records
         .iter()
-        .filter(|record| matches!(record.status, ToolExecutionStatus::Success))
+        .filter(|record| !tool_execution_needs_old_turn_failure_count(record))
         .count();
     let error = records
         .iter()
-        .filter(|record| matches!(record.status, ToolExecutionStatus::Error))
+        .filter(|record| tool_execution_needs_old_turn_failure_count(record))
         .count();
     let promoted = records
         .iter()
@@ -2297,7 +2316,7 @@ fn render_recent_tool_execution_rollup(records: &[&ToolExecutionRecord]) -> Vec<
     let mut refs = records
         .iter()
         .take(6)
-        .map(|record| tool_execution_ref(record))
+        .map(|record| tool_execution_rollup_ref(record))
         .collect::<Vec<_>>();
     if records.len() > refs.len() {
         refs.push(format!("+{} more", records.len() - refs.len()));
@@ -2333,6 +2352,9 @@ fn render_recent_tool_execution_alert(record: &ToolExecutionRecord) -> String {
     }
     if let Some(task_id) = command_task_id(record) {
         parts.push(format!("task_id={}", sanitize_inline(task_id)));
+    }
+    if let Some(exit_status) = command_exit_status(record) {
+        parts.push(format!("exit_status={exit_status}"));
     }
     if record.tool_name == "ExecCommand" {
         parts.push(format!(
@@ -3898,7 +3920,7 @@ mod tests {
 
         assert!(
             recent_turns.contains(
-                "- summary: total=1 success=1 error=0 promoted=0 refs=[tool_execution:tool-old-compact]"
+                "- summary: total=1 success=1 error=0 promoted=0 refs=[tool_execution:tool-old-compact:output]"
             ),
             "{recent_turns}"
         );
@@ -3937,7 +3959,7 @@ mod tests {
             completed_at: Some(chrono::Utc::now()),
             duration_ms: 10,
             authority_class: AuthorityClass::OperatorInstruction,
-            status: ToolExecutionStatus::Error,
+            status: ToolExecutionStatus::Success,
             input: json!({"cmd": "cargo test failing_path"}),
             output: json!({"exit_status": 101, "stderr_preview": "failed"}),
             summary: "cargo test failing_path failed".into(),
@@ -3971,12 +3993,12 @@ mod tests {
         let rendered = render_recent_tool_execution_rollup(&records).join("\n");
 
         assert!(rendered.contains("total=3 success=2 error=1 promoted=1"));
-        assert!(rendered.contains("refs=[tool_execution:tool-rollup-success"));
-        assert!(rendered.contains("alert: ExecCommand status=error"));
+        assert!(rendered.contains("refs=[tool_execution:tool-rollup-success:output"));
+        assert!(rendered.contains("alert: ExecCommand status=success"));
         assert!(rendered.contains("tool_execution_id=tool-rollup-failed"));
+        assert!(rendered.contains("exit_status=101"));
         assert!(rendered.contains("cmd_ref=tool_execution:tool-rollup-failed:cmd"));
         assert!(rendered.contains("stdout_ref=tool_execution:tool-rollup-failed:stdout"));
-        assert!(rendered.contains("alert: ExecCommand status=success"));
         assert!(rendered.contains("disposition=promoted_to_task"));
         assert!(rendered.contains("task_id=task-promoted-1"));
         assert!(!rendered.contains("successful old command should not get alert"));
