@@ -2700,6 +2700,50 @@ fn chat_display_mode_info_shows_hidden_stream_activity_in_working_body() {
 }
 
 #[test]
+fn chat_display_mode_info_suppresses_successful_work_item_tool_activity() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.display_mode = OperatorDisplayMode::Info;
+    let mut snapshot = sample_snapshot("default", "evt-0");
+    snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.apply_stream_event(
+        AgentStreamEvent {
+            id: "evt-work-item-tool".into(),
+            event: "tool_executed".into(),
+            data: StreamEventEnvelope {
+                id: "evt-work-item-tool".into(),
+                event_seq: 2,
+                ts: Utc::now(),
+                agent_id: "default".into(),
+                event_type: "tool_executed".into(),
+                provenance: None,
+                payload: json!({
+                    "tool_name": "UpdateWorkItem",
+                    "status": "success",
+                    "summary": "updated work item"
+                }),
+            },
+        },
+        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        app.display_mode,
+    );
+    app.projection = Some(projection);
+
+    let items = collect_chat_items(&app);
+    let active_item = items.last().expect("active activity item");
+    match active_item {
+        ConversationCell::ActiveActivity { body, .. } => {
+            assert!(body.is_empty());
+        }
+        other => panic!("expected active activity item, got {other:?}"),
+    }
+}
+
+#[test]
 fn chat_display_mode_verbose_keeps_working_marker_without_activity_body() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(

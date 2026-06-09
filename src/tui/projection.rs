@@ -23,6 +23,7 @@ use crate::{
         is_operator_event_in_display_mode, present_operator_event, OperatorEventCategory,
         OperatorEventPresentation, OperatorPresentationContext,
     },
+    presentation::event_has_live_working_activity_item,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         ActiveWorkspaceEntry, AgentState, AgentSummary, BriefRecord, ClosureDecision,
@@ -846,6 +847,10 @@ impl TuiProjection {
         if self.is_visible_in_display_mode(record, OperatorDisplayMode::Info)
             || !self.is_visible_in_display_mode(record, OperatorDisplayMode::Debug)
         {
+            return;
+        }
+
+        if !event_has_live_working_activity_item(record) {
             return;
         }
 

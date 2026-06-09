@@ -408,6 +408,28 @@ impl PresentationItem {
             }
         )
     }
+
+    pub(crate) fn is_live_working_activity_item(&self) -> bool {
+        matches!(
+            self,
+            PresentationItem::AssistantProgress { .. }
+                | PresentationItem::ActionGroup { .. }
+                | PresentationItem::CommandExecuted { .. }
+                | PresentationItem::FileRead { .. }
+                | PresentationItem::FileChange { .. }
+                | PresentationItem::PatchFailure { .. }
+                | PresentationItem::ToolAction { .. }
+                | PresentationItem::PlanShown { .. }
+        )
+    }
+}
+
+pub(crate) fn event_has_live_working_activity_item(event: &ProjectionEventRecord) -> bool {
+    let mut reducer = PresentationReducer::new();
+    reducer
+        .reduce(&[event.clone()])
+        .iter()
+        .any(|timed| timed.item.is_live_working_activity_item() && timed.item.is_visible_at(4))
 }
 
 // ── Renderable trait ───────────────────────────────────────────────────────
