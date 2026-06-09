@@ -82,10 +82,12 @@ to provide:
 - Result, failure, blocked, verification, wait, and delivery briefs should be
   retained with enough detail to recover the latest outcome and decision. Ack
   briefs are runtime lifecycle acknowledgements such as `Queued work: ...`,
-  not task outcomes; they are usually low-value and may be omitted.
+  not task outcomes and should be omitted from model-facing recent turns.
+- Result and failure briefs should be rendered by recency role: the continuity
+  turn gets full text when budget allows, nearby turns get larger previews, and
+  older turns remain compact retrieval anchors.
 - Normal successful tool executions should be summarized as traceable evidence:
-  status, tool kind, command preview or equivalent request preview, and stable
-  command/output references when available.
+  count/status rollups and stable command/output references when available.
 - Failed, cancelled, promoted/running, truncated, artifact-producing, or
   unmatched tool executions should appear in alert/fallback context even if they
   cannot be attached cleanly to a turn.
@@ -102,12 +104,13 @@ Recent turns:
   - trigger: trusted operator input|<runtime continuation label>
   - continues input: message_seq <n>|<message_id>
   - continuation trigger: <runtime continuation label>
-  - operator asked: <original operator input preview>
+  - operator input: <original operator input>
   - input: <non-operator input preview>
   - produced briefs:
-    - <BriefKind>: <brief text preview>
+    - Result full|excerpt|preview: <brief text>
   - tool executions:
-    - [<authority>][<status>] <summary> tool_execution_id=<id> ...
+    - summary: total=<n> success=<n> error=<n> promoted=<n> refs=[...]
+    - alert: <only failures, promoted/running tasks, truncation, or artifact-producing tools>
   - current relation: <runtime continuation label>
   - current input: <current continuation input preview>
   - current work item: <work_item_id> :: <objective preview>
@@ -117,20 +120,19 @@ Only the fields that apply to a turn are shown. For example, `continues input`,
 `continuation trigger`, `current relation`, `current input`, and `current work
 item` are only added when the current runtime continuation is being rendered
 against the latest trusted operator input. Trusted operator input uses
-`operator asked`; other inputs use `input`.
+`operator input`; other inputs use `input`.
 
-Tool rows are compact evidence handles, not full output dumps. The immediately
-previous turn, or the trusted operator turn currently being continued by a
-runtime wake, may include compact per-tool detail such as `tool_execution_id`,
-tool name, status, command preview, task id, `cmd_ref`, and available
-`stdout_ref` / `stderr_ref` / `output_ref` values. Command digests are omitted
-from the normal prompt because the refs already provide the recovery path and
-the digest rarely helps model-facing continuity.
+Brief rows are compact evidence handles except for adjacent semantic delivery.
+The continuity turn is the trusted operator turn currently being continued, or
+the latest previous turn for a new trusted operator input. Its `Result` and
+`Failure` briefs render as `full` when budget allows, otherwise as an explicit
+excerpt with `brief_ref`. The newest two non-continuity turns are nearby turns
+and receive larger result/failure previews. Older turns receive compact
+previews. `Ack` briefs are not rendered.
 
-Older recent turns do not expand command batches or repeat full per-tool
-metadata by default. They render a small aggregate line with total,
-success/error/promoted counts, plus retrievable refs such as
-`tool_execution:<id>:output`. Older failed, non-zero-exit,
+Tool rows do not expand routine successful tool calls by default. Every turn
+renders a small aggregate line with total, success/error/promoted counts, plus
+retrievable refs such as `tool_execution:<id>:output`. Failed, non-zero-exit,
 promoted/running, truncated, or artifact-producing tool executions may add one
 compact alert row with the status, exit status, summary, task id, and retrieval
 refs needed for follow-up inspection.
@@ -271,7 +273,6 @@ original input and a later terminal result. The preferred direction is:
   queue/turn lifecycle event or status record over preserving it as a normal
   produced brief.
 
-Until storage is changed, prompt rendering should continue to omit ordinary
-operator-input `Ack` briefs from `recent_turns` when the input and outcome are
-already visible, while retaining trace identifiers so the underlying stored
-record can still be recovered for debugging or migration.
+Prompt rendering omits `Ack` briefs from `recent_turns`. The underlying record
+remains durable runtime evidence when it exists, but it is no longer projected
+into model-facing turn history.

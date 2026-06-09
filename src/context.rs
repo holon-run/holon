@@ -393,7 +393,7 @@ pub fn build_context_with_default_external_ingress(
         &tools,
         current_message,
         current_work_item,
-        remaining_budget,
+        remaining_budget.min(config.turn_projection_budget()),
     ) {
         push_budgeted_section(
             &mut sections,
@@ -1329,6 +1329,7 @@ fn origin_label(origin: &MessageOrigin) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn trust_label(authority_class: &AuthorityClass) -> &'static str {
     match authority_class {
         AuthorityClass::OperatorInstruction => "trusted_operator",
@@ -1429,13 +1430,73 @@ fn render_recent_turn_input_line(message: &MessageEnvelope) -> String {
     }
 }
 
-fn render_recent_turn_brief_line(brief: &BriefRecord) -> String {
-    format!(
-        "    - {:?}: {} brief_ref=brief:{}",
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecentTurnProjectionMode {
+    Continuity,
+    Nearby,
+    Older,
+}
+
+fn render_recent_turn_brief_line(
+    brief: &BriefRecord,
+    mode: RecentTurnProjectionMode,
+    budget: usize,
+) -> Option<String> {
+    if brief.kind == crate::types::BriefKind::Ack {
+        return None;
+    }
+
+    let brief_ref = format!("brief:{}", sanitize_inline(&brief.id));
+    match mode {
+        RecentTurnProjectionMode::Continuity => {
+            render_continuity_brief_line(brief, &brief_ref, budget)
+        }
+        RecentTurnProjectionMode::Nearby => Some(format!(
+            "    - {:?}: {} brief_ref={}",
+            brief.kind,
+            sanitize_inline(&truncate_text(&brief.text.replace('\n', " "), 1200)),
+            brief_ref
+        )),
+        RecentTurnProjectionMode::Older => Some(format!(
+            "    - {:?}: {} brief_ref={}",
+            brief.kind,
+            sanitize_inline(&truncate_text(&brief.text.replace('\n', " "), 240)),
+            brief_ref
+        )),
+    }
+}
+
+fn render_continuity_brief_line(
+    brief: &BriefRecord,
+    brief_ref: &str,
+    budget: usize,
+) -> Option<String> {
+    let full = format!(
+        "    - {:?} full:\n{}\n      brief_ref={}",
         brief.kind,
-        sanitize_inline(&truncate_text(&brief.text, 160)),
-        sanitize_inline(&brief.id)
-    )
+        indent_block(&brief.text, 6),
+        brief_ref
+    );
+    if estimate_text_tokens(&full) <= budget {
+        return Some(full);
+    }
+
+    let prefix = format!("    - {:?} excerpt:\n", brief.kind);
+    let notice = format!("\n      [truncated; full via brief_ref={}]", brief_ref);
+    let rendered = truncate_section_content(
+        &prefix,
+        &indent_block(&brief.text, 6),
+        budget.max(64),
+        Some(&notice),
+    );
+    if rendered.contains("brief_ref=") {
+        Some(rendered)
+    } else {
+        Some(format!(
+            "    - {:?} excerpt: [truncated; full via brief_ref={}]",
+            brief.kind, brief_ref
+        ))
+    }
 }
 
 fn render_current_input_body_with_budget(
@@ -1851,21 +1912,33 @@ fn render_turn_records_with_budget(
                 .iter()
                 .find(|record| turn_record_matches_message(record, operator))
         })
-        .map(|record| record.turn_id.as_str());
-    let detailed_tool_turn_id = continuation_turn_id.map(ToOwned::to_owned).or_else(|| {
-        turn_records
-            .iter()
-            .rev()
-            .find(|record| continuation_turn_id.is_none_or(|turn_id| record.turn_id != turn_id))
-            .map(|record| record.turn_id.clone())
-    });
+        .map(|record| record.turn_id.clone());
+    let latest_previous_turn_id = turn_records
+        .iter()
+        .rev()
+        .map(|record| record.turn_id.clone())
+        .next();
+    let continuity_turn_id = continuation_turn_id
+        .clone()
+        .or_else(|| latest_previous_turn_id.clone());
+    let nearby_turn_ids = turn_records
+        .iter()
+        .rev()
+        .filter(|record| continuity_turn_id.as_deref() != Some(record.turn_id.as_str()))
+        .take(2)
+        .map(|record| record.turn_id.as_str())
+        .collect::<Vec<_>>();
 
     let mut rendered_turns = turn_records
         .iter()
-        .filter(|record| continuation_turn_id.is_none_or(|turn_id| record.turn_id != turn_id))
+        .filter(|record| continuation_turn_id.as_deref() != Some(record.turn_id.as_str()))
         .filter_map(|record| {
-            let detail_tools = detailed_tool_turn_id.as_deref() == Some(record.turn_id.as_str());
-            render_turn_record_projection(record, messages, briefs, tools, None, detail_tools)
+            let mode = recent_turn_projection_mode(
+                record,
+                continuity_turn_id.as_deref(),
+                &nearby_turn_ids,
+            );
+            render_turn_record_projection(record, messages, briefs, tools, None, mode, budget)
         })
         .collect::<Vec<_>>();
 
@@ -1882,7 +1955,7 @@ fn render_turn_records_with_budget(
                 briefs,
                 tools,
                 current_work_item,
-                true,
+                budget,
             ) {
                 rendered_turns.push(rendered);
             }
@@ -1896,13 +1969,28 @@ fn render_turn_records_with_budget(
     render_budgeted_lines("Recent turns:", rendered_turns, budget)
 }
 
+fn recent_turn_projection_mode(
+    record: &TurnRecord,
+    continuity_turn_id: Option<&str>,
+    nearby_turn_ids: &[&str],
+) -> RecentTurnProjectionMode {
+    if continuity_turn_id == Some(record.turn_id.as_str()) {
+        RecentTurnProjectionMode::Continuity
+    } else if nearby_turn_ids.contains(&record.turn_id.as_str()) {
+        RecentTurnProjectionMode::Nearby
+    } else {
+        RecentTurnProjectionMode::Older
+    }
+}
+
 fn render_turn_record_projection(
     record: &TurnRecord,
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
     tools: &[ToolExecutionRecord],
     continuation: Option<&MessageEnvelope>,
-    detail_tools: bool,
+    mode: RecentTurnProjectionMode,
+    budget: usize,
 ) -> Option<String> {
     let is_legacy_synthetic_record = record.turn_id.starts_with("legacy-");
     let trigger_message = record
@@ -1968,12 +2056,18 @@ fn render_turn_record_projection(
         lines.push(render_recent_turn_input_line(trigger_message));
     }
 
-    let related_briefs = record
+    let mut related_briefs = Vec::new();
+    let mut brief_budget = budget.saturating_sub(estimate_text_tokens(&lines.join("\n")));
+    for brief in record
         .produced_brief_ids
         .iter()
         .filter_map(|id| briefs.iter().find(|brief| brief.id == *id))
-        .map(render_recent_turn_brief_line)
-        .collect::<Vec<_>>();
+    {
+        if let Some(rendered) = render_recent_turn_brief_line(brief, mode, brief_budget) {
+            brief_budget = brief_budget.saturating_sub(estimate_text_tokens(&rendered));
+            related_briefs.push(rendered);
+        }
+    }
     if !related_briefs.is_empty() {
         lines.push("  - produced briefs:".to_string());
         lines.extend(related_briefs);
@@ -1986,20 +2080,11 @@ fn render_turn_record_projection(
         .collect::<Vec<_>>();
     if !related_tools.is_empty() {
         lines.push("  - tool executions:".to_string());
-        if detail_tools {
-            lines.extend(
-                related_tools
-                    .into_iter()
-                    .map(render_recent_tool_execution)
-                    .map(|tool| format!("    {tool}")),
-            );
-        } else {
-            lines.extend(
-                render_recent_tool_execution_rollup(&related_tools)
-                    .into_iter()
-                    .map(|tool| format!("    {tool}")),
-            );
-        }
+        lines.extend(
+            render_recent_tool_execution_rollup(&related_tools)
+                .into_iter()
+                .map(|tool| format!("    {tool}")),
+        );
     }
 
     Some(lines.join("\n"))
@@ -2013,7 +2098,7 @@ fn render_current_continuation_turn_record_projection(
     briefs: &[BriefRecord],
     tools: &[ToolExecutionRecord],
     current_work_item: Option<&WorkItemRecord>,
-    detail_tools: bool,
+    budget: usize,
 ) -> Option<String> {
     let mut rendered = render_turn_record_projection(
         record,
@@ -2021,7 +2106,8 @@ fn render_current_continuation_turn_record_projection(
         briefs,
         tools,
         Some(current_message),
-        detail_tools,
+        RecentTurnProjectionMode::Continuity,
+        budget,
     )?;
     let mut lines = vec![
         format!(
@@ -2248,7 +2334,6 @@ fn tool_execution_needs_old_turn_failure_count(record: &ToolExecutionRecord) -> 
 
 #[derive(Default)]
 struct BatchItemCounts {
-    total: usize,
     succeeded: usize,
     failed: usize,
     promoted: usize,
@@ -2262,10 +2347,7 @@ fn batch_item_counts(record: &ToolExecutionRecord) -> BatchItemCounts {
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or_default();
-    let mut counts = BatchItemCounts {
-        total,
-        ..BatchItemCounts::default()
-    };
+    let mut counts = BatchItemCounts::default();
     let Some(items) = tool_result_payload(record)
         .get("items")
         .and_then(Value::as_array)
@@ -2375,6 +2457,7 @@ fn render_recent_tool_execution_alert(record: &ToolExecutionRecord) -> String {
     parts.join(" ")
 }
 
+#[cfg(test)]
 fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
     let prefix = format!(
         "- [{}][{}] {} {}",
@@ -2426,7 +2509,7 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
                 format!(
                     "{prefix} tool_execution_id={} batch_items={} succeeded={} failed={} promoted={} unknown={} batch_cmds=[{}]",
                     record.id,
-                    counts.total,
+                    items.len(),
                     counts.succeeded,
                     counts.failed,
                     counts.promoted,
@@ -3191,7 +3274,10 @@ mod tests {
         assert!(recent_turns.contains("- Turn turn_index 3:"));
         assert!(recent_turns.contains("Hydrate this older turn input by id."));
         assert!(recent_turns.contains("Hydrated brief by turn record id."));
-        assert!(recent_turns.contains("hydrated tool execution by turn record id"));
+        assert!(recent_turns.contains(
+            "- summary: total=1 success=1 error=0 promoted=0 refs=[tool_execution:tool-hydrated:output]"
+        ));
+        assert!(!recent_turns.contains("hydrated tool execution by turn record id"));
     }
 
     #[test]
@@ -3581,7 +3667,10 @@ mod tests {
         assert!(recent_turns
             .content
             .contains("Updated benchmark summary reporting"));
-        assert!(recent_turns.content.contains("Verified with cargo test"));
+        assert!(recent_turns.content.contains(
+            "- summary: total=1 success=1 error=0 promoted=0 refs=[tool_execution:tool-1:output]"
+        ));
+        assert!(!recent_turns.content.contains("Verified with cargo test"));
         assert!(!built
             .sections
             .iter()
@@ -3925,8 +4014,11 @@ mod tests {
             "{recent_turns}"
         );
         assert!(!recent_turns.contains("older successful tool summary should be compacted"));
-        assert!(recent_turns.contains("newer detailed tool summary remains visible"));
-        assert!(recent_turns.contains("cmd_ref=tool_execution:tool-new-detail:cmd"));
+        assert!(!recent_turns.contains("newer detailed tool summary remains visible"));
+        assert!(!recent_turns.contains("cmd_ref=tool_execution:tool-new-detail:cmd"));
+        assert!(recent_turns.contains(
+            "- summary: total=1 success=1 error=0 promoted=0 refs=[tool_execution:tool-new-detail:output]"
+        ));
     }
 
     #[test]
@@ -4020,6 +4112,14 @@ mod tests {
             },
         );
         storage.append_message(&prior_message).unwrap();
+        let ack = BriefRecord::new(
+            "default",
+            BriefKind::Ack,
+            "Acknowledged the request. Queued work: previous request",
+            Some(prior_message.id.clone()),
+            None,
+        );
+        storage.append_brief(&ack).unwrap();
         let result = BriefRecord::new(
             "default",
             BriefKind::Result,
@@ -4030,7 +4130,7 @@ mod tests {
         storage.append_brief(&result).unwrap();
         let mut turn = TurnRecord::new("default", "turn-previous", 1);
         turn.input_message_ids = vec![prior_message.id.clone()];
-        turn.produced_brief_ids = vec![result.id.clone()];
+        turn.produced_brief_ids = vec![ack.id.clone(), result.id.clone()];
         turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
             &prior_message,
         ));
@@ -4073,6 +4173,9 @@ mod tests {
             .content
             .contains("Unique latest result content."));
         assert!(!recent_turns.content.contains("Acknowledged the request."));
+        assert!(!recent_turns
+            .content
+            .contains("Queued work: previous request"));
         assert!(!built
             .sections
             .iter()
@@ -4081,6 +4184,185 @@ mod tests {
             .sections
             .iter()
             .any(|section| section.name == "latest_result"));
+    }
+
+    #[test]
+    fn recent_turns_inlines_latest_result_beyond_old_preview_limit() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let tail = "latest-result-tail-visible-after-old-preview-limit";
+        let prior_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "derive the final principle".to_string(),
+            },
+        );
+        storage.append_message(&prior_message).unwrap();
+        let result = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            format!(
+                "{} {tail}",
+                "analysis before the final principle. ".repeat(10)
+            ),
+            Some(prior_message.id.clone()),
+            None,
+        );
+        storage.append_brief(&result).unwrap();
+        let mut turn = TurnRecord::new("default", "turn-latest-result-full", 1);
+        turn.input_message_ids = vec![prior_message.id.clone()];
+        turn.produced_brief_ids = vec![result.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &prior_message,
+        ));
+        storage.append_turn(&turn).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue".to_string(),
+            },
+        );
+        let context = build_context(
+            &storage,
+            &AgentState::new("default"),
+            &execution_snapshot_for(&AgentState::new("default")),
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                prompt_budget_estimated_tokens: 8192,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+        let recent_turns = context
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section")
+            .content
+            .clone();
+
+        assert!(recent_turns.contains("Result full:"));
+        assert!(recent_turns.contains(tail));
+        assert!(recent_turns.contains(&format!("brief_ref=brief:{}", result.id)));
+    }
+
+    #[test]
+    fn continuity_result_truncation_keeps_explicit_brief_ref() {
+        let message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "summarize the long result".to_string(),
+            },
+        );
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "long result body ".repeat(200),
+            Some(message.id.clone()),
+            None,
+        );
+        brief.id = "brief-long-continuity".into();
+        let mut turn = TurnRecord::new("default", "turn-long-continuity", 1);
+        turn.input_message_ids = vec![message.id.clone()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+
+        let rendered = render_turn_record_projection(
+            &turn,
+            &[message],
+            &[brief],
+            &[],
+            None,
+            RecentTurnProjectionMode::Continuity,
+            80,
+        )
+        .expect("turn should render");
+
+        assert!(rendered.contains("Result excerpt"));
+        assert!(rendered.contains("[truncated; full via brief_ref=brief:brief-long-continuity]"));
+    }
+
+    #[test]
+    fn nearby_turns_get_larger_result_previews_than_older_turns() {
+        let mut messages = Vec::new();
+        let mut briefs = Vec::new();
+        let mut turns = Vec::new();
+
+        for idx in 1..=4 {
+            let message = MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator { actor_id: None },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: format!("turn {idx} request"),
+                },
+            );
+            let tail = match idx {
+                1 => "older-tail-after-compact-preview",
+                2 => "nearby-two-tail-after-compact-preview",
+                3 => "nearby-one-tail-after-compact-preview",
+                _ => "continuity-tail-after-compact-preview",
+            };
+            let mut brief = BriefRecord::new(
+                "default",
+                BriefKind::Result,
+                format!("{} {tail}", "brief prefix. ".repeat(30)),
+                Some(message.id.clone()),
+                None,
+            );
+            brief.id = format!("brief-nearby-{idx}");
+            let mut turn = TurnRecord::new("default", format!("turn-nearby-{idx}"), idx);
+            turn.input_message_ids = vec![message.id.clone()];
+            turn.produced_brief_ids = vec![brief.id.clone()];
+            turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+            messages.push(message);
+            briefs.push(brief);
+            turns.push(turn);
+        }
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "new request".to_string(),
+            },
+        );
+
+        let rendered = render_turn_records_with_budget(
+            &turns,
+            &messages,
+            &briefs,
+            &[],
+            &current_message,
+            None,
+            20_000,
+        )
+        .expect("recent turns should render");
+
+        assert!(rendered.contains("continuity-tail-after-compact-preview"));
+        assert!(rendered.contains("nearby-one-tail-after-compact-preview"));
+        assert!(rendered.contains("nearby-two-tail-after-compact-preview"));
+        assert!(!rendered.contains("older-tail-after-compact-preview"));
     }
 
     #[test]
