@@ -316,14 +316,11 @@ mod tests {
             .iter()
             .find(|s| s.name == "tool_work_item_write")
             .expect("work item write section");
-        assert!(section.content.contains("durable work state"));
-        assert!(section.content.contains("genuinely separate work"));
         assert!(section
             .content
-            .contains("independent lifecycle and completion criteria"));
-        assert!(section.content.contains("not as a scratchpad"));
-        assert!(section.content.contains("transient current-turn plan"));
-        assert!(section.content.contains("default planning tool"));
+            .contains("after the planning contract says durable WorkItem state is warranted"));
+        assert!(section.content.contains("creates separate tracked work"));
+        assert!(section.content.contains("seeds plan_artifact.path"));
         assert!(section
             .content
             .contains("PickWorkItem makes an existing open item current"));
@@ -332,24 +329,24 @@ mod tests {
             .contains("lets the runtime record the continuation"));
         assert!(section
             .content
-            .contains("instead of you manually blocking the caller"));
+            .contains("instead of manually blocking the caller"));
+        assert!(section.content.contains("UpdateWorkItem changes objective"));
+        assert!(section
+            .content
+            .contains("CompleteWorkItem confirms the objective is actually complete"));
         assert!(section.content.contains("Reuse the current WorkItem"));
         assert!(section
             .content
-            .contains("Continuous discussion, planning threads"));
+            .contains("candidate issue screening, option comparison"));
         assert!(section.content.contains("candidate issue screening"));
-        assert!(section
-            .content
-            .contains("should normally update one WorkItem rather than create another"));
+        assert!(section.content.contains("normally update one WorkItem"));
         assert!(section.content.contains("edit plan_artifact.path directly"));
         assert!(section.content.contains("plan_status=ready"));
         assert!(section.content.contains("Use WaitFor, not UpdateWorkItem"));
         assert!(section
             .content
-            .contains("Update objective, plan_status, plan artifact, or todo_list"));
-        assert!(section
-            .content
-            .contains("material progress, verification, blockers"));
+            .contains("keep plan_artifact.path as durable prose"));
+        assert!(section.content.contains("use WaitFor(operator_input)"));
         assert!(!section
             .content
             .contains("use ApplyPatch first and update the work item afterward"));
@@ -458,38 +455,22 @@ mod tests {
             .contains("`workdir` is optional and usually should be omitted"));
         assert!(section
             .content
-            .contains("prefer a short relative path inside the workspace"));
+            .contains("preferably as a short relative path inside the workspace"));
         assert!(section
             .content
-            .contains("`yield_time_ms` is optional and defaults to 10_000 ms"));
+            .contains("`yield_time_ms` defaults to 10_000 ms"));
         assert!(section
             .content
-            .contains("Before setting `yield_time_ms`, ask whether"));
+            .contains("omit it unless intentionally changing"));
         assert!(section
             .content
-            .contains("do not dump large files with `cat`"));
-        assert!(section
-            .content
-            .contains("Do not repeat the same read command"));
-        assert!(section
-            .content
-            .contains("refresh only the smallest relevant slice"));
-        assert!(section
-            .content
-            .contains("After a successful command creates, rewrites, formats, or generates files"));
-        assert!(section
-            .content
-            .contains("rely on the command receipt first"));
-        assert!(section
-            .content
-            .contains("several short, bounded shell commands"));
-        assert!(section
-            .content
-            .contains("long-running, or uncertain-runtime"));
+            .contains("may need background task promotion"));
+        assert!(section.content.contains("several short bounded commands"));
+        assert!(section.content.contains("uncertain-runtime"));
         assert!(section.content.contains("Avoid repeated micro-commands"));
         assert!(section
             .content
-            .contains("readable text receipt instead of a raw JSON dump"));
+            .contains("Command receipts render structured results as readable text"));
         assert!(section.content.contains("Valid startup examples:"));
         assert!(section.content.contains("{ \"cmd\": \"rg -n"));
         assert!(section
@@ -500,24 +481,20 @@ mod tests {
             .contains("`status` is result/task metadata, not startup input"));
         assert!(section
             .content
-            .contains("Those are result fields, not valid startup input"));
-        assert!(section.content.contains("`disposition=promoted_to_task`"));
-        assert!(section
+            .contains("free-form commentary is not an ExecCommand field"));
+        assert!(!section
             .content
-            .contains("When output is truncated, refine the command"));
-        assert!(section
+            .contains("Before setting `yield_time_ms`, ask whether"));
+        assert!(!section
             .content
-            .contains("TaskOutput only when you need bounded output retrieval"));
-        assert!(section
+            .contains("Do not repeat the same read command"));
+        assert!(!section
             .content
             .contains("for ordinary completion waiting, call WaitFor"));
-        assert!(section.content.contains("resource set to the task id"));
+        assert!(!section.content.contains("`disposition=promoted_to_task`"));
         assert!(section
             .content
-            .contains("multiple independent long-running commands"));
-        assert!(section
-            .content
-            .contains("each command needs its own task handle"));
+            .contains("If output is truncated, refine the command"));
     }
 
     #[test]
@@ -534,26 +511,36 @@ mod tests {
             .find(|s| s.name == "tool_exec_command_batch")
             .expect("exec command batch section");
         assert!(section.content.contains("short, bounded shell commands"));
-        assert!(section.content.contains("runs items sequentially"));
-        assert!(section.content.contains("Do not pass `tty`"));
+        assert!(section.content.contains("run sequentially"));
+        assert!(section
+            .content
+            .contains("restricted ExecCommand startup fields"));
+        assert!(section
+            .content
+            .contains("top-level values act as defaults and item values take precedence"));
         assert!(section.content.contains("defaults to 30_000 ms"));
-        assert!(section.content.contains("Top-level `workdir`"));
+        assert!(section
+            .content
+            .contains("set it only when intentionally changing"));
         assert!(section
             .content
             .contains("does not promote timed-out items into managed command tasks"));
-        assert!(section.content.contains("omit it by default"));
         assert!(section.content.contains("grouped receipt"));
         assert!(section
             .content
-            .contains("long-running, has uncertain runtime"));
+            .contains("long-running, uncertain-runtime, interactive"));
         assert!(section
             .content
-            .contains("For multiple independent long-running commands"));
-        assert!(section.content.contains("shell-level `&`"));
+            .contains("unstructured shell separator scripts"));
         assert!(section
             .content
-            .contains("call WaitFor with `reason`, `wake=task_result`, and `resource=<task_id>`"));
-        assert!(section.content.contains("rather than polling"));
+            .contains("because `tty` and `accepts_input`"));
+        assert!(!section.content.contains("shell-level `&`"));
+        assert!(section
+            .content
+            .contains("use ExecCommand for long or uncertain runtime"));
+        assert!(!section.content.contains("call WaitFor"));
+        assert!(!section.content.contains("rather than polling"));
     }
 
     #[test]

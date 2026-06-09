@@ -509,6 +509,11 @@ fn build_system_sections(
             "Read before changing. When analyzing a project, describe the current structure before recommending changes. When changing code, keep edits as small and local as possible, but use ApplyPatch as the default file-mutation primitive instead of shell rewrite tricks or whole-file rewrites. Avoid redundant tool calls once you already have enough evidence to act. Do not re-read files, AGENTS guidance, or command output already present in the current context unless a concrete changed-state question requires it.".to_string(),
         ),
         section(
+            "tool_use_contract",
+            PromptStability::Stable,
+            "Tool startup input must contain only fields from that tool's input schema. Do not pass result metadata such as status, disposition, task_handle, truncation flags, previews, commentary, or prior tool receipts as startup fields. Treat structured tool results as evidence and use the smallest next tool call that answers the remaining question. Do not repeat reads, output fetches, or broad searches when current context already contains the needed evidence; refresh only the smallest relevant slice for a concrete changed-state question. For background command tasks or child task handles, use WaitFor(wake=task_result, resource=<task_id>) when ordinary completion is the only thing left; use task output/status tools only for active supervision or bounded current-turn inspection.".to_string(),
+        ),
+        section(
             "engineering_guardrails",
             PromptStability::Stable,
             "Fix the problem at the most semantic or root-cause layer you can justify, rather than stacking post-fix normalization or other symptom-only patches when a cleaner contract or state-transition repair is available. Keep changes focused on the requested task; do not broaden scope to unrelated fixes or speculative cleanup. When adding or updating verification, prefer real build or test targets that the repository or CI would actually run over ad hoc scratch scripts. Do not leave temporary artifacts, binary outputs, or throwaway test files in the final patch. Add examples only when they compile and match the intended public contract. When choosing between data-shape options, prefer the one that keeps the internal model aligned with the user-facing contract when reasonable.".to_string(),
@@ -534,9 +539,9 @@ fn build_system_sections(
             "When the operator provides an external reference or another indirect task entry point, resolve only the minimum context needed to identify the task scope, acceptance target, relevant files or systems, and local conventions before making high-commitment changes. If that missing context can be obtained with available local or network tools, do so proactively; a failed first lookup does not by itself mean the task is blocked. Once those concrete execution facts are known, stop expanding context and make the smallest viable change, run the relevant verification, or report the specific blocker. Continue exploring only when one concrete missing fact still blocks editing, verification, or a grounded answer. If context may have changed because another command, patch, formatter, or user edit touched the file, refresh only the smallest relevant slice before the next edit.".to_string(),
         ),
         section(
-            "progress_reporting",
+            "reporting_contract",
             PromptStability::Stable,
-            "Prefer durable action over narration. If progress, intent, or state can be expressed by the actual artifact, tool call, code change, test result, work item objective, work item plan, todo list, or final deliverable, do that instead of describing it in assistant text. Use progress text only to keep the operator oriented when the next action would otherwise be opaque. For non-trivial tasks, keep the operator informed with concise progress updates at meaningful boundaries, but do not turn progress updates into mini reports. Before tool calls, use at most 1-2 short sentences that state the immediate action and why it is useful now. Do not include full reasoning, historical recap, hypothesis trees, implementation plans, or broad status reports in pre-tool progress text. After a cluster of related reads or searches, summarize only when the material state changed or when the next action would otherwise be unclear. Keep the summary limited to confirmed facts and the next bounded action. Do not restate known context. If a previous assistant or result brief already answered the same question, do not repeat it; only add newly discovered facts, corrections, or the next concrete action. If code, docs, diffs, tool output, or logs already express the detail, do not restate that detail at length in natural language. Before file mutation, briefly state the intended change in one sentence. Do not explain the full design unless the operator explicitly asked for analysis. When changing strategy, explain only the concrete trigger for the change and the next bounded action. Do not re-derive the whole task. After a tool failure, do not write a broad explanation. Use the tool-specific failure receipt to choose the smallest recovery action, state that action briefly if needed, then proceed. Do not emit filler updates or repeat progress updates when no material state changed. When a tool call is the next useful action, include the progress update in the same assistant response as that tool call rather than stopping after commentary.".to_string(),
+            "Prefer durable action over narration. Use progress text only to orient the operator when the next action would otherwise be opaque, especially before file mutation, long-running commands, or strategy changes. Before tool calls, use at most 1-2 short sentences that state the immediate action and why it is useful now; do not include full reasoning, historical recap, hypothesis trees, or broad status reports. After reads, searches, or tool failures, summarize only when material state changed or the next action would otherwise be unclear, and keep it to confirmed facts plus the next bounded action. Do not restate known context, prior reports, or details already expressed by code, diffs, tool output, logs, WorkItems, plans, or tests. When the task is satisfied and relevant verification is known, deliver the result instead of continuing low-value exploration. Final delivery should be concise and user-facing: lead with the outcome, mention changed behavior or relevant files, root cause or rationale when useful, and verification status including skipped or failed checks. Match structure to task complexity; avoid fixed templates, boilerplate, complete process replay, and weak endings such as only saying done.".to_string(),
         ),
         section(
             "exploration_discipline",
@@ -567,21 +572,6 @@ fn build_system_sections(
             "verification",
             PromptStability::Stable,
             "If you change code or commands affect the workspace, run a relevant verification step before finishing when a local verification path exists. Report verification failures honestly.".to_string(),
-        ),
-        section(
-            "completion",
-            PromptStability::Stable,
-            "After you have satisfied the task and obtained a relevant successful verification signal, default to final delivery instead of continuing low-value exploration. Do not keep reading or searching just to gain extra confidence once you already have enough evidence to report a grounded result. Continue only when a concrete unmet condition remains.".to_string(),
-        ),
-        section(
-            "reporting",
-            PromptStability::Stable,
-            "The final response should be user-facing: summarize what you found or changed, give the root cause when relevant, and mention verification status succinctly. Do not replay the full analysis process or repeat prior reports; include only what the operator needs to know now. When you are ready to finish, provide that summary before ending the turn.".to_string(),
-        ),
-        section(
-            "long_task_delivery",
-            PromptStability::Stable,
-            "For coding tasks that make changes, final delivery should be concise, self-contained, and useful to the operator without requiring them to inspect the workspace. Lead with the outcome. Mention the changed behavior or relevant files, rationale or root cause, and verification status when they are useful to understand the result; always call out skipped or failed verification. Match the structure to the task complexity: simple changes can be one short paragraph; larger changes can use compact bullets. Avoid fixed headings, boilerplate, or otherwise making the report feel like a template; avoid weak completions like 'done' or 'completed'.".to_string(),
         ),
         section(
             "execution_environment_contract",
@@ -1371,6 +1361,35 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_includes_tool_use_contract() {
+        let sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("."),
+            &LoadedAgentsMd::default(),
+            &SkillsRuntimeView::default(),
+            &[],
+        );
+        let section = sections
+            .iter()
+            .find(|section| section.name == "tool_use_contract")
+            .expect("tool use contract section");
+
+        assert!(section
+            .content
+            .contains("Tool startup input must contain only fields from that tool's input schema"));
+        assert!(section.content.contains("Do not pass result metadata"));
+        assert!(section
+            .content
+            .contains("Treat structured tool results as evidence"));
+        assert!(section.content.contains("Do not repeat reads"));
+        assert!(section.content.contains("WaitFor(wake=task_result"));
+        assert!(section
+            .content
+            .contains("only for active supervision or bounded current-turn inspection"));
+    }
+
+    #[test]
     fn system_prompt_includes_context_completion_principle() {
         let sections = build_system_sections(
             &sample_identity(),
@@ -1401,7 +1420,7 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_includes_progress_reporting_rules() {
+    fn system_prompt_includes_reporting_contract() {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
@@ -1412,28 +1431,35 @@ mod tests {
         );
         let section = sections
             .iter()
-            .find(|section| section.name == "progress_reporting")
-            .expect("progress reporting section");
+            .find(|section| section.name == "reporting_contract")
+            .expect("reporting contract section");
 
         assert!(section
             .content
             .contains("Prefer durable action over narration"));
         assert!(section.content.contains("at most 1-2 short sentences"));
-        assert!(section.content.contains("mini reports"));
         assert!(section.content.contains("full reasoning"));
         assert!(section.content.contains("material state changed"));
         assert!(section
             .content
-            .contains("previous assistant or result brief"));
+            .contains("Do not restate known context, prior reports"));
         assert!(section
             .content
-            .contains("code, docs, diffs, tool output, or logs"));
-        assert!(section.content.contains("Before file mutation"));
-        assert!(section.content.contains("tool-specific failure receipt"));
-        assert!(section.content.contains("Do not emit filler updates"));
+            .contains("code, diffs, tool output, logs, WorkItems, plans, or tests"));
         assert!(section
             .content
-            .contains("same assistant response as that tool call"));
+            .contains("When the task is satisfied and relevant verification is known"));
+        assert!(section.content.contains("Final delivery should be concise"));
+        assert!(section.content.contains("verification status"));
+        assert!(section.content.contains("avoid fixed templates"));
+        assert!(!sections
+            .iter()
+            .any(|section| section.name == "progress_reporting"));
+        assert!(!sections.iter().any(|section| section.name == "completion"));
+        assert!(!sections.iter().any(|section| section.name == "reporting"));
+        assert!(!sections
+            .iter()
+            .any(|section| section.name == "long_task_delivery"));
     }
 
     #[test]
@@ -1594,7 +1620,7 @@ mod tests {
     }
 
     #[test]
-    fn long_task_delivery_discourages_fixed_report_template() {
+    fn reporting_contract_discourages_fixed_report_template() {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
@@ -1605,19 +1631,19 @@ mod tests {
         );
         let section = sections
             .iter()
-            .find(|section| section.name == "long_task_delivery")
-            .expect("long task delivery section");
+            .find(|section| section.name == "reporting_contract")
+            .expect("reporting contract section");
 
-        assert!(section.content.contains("Lead with the outcome"));
+        assert!(section.content.contains("lead with the outcome"));
         assert!(section
             .content
-            .contains("always call out skipped or failed verification"));
+            .contains("verification status including skipped or failed checks"));
         assert!(section
             .content
-            .contains("Match the structure to the task complexity"));
+            .contains("Match structure to task complexity"));
         assert!(section
             .content
-            .contains("making the report feel like a template"));
+            .contains("avoid fixed templates, boilerplate, complete process replay"));
         assert!(!section
             .content
             .contains("what changed / why / verification"));
