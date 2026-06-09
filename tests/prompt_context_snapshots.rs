@@ -464,7 +464,9 @@ Recent turns:
   - trigger: trusted operator input
   - operator input: Run the focused prompt projection test.
   - produced briefs:
-    - Result: Focused prompt projection test passed. brief_ref=brief:brief_focused_prompt_projection
+    - Result full:
+      Focused prompt projection test passed.
+      brief_ref=brief:brief_focused_prompt_projection
 
 ## current_input
 Current input:
@@ -603,9 +605,11 @@ Recent turns:
   - continuation trigger: a task-result continuation
   - operator input: Run cargo test runtime_flow and report back.
   - produced briefs:
-    - Result: Captured completion report promotion. brief_ref=brief:brief_completion_report_promotion
+    - Result full:
+      Captured completion report promotion.
+      brief_ref=brief:brief_completion_report_promotion
   - tool executions:
-    - [trusted_system][success] ExecCommand Run command: cargo test runtime_flow tool_execution_id=tool_exec_1
+    - summary: total=1 success=1 error=0 promoted=0 refs=[tool_execution:tool_exec_1:output]
   - current relation: a task-result continuation
   - current input: Command task completed successfully: cargo test runtime_flow
   - current work item: work_runtime_flow :: Track runtime flow
@@ -1827,7 +1831,6 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         None,
     ))?;
 
-    let tool_summary = "Run command: cargo test -q --test prompt_context_snapshots";
     storage.append_tool_execution(&ToolExecutionRecord {
         id: "tool_context_eval".into(),
         agent_id: "default".into(),
@@ -1842,7 +1845,7 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         status: ToolExecutionStatus::Success,
         input: json!({ "cmd": "cargo test -q --test prompt_context_snapshots" }),
         output: json!({ "exit_status": 0 }),
-        summary: tool_summary.into(),
+        summary: "Run command: cargo test -q --test prompt_context_snapshots".into(),
         invocation_surface: Some("commentary".into()),
     })?;
 
@@ -1924,7 +1927,8 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
     assert!(current_work_item.contains("[in_progress] Inspect diagnostics and duplicate ratios"));
     assert!(recent_turns.contains("fact alpha visible"));
     assert!(recent_turns.contains("fact beta remains visible"));
-    assert!(recent_turns.contains(tool_summary));
+    assert!(recent_turns.contains("tool_execution:tool_context_eval:output"));
+    assert!(!recent_turns.contains("Run command: cargo test -q --test prompt_context_snapshots"));
     assert!(current_input.contains("fact gamma is still available"));
     assert!(!recent_turns.contains("Plan artifact:"));
     assert!(!recent_turns.contains("[in_progress] Inspect diagnostics and duplicate ratios"));
