@@ -1966,7 +1966,7 @@ fn render_turn_records_with_budget(
         return None;
     }
 
-    render_budgeted_lines("Recent turns:", rendered_turns, budget)
+    render_budgeted_recent_turns("Recent turns:", rendered_turns, budget)
 }
 
 fn recent_turn_projection_mode(
@@ -2522,6 +2522,7 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
     }
 }
 
+#[cfg(test)]
 fn render_budgeted_lines(heading: &str, lines: Vec<String>, budget: usize) -> Option<String> {
     if lines.is_empty() {
         return None;
@@ -2536,6 +2537,46 @@ fn render_budgeted_lines(heading: &str, lines: Vec<String>, budget: usize) -> Op
         }
         used += cost;
         selected.push(line);
+    }
+
+    if selected.is_empty() {
+        return None;
+    }
+
+    selected.reverse();
+    Some(format!("{heading}\n{}", selected.join("\n")))
+}
+
+fn render_budgeted_recent_turns(
+    heading: &str,
+    turns: Vec<String>,
+    budget: usize,
+) -> Option<String> {
+    if turns.is_empty() {
+        return None;
+    }
+
+    let mut selected = Vec::new();
+    let mut used = estimate_text_tokens(heading) + 1;
+    for turn in turns.into_iter().rev() {
+        let cost = estimate_text_tokens(&turn);
+        if used + cost > budget {
+            if selected.is_empty() {
+                let remaining = budget.saturating_sub(used);
+                let truncated = truncate_section_content(
+                    "",
+                    &turn,
+                    remaining,
+                    Some("\n[truncated recent turn; use visible refs for full evidence]"),
+                );
+                if !truncated.trim().is_empty() {
+                    selected.push(truncated);
+                }
+            }
+            break;
+        }
+        used += cost;
+        selected.push(turn);
     }
 
     if selected.is_empty() {
@@ -4295,6 +4336,24 @@ mod tests {
 
         assert!(rendered.contains("Result excerpt"));
         assert!(rendered.contains("[truncated; full via brief_ref=brief:brief-long-continuity]"));
+    }
+
+    #[test]
+    fn oversized_latest_recent_turn_is_truncated_instead_of_dropped() {
+        let rendered = render_budgeted_recent_turns(
+            "Recent turns:",
+            vec![format!(
+                "- Turn turn-over-budget:\n  - produced briefs:\n    - Result excerpt: keep this continuity anchor brief_ref=brief:over-budget\n  - tool executions:\n{}",
+                "    - summary: total=1 success=1 error=0 promoted=0 refs=[tool_execution:tool-over-budget:output]\n".repeat(80)
+            )],
+            140,
+        )
+        .expect("oversized latest turn should still render as a truncated continuity anchor");
+
+        assert!(rendered.contains("Recent turns:"));
+        assert!(rendered.contains("- Turn turn-over-budget:"));
+        assert!(rendered.contains("brief_ref=brief:over-budget"));
+        assert!(rendered.contains("[truncated recent turn; use visible refs for full evidence]"));
     }
 
     #[test]
