@@ -12,7 +12,7 @@
   },
   "tools": [
     {
-      "description": "Record an explicit wait condition and yield the current turn. Use wake=task_result with resource=<task_id> when waiting for a background task, wake=external with optional resource=<external object such as a URL or github:owner/repo#id> when waiting for outside state, or wake=operator_input when waiting for the operator. Optional recheck_after_ms records a fallback recheck deadline. If there is a current open work item, WaitFor attaches to it and marks it waiting; otherwise it records an agent-level wait.",
+      "description": "Record an explicit wait condition and yield the current turn. Use wake=task_result with resource=<task_id> when waiting for a background task, wake=external with optional resource=<external object such as a URL or github:owner/repo#id> when waiting for outside state, or wake=operator_input when waiting for the operator. Optional recheck_after_ms records a fallback recheck deadline. If there is a current open work item, WaitFor attaches to it and marks it waiting; otherwise it records an agent-level wait.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -65,7 +65,7 @@
       "stability": "stable"
     },
     {
-      "description": "Read the current agent-plane summary, including identity visibility, ownership, profile preset, lifecycle, active work focus, waiting state, and visible child-agent lineage.",
+      "description": "Read the current agent-plane summary, including identity visibility, ownership, profile preset, lifecycle, active work focus, waiting state, and visible child-agent lineage.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -87,7 +87,7 @@
       "stability": "stable"
     },
     {
-      "description": "Enqueue a follow-up message into the current agent.",
+      "description": "Enqueue a follow-up message into the current agent.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -128,7 +128,7 @@
       "stability": "stable"
     },
     {
-      "description": "Spawn a delegated agent from a small preset surface. Use `initial_message` as the single caller text field: it is required for the default `private_child` preset and optional for `public_named`. Legacy caller text fields such as `summary`, `prompt`, `task_summary`, and `work_item` are not accepted. The default `private_child` preset returns `agent_id` plus a supervising `task_handle`; `public_named` requires `agent_id` and returns only `agent_id`.",
+      "description": "Spawn a delegated agent from a small preset surface. Use `initial_message` as the single caller text field: it is required for the default `private_child` preset and optional for `public_named`. Legacy caller text fields such as `summary`, `prompt`, `task_summary`, and `work_item` are not accepted. The default `private_child` preset returns `agent_id` plus a supervising `task_handle`; `public_named` requires `agent_id` and returns only `agent_id`.\n",
       "family": "agent_creation",
       "freeform_grammar": null,
       "input_schema": {
@@ -287,7 +287,7 @@
       "stability": "stable"
     },
     {
-      "description": "List active tasks with bounded output.",
+      "description": "List active tasks with bounded output.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -320,7 +320,7 @@
       "stability": "stable"
     },
     {
-      "description": "Read a specific task lifecycle snapshot by id.",
+      "description": "Read a specific task lifecycle snapshot by id.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -349,7 +349,7 @@
       "stability": "stable"
     },
     {
-      "description": "Send input to a managed task handle. Command tasks accept stdin or tty text here when they were created for interactive continuation, and parent-supervised child handles accept bounded follow-up input on the same surface.",
+      "description": "Send input to a managed task handle. Command tasks accept stdin or tty text here when they were created for interactive continuation, and parent-supervised child handles accept bounded follow-up input on the same surface.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -382,7 +382,7 @@
       "stability": "stable"
     },
     {
-      "description": "Read background task output and optionally wait for task completion.",
+      "description": "Read background task output and optionally wait for task completion.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -425,7 +425,7 @@
       "stability": "stable"
     },
     {
-      "description": "Stop a currently running background task by id. command_task may first enter cancelling before the final cancelled result arrives.",
+      "description": "Stop a currently running background task by id. command_task may first enter cancelling before the final cancelled result arrives.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -454,7 +454,7 @@
       "stability": "stable"
     },
     {
-      "description": "List configured/discovered model providers. By default unavailable providers are omitted; set include_unavailable=true to inspect blocked options.",
+      "description": "List configured/discovered model providers. By default unavailable providers are omitted; set include_unavailable=true to inspect blocked options.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -480,7 +480,7 @@
       "stability": "stable"
     },
     {
-      "description": "List selectable models for a provider. By default unavailable models are omitted; set include_unavailable=true only to inspect blocked models and unavailability reasons. Use provider from ListModelProviders; cursor is a model_ref returned by a previous page.",
+      "description": "List selectable models for a provider. By default unavailable models are omitted; set include_unavailable=true only to inspect blocked models and unavailability reasons. Use provider from ListModelProviders; cursor is a model_ref returned by a previous page.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -527,7 +527,7 @@
       "stability": "stable"
     },
     {
-      "description": "Create a new open work item for a genuinely separate objective with an independent lifecycle. Optional plan seeds the work item's AgentHome plan.md artifact; edit that file directly for later plan changes. Use todo_list only for progress checklist items. Continuous discussion, planning, candidate screening, and option comparison should usually update the current work item instead. Do not create a new work item just to refine, narrow, or switch candidates inside the current task; use UpdateWorkItem.objective, UpdateWorkItem.plan_status, and UpdateWorkItem.todo_list for state updates.",
+      "description": "Create a new open work item for a genuinely separate objective with an independent lifecycle. Optional plan seeds the work item's AgentHome plan.md artifact; edit that file directly for later plan changes. Use todo_list only for progress checklist items. Continuous discussion, planning, candidate screening, and option comparison should usually update the current work item instead. Do not create a new work item just to refine, narrow, or switch candidates inside the current task; use UpdateWorkItem.objective, UpdateWorkItem.plan_status, and UpdateWorkItem.todo_list for state updates.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -603,7 +603,7 @@
       "stability": "stable"
     },
     {
-      "description": "Make an existing open work item the current work-item focus for this agent. Include reason when switching away from runnable current work; blocked work items may be picked for inspection but remain non-runnable.",
+      "description": "Make an existing open work item the current work-item focus for this agent. Include reason when switching away from runnable current work; blocked work items may be picked for inspection but remain non-runnable.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -639,7 +639,7 @@
       "stability": "stable"
     },
     {
-      "description": "Read one work item by id, including its lifecycle view, current focus flag, plan artifact descriptor, bounded plan preview, and optional todo_list.",
+      "description": "Read one work item by id, including its lifecycle view, current focus flag, plan artifact descriptor, bounded plan preview, and optional todo_list.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -672,7 +672,7 @@
       "stability": "stable"
     },
     {
-      "description": "List recent work items with explicit current, open, completed, queued, blocked, waiting_for_operator, and runnable views. Use this before relying on memory briefs for work-item focus.",
+      "description": "List recent work items with explicit current, open, completed, queued, blocked, waiting_for_operator, and runnable views. Use this before relying on memory briefs for work-item focus.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -727,7 +727,7 @@
       "stability": "stable"
     },
     {
-      "description": "Update mutable state fields for an existing work item. Use objective to refine the short target, plan_status for planning state, and todo_list to replace the full progress checklist snapshot. Use WaitFor, not UpdateWorkItem, to mark task, external, or operator waits. Edit the plan_artifact.path file directly for plan body changes.",
+      "description": "Update mutable state fields for an existing work item. Use objective to refine the short target, plan_status for planning state, and todo_list to replace the full progress checklist snapshot. Use WaitFor, not UpdateWorkItem, to mark task, external, or operator waits. Edit the plan_artifact.path file directly for plan body changes.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -803,7 +803,7 @@
       "stability": "stable"
     },
     {
-      "description": "Mark an open work item completed. Write the operator-facing completion report as assistant text in the same round; the runtime promotes that text after this tool succeeds.",
+      "description": "Mark an open work item completed. Write the operator-facing completion report as assistant text in the same round; the runtime promotes that text after this tool succeeds.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -832,7 +832,7 @@
       "stability": "stable"
     },
     {
-      "description": "Search Holon memory sources, including agent memory markdown and runtime evidence. Normal workspace markdown is not included. Each result includes an opaque source_ref that can be copied verbatim to MemoryGet.",
+      "description": "Search Holon memory sources, including agent memory markdown and runtime evidence. Normal workspace markdown is not included. Each result includes an opaque source_ref that can be copied verbatim to MemoryGet.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -872,7 +872,7 @@
       "stability": "stable"
     },
     {
-      "description": "Fetch exact bounded Holon memory content by a source_ref copied verbatim from MemorySearch results or from runtime prompt refs such as brief_ref/cmd_ref/stdout_ref/stderr_ref/output_ref. Do not invent source_ref values or use MemoryGet for skill paths, file paths, or URLs.",
+      "description": "Fetch exact bounded Holon memory content by a source_ref copied verbatim from MemorySearch results or from runtime prompt refs such as brief_ref/cmd_ref/stdout_ref/stderr_ref/output_ref. Do not invent source_ref values or use MemoryGet for skill paths, file paths, or URLs.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -909,7 +909,7 @@
       "stability": "stable"
     },
     {
-      "description": "Apply a unified diff patch across one or more files. Call the JSON/function tool with exactly {\"patch\":\"--- a/path\\n+++ b/path\\n@@ ...\"}; do not use the Codex *** Begin Patch DSL as the advertised format.",
+      "description": "Apply a unified diff patch across one or more files. Call the JSON/function tool with exactly {\"patch\":\"--- a/path\\n+++ b/path\\n@@ ...\"}; do not use the Codex *** Begin Patch DSL as the advertised format.\n",
       "family": "local_environment",
       "freeform_grammar": null,
       "input_schema": {
@@ -937,7 +937,7 @@
       "stability": "stable"
     },
     {
-      "description": "Start a shell command inside the workspace. Valid startup input uses `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `duplicate_policy`, `accepts_input`, `yield_time_ms`, and `max_output_tokens`; do not pass result or task metadata such as `status` or `task_handle`. `duplicate_policy` defaults to `reuse_running` and `yield_time_ms` defaults to 10_000 ms when omitted; set it only when intentionally changing the foreground wait window. Short commands return immediately; long non-interactive commands become command_task automatically.",
+      "description": "Start a shell command inside the workspace. Valid startup input uses `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `duplicate_policy`, `accepts_input`, `yield_time_ms`, and `max_output_tokens`; do not pass result or task metadata such as `status` or `task_handle`. `duplicate_policy` defaults to `reuse_running` and `yield_time_ms` defaults to 10_000 ms when omitted; set it only when intentionally changing the foreground wait window. Short commands return immediately; long non-interactive commands become command_task automatically.\n",
       "family": "local_environment",
       "freeform_grammar": null,
       "input_schema": {
@@ -1020,7 +1020,7 @@
       "stability": "stable"
     },
     {
-      "description": "Run a bounded sequential batch of short ExecCommand-like startup requests and return one grouped receipt. Use ExecCommandBatch for short, predictable commands only; use ExecCommand directly for long or uncertain runtime so it can promote into a managed command_task. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Top-level workdir, shell, login, yield_time_ms, and max_output_tokens act as defaults for items that omit those fields. Per-item yield_time_ms defaults to 30_000 ms when no item or top-level value is provided; set it only when intentionally changing that item's foreground wait window. Do not use non-command tools inside the batch.",
+      "description": "Run a bounded sequential batch of short ExecCommand-like startup requests and return one grouped receipt. Use ExecCommandBatch for short, predictable commands only; use ExecCommand directly for long or uncertain runtime so it can promote into a managed command_task. Each item supports cmd plus optional workdir, shell, login, yield_time_ms, and max_output_tokens. Top-level workdir, shell, login, yield_time_ms, and max_output_tokens act as defaults for items that omit those fields. Per-item yield_time_ms defaults to 30_000 ms when no item or top-level value is provided; set it only when intentionally changing that item's foreground wait window. Do not use non-command tools inside the batch.\n",
       "family": "local_environment",
       "freeform_grammar": null,
       "input_schema": {
@@ -1135,7 +1135,7 @@
       "stability": "stable"
     },
     {
-      "description": "Make a workspace active. Provide exactly one of `path` or `workspace_id`: use `path` to discover, attach, and activate a project directory; use `workspace_id` to switch to a known workspace, including `agent_home` for the built-in fallback workspace. Shell `cd` does not change this active workspace for ApplyPatch or future commands.",
+      "description": "Make a workspace active. Provide exactly one of `path` or `workspace_id`: use `path` to discover, attach, and activate a project directory; use `workspace_id` to switch to a known workspace, including `agent_home` for the built-in fallback workspace. Shell `cd` does not change this active workspace for ApplyPatch or future commands.\n",
       "family": "local_environment",
       "freeform_grammar": null,
       "input_schema": {
@@ -1193,7 +1193,7 @@
       "stability": "stable"
     },
     {
-      "description": "Fetch a specific http or https URL through Holon's web policy, extract readable text, wrap it as untrusted external content, and return provenance including final URL, status, content type, truncation, and hash.",
+      "description": "Fetch a specific http or https URL through Holon's web policy, extract readable text, wrap it as untrusted external content, and return provenance including final URL, status, content type, truncation, and hash.\n",
       "family": "web",
       "freeform_grammar": null,
       "input_schema": {
@@ -1238,7 +1238,7 @@
       "stability": "experimental"
     },
     {
-      "description": "Search the web through Holon's web provider registry and return structured results and citations. Use WebFetch after search when full page content is needed.",
+      "description": "Search the web through Holon's web provider registry and return structured results and citations. Use WebFetch after search when full page content is needed.\n",
       "family": "web",
       "freeform_grammar": null,
       "input_schema": {
