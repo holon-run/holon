@@ -1440,6 +1440,8 @@ pub enum WorkingMemoryUpdateReason {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkingMemoryDelta {
+    #[serde(default)]
+    pub agent_id: String,
     pub from_revision: u64,
     pub to_revision: u64,
     pub created_at_turn: u64,

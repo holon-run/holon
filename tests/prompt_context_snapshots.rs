@@ -692,6 +692,7 @@ fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Resu
         ..WorkingMemorySnapshot::default()
     };
     session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
+        agent_id: "default".into(),
         from_revision: 2,
         to_revision: 3,
         created_at_turn: 4,
@@ -1270,6 +1271,7 @@ fn callback_with_active_work_and_delta() -> Result<()> {
         ..WorkingMemorySnapshot::default()
     };
     session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
+        agent_id: "default".into(),
         from_revision: 5,
         to_revision: 6,
         created_at_turn: 12,
@@ -1545,6 +1547,7 @@ fn post_compaction_snapshot_preserves_continuity() -> Result<()> {
         ..WorkingMemorySnapshot::default()
     };
     session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
+        agent_id: "default".into(),
         from_revision: 7,
         to_revision: 8,
         created_at_turn: 15,
@@ -1698,6 +1701,7 @@ fn task_result_with_multiple_work_items() -> Result<()> {
         ..WorkingMemorySnapshot::default()
     };
     session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
+        agent_id: "default".into(),
         from_revision: 3,
         to_revision: 4,
         created_at_turn: 8,

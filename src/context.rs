@@ -2654,7 +2654,7 @@ mod tests {
     #[test]
     fn recent_turns_prefers_db_turn_records_when_available() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
@@ -2734,7 +2734,7 @@ mod tests {
     #[test]
     fn recent_turns_keeps_db_turn_when_trigger_message_is_outside_window() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
@@ -2810,7 +2810,7 @@ mod tests {
     #[test]
     fn recent_turns_hydrates_turn_record_references_outside_recent_windows() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
@@ -3810,6 +3810,7 @@ mod tests {
             ..WorkingMemorySnapshot::default()
         };
         session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
+            agent_id: "default".into(),
             from_revision: 0,
             to_revision: 1,
             created_at_turn: 1,
@@ -5462,6 +5463,7 @@ mod tests {
             ..WorkingMemorySnapshot::default()
         };
         session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
+            agent_id: "default".into(),
             from_revision: 1,
             to_revision: 2,
             created_at_turn: 2,
@@ -5573,6 +5575,7 @@ mod tests {
             ..WorkingMemorySnapshot::default()
         };
         session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
+            agent_id: "default".into(),
             from_revision: 4,
             to_revision: 5,
             created_at_turn: 7,

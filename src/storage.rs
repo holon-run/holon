@@ -167,6 +167,7 @@ pub struct RecoverySnapshot {
 #[derive(Debug, Clone)]
 pub struct AppStorage {
     data_dir: PathBuf,
+    agent_id: Option<String>,
     events_path: PathBuf,
     briefs_path: PathBuf,
     messages_path: PathBuf,
@@ -224,6 +225,28 @@ pub struct PollActivityMarker {
 impl AppStorage {
     pub fn new(data_dir: impl Into<PathBuf>) -> Result<Self> {
         let data_dir = data_dir.into();
+        let agent_id = infer_agent_id_from_data_dir(&data_dir);
+        Self::new_with_scope(data_dir, agent_id)
+    }
+
+    pub fn new_for_agent(
+        data_dir: impl Into<PathBuf>,
+        agent_id: impl Into<String>,
+    ) -> Result<Self> {
+        let agent_id = agent_id.into();
+        anyhow::ensure!(
+            !agent_id.trim().is_empty(),
+            "agent-scoped storage requires a non-empty agent id"
+        );
+        Self::new_with_scope(data_dir, Some(agent_id))
+    }
+
+    pub fn new_global(data_dir: impl Into<PathBuf>) -> Result<Self> {
+        Self::new_with_scope(data_dir, None)
+    }
+
+    fn new_with_scope(data_dir: impl Into<PathBuf>, agent_id: Option<String>) -> Result<Self> {
+        let data_dir = data_dir.into();
         fs::create_dir_all(&data_dir)
             .with_context(|| format!("failed to create {}", data_dir.display()))?;
         let runtime_dir = data_dir.join(RUNTIME_DIR);
@@ -247,6 +270,7 @@ impl AppStorage {
         let transcript_seq_counter = max_jsonl_u64_field(&transcript_path, "transcript_seq")?;
 
         Ok(Self {
+            agent_id,
             events_path,
             briefs_path: ledger_dir.join("briefs.jsonl"),
             messages_path,
@@ -345,24 +369,7 @@ impl AppStorage {
     }
 
     pub(crate) fn current_agent_id(&self) -> Result<Option<String>> {
-        if let Some(agent) = self.read_agent_file()? {
-            return Ok(Some(agent.id));
-        }
-        let parent_is_agents_dir = self
-            .data_dir
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            == Some("agents");
-        if !parent_is_agents_dir {
-            return Ok(None);
-        }
-        Ok(self
-            .data_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .map(ToString::to_string))
+        Ok(self.agent_id.clone())
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -684,11 +691,12 @@ impl AppStorage {
     }
 
     pub fn append_working_memory_delta(&self, record: &WorkingMemoryDelta) -> Result<()> {
+        let record = self.working_memory_delta_for_scope(record)?;
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.working_memory_deltas().upsert(record)?;
+            runtime_db.working_memory_deltas().upsert(&record)?;
             return Ok(());
         }
-        self.append_jsonl(&self.working_memory_deltas_path, record)
+        self.append_jsonl(&self.working_memory_deltas_path, &record)
     }
 
     pub fn append_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
@@ -837,10 +845,39 @@ impl AppStorage {
     }
 
     fn storage_agent_id(&self) -> Result<String> {
-        Ok(self.current_agent_id()?.unwrap_or_else(|| "unknown".into()))
+        self.agent_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("agent-scoped storage operation requires an agent id"))
+    }
+
+    fn working_memory_delta_for_scope(
+        &self,
+        record: &WorkingMemoryDelta,
+    ) -> Result<WorkingMemoryDelta> {
+        let agent_id = self.storage_agent_id()?;
+        if record.agent_id.is_empty() {
+            let mut record = record.clone();
+            record.agent_id = agent_id;
+            return Ok(record);
+        }
+        anyhow::ensure!(
+            record.agent_id == agent_id,
+            "agent-scoped storage for `{}` cannot use working memory delta for `{}`",
+            agent_id,
+            record.agent_id
+        );
+        Ok(record.clone())
     }
 
     pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
+        if let Some(storage_agent_id) = self.agent_id.as_deref() {
+            anyhow::ensure!(
+                agent.id == storage_agent_id,
+                "agent-scoped storage for `{}` cannot write agent state for `{}`",
+                storage_agent_id,
+                agent.id
+            );
+        }
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.agent_states().upsert(agent)?;
         }
@@ -1138,6 +1175,12 @@ impl AppStorage {
 
     pub fn read_recent_tasks(&self, limit: usize) -> Result<Vec<TaskRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return Ok(take_recent(
+                    runtime_db.tasks().latest_for_agent(&agent_id, limit)?,
+                    limit,
+                ));
+            }
             return Ok(take_recent(runtime_db.tasks().latest_all()?, limit));
         }
         read_recent_jsonl(&self.tasks_path, limit)
@@ -1145,6 +1188,12 @@ impl AppStorage {
 
     pub fn read_recent_work_items(&self, limit: usize) -> Result<Vec<WorkItemRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return Ok(take_recent(
+                    runtime_db.work_items().latest_for_agent(&agent_id, limit)?,
+                    limit,
+                ));
+            }
             return Ok(take_recent(runtime_db.work_items().latest_all()?, limit));
         }
         read_recent_jsonl(&self.work_items_path, limit)
@@ -1167,6 +1216,11 @@ impl AppStorage {
         limit: usize,
     ) -> Result<Vec<WorkItemDelegationRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .work_item_delegations()
+                    .recent_for_agent(&agent_id, limit);
+            }
             return runtime_db.work_item_delegations().recent(limit);
         }
         read_recent_jsonl(&self.work_item_delegations_path, limit)
@@ -1174,6 +1228,9 @@ impl AppStorage {
 
     pub fn read_recent_timers(&self, limit: usize) -> Result<Vec<TimerRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db.timers().recent_for_agent(&agent_id, limit);
+            }
             return runtime_db.timers().recent(limit);
         }
         read_recent_jsonl(&self.timers_path, limit)
@@ -1207,6 +1264,9 @@ impl AppStorage {
 
     pub fn read_recent_turns(&self, limit: usize) -> Result<Vec<TurnRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db.turn_records().recent_for_agent(&agent_id, limit);
+            }
             return runtime_db.turn_records().recent(limit);
         }
         read_recent_jsonl(&self.turns_path, limit)
@@ -1236,6 +1296,11 @@ impl AppStorage {
 
     pub fn read_recent_wait_conditions(&self, limit: usize) -> Result<Vec<WaitConditionRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .wait_conditions()
+                    .recent_for_agent(&agent_id, limit);
+            }
             return runtime_db.wait_conditions().recent(limit);
         }
         read_recent_jsonl(&self.wait_conditions_path, limit)
@@ -1290,13 +1355,24 @@ impl AppStorage {
         limit: usize,
     ) -> Result<Vec<WorkingMemoryDelta>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db.working_memory_deltas().recent(limit);
+            return runtime_db
+                .working_memory_deltas()
+                .recent_for_agent(&self.storage_agent_id()?, limit);
         }
-        read_recent_jsonl(&self.working_memory_deltas_path, limit)
+        let records = read_recent_jsonl(&self.working_memory_deltas_path, limit)?;
+        records
+            .into_iter()
+            .map(|record| self.working_memory_delta_for_scope(&record))
+            .collect()
     }
 
     pub fn read_recent_context_episodes(&self, limit: usize) -> Result<Vec<ContextEpisodeRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .context_episodes()
+                    .recent_for_agent(&agent_id, limit);
+            }
             return runtime_db.context_episodes().recent(limit);
         }
         read_recent_jsonl(&self.context_episodes_path, limit)
@@ -1341,6 +1417,14 @@ impl AppStorage {
 
     pub fn latest_task_records_from_recent(&self, history_limit: usize) -> Result<Vec<TaskRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return Ok(take_recent(
+                    runtime_db
+                        .tasks()
+                        .latest_for_agent(&agent_id, history_limit)?,
+                    history_limit,
+                ));
+            }
             return Ok(take_recent(runtime_db.tasks().latest_all()?, history_limit));
         }
         let records = self.read_recent_tasks(history_limit)?;
@@ -1361,6 +1445,9 @@ impl AppStorage {
 
     pub fn latest_active_task_records(&self, limit: usize) -> Result<Vec<TaskRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db.tasks().active_for_agent(&agent_id, limit);
+            }
             return Ok(take_recent(
                 runtime_db
                     .tasks()
@@ -2282,6 +2369,22 @@ fn memory_index_agent_key(agent_id: &str) -> String {
         .collect()
 }
 
+fn infer_agent_id_from_data_dir(data_dir: &Path) -> Option<String> {
+    let parent_is_agents_dir = data_dir
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        == Some("agents");
+    if !parent_is_agents_dir {
+        return None;
+    }
+    data_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+}
+
 fn migrate_events_ledger(path: &Path) -> Result<u64> {
     if !path.exists() {
         return Ok(0);
@@ -3119,7 +3222,7 @@ mod tests {
     #[test]
     fn runtime_db_state_writes_skip_live_jsonl_after_cutover() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
@@ -3337,7 +3440,8 @@ mod tests {
     #[test]
     fn append_turn_uses_runtime_db_after_cutover_without_turns_jsonl() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -3361,6 +3465,185 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn read_recent_turns_scopes_global_runtime_db_to_current_agent() {
+        let dir = tempdir().unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            dir.path().join("state/runtime.sqlite"),
+            dir.path().join("state/runtime.lock"),
+        )
+        .unwrap();
+        let agent_a = AppStorage::new(dir.path().join("agents/agent-a")).unwrap();
+        let agent_b = AppStorage::new(dir.path().join("agents/agent-b")).unwrap();
+        agent_a
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+        agent_b
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+
+        agent_a
+            .append_turn(&TurnRecord::new("agent-a", "turn-a", 1))
+            .unwrap();
+        agent_b
+            .append_turn(&TurnRecord::new("agent-b", "turn-b", 2))
+            .unwrap();
+
+        let turns = agent_a.read_recent_turns(10).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].agent_id, "agent-a");
+        assert_eq!(turns[0].turn_id, "turn-a");
+    }
+
+    #[test]
+    fn agent_local_runtime_db_reads_scope_current_state_domains_to_current_agent() {
+        let dir = tempdir().unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            dir.path().join("state/runtime.sqlite"),
+            dir.path().join("state/runtime.lock"),
+        )
+        .unwrap();
+        let agent_a = AppStorage::new(dir.path().join("agents/agent-a")).unwrap();
+        let agent_b = AppStorage::new(dir.path().join("agents/agent-b")).unwrap();
+        agent_a
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+        agent_b
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        let now = Utc::now();
+        let task_for = |agent_id: &str, id: &str| TaskRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some(id.into()),
+            detail: None,
+            recovery: None,
+        };
+        let timer_for = |agent_id: &str, id: &str| TimerRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            created_at: now,
+            duration_ms: 1000,
+            interval_ms: None,
+            repeat: false,
+            status: crate::types::TimerStatus::Active,
+            summary: Some(id.into()),
+            next_fire_at: Some(now),
+            last_fired_at: None,
+            fire_count: 0,
+        };
+        let wait_for = |agent_id: &str, id: &str| WaitConditionRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            work_item_id: None,
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Operator,
+            source: None,
+            subject_ref: None,
+            waiting_for: id.into(),
+            wake_sources: Vec::new(),
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        };
+        let episode_for = |agent_id: &str, id: &str| ContextEpisodeRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            workspace_id: "agent_home".into(),
+            created_at: now,
+            finalized_at: now,
+            start_turn_index: 1,
+            end_turn_index: 2,
+            start_message_count: 1,
+            end_message_count: 2,
+            boundary_reason: EpisodeBoundaryReason::TaskRejoined,
+            current_work_item_id: None,
+            objective: None,
+            work_summary: None,
+            scope_hints: Vec::new(),
+            source_turn_ids: Vec::new(),
+            source_refs: Vec::new(),
+            generated_by: None,
+            operator_intents: Vec::new(),
+            runtime_facts: Vec::new(),
+            task_results: Vec::new(),
+            unresolved_items: Vec::new(),
+            model_inferences: Vec::new(),
+            summary: id.into(),
+            working_set_files: Vec::new(),
+            commands: Vec::new(),
+            verification: Vec::new(),
+            decisions: Vec::new(),
+            carry_forward: Vec::new(),
+            waiting_on: Vec::new(),
+        };
+
+        agent_a.append_task(&task_for("agent-a", "task-a")).unwrap();
+        agent_b.append_task(&task_for("agent-b", "task-b")).unwrap();
+        agent_a
+            .append_work_item(&WorkItemRecord::new(
+                "agent-a",
+                "work-a",
+                WorkItemState::Open,
+            ))
+            .unwrap();
+        agent_b
+            .append_work_item(&WorkItemRecord::new(
+                "agent-b",
+                "work-b",
+                WorkItemState::Open,
+            ))
+            .unwrap();
+        agent_a
+            .append_timer(&timer_for("agent-a", "timer-a"))
+            .unwrap();
+        agent_b
+            .append_timer(&timer_for("agent-b", "timer-b"))
+            .unwrap();
+        agent_a
+            .append_wait_condition(&wait_for("agent-a", "wait-a"))
+            .unwrap();
+        agent_b
+            .append_wait_condition(&wait_for("agent-b", "wait-b"))
+            .unwrap();
+        agent_a
+            .append_context_episode(&episode_for("agent-a", "episode-a"))
+            .unwrap();
+        agent_b
+            .append_context_episode(&episode_for("agent-b", "episode-b"))
+            .unwrap();
+
+        assert_eq!(agent_a.read_recent_tasks(10).unwrap()[0].id, "task-a");
+        assert_eq!(
+            agent_a.latest_active_task_records(10).unwrap()[0].id,
+            "task-a"
+        );
+        assert_eq!(
+            agent_a.read_recent_work_items(10).unwrap()[0].agent_id,
+            "agent-a"
+        );
+        assert_eq!(agent_a.read_recent_timers(10).unwrap()[0].id, "timer-a");
+        assert_eq!(
+            agent_a.read_recent_wait_conditions(10).unwrap()[0].id,
+            "wait-a"
+        );
+        assert_eq!(
+            agent_a.read_recent_context_episodes(10).unwrap()[0].id,
+            "episode-a"
         );
     }
 
@@ -3467,7 +3750,7 @@ mod tests {
     #[test]
     fn runtime_db_evidence_writes_skip_live_jsonl_after_cutover() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
@@ -3528,7 +3811,7 @@ mod tests {
     #[test]
     fn runtime_db_memory_episode_and_delegation_writes_skip_live_jsonl_after_cutover() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -3538,13 +3821,10 @@ mod tests {
             .enable_scheduler_control_plane_db(runtime_db)
             .unwrap();
 
-        let delegation = WorkItemDelegationRecord::new(
-            "parent-agent",
-            "parent-work",
-            "child-agent",
-            "child-work",
-        );
+        let delegation =
+            WorkItemDelegationRecord::new("default", "parent-work", "child-agent", "child-work");
         let memory_delta = WorkingMemoryDelta {
+            agent_id: "default".into(),
             from_revision: 1,
             to_revision: 2,
             created_at_turn: 7,
@@ -4035,7 +4315,7 @@ mod tests {
     #[test]
     fn write_agent_with_runtime_db_keeps_legacy_agent_json_export_current() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
@@ -4077,6 +4357,89 @@ mod tests {
 
         let restored = storage.read_agent().unwrap().unwrap();
         assert_eq!(restored.status, AgentStatus::Stopped);
+    }
+
+    #[test]
+    fn current_agent_id_is_fixed_at_storage_construction() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "agent-a").unwrap();
+
+        storage.write_agent(&AgentState::new("agent-a")).unwrap();
+        let mismatch = storage
+            .write_agent(&AgentState::new("agent-b"))
+            .unwrap_err();
+
+        assert_eq!(
+            storage.current_agent_id().unwrap().as_deref(),
+            Some("agent-a")
+        );
+        assert!(
+            mismatch
+                .to_string()
+                .contains("cannot write agent state for `agent-b`"),
+            "{mismatch}"
+        );
+    }
+
+    #[test]
+    fn global_storage_has_no_agent_scope_even_with_agent_json() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_global(dir.path()).unwrap();
+
+        storage.write_agent(&AgentState::new("default")).unwrap();
+
+        assert_eq!(storage.current_agent_id().unwrap(), None);
+    }
+
+    #[test]
+    fn db_backed_working_memory_deltas_are_scoped_to_current_agent() {
+        let dir = tempdir().unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            dir.path().join("state/runtime.sqlite"),
+            dir.path().join("state/runtime.lock"),
+        )
+        .unwrap();
+        let agent_a =
+            AppStorage::new_for_agent(dir.path().join("agents/agent-a"), "agent-a").unwrap();
+        let agent_b =
+            AppStorage::new_for_agent(dir.path().join("agents/agent-b"), "agent-b").unwrap();
+        agent_a
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+        agent_b
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        let delta_a = WorkingMemoryDelta {
+            agent_id: "agent-a".into(),
+            from_revision: 0,
+            to_revision: 1,
+            created_at_turn: 1,
+            reason: WorkingMemoryUpdateReason::TerminalTurnCompleted,
+            changed_fields: vec!["plan".into()],
+            summary_lines: vec!["agent-a plan changed".into()],
+        };
+        let delta_b = WorkingMemoryDelta {
+            agent_id: "agent-b".into(),
+            from_revision: 0,
+            to_revision: 1,
+            created_at_turn: 1,
+            reason: WorkingMemoryUpdateReason::TaskRejoined,
+            changed_fields: vec!["waiting_on".into()],
+            summary_lines: vec!["agent-b wait changed".into()],
+        };
+
+        agent_a.append_working_memory_delta(&delta_a).unwrap();
+        agent_b.append_working_memory_delta(&delta_b).unwrap();
+
+        assert_eq!(
+            agent_a.read_recent_working_memory_deltas(10).unwrap(),
+            vec![delta_a]
+        );
+        assert_eq!(
+            agent_b.read_recent_working_memory_deltas(10).unwrap(),
+            vec![delta_b]
+        );
     }
 
     #[test]
@@ -4181,7 +4544,7 @@ mod tests {
     #[test]
     fn mark_memory_index_dirty_does_not_rewrite_existing_marker() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let dirty_path = storage.indexes_dir().join("memory.default.dirty");
 
@@ -5751,7 +6114,7 @@ mod tests {
     #[test]
     fn db_backed_work_queue_prompt_projection_filters_by_current_agent() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),

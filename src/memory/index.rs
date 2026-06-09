@@ -1744,9 +1744,8 @@ fn todo_item_state_label(state: crate::types::TodoItemState) -> &'static str {
 fn storage_agent_id(storage: &AppStorage) -> String {
     storage
         .current_agent_id()
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "unknown".into())
+        .expect("failed to read storage agent scope")
+        .unwrap_or_else(|| "global".into())
 }
 
 fn file_updated_at(path: &Path) -> DateTime<Utc> {

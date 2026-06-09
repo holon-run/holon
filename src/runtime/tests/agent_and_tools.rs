@@ -1288,6 +1288,7 @@ async fn interactive_turn_keeps_pending_working_memory_delta_when_prompt_omits_i
         guard.state.working_memory.working_memory_revision = 5;
         guard.state.working_memory.pending_working_memory_delta =
             Some(crate::types::WorkingMemoryDelta {
+                agent_id: "default".into(),
                 from_revision: 4,
                 to_revision: 5,
                 created_at_turn: 7,

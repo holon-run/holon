@@ -271,7 +271,7 @@ pub(crate) fn clear_persisted_daemon_lifecycle_failures(config: &AppConfig) -> R
 }
 
 fn latest_public_runtime_failure(config: &AppConfig) -> Result<Option<RuntimeFailureSummary>> {
-    let host_storage = AppStorage::new(config.home_dir.join("host"))?;
+    let host_storage = AppStorage::new_global(config.home_dir.join("host"))?;
     let mut latest = None;
     for identity in host_storage
         .latest_agent_identities()?
@@ -281,7 +281,10 @@ fn latest_public_runtime_failure(config: &AppConfig) -> Result<Option<RuntimeFai
                 && record.visibility == AgentVisibility::Public
         })
     {
-        let storage = AppStorage::new(config.agent_root_dir().join(&identity.agent_id))?;
+        let storage = AppStorage::new_for_agent(
+            config.agent_root_dir().join(&identity.agent_id),
+            identity.agent_id.clone(),
+        )?;
         let failure = storage
             .read_agent()?
             .and_then(|agent| agent.last_runtime_failure);
