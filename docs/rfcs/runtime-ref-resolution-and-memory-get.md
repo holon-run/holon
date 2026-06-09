@@ -2,6 +2,7 @@
 title: RFC: Runtime Ref Resolution and MemoryGet
 date: 2026-06-10
 status: draft
+Handle: rfc-runtime-ref-resolution-and-memory-get
 ---
 
 # RFC: Runtime Ref Resolution and MemoryGet
