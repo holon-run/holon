@@ -3535,7 +3535,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        wait_for_brief_count(&runtime, 2).await;
+        wait_for_brief_count(&runtime, 1).await;
 
         host.shutdown().await.unwrap();
 
@@ -3562,7 +3562,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        wait_for_brief_count(&runtime2, 4).await;
+        wait_for_brief_count(&runtime2, 2).await;
 
         let final_state = runtime2.agent_state().await.unwrap();
         assert_ne!(final_state.status, AgentStatus::Stopped);
@@ -3686,7 +3686,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        wait_for_brief_count(&started, 2).await;
+        wait_for_brief_count(&started, 1).await;
 
         let agents = host.inner.agents.read().await;
         let entry = agents.get(&agent_id).expect("expected live runtime entry");
@@ -3697,8 +3697,12 @@ mod tests {
         drop(agents);
 
         let briefs = started.storage().read_recent_briefs(10).unwrap();
-        assert!(briefs.iter().any(|brief| brief.text.contains("start me")));
         assert!(briefs.iter().any(|brief| brief.text.contains("done")));
+        let events = started.storage().read_recent_events(100).unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "message_acknowledged"
+                && event.data["summary"].as_str() == Some("Queued work: start me")
+        }));
     }
 
     #[test]

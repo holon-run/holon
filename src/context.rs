@@ -4020,14 +4020,6 @@ mod tests {
             },
         );
         storage.append_message(&prior_message).unwrap();
-        let ack = BriefRecord::new(
-            "default",
-            BriefKind::Ack,
-            "Acknowledged the request.",
-            Some(prior_message.id.clone()),
-            None,
-        );
-        storage.append_brief(&ack).unwrap();
         let result = BriefRecord::new(
             "default",
             BriefKind::Result,
@@ -4038,7 +4030,7 @@ mod tests {
         storage.append_brief(&result).unwrap();
         let mut turn = TurnRecord::new("default", "turn-previous", 1);
         turn.input_message_ids = vec![prior_message.id.clone()];
-        turn.produced_brief_ids = vec![ack.id.clone(), result.id.clone()];
+        turn.produced_brief_ids = vec![result.id.clone()];
         turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
             &prior_message,
         ));
@@ -4080,7 +4072,7 @@ mod tests {
         assert!(recent_turns
             .content
             .contains("Unique latest result content."));
-        assert!(recent_turns.content.contains("Acknowledged the request."));
+        assert!(!recent_turns.content.contains("Acknowledged the request."));
         assert!(!built
             .sections
             .iter()

@@ -1,6 +1,17 @@
-use crate::types::{BriefKind, BriefRecord, MessageEnvelope};
+use crate::types::{AuditEvent, BriefKind, BriefRecord, MessageEnvelope};
 
 pub const QUEUED_WORK_ACK_PREFIX: &str = "Queued work: ";
+
+pub fn make_acknowledgement_event(message: &MessageEnvelope) -> AuditEvent {
+    AuditEvent::new(
+        "message_acknowledged",
+        serde_json::json!({
+            "agent_id": &message.agent_id,
+            "message_id": &message.id,
+            "summary": format!("{QUEUED_WORK_ACK_PREFIX}{}", preview_message(message)),
+        }),
+    )
+}
 
 pub fn make_ack(agent_id: &str, message: &MessageEnvelope) -> BriefRecord {
     let preview = preview_message(message);

@@ -194,7 +194,7 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
         if let Some(child) = summary.active_children.iter().find(|child| {
             child.identity.delegated_from_task_id.as_deref() == Some(task.id.as_str())
         }) {
-            if child.observability.last_progress_brief.is_some() {
+            if matches!(child.observability.phase, ChildAgentPhase::Running) {
                 saw_child_summary = true;
                 assert_eq!(child.identity.kind, AgentKind::Child);
                 assert_eq!(child.identity.parent_agent_id.as_deref(), Some("default"));
@@ -202,7 +202,6 @@ pub async fn subagent_task_updates_parent_state_and_child_summary_during_lifecyc
                     child.identity.delegated_from_task_id.as_deref(),
                     Some(task.id.as_str())
                 );
-                assert_eq!(child.observability.phase, ChildAgentPhase::Running);
                 assert!(child.observability.last_result_brief.is_none());
                 break;
             }
@@ -317,8 +316,7 @@ pub async fn subagent_task_status_exposes_live_and_terminal_child_observability(
             Ok(matches!(
                 child.phase,
                 ChildAgentPhase::Running | ChildAgentPhase::Waiting
-            ) && child.last_progress_brief.is_some()
-                && snapshot.child_agent_id.is_some())
+            ) && snapshot.child_agent_id.is_some())
         }
     })
     .await?;

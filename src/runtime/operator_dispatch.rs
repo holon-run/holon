@@ -17,8 +17,9 @@ impl RuntimeHandle {
         )
         .await?;
         self.record_incoming_transcript_entry(message)?;
-        let ack = brief::make_ack(&message.agent_id, message);
-        self.persist_brief(&ack).await?;
+        self.inner
+            .storage
+            .append_event(&brief::make_acknowledgement_event(message))?;
         let context_build_started = std::time::Instant::now();
         let identity = self.agent_identity_view().await?;
         let default_external_ingress = self

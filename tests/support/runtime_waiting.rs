@@ -111,10 +111,9 @@ pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> R
     }));
 
     let briefs = runtime.recent_briefs(10).await?;
-    assert!(briefs.iter().any(|brief| {
+    assert!(!briefs.iter().any(|brief| {
         brief.kind == BriefKind::Ack
             && brief.related_message_id.as_deref() == Some(message.id.as_str())
-            && brief.text == "Queued work: exercise the turn boundary"
     }));
     assert!(briefs.iter().any(|brief| {
         brief.kind == BriefKind::Result
@@ -122,7 +121,12 @@ pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> R
             && brief.text == "turn boundary result"
     }));
 
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(100).await?;
+    assert!(events.iter().any(|event| {
+        event.kind == "message_acknowledged"
+            && event.data["message_id"].as_str() == Some(message.id.as_str())
+            && event.data["summary"].as_str() == Some("Queued work: exercise the turn boundary")
+    }));
     let terminal_event = events
         .iter()
         .find(|event| event.kind == "turn_terminal")
@@ -151,13 +155,20 @@ pub async fn message_processing_creates_briefs_and_sleeps() -> Result<()> {
             text: "hello".into(),
         },
     );
-    runtime.enqueue(message).await?;
+    runtime.enqueue(message.clone()).await?;
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
     let briefs = runtime.recent_briefs(10).await?;
-    assert_eq!(briefs.len(), 2);
-    assert_eq!(briefs[0].text, "Queued work: hello");
-    assert_eq!(briefs[1].text, "stub result");
+    assert_eq!(briefs.len(), 1);
+    assert_eq!(briefs[0].kind, BriefKind::Result);
+    assert_eq!(briefs[0].text, "stub result");
+
+    let events = runtime.recent_events(100).await?;
+    assert!(events.iter().any(|event| {
+        event.kind == "message_acknowledged"
+            && event.data["message_id"].as_str() == Some(message.id.as_str())
+            && event.data["summary"].as_str() == Some("Queued work: hello")
+    }));
 
     let session = runtime.agent_state().await?;
     assert_eq!(session.status, AgentStatus::Asleep);
@@ -197,20 +208,25 @@ pub async fn terminal_brief_uses_last_assistant_message_without_terminal_deliver
     .await?;
 
     let briefs = runtime.recent_briefs(10).await?;
-    assert_eq!(briefs.len(), 2);
-    assert_eq!(briefs[0].text, "Queued work: write and verify a file");
+    assert_eq!(briefs.len(), 1);
+    assert_eq!(briefs[0].kind, BriefKind::Result);
     assert_eq!(
-        briefs[1].text,
+        briefs[0].text,
         "Verification is complete. I'll package the final answer now."
     );
     assert!(
-        !briefs[1]
+        !briefs[0]
             .text
             .contains("Let me create a summary document of what was changed."),
         "persisted result brief should come from the terminal turn, not a tool-round preamble: {}",
-        briefs[1].text
+        briefs[0].text
     );
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(100).await?;
+    assert!(events.iter().any(|event| {
+        event.kind == "message_acknowledged"
+            && event.data["message_id"].as_str() == Some(message.id.as_str())
+            && event.data["summary"].as_str() == Some("Queued work: write and verify a file")
+    }));
     let terminal_event = events
         .iter()
         .find(|event| event.kind == "turn_terminal")
@@ -533,7 +549,7 @@ pub async fn multi_session_state_is_isolated() -> Result<()> {
     let a = host.get_or_create_agent("alpha").await?;
     let b = host.get_or_create_agent("beta").await?;
 
-    a.enqueue(MessageEnvelope::new(
+    let alpha_message = MessageEnvelope::new(
         "alpha",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
@@ -542,9 +558,9 @@ pub async fn multi_session_state_is_isolated() -> Result<()> {
         MessageBody::Text {
             text: "alpha".into(),
         },
-    ))
-    .await?;
-    b.enqueue(MessageEnvelope::new(
+    );
+    a.enqueue(alpha_message.clone()).await?;
+    let beta_message = MessageEnvelope::new(
         "beta",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
@@ -553,16 +569,29 @@ pub async fn multi_session_state_is_isolated() -> Result<()> {
         MessageBody::Text {
             text: "beta".into(),
         },
-    ))
-    .await?;
+    );
+    b.enqueue(beta_message.clone()).await?;
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
     let alpha_briefs = a.recent_briefs(10).await?;
     let beta_briefs = b.recent_briefs(10).await?;
-    assert_eq!(alpha_briefs.len(), 2);
-    assert_eq!(beta_briefs.len(), 2);
+    assert_eq!(alpha_briefs.len(), 1);
+    assert_eq!(beta_briefs.len(), 1);
     assert_eq!(alpha_briefs[0].agent_id, "alpha");
     assert_eq!(beta_briefs[0].agent_id, "beta");
+
+    let alpha_events = a.recent_events(100).await?;
+    let beta_events = b.recent_events(100).await?;
+    assert!(alpha_events.iter().any(|event| {
+        event.kind == "message_acknowledged"
+            && event.data["message_id"].as_str() == Some(alpha_message.id.as_str())
+            && event.data["summary"].as_str() == Some("Queued work: alpha")
+    }));
+    assert!(beta_events.iter().any(|event| {
+        event.kind == "message_acknowledged"
+            && event.data["message_id"].as_str() == Some(beta_message.id.as_str())
+            && event.data["summary"].as_str() == Some("Queued work: beta")
+    }));
     Ok(())
 }
 
