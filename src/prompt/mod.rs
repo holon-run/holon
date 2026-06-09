@@ -541,7 +541,7 @@ fn build_system_sections(
         section(
             "reporting_contract",
             PromptStability::Stable,
-            "Prefer durable action over narration. Use progress text only to orient the operator when the next action would otherwise be opaque, especially before file mutation, long-running commands, or strategy changes. Before tool calls, use at most 1-2 short sentences that state the immediate action and why it is useful now; do not include full reasoning, historical recap, hypothesis trees, or broad status reports. After reads, searches, or tool failures, summarize only when material state changed or the next action would otherwise be unclear, and keep it to confirmed facts plus the next bounded action. Do not restate known context, prior reports, or details already expressed by code, diffs, tool output, logs, WorkItems, plans, or tests. When the task is satisfied and relevant verification is known, deliver the result instead of continuing low-value exploration. Final delivery should be concise and user-facing: lead with the outcome, mention changed behavior or relevant files, root cause or rationale when useful, and verification status including skipped or failed checks. Match structure to task complexity; avoid fixed templates, boilerplate, complete process replay, and weak endings such as only saying done.".to_string(),
+            "Prefer durable action over narration. Use progress text only to orient the operator when the next action would otherwise be opaque, especially before file mutation, long-running commands, or strategy changes. Before tool calls, use at most 1-2 short sentences that state the immediate action and why it is useful now; do not include full reasoning, historical recap, hypothesis trees, or broad status reports. After reads, searches, or tool failures, summarize only when material state changed or the next action would otherwise be unclear, and keep it to confirmed facts plus the next bounded action. Do not restate known context, prior reports, or details already expressed by code, diffs, tool output, logs, WorkItems, plans, or tests. Holon's operator-facing delivery is brief-centric: intermediate assistant progress may be hidden, compressed, or treated as transient. Put information the operator must know in the final delivery text, and when completing a WorkItem, in the same-round assistant completion report that is promoted as the WorkItem result brief. Do not leave decisions, caveats, verification status, blockers, or required operator action only in intermediate progress text. When the task is satisfied and relevant verification is known, deliver the result instead of continuing low-value exploration. Final delivery should be concise and user-facing: lead with the outcome, mention changed behavior or relevant files, root cause or rationale when useful, and verification status including skipped or failed checks. Match structure to task complexity; avoid fixed templates, boilerplate, complete process replay, and weak endings such as only saying done.".to_string(),
         ),
         section(
             "exploration_discipline",
@@ -1449,6 +1449,18 @@ mod tests {
         assert!(section
             .content
             .contains("When the task is satisfied and relevant verification is known"));
+        assert!(section
+            .content
+            .contains("operator-facing delivery is brief-centric"));
+        assert!(section
+            .content
+            .contains("intermediate assistant progress may be hidden"));
+        assert!(section
+            .content
+            .contains("promoted as the WorkItem result brief"));
+        assert!(section
+            .content
+            .contains("required operator action only in intermediate progress text"));
         assert!(section.content.contains("Final delivery should be concise"));
         assert!(section.content.contains("verification status"));
         assert!(section.content.contains("avoid fixed templates"));
