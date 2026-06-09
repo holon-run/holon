@@ -4677,10 +4677,13 @@ fn repair_unreleased_working_memory_delta_scope(connection: &mut Connection) -> 
         return Ok(());
     }
 
+    let backup_table =
+        next_legacy_backup_table_name(connection, "working_memory_deltas_unscoped_legacy")?;
     let transaction = connection.transaction()?;
-    transaction.execute_batch(
+    transaction.execute_batch(&format!(
         r#"
-DROP TABLE working_memory_deltas;
+DROP INDEX IF EXISTS idx_working_memory_deltas_revision;
+ALTER TABLE working_memory_deltas RENAME TO {backup_table};
 CREATE TABLE working_memory_deltas (
   memory_delta_id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
@@ -4694,13 +4697,26 @@ CREATE TABLE working_memory_deltas (
 CREATE INDEX IF NOT EXISTS idx_working_memory_deltas_revision
   ON working_memory_deltas(agent_id, to_revision, created_at);
 "#,
-    )?;
+    ))?;
     transaction.execute(
         "DELETE FROM storage_domains WHERE domain = ?1",
         ["working_memory_deltas"],
     )?;
     transaction.commit()?;
     Ok(())
+}
+
+fn next_legacy_backup_table_name(connection: &Connection, base_name: &str) -> Result<String> {
+    if !table_exists(connection, base_name)? {
+        return Ok(base_name.to_string());
+    }
+    for suffix in 2.. {
+        let candidate = format!("{base_name}_{suffix}");
+        if !table_exists(connection, &candidate)? {
+            return Ok(candidate);
+        }
+    }
+    unreachable!("unbounded suffix search should find a table name")
 }
 
 fn table_exists(connection: &Connection, table_name: &str) -> Result<bool> {
@@ -5007,6 +5023,21 @@ CREATE TABLE working_memory_deltas (
 "#,
             )?;
             connection.execute(
+                "INSERT INTO working_memory_deltas (
+                    memory_delta_id, from_revision, to_revision, created_at_turn,
+                    reason, created_at, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (
+                    "memory-delta-1-2-7",
+                    1_i64,
+                    2_i64,
+                    7_i64,
+                    "task_rejoined",
+                    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    "{}",
+                ),
+            )?;
+            connection.execute(
                 "INSERT OR REPLACE INTO storage_domains (
                     domain, schema_version, import_status, canonical_source, updated_at
                  ) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -5027,6 +5058,16 @@ CREATE TABLE working_memory_deltas (
             "working_memory_deltas",
             "agent_id"
         )?);
+        assert!(table_exists(
+            &connection,
+            "working_memory_deltas_unscoped_legacy"
+        )?);
+        let backup_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM working_memory_deltas_unscoped_legacy",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(backup_count, 1);
         let domain_count: i64 = connection.query_row(
             "SELECT COUNT(*) FROM storage_domains WHERE domain = ?1",
             ["working_memory_deltas"],
