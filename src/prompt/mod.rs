@@ -561,7 +561,7 @@ fn build_system_sections(
         section(
             "runtime_scheduling_contract",
             PromptStability::Stable,
-            "Holon is event-driven and resumes work from persisted runtime state, not from agent memory alone. A WorkItem is the durable scheduling anchor for multi-turn work; keep it runnable only when the scheduler may safely resume it. Current WorkItem means focus, not lifecycle. Queued runnable WorkItems are normal scheduler candidates. Yielded or parked WorkItems are open but temporarily unschedulable because they yielded to another WorkItem through a runtime continuation frame; do not mark them blocked, poll them, or manually pick them just to return. When switching from runnable current WorkItem A to another open WorkItem B, call PickWorkItem(B); the runtime records the A -> B continuation. When B completes, CompleteWorkItem(B) may restore A and close the turn so the scheduler continues from A. Use WaitFor when the focused WorkItem itself cannot continue until task_result, external state, operator_input, timer, or system state; the wait attaches to the current open WorkItem when one is focused and otherwise records an agent-level wait. External triggers are reusable ingress capabilities that can wake the agent, but they do not replace WaitFor or completion. When a child agent or background command task only needs terminal-result waiting, call WaitFor with wake=task_result and resource set to the task id instead of polling with TaskOutput. Use TaskStatus, TaskOutput, TaskInput, and TaskStop only for active supervision or bounded current-turn inspection. Express scheduling facts through the runtime tools, not through narration, repeated polling, manual blocker fields, or extra scratch WorkItems.".to_string(),
+            "Holon is event-driven and resumes work from persisted runtime state, not from agent memory alone. A WorkItem is the durable scheduling anchor for multi-turn work; keep it runnable only when the scheduler may safely resume it. Current WorkItem means focus, not lifecycle. Queued runnable WorkItems are normal scheduler candidates. Yielded or parked WorkItems are open but temporarily unschedulable because they yielded to another WorkItem through a runtime continuation frame; do not mark them blocked, poll them, or manually pick them just to return. When switching from runnable current WorkItem A to another open WorkItem B, call PickWorkItem(B); the runtime records the A -> B continuation. When B completes, CompleteWorkItem(B) may restore A and close the turn so the scheduler continues from A. Use WaitFor when the focused WorkItem itself cannot continue until task_result, external state, or operator_input; use WaitFor `recheck_after_ms` for a timed fallback recheck. The wait attaches to the current open WorkItem when one is focused and otherwise records an agent-level wait. External triggers are reusable ingress capabilities that can wake the agent, but they do not replace WaitFor or completion. When a child agent or background command task only needs terminal-result waiting, call WaitFor with wake=task_result and resource set to the task id instead of polling with TaskOutput. Use TaskStatus, TaskOutput, TaskInput, and TaskStop only for active supervision or bounded current-turn inspection. Express scheduling facts through the runtime tools, not through narration, repeated polling, manual blocker fields, or extra scratch WorkItems.".to_string(),
         ),
         section(
             "trust_boundary",
@@ -1792,6 +1792,11 @@ mod tests {
         assert!(section
             .content
             .contains("CompleteWorkItem(B) may restore A"));
+        assert!(section
+            .content
+            .contains("cannot continue until task_result, external state, or operator_input"));
+        assert!(section.content.contains("WaitFor `recheck_after_ms`"));
+        assert!(!section.content.contains("timer, or system state"));
         assert!(section
             .content
             .contains("call WaitFor with wake=task_result"));

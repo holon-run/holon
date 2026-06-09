@@ -318,7 +318,7 @@ mod tests {
             .expect("work item write section");
         assert!(section
             .content
-            .contains("after the planning contract says durable WorkItem state is warranted"));
+            .contains("after `planning_discipline` says durable WorkItem state is warranted"));
         assert!(section.content.contains("creates separate tracked work"));
         assert!(section.content.contains("seeds plan_artifact.path"));
         assert!(section
@@ -343,6 +343,11 @@ mod tests {
         assert!(section.content.contains("edit plan_artifact.path directly"));
         assert!(section.content.contains("plan_status=ready"));
         assert!(section.content.contains("Use WaitFor, not UpdateWorkItem"));
+        assert!(section
+            .content
+            .contains("task_result, external, and operator_input waits"));
+        assert!(section.content.contains("WaitFor `recheck_after_ms`"));
+        assert!(!section.content.contains("timer, or system waits"));
         assert!(section
             .content
             .contains("keep plan_artifact.path as durable prose"));
@@ -456,6 +461,11 @@ mod tests {
         assert!(section
             .content
             .contains("preferably as a short relative path inside the workspace"));
+        assert!(section.content.contains("`duplicate_policy`"));
+        assert!(section.content.contains("defaults to `reuse_running`"));
+        assert!(section
+            .content
+            .contains("set `start_new` only when intentionally starting another instance"));
         assert!(section
             .content
             .contains("`yield_time_ms` defaults to 10_000 ms"));
@@ -495,6 +505,31 @@ mod tests {
         assert!(section
             .content
             .contains("If output is truncated, refine the command"));
+    }
+
+    #[test]
+    fn test_wait_for_section_describes_wake_values_and_recheck_fallback() {
+        let tools = vec![ToolSpec {
+            name: "WaitFor".into(),
+            description: String::new(),
+            input_schema: json!({}),
+            freeform_grammar: None,
+        }];
+        let sections = tool_sections(&tools);
+        let section = sections
+            .iter()
+            .find(|s| s.name == "tool_wait_for")
+            .expect("wait for section");
+        assert!(section.content.contains("`wake=task_result`"));
+        assert!(section.content.contains("`wake=external`"));
+        assert!(section.content.contains("`wake=operator_input`"));
+        assert!(section.content.contains("`recheck_after_ms`"));
+        assert!(section
+            .content
+            .contains("timer and system are not wake values"));
+        assert!(section
+            .content
+            .contains("Do not use UpdateWorkItem blocked fields"));
     }
 
     #[test]
