@@ -405,7 +405,8 @@ fn prepare_runtime_storage(
     initial_workspace: impl Into<InitialWorkspaceBinding>,
     runtime_db: Option<RuntimeDb>,
 ) -> Result<PreparedRuntimeStorage> {
-    let storage = AppStorage::new(data_dir)?;
+    let agent_id = agent_id.into();
+    let storage = AppStorage::new_for_agent(data_dir, agent_id.clone())?;
     let runtime_db = match runtime_db {
         Some(runtime_db) => runtime_db,
         None => RuntimeDb::open_and_migrate(
@@ -413,7 +414,6 @@ fn prepare_runtime_storage(
             storage.runtime_dir().join("state/runtime.lock"),
         )?,
     };
-    let agent_id = agent_id.into();
     let initial_workspace = initial_workspace.into();
     let initial_workspace_entry = match &initial_workspace {
         InitialWorkspaceBinding::Entry(entry) => Some(entry.clone()),

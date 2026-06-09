@@ -26,7 +26,7 @@ struct RuntimeRegistryInner {
 
 impl RuntimeRegistry {
     pub(crate) fn new(config: AppConfig, runtime_db: RuntimeDb) -> Result<Self> {
-        let host_storage = AppStorage::new(config.home_dir.join("host"))?;
+        let host_storage = AppStorage::new_global(config.home_dir.join("host"))?;
         if !runtime_db.storage_domain_is_complete("workspace_entries", "db")? {
             runtime_db
                 .workspace_entries()

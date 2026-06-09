@@ -380,6 +380,7 @@ fn derive_working_memory_delta(
     );
 
     WorkingMemoryDelta {
+        agent_id: agent.id.clone(),
         from_revision: agent
             .working_memory
             .last_prompted_working_memory_revision
@@ -401,6 +402,7 @@ fn merge_pending_delta(
     };
 
     WorkingMemoryDelta {
+        agent_id: new_delta.agent_id.clone(),
         from_revision: pending.from_revision,
         to_revision: new_delta.to_revision,
         created_at_turn: new_delta.created_at_turn,
@@ -890,7 +892,7 @@ mod tests {
     #[test]
     fn derive_working_memory_snapshot_projects_work_state_and_tool_evidence() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
 
         let mut active = WorkItemRecord::new(
             "default",
@@ -1082,7 +1084,7 @@ mod tests {
     #[test]
     fn derive_working_memory_snapshot_uses_waiting_anchor_when_no_active_work_exists() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
 
         let queued = WorkItemRecord::new(
             "default",
@@ -1122,7 +1124,7 @@ mod tests {
     #[test]
     fn derive_working_memory_snapshot_prefers_active_work_bound_briefs_and_tools() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
 
         let active = WorkItemRecord::new("default", "current active summary", WorkItemState::Open);
         storage.append_work_item(&active).unwrap();
@@ -1253,7 +1255,7 @@ mod tests {
     #[test]
     fn derive_working_memory_snapshot_scans_past_trimmed_recent_noise_for_bound_evidence() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
 
         let active = WorkItemRecord::new("default", "current target", WorkItemState::Open);
         let other = WorkItemRecord::new("default", "other target", WorkItemState::Open);
@@ -1340,7 +1342,7 @@ mod tests {
     #[test]
     fn derive_working_memory_snapshot_sorts_waiting_on_by_work_relevance_and_recency() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         let base = Utc::now();
 
         let active = WorkItemRecord::new("default", "current waiting target", WorkItemState::Open);
@@ -1465,7 +1467,7 @@ mod tests {
     #[test]
     fn refresh_working_memory_merges_unprompted_updates_and_resets_after_prompt() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 1;
 
@@ -1592,7 +1594,7 @@ mod tests {
     #[test]
     fn refresh_working_memory_scrubs_legacy_prose_fields_without_empty_delta() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 1;
 
@@ -1655,7 +1657,7 @@ mod tests {
     #[test]
     fn refresh_working_memory_clears_stale_context_summary_when_memory_is_active() {
         let dir = tempdir().unwrap();
-        let storage = AppStorage::new(dir.path()).unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         let mut agent = AgentState::new("default");
         agent.context_summary = Some("stale compacted summary".into());
 

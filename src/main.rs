@@ -1111,8 +1111,9 @@ mod tests {
     #[test]
     fn export_scheduler_fixture_writes_replay_harness_shape() {
         let config = test_config();
+        let agent_id = "default";
         let agent_home = config.data_dir.join("agents/default");
-        let storage = AppStorage::new(&agent_home).unwrap();
+        let storage = AppStorage::new_for_agent(&agent_home, agent_id).unwrap();
         let mut agent = holon::types::AgentState::new("default");
         agent.current_work_item_id = Some("work-1".into());
         storage.write_agent(&agent).unwrap();
@@ -1479,7 +1480,7 @@ fn export_scheduler_fixture(
 ) -> Result<()> {
     let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
     let agent_home = config.data_dir.join("agents").join(&agent_id);
-    let storage = AppStorage::new(&agent_home)?;
+    let storage = AppStorage::new_for_agent(&agent_home, agent_id.clone())?;
     let agent = storage.read_agent()?.with_context(|| {
         format!(
             "agent state not found for {agent_id} in {}",
@@ -1671,7 +1672,7 @@ fn print_latency_diagnostics(
 ) -> Result<()> {
     let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
     let agent_home = config.data_dir.join("agents").join(&agent);
-    let storage = AppStorage::new(&agent_home)?;
+    let storage = AppStorage::new_for_agent(&agent_home, agent.clone())?;
     let events = storage.read_recent_events(events_limit)?;
     let diagnostics = build_latency_diagnostics(&events, limit);
     if diagnostics.is_empty() {

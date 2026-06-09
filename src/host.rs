@@ -291,7 +291,7 @@ impl RuntimeHost {
         agent_id: &str,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
         self.public_agent_identity(agent_id)?;
-        let state = AppStorage::new(self.agent_data_dir(agent_id))
+        let state = AppStorage::new_for_agent(self.agent_data_dir(agent_id), agent_id.to_string())
             .map_err(PublicAgentError::Runtime)?
             .read_agent()
             .map_err(PublicAgentError::Runtime)?
@@ -567,7 +567,7 @@ impl RuntimeHost {
             if !agent_home.exists() {
                 continue;
             }
-            let storage = AppStorage::new(agent_home)?;
+            let storage = AppStorage::new_for_agent(agent_home, identity.agent_id.clone())?;
             records.extend(storage.read_recent_external_triggers(usize::MAX)?);
         }
         self.inner
@@ -658,7 +658,10 @@ impl RuntimeHost {
         &self,
         identity: &AgentIdentityRecord,
     ) -> Result<AgentListEntry> {
-        let storage = AppStorage::new(self.agent_data_dir(&identity.agent_id))?;
+        let storage = AppStorage::new_for_agent(
+            self.agent_data_dir(&identity.agent_id),
+            identity.agent_id.clone(),
+        )?;
         let agent = match storage.read_agent() {
             Ok(Some(agent)) => agent,
             Ok(None) => stopped_unloaded_agent(&identity.agent_id),
@@ -723,7 +726,10 @@ impl RuntimeHost {
                 });
                 continue;
             }
-            let storage = AppStorage::new(self.agent_data_dir(&identity.agent_id))?;
+            let storage = AppStorage::new_for_agent(
+                self.agent_data_dir(&identity.agent_id),
+                identity.agent_id.clone(),
+            )?;
             let state = storage
                 .read_agent()?
                 .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
@@ -749,7 +755,10 @@ impl RuntimeHost {
                 && record.kind == AgentKind::Child
                 && record.parent_agent_id.as_deref() == Some(parent_agent_id)
         }) {
-            let storage = AppStorage::new(self.agent_data_dir(&identity.agent_id))?;
+            let storage = AppStorage::new_for_agent(
+                self.agent_data_dir(&identity.agent_id),
+                identity.agent_id.clone(),
+            )?;
             let state = storage
                 .read_agent()?
                 .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
@@ -936,7 +945,8 @@ impl RuntimeHost {
         if !parent_data_dir.exists() {
             return Ok(true);
         }
-        let parent_storage = AppStorage::new(parent_data_dir)?;
+        let parent_storage =
+            AppStorage::new_for_agent(parent_data_dir, parent_agent_id.to_string())?;
         let Some(task) = parent_storage.latest_task_record(task_id)? else {
             return Ok(true);
         };
@@ -1133,7 +1143,10 @@ impl RuntimeHost {
         child_turn_baseline: u64,
         worktree: bool,
     ) -> Result<ChildTaskTerminalResult> {
-        let storage = AppStorage::new(self.agent_data_dir(child_agent_id))?;
+        let storage = AppStorage::new_for_agent(
+            self.agent_data_dir(child_agent_id),
+            child_agent_id.to_string(),
+        )?;
         if let Some(result) = self
             .completed_child_terminal_from_storage(&storage, child_agent_id, child_turn_baseline)
             .await?
@@ -1406,7 +1419,7 @@ impl RuntimeHost {
 }
 
 fn import_host_registry_domains(config: &AppConfig, runtime_db: &RuntimeDb) -> Result<()> {
-    let host_storage = AppStorage::new(config.home_dir.join("host"))?;
+    let host_storage = AppStorage::new_global(config.home_dir.join("host"))?;
     if !runtime_db.storage_domain_is_complete("workspace_entries", "db")? {
         runtime_db
             .workspace_entries()
@@ -1473,7 +1486,7 @@ fn repair_host_agent_legacy_evidence_import(
         if !agent_home.exists() {
             continue;
         }
-        let storage = AppStorage::new(agent_home)?;
+        let storage = AppStorage::new_for_agent(agent_home, agent_id.clone())?;
         match storage.read_all_messages() {
             Ok(messages) => {
                 let legacy_max_seq = messages
@@ -1595,7 +1608,10 @@ impl RuntimeHostBridge {
         {
             return Ok(None);
         }
-        let storage = AppStorage::new(host.agent_data_dir(child_agent_id))?;
+        let storage = AppStorage::new_for_agent(
+            host.agent_data_dir(child_agent_id),
+            child_agent_id.to_string(),
+        )?;
         let state = storage
             .read_agent()?
             .unwrap_or_else(|| AgentState::new(child_agent_id.to_string()));
@@ -2001,7 +2017,7 @@ mod tests {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-        let host_storage = AppStorage::new(config.home_dir.join("host")).unwrap();
+        let host_storage = AppStorage::new_global(config.home_dir.join("host")).unwrap();
         host_storage
             .append_agent_identity(&AgentIdentityRecord::new(
                 "release-bot",
@@ -2052,7 +2068,7 @@ mod tests {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-        let host_storage = AppStorage::new(config.home_dir.join("host")).unwrap();
+        let host_storage = AppStorage::new_global(config.home_dir.join("host")).unwrap();
         host_storage
             .append_agent_identity(&AgentIdentityRecord::new(
                 "release-bot",
@@ -2108,7 +2124,7 @@ mod tests {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
-        let host_storage = AppStorage::new(config.home_dir.join("host")).unwrap();
+        let host_storage = AppStorage::new_global(config.home_dir.join("host")).unwrap();
         host_storage
             .append_agent_identity(&AgentIdentityRecord::new(
                 "release-bot",

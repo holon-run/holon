@@ -29,6 +29,7 @@ fn isolated_holon_command(home: &tempfile::TempDir) -> Command {
         .env("HOLON_HOME", home.path())
         .env("HOLON_AGENT_ID", "main")
         .env("HOLON_MODEL", "openai/gpt-5.4")
+        .env("HOLON_HTTP_ADDR", "127.0.0.1:9")
         .env(
             "HOLON_SOCKET_PATH",
             home.path().join("run").join("missing.sock"),
