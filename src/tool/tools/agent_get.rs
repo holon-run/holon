@@ -21,10 +21,7 @@ pub(crate) struct AgentGetArgs {}
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::CoreAgent,
-        spec: typed_spec::<AgentGetArgs>(
-            NAME,
-            "Read the current agent-plane summary, including identity visibility, ownership, profile preset, lifecycle, active work focus, waiting state, and visible child-agent lineage.",
-        )?,
+        spec: typed_spec::<AgentGetArgs>(NAME, include_str!("../tool_descriptions/agent_get.md"))?,
     })
 }
 

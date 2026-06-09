@@ -29,7 +29,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::ExternalTrigger,
         spec: typed_spec::<CancelExternalTriggerArgs>(
             NAME,
-            "Revoke an external trigger ingress capability by external_trigger_id.",
+            include_str!("../tool_descriptions/cancel_external_trigger.md"),
         )?,
     })
 }

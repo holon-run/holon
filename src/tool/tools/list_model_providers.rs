@@ -35,7 +35,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<ListModelProvidersArgs>(
             NAME,
-            "List configured/discovered model providers. By default unavailable providers are omitted; set include_unavailable=true to inspect blocked options.",
+            include_str!("../tool_descriptions/list_model_providers.md"),
         )?,
     })
 }

@@ -26,7 +26,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<TaskInputArgs>(
             NAME,
-            "Send input to a managed task handle. Command tasks accept stdin or tty text here when they were created for interactive continuation, and parent-supervised child handles accept bounded follow-up input on the same surface.",
+            include_str!("../tool_descriptions/task_input.md"),
         )?,
     })
 }

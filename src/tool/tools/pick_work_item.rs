@@ -37,7 +37,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<PickWorkItemArgs>(
             NAME,
-            "Make an existing open work item the current work-item focus for this agent. Include reason when switching away from runnable current work; blocked work items may be picked for inspection but remain non-runnable.",
+            include_str!("../tool_descriptions/pick_work_item.md"),
         )?,
     })
 }

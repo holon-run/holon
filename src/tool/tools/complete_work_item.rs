@@ -45,7 +45,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<CompleteWorkItemArgs>(
             NAME,
-            "Mark an open work item completed. Write the operator-facing completion report as assistant text in the same round; the runtime promotes that text after this tool succeeds.",
+            include_str!("../tool_descriptions/complete_work_item.md"),
         )?,
     })
 }

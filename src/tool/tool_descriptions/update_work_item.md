@@ -1,0 +1,1 @@
+Update mutable state fields for an existing work item. Use objective to refine the short target, plan_status for planning state, and todo_list to replace the full progress checklist snapshot. Use WaitFor, not UpdateWorkItem, to mark task, external, or operator waits. Edit the plan_artifact.path file directly for plan body changes.

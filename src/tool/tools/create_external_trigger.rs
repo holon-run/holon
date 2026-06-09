@@ -39,7 +39,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::ExternalTrigger,
         spec: typed_spec::<CreateExternalTriggerArgs>(
             NAME,
-            "Return the default external ingress capability for this agent and delivery mode.",
+            include_str!("../tool_descriptions/create_external_trigger.md"),
         )?,
     })
 }

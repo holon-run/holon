@@ -35,14 +35,20 @@ pub(crate) struct ListTasksResult {
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::CoreAgent,
-        spec: typed_spec::<ListTasksArgs>(NAME, "List active tasks with bounded output.")?,
+        spec: typed_spec::<ListTasksArgs>(
+            NAME,
+            include_str!("../tool_descriptions/list_tasks.md"),
+        )?,
     })
 }
 
 pub(crate) fn legacy_definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::CoreAgent,
-        spec: typed_spec::<ListTasksArgs>(LEGACY_NAME, "Legacy alias for ListTasks.")?,
+        spec: typed_spec::<ListTasksArgs>(
+            LEGACY_NAME,
+            include_str!("../tool_descriptions/task_list_legacy.md"),
+        )?,
     })
 }
 

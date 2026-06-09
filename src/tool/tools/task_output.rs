@@ -30,7 +30,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<TaskOutputArgs>(
             NAME,
-            "Read background task output and optionally wait for task completion.",
+            include_str!("../tool_descriptions/task_output.md"),
         )?,
     })
 }

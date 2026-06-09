@@ -37,7 +37,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<GetWorkItemArgs>(
             NAME,
-            "Read one work item by id, including its lifecycle view, current focus flag, plan artifact descriptor, bounded plan preview, and optional todo_list.",
+            include_str!("../tool_descriptions/get_work_item.md"),
         )?,
     })
 }

@@ -57,7 +57,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<CreateWorkItemArgs>(
             NAME,
-            "Create a new open work item for a genuinely separate objective with an independent lifecycle. Optional plan seeds the work item's AgentHome plan.md artifact; edit that file directly for later plan changes. Use todo_list only for progress checklist items. Continuous discussion, planning, candidate screening, and option comparison should usually update the current work item instead. Do not create a new work item just to refine, narrow, or switch candidates inside the current task; use UpdateWorkItem.objective, UpdateWorkItem.plan_status, and UpdateWorkItem.todo_list for state updates.",
+            include_str!("../tool_descriptions/create_work_item.md"),
         )?,
     })
 }

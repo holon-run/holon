@@ -42,7 +42,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<MemoryGetArgs>(
             NAME,
-            "Fetch exact bounded Holon memory content by a source_ref copied verbatim from MemorySearch results or from runtime prompt refs such as brief_ref/cmd_ref/stdout_ref/stderr_ref/output_ref. Do not invent source_ref values or use MemoryGet for skill paths, file paths, or URLs.",
+            include_str!("../tool_descriptions/memory_get.md"),
         )?,
     })
 }

@@ -27,10 +27,7 @@ pub(crate) struct WebFetchArgs {
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::Web,
-        spec: typed_spec::<WebFetchArgs>(
-            NAME,
-            "Fetch a specific http or https URL through Holon's web policy, extract readable text, wrap it as untrusted external content, and return provenance including final URL, status, content type, truncation, and hash.",
-        )?,
+        spec: typed_spec::<WebFetchArgs>(NAME, include_str!("../tool_descriptions/web_fetch.md"))?,
     })
 }
 

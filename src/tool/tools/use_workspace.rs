@@ -41,7 +41,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::LocalEnvironment,
         spec: typed_spec::<UseWorkspaceArgs>(
             NAME,
-            "Make a workspace active. Provide exactly one of `path` or `workspace_id`: use `path` to discover, attach, and activate a project directory; use `workspace_id` to switch to a known workspace, including `agent_home` for the built-in fallback workspace. Shell `cd` does not change this active workspace for ApplyPatch or future commands.",
+            include_str!("../tool_descriptions/use_workspace.md"),
         )?,
     })
 }

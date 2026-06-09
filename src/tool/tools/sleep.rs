@@ -26,10 +26,7 @@ pub(crate) struct SleepArgs {
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::CoreAgent,
-        spec: typed_spec::<SleepArgs>(
-            NAME,
-            "Mark the current loop as done so the agent can sleep when no other work remains. Omit `duration_ms` for ordinary rest, or provide a positive short session-local delay to wake again.",
-        )?,
+        spec: typed_spec::<SleepArgs>(NAME, include_str!("../tool_descriptions/sleep.md"))?,
     })
 }
 

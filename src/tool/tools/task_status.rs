@@ -23,7 +23,10 @@ pub(crate) struct TaskStatusArgs {
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::CoreAgent,
-        spec: typed_spec::<TaskStatusArgs>(NAME, "Read a specific task lifecycle snapshot by id.")?,
+        spec: typed_spec::<TaskStatusArgs>(
+            NAME,
+            include_str!("../tool_descriptions/task_status.md"),
+        )?,
     })
 }
 
