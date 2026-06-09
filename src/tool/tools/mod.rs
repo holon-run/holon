@@ -223,6 +223,10 @@ pub(crate) fn success_from_value(tool_name: &str, mut value: Value) -> ToolResul
 mod tests {
     use super::*;
 
+    fn manifest_path(path: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path)
+    }
+
     fn description_path(tool_name: &str) -> Option<&'static str> {
         Some(match tool_name {
             "AgentGet" => "src/tool/tool_descriptions/agent_get.md",
@@ -265,7 +269,7 @@ mod tests {
         for definition in definitions {
             let path = description_path(&definition.spec.name)
                 .unwrap_or_else(|| panic!("missing description path for {}", definition.spec.name));
-            let markdown = std::fs::read_to_string(path).unwrap();
+            let markdown = std::fs::read_to_string(manifest_path(path)).unwrap();
             assert_eq!(
                 definition.spec.description, markdown,
                 "{}",
@@ -279,8 +283,10 @@ mod tests {
             .description;
         assert_eq!(
             codex,
-            std::fs::read_to_string("src/tool/tool_descriptions/apply_patch_codex_dsl_freeform.md")
-                .unwrap()
+            std::fs::read_to_string(manifest_path(
+                "src/tool/tool_descriptions/apply_patch_codex_dsl_freeform.md"
+            ))
+            .unwrap()
         );
     }
 
