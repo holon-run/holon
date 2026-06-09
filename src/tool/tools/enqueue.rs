@@ -39,10 +39,7 @@ pub(crate) struct EnqueueArgs {
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::CoreAgent,
-        spec: typed_spec::<EnqueueArgs>(
-            NAME,
-            "Enqueue a follow-up message into the current agent.",
-        )?,
+        spec: typed_spec::<EnqueueArgs>(NAME, include_str!("../tool_descriptions/enqueue.md"))?,
     })
 }
 

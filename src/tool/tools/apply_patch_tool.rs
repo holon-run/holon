@@ -43,7 +43,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) fn definition_for_surface(surface: ApplyPatchSurface) -> Result<BuiltinToolDefinition> {
     let (description, input_schema, freeform_grammar) = match surface {
         ApplyPatchSurface::CodexDslFreeform => (
-            "Apply a Codex-style patch DSL across one or more files. Submit raw *** Begin Patch / *** End Patch text directly as the freeform tool body; do not wrap it in JSON.".to_string(),
+            include_str!("../tool_descriptions/apply_patch_codex_dsl_freeform.md").to_string(),
             serde_json::json!({
                 "type": "string",
                 "description": "Raw Codex ApplyPatch DSL beginning with *** Begin Patch and ending with *** End Patch"
@@ -54,7 +54,7 @@ pub(crate) fn definition_for_surface(surface: ApplyPatchSurface) -> Result<Built
             }),
         ),
         ApplyPatchSurface::UnifiedDiffJson => (
-            "Apply a unified diff patch across one or more files. Call the JSON/function tool with exactly {\"patch\":\"--- a/path\\n+++ b/path\\n@@ ...\"}; do not use the Codex *** Begin Patch DSL as the advertised format.".to_string(),
+            include_str!("../tool_descriptions/apply_patch_unified_diff_json.md").to_string(),
             tool_input_schema::<ApplyPatchArgs>()?,
             None,
         ),

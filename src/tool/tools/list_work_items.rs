@@ -67,7 +67,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::CoreAgent,
         spec: typed_spec::<ListWorkItemsArgs>(
             NAME,
-            "List recent work items with explicit current, open, completed, queued, blocked, waiting_for_operator, and runnable views. Use this before relying on memory briefs for work-item focus.",
+            include_str!("../tool_descriptions/list_work_items.md"),
         )?,
     })
 }

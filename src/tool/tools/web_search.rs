@@ -28,7 +28,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::Web,
         spec: typed_spec::<WebSearchArgs>(
             NAME,
-            "Search the web through Holon's web provider registry and return structured results and citations. Use WebFetch after search when full page content is needed.",
+            include_str!("../tool_descriptions/web_search.md"),
         )?,
     })
 }

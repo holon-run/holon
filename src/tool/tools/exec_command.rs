@@ -40,7 +40,7 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
         family: ToolCapabilityFamily::LocalEnvironment,
         spec: typed_spec::<ExecCommandArgs>(
             NAME,
-            "Start a shell command inside the workspace. Valid startup input uses `cmd` plus optional `workdir`, `shell`, `login`, `tty`, `duplicate_policy`, `accepts_input`, `yield_time_ms`, and `max_output_tokens`; do not pass result or task metadata such as `status` or `task_handle`. `duplicate_policy` defaults to `reuse_running` and `yield_time_ms` defaults to 10_000 ms when omitted; set it only when intentionally changing the foreground wait window. Short commands return immediately; long non-interactive commands become command_task automatically.",
+            include_str!("../tool_descriptions/exec_command.md"),
         )?,
     })
 }

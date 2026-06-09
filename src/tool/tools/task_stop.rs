@@ -23,10 +23,7 @@ pub(crate) struct TaskStopArgs {
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::CoreAgent,
-        spec: typed_spec::<TaskStopArgs>(
-            NAME,
-            "Stop a currently running background task by id. command_task may first enter cancelling before the final cancelled result arrives.",
-        )?,
+        spec: typed_spec::<TaskStopArgs>(NAME, include_str!("../tool_descriptions/task_stop.md"))?,
     })
 }
 

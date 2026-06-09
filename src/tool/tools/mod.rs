@@ -223,6 +223,67 @@ pub(crate) fn success_from_value(tool_name: &str, mut value: Value) -> ToolResul
 mod tests {
     use super::*;
 
+    fn description_path(tool_name: &str) -> Option<&'static str> {
+        Some(match tool_name {
+            "AgentGet" => "src/tool/tool_descriptions/agent_get.md",
+            "ApplyPatch" => "src/tool/tool_descriptions/apply_patch_unified_diff_json.md",
+            "CancelExternalTrigger" => "src/tool/tool_descriptions/cancel_external_trigger.md",
+            "CompleteWorkItem" => "src/tool/tool_descriptions/complete_work_item.md",
+            "CreateExternalTrigger" => "src/tool/tool_descriptions/create_external_trigger.md",
+            "CreateWorkItem" => "src/tool/tool_descriptions/create_work_item.md",
+            "Enqueue" => "src/tool/tool_descriptions/enqueue.md",
+            "ExecCommand" => "src/tool/tool_descriptions/exec_command.md",
+            "ExecCommandBatch" => "src/tool/tool_descriptions/exec_command_batch.md",
+            "GetWorkItem" => "src/tool/tool_descriptions/get_work_item.md",
+            "ListModelProviders" => "src/tool/tool_descriptions/list_model_providers.md",
+            "ListProviderModels" => "src/tool/tool_descriptions/list_provider_models.md",
+            "ListTasks" => "src/tool/tool_descriptions/list_tasks.md",
+            "ListWorkItems" => "src/tool/tool_descriptions/list_work_items.md",
+            "MemoryGet" => "src/tool/tool_descriptions/memory_get.md",
+            "MemorySearch" => "src/tool/tool_descriptions/memory_search.md",
+            "PickWorkItem" => "src/tool/tool_descriptions/pick_work_item.md",
+            "Sleep" => "src/tool/tool_descriptions/sleep.md",
+            "SpawnAgent" => "src/tool/tool_descriptions/spawn_agent.md",
+            "TaskInput" => "src/tool/tool_descriptions/task_input.md",
+            "TaskList" => "src/tool/tool_descriptions/task_list_legacy.md",
+            "TaskOutput" => "src/tool/tool_descriptions/task_output.md",
+            "TaskStatus" => "src/tool/tool_descriptions/task_status.md",
+            "TaskStop" => "src/tool/tool_descriptions/task_stop.md",
+            "UpdateWorkItem" => "src/tool/tool_descriptions/update_work_item.md",
+            "UseWorkspace" => "src/tool/tool_descriptions/use_workspace.md",
+            "WaitFor" => "src/tool/tool_descriptions/wait_for.md",
+            "WebFetch" => "src/tool/tool_descriptions/web_fetch.md",
+            "WebSearch" => "src/tool/tool_descriptions/web_search.md",
+            _ => return None,
+        })
+    }
+
+    #[test]
+    fn builtin_tool_descriptions_come_from_markdown_files() {
+        let definitions = builtin_tool_definitions().unwrap();
+
+        for definition in definitions {
+            let path = description_path(&definition.spec.name)
+                .unwrap_or_else(|| panic!("missing description path for {}", definition.spec.name));
+            let markdown = std::fs::read_to_string(path).unwrap();
+            assert_eq!(
+                definition.spec.description, markdown,
+                "{}",
+                definition.spec.name
+            );
+        }
+
+        let codex = apply_patch_tool::definition_for_surface(ApplyPatchSurface::CodexDslFreeform)
+            .unwrap()
+            .spec
+            .description;
+        assert_eq!(
+            codex,
+            std::fs::read_to_string("src/tool/tool_descriptions/apply_patch_codex_dsl_freeform.md")
+                .unwrap()
+        );
+    }
+
     #[test]
     fn non_command_tools_default_to_canonical_json_render() {
         let result = ToolResult::success(

@@ -63,10 +63,7 @@ pub(crate) struct WaitForResult {
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
         family: ToolCapabilityFamily::CoreAgent,
-        spec: typed_spec::<WaitForArgs>(
-            NAME,
-            "Record an explicit wait condition and yield the current turn. Use wake=task_result with resource=<task_id> when waiting for a background task, wake=external with optional resource=<external object such as a URL or github:owner/repo#id> when waiting for outside state, or wake=operator_input when waiting for the operator. Optional recheck_after_ms records a fallback recheck deadline. If there is a current open work item, WaitFor attaches to it and marks it waiting; otherwise it records an agent-level wait.",
-        )?,
+        spec: typed_spec::<WaitForArgs>(NAME, include_str!("../tool_descriptions/wait_for.md"))?,
     })
 }
 

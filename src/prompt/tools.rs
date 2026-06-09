@@ -13,6 +13,14 @@ fn guidance(content: &'static str) -> String {
         .to_string()
 }
 
+fn guidance_template(content: &'static str, replacements: &[(&str, &str)]) -> String {
+    let mut rendered = guidance(content);
+    for (placeholder, replacement) in replacements {
+        rendered = rendered.replace(placeholder, replacement);
+    }
+    rendered
+}
+
 /// Build tool-specific prompt sections based on available tools.
 ///
 /// This function implements a registry pattern: each tool has an associated
@@ -39,28 +47,28 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_spawn_agent",
             PromptStability::Stable,
-            "Use SpawnAgent when you need another agent context rather than a command task. SpawnAgent selects behavior through a small `preset` surface: omit it or use `private_child` for the default bounded delegated child, or use `public_named` when you intentionally want a self-owned public agent. Provide one caller text field: `initial_message`. For `private_child`, `initial_message` is required, becomes the child's first delegation message, and is also the source for the parent-visible task label; `private_child` returns both `agent_id` and a structured `task_handle`. The private-child task handle is a background supervision handle by default, so the parent can continue working while the child runs. You may pass `task_handle.task_id` to TaskStatus, TaskOutput, TaskInput, or TaskStop when you need active supervision, intermediate output inspection, follow-up input, or explicit stop control; you do not need to poll the handle just to wait for completion because terminal child results re-enter the parent through the runtime event loop. For `public_named`, `agent_id` is required and `initial_message` is optional bootstrap input; it returns only `agent_id` because it is not parent-supervised through a task handle. Do not pass `summary`, `task_summary`, `prompt`, or `work_item` to SpawnAgent. When the delegated agent should start from a reusable role bootstrap, set `template` to a catalog template id such as `holon-default`, an explicit catalog selector such as `builtin:holon-default`, `agent:worker`, `agent_home:worker`, `user:worker`, or `user_global:worker`, an absolute local template path, or a GitHub template URL; the template only initializes that agent's own `agent_home/AGENTS.md` and agent-local skills, and later edits to the agent's local state remain authoritative. Prefer `workspace_mode=worktree` only for `private_child` when the child truly needs isolated file changes; keep inherited workspace otherwise. SpawnAgent is for bounded delegation or explicit agent creation, not for handing off overall understanding or opening an unconstrained worker swarm.".to_string(),
+            guidance(include_str!("tool_guidance/tool_spawn_agent.md")),
         ));
     }
     if names.contains(&"AgentGet") {
         sections.push(section(
             "tool_agent_get",
             PromptStability::Stable,
-            "Use AgentGet for agent-plane inspection: it returns the current agent summary, including `identity.visibility`, `identity.ownership`, and `identity.profile_preset`, plus active work focus, waiting state, execution snapshot, and visible child-agent lineage. Read those identity fields as the current agent contract: `public_named` means a public self-owned agent addressed directly by `agent_id`, while `private_child` means a private parent-supervised child that stays under a supervising task handle. Child-agent summaries expose the same ownership/profile semantics. Prefer AgentGet when you need to understand the context-owning agent itself. Prefer TaskStatus when you are inspecting a managed task handle such as a command task or a parent-supervised SpawnAgent handle. Do not use AgentGet as a transcript dump or as a substitute for TaskOutput.".to_string(),
+            guidance(include_str!("tool_guidance/tool_agent_get.md")),
         ));
     }
     if names.contains(&"Enqueue") {
         sections.push(section(
             "tool_enqueue",
             PromptStability::Stable,
-            "Use Enqueue only when you need to schedule a follow-up message for this same agent instead of acting immediately in the current tool loop. Prefer `priority=next` for normal continuations, `background` for low-urgency bookkeeping, and reserve `interject` for genuinely urgent self-follow-up that should preempt queued work. Enqueue returns a structured receipt with `enqueued`, `priority`, `follow_up_text`, and `summary_text`; treat that receipt as confirmation that the follow-up entered the runtime queue, not as completion of the follow-up work itself.".to_string(),
+            guidance(include_str!("tool_guidance/tool_enqueue.md")),
         ));
     }
     if names.contains(&"CreateExternalTrigger") || names.contains(&"CancelExternalTrigger") {
         sections.push(section(
             "tool_external_trigger",
             PromptStability::Stable,
-            "Use CreateExternalTrigger only to retrieve the default agent external ingress capability for a delivery mode. The capability is long-lived agent infrastructure, not a WorkItem or waiting-intent resource, and should not be created separately for each PR, CI run, issue, source, or WorkItem. Use delivery_mode=wake_hint when an external system with its own durable queue or query API only needs to wake the agent to inspect external state, and delivery_mode=enqueue_message when every callback payload should enter the agent queue. A delivered external trigger records provenance and wakes/re-enters the agent, but it does not automatically clear blocked_by or complete work; inspect the evidence and then explicitly call UpdateWorkItem or CompleteWorkItem as appropriate. Use CancelExternalTrigger only for explicit capability revoke or rotation by external_trigger_id, not normal WorkItem cleanup.".to_string(),
+            guidance(include_str!("tool_guidance/tool_external_trigger.md")),
         ));
     }
     if names.contains(&"CreateWorkItem")
@@ -73,7 +81,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_work_item_scheduling",
             PromptStability::Stable,
-            "WorkItem scheduler model: an open runnable WorkItem is eligible for scheduler resume or system tick. Ending the current response only yields the turn; it does not change WorkItem readiness. Use WaitFor to record task_result, external, or operator_input waits; it attaches to the current open WorkItem when one is focused and otherwise records an agent-level wait. Use an external trigger when an external system can actively wake the agent; the trigger complements, but does not replace, WaitFor or explicit completion. Keep runnable WorkItems only for work that is actually ready for the scheduler to resume.".to_string(),
+            guidance(include_str!("tool_guidance/tool_work_item_scheduling.md")),
         ));
     }
     if names.contains(&"CreateWorkItem")
@@ -91,7 +99,7 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_work_item_read",
             PromptStability::Stable,
-            "Use ListWorkItems with filter=current to inspect the current work-item focus before relying on memory briefs. Use GetWorkItem when you already know the id and need its open/completed state, focus flag, readiness, plan_artifact descriptor with bounded preview, and optional todo_list. Read or edit plan_artifact.path directly when the preview is incomplete or the plan body needs changes. Use ListWorkItems for queue inspection with filters such as open, completed, current, queued, blocked, waiting_for_operator, and runnable. Treat current_work_item_id as focus, not lifecycle; open/completed describes completion, current describes focus, and queued/blocked/waiting_for_operator/runnable are derived from scheduler readiness plus current focus. Read the work-item surface before switching, completing, or expanding cross-turn work so the next action is anchored to the right objective.".to_string(),
+            guidance(include_str!("tool_guidance/tool_work_item_read.md")),
         ));
     }
     if names.contains(&"ListTasks")
@@ -135,7 +143,13 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_apply_patch",
             PromptStability::Stable,
-            format!("Use ApplyPatch as the primary precise file-mutation tool. Use it for focused new files, small local edits, multi-hunk single-file changes, structural edits, and bounded refactors. For very large new files, generated files, whole-file rewrites, bulk deletes, or broad mechanical refactors, choose the lower-context path: split the change into smaller ApplyPatch calls, or use a carefully bounded ExecCommand/scripted rewrite when that avoids emitting a huge diff and is easier to verify. Do not expect separate Write or Edit tools; {patch_language}. {invocation_contract} The model-visible ApplyPatch receipt is concise text with action markers like `A`, `M`, `D`, or `R`; if it says success with diagnostics, treat the target file as potentially different from your intended mental model. The canonical result still records structured changed-file metadata, `changed_paths`, `changed_file_count`, ignored metadata, diagnostics, and `summary_text`."),
+            guidance_template(
+                include_str!("tool_guidance/tool_apply_patch.md"),
+                &[
+                    ("{patch_language}", patch_language),
+                    ("{invocation_contract}", invocation_contract),
+                ],
+            ),
         ));
     }
     if names.contains(&"ApplyPatch") {
@@ -150,14 +164,17 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         sections.push(section(
             "tool_file_mutation",
             PromptStability::Stable,
-            format!("File mutation is centered on ApplyPatch. Relative patch paths resolve from the active workspace; explicit absolute paths are filesystem targets and should be used only when the operator or task context clearly identifies that target. {format_guidance} Keep tool output bounded: do not paste enormous malformed patches, do not retry the same large failed patch unchanged, and split large refactors into smaller patch/application steps when that keeps failures recoverable. Avoid using ExecCommand with shell rewrite tricks like `sed -i` as the default editing path, but use a bounded script or heredoc when generating/replacing a large file is cheaper and safer than a huge diff. After a clean file mutation, rely on the ApplyPatch receipt first and do not re-read the same file merely to confirm that the tool applied; run focused verification with ExecCommand when behavior matters. If exact final content affects the next edit, read only the smallest relevant slice. If ApplyPatch reports diagnostics, warnings, partial application, context mismatch, or any non-clean receipt, inspect the exact affected region before continuing edits to that file and do not retry the same diagnostic-producing patch unchanged. Also inspect the minimal affected slice when a formatter, script, command, or user edit may have changed the file after your last read. Do not use file mutation tools for broad exploration; inspect with shell-first read commands through ExecCommand instead."),
+            guidance_template(
+                include_str!("tool_guidance/tool_file_mutation.md"),
+                &[("{format_guidance}", format_guidance)],
+            ),
         ));
     }
     if names.contains(&"UseWorkspace") {
         sections.push(section(
             "tool_workspace",
             PromptStability::Stable,
-            "Workspace is explicit runtime state, not just a shell directory. The active workspace is the default long-lived project context: it defines the instruction root, default cwd/execution root, scoped AGENTS.md or CLAUDE.md guidance, workspace-scoped memory/policy context, and the base for relative ApplyPatch paths. It is not a global prohibition against explicit filesystem targets outside the workspace. Every agent always has exactly one active workspace. `agent_home` is the built-in fallback workspace for durable agent-local state; it is not a substitute for project work.\n\nUse UseWorkspace to make the right workspace active when you will inspect, edit, or verify a project over more than a one-off explicit path. Call `UseWorkspace({\"path\":\"/repo/or/subdir\"})` when the operator gave you a project path or you need to discover/adopt a directory. Call `UseWorkspace({\"workspace_id\":\"agent_home\"})` to return to AgentHome, or `UseWorkspace({\"workspace_id\":\"ws-...\"})` to switch to a known workspace id from agent state. Provide exactly one of `path` or `workspace_id`. Use `mode=\"isolated\"` only when you need a runtime-managed isolated execution root, and provide an `isolation_label` as an intent/branch hint rather than inventing a worktree path.\n\nShell `cd` affects only that shell command process. It does not redefine the active workspace, instruction root, AGENTS.md loading scope, or relative ApplyPatch base. Switching workspaces does not delete files, remove bindings, or clean up retained isolated roots; cleanup is a separate explicit lifecycle action.".to_string(),
+            guidance(include_str!("tool_guidance/tool_workspace.md")),
         ));
     }
     sections
@@ -754,7 +771,37 @@ mod tests {
                 freeform_grammar: None,
             },
             ToolSpec {
+                name: "SpawnAgent".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+            ToolSpec {
+                name: "AgentGet".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+            ToolSpec {
+                name: "Enqueue".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+            ToolSpec {
+                name: "CreateExternalTrigger".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+            ToolSpec {
                 name: "CreateWorkItem".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+            ToolSpec {
+                name: "GetWorkItem".into(),
                 description: String::new(),
                 input_schema: json!({}),
                 freeform_grammar: None,
@@ -777,14 +824,35 @@ mod tests {
                 input_schema: json!({}),
                 freeform_grammar: None,
             },
+            ToolSpec {
+                name: "ApplyPatch".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
+            ToolSpec {
+                name: "UseWorkspace".into(),
+                description: String::new(),
+                input_schema: json!({}),
+                freeform_grammar: None,
+            },
         ];
         let sections = tool_sections(&tools);
         for name in [
             "tool_wait_for",
+            "tool_spawn_agent",
+            "tool_agent_get",
+            "tool_enqueue",
+            "tool_external_trigger",
+            "tool_work_item_scheduling",
             "tool_work_item_write",
+            "tool_work_item_read",
             "tool_task_control",
             "tool_exec_command",
             "tool_exec_command_batch",
+            "tool_apply_patch",
+            "tool_file_mutation",
+            "tool_workspace",
         ] {
             let section = sections
                 .iter()

@@ -1,0 +1,1 @@
+Fetch a specific http or https URL through Holon's web policy, extract readable text, wrap it as untrusted external content, and return provenance including final URL, status, content type, truncation, and hash.

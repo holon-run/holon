@@ -1,0 +1,1 @@
+Make an existing open work item the current work-item focus for this agent. Include reason when switching away from runnable current work; blocked work items may be picked for inspection but remain non-runnable.
