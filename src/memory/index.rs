@@ -13,14 +13,15 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     agent_template::{agent_memory_operator_path, agent_memory_self_path},
+    memory::refs::{RuntimeRef, ToolExecutionRefSelector},
     runtime_db::{EvidenceKind, RuntimeDb},
     storage::AppStorage,
     tool::helpers::{
         command_digest, command_output_source_ref, command_preview, command_receipt_source_ref,
     },
     types::{
-        BriefRecord, CommandTaskStatusSnapshot, ContextEpisodeRecord, TaskRecord, TaskStatus,
-        ToolExecutionRecord, WorkItemRecord, WorkspaceEntry,
+        BriefKind, BriefRecord, CommandTaskStatusSnapshot, ContextEpisodeRecord, TaskRecord,
+        TaskStatus, ToolExecutionRecord, WorkItemRecord, WorkspaceEntry,
     },
 };
 
@@ -148,9 +149,39 @@ pub fn get_memory(
     max_chars: Option<usize>,
     active_workspace_id: Option<&str>,
 ) -> Result<Option<MemoryGetResult>> {
-    let index = ensure_memory_index_current(storage, active_workspace_id)?;
     let agent_id = storage_agent_id(storage);
+    if let Ok(runtime_ref) = RuntimeRef::parse(source_ref) {
+        let Some(document) = document_for_runtime_ref(storage, &runtime_ref)? else {
+            return Ok(None);
+        };
+        if document.agent_id != agent_id {
+            return Ok(None);
+        }
+        return Ok(Some(memory_get_result(document, max_chars)));
+    }
+
+    let index = ensure_memory_index_current(storage, active_workspace_id)?;
     index.get(source_ref, max_chars, &agent_id, active_workspace_id)
+}
+
+fn memory_get_result(document: MemoryDocument, max_chars: Option<usize>) -> MemoryGetResult {
+    let max_chars = max_chars
+        .unwrap_or(GET_CHARS_DEFAULT)
+        .clamp(1, GET_CHARS_MAX);
+    let (content, truncated) = truncate_chars(&document.body, max_chars);
+    MemoryGetResult {
+        kind: document.source_kind,
+        source_ref: document.source_ref,
+        scope_kind: document.scope_kind,
+        workspace_id: document.workspace_id,
+        agent_id: document.agent_id,
+        source_path: document.source_path.map(|path| path.display().to_string()),
+        title: document.title,
+        content,
+        truncated,
+        updated_at: document.updated_at,
+        metadata: document.metadata,
+    }
 }
 
 fn ensure_memory_index_current(
@@ -912,6 +943,32 @@ fn document_for_pending_source(
     }
 }
 
+fn document_for_runtime_ref(
+    storage: &AppStorage,
+    runtime_ref: &RuntimeRef,
+) -> Result<Option<MemoryDocument>> {
+    match runtime_ref {
+        RuntimeRef::AgentMemory { name } => known_memory_markdown_sources(storage)
+            .into_iter()
+            .find(|known| known.name == name)
+            .map(|known| agent_memory_document(storage, known.name, known.title, &known.path))
+            .transpose()
+            .map(|value| value.flatten()),
+        RuntimeRef::WorkspaceProfile { workspace_id } => {
+            workspace_profile_document_by_id(storage, workspace_id)
+        }
+        RuntimeRef::Brief { id } => brief_document_by_id(storage, id),
+        RuntimeRef::Episode { id } => context_episode_document_by_id(storage, id),
+        RuntimeRef::WorkItem { id } => work_item_document_by_id(storage, id),
+        RuntimeRef::Task { id } => task_document_by_id(storage, id),
+        RuntimeRef::ToolExecution {
+            id,
+            batch_item_index,
+            selector,
+        } => command_tool_execution_document(storage, id, *batch_item_index, *selector),
+    }
+}
+
 fn agent_memory_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
     let mut documents = Vec::new();
     for source in known_memory_markdown_sources(storage) {
@@ -1020,9 +1077,13 @@ fn brief_documents(
     };
     Ok(briefs
         .into_iter()
-        .filter(|brief| !brief.text.trim().is_empty())
+        .filter(semantic_brief_is_retrievable)
         .map(|brief| brief_document(storage, brief))
         .collect())
+}
+
+fn semantic_brief_is_retrievable(brief: &BriefRecord) -> bool {
+    brief.kind != BriefKind::Ack && !brief.text.trim().is_empty()
 }
 
 fn brief_document(storage: &AppStorage, brief: BriefRecord) -> MemoryDocument {
@@ -1064,7 +1125,7 @@ fn brief_document_by_id(storage: &AppStorage, brief_id: &str) -> Result<Option<M
             .find(|brief| brief.id == brief_id)
     };
     Ok(brief
-        .filter(|brief| !brief.text.trim().is_empty())
+        .filter(semantic_brief_is_retrievable)
         .map(|brief| brief_document(storage, brief)))
 }
 
@@ -1433,9 +1494,24 @@ fn command_tool_execution_document_by_ref(
     storage: &AppStorage,
     source_ref: &str,
 ) -> Result<Option<MemoryDocument>> {
-    let Some(parsed_ref) = parse_tool_execution_source_ref(source_ref) else {
-        return Ok(None);
+    let runtime_ref = RuntimeRef::parse(source_ref).ok();
+    if let Some(RuntimeRef::ToolExecution {
+        id,
+        batch_item_index,
+        selector,
+    }) = runtime_ref
+    {
+        return command_tool_execution_document(storage, &id, batch_item_index, selector);
     };
+    Ok(None)
+}
+
+fn command_tool_execution_document(
+    storage: &AppStorage,
+    tool_execution_id: &str,
+    batch_item_index: Option<usize>,
+    selector: ToolExecutionRefSelector,
+) -> Result<Option<MemoryDocument>> {
     let runtime_db = storage.runtime_db()?;
     let record = if let Some(runtime_db) = runtime_db.as_ref() {
         runtime_db
@@ -1443,7 +1519,7 @@ fn command_tool_execution_document_by_ref(
             .payload_by_id(
                 EvidenceKind::ToolExecution,
                 &storage_agent_id(storage),
-                &parsed_ref.tool_execution_id,
+                tool_execution_id,
             )?
             .map(|row| serde_json::from_str::<ToolExecutionRecord>(&row.payload_json))
             .transpose()?
@@ -1451,16 +1527,12 @@ fn command_tool_execution_document_by_ref(
         storage
             .read_recent_tool_executions(usize::MAX)?
             .into_iter()
-            .find(|record| record.id == parsed_ref.tool_execution_id)
+            .find(|record| record.id == tool_execution_id)
     };
     let Some(record) = record else {
         return Ok(None);
     };
-    match (
-        record.tool_name.as_str(),
-        parsed_ref.batch_item_index,
-        parsed_ref.selector,
-    ) {
+    match (record.tool_name.as_str(), batch_item_index, selector) {
         ("ExecCommand", None, ToolExecutionRefSelector::Cmd) => Ok(record
             .input
             .get("cmd")
@@ -1476,54 +1548,13 @@ fn command_tool_execution_document_by_ref(
                     .and_then(Value::as_str)
                     .map(|cmd| command_receipt_document(&record, Some(index), Some(item), cmd))
             })),
-        ("ExecCommand", None, ToolExecutionRefSelector::Output(stream)) => {
-            Ok(command_output_document(&record, None, stream))
-        }
-        ("ExecCommandBatch", Some(index), ToolExecutionRefSelector::Output(stream)) => {
-            Ok(command_output_document(&record, Some(index), stream))
-        }
+        ("ExecCommand", None, ToolExecutionRefSelector::Output(stream)) => Ok(
+            command_output_document(&record, None, stream.as_ref_selector()),
+        ),
+        ("ExecCommandBatch", Some(index), ToolExecutionRefSelector::Output(stream)) => Ok(
+            command_output_document(&record, Some(index), stream.as_ref_selector()),
+        ),
         _ => Ok(None),
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ToolExecutionRefSelector {
-    Cmd,
-    Output(&'static str),
-}
-
-struct ParsedToolExecutionRef {
-    tool_execution_id: String,
-    batch_item_index: Option<usize>,
-    selector: ToolExecutionRefSelector,
-}
-
-fn parse_tool_execution_source_ref(source_ref: &str) -> Option<ParsedToolExecutionRef> {
-    let rest = source_ref.strip_prefix("tool_execution:")?;
-    if let Some((tool_execution_id, tail)) = rest.rsplit_once(":batch_item:") {
-        let (index, selector) = tail.split_once(':')?;
-        let index = index.parse().ok().filter(|index| *index >= 1)?;
-        return Some(ParsedToolExecutionRef {
-            tool_execution_id: tool_execution_id.to_string(),
-            batch_item_index: Some(index),
-            selector: parse_tool_execution_selector(selector)?,
-        });
-    }
-    let (tool_execution_id, selector) = rest.rsplit_once(':')?;
-    Some(ParsedToolExecutionRef {
-        tool_execution_id: tool_execution_id.to_string(),
-        batch_item_index: None,
-        selector: parse_tool_execution_selector(selector)?,
-    })
-}
-
-fn parse_tool_execution_selector(selector: &str) -> Option<ToolExecutionRefSelector> {
-    match selector {
-        "cmd" => Some(ToolExecutionRefSelector::Cmd),
-        "stdout" => Some(ToolExecutionRefSelector::Output("stdout")),
-        "stderr" => Some(ToolExecutionRefSelector::Output("stderr")),
-        "output" => Some(ToolExecutionRefSelector::Output("output")),
-        _ => None,
     }
 }
 
@@ -2091,6 +2122,168 @@ mod tests {
     }
 
     #[test]
+    fn memory_get_resolves_known_runtime_refs_without_search_index_hit() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        rebuild_memory_index(&storage, None).unwrap();
+
+        let brief = brief_with_workspace(
+            "default",
+            BriefKind::Result,
+            "direct result evidence after index rebuild",
+            "ws-holon",
+        );
+        let brief_ref = format!("brief:{}", brief.id);
+        storage.append_brief(&brief).unwrap();
+
+        storage
+            .append_task(&task_record(
+                "task-direct-1663",
+                "default",
+                TaskKind::CommandTask,
+                TaskStatus::Completed,
+                "direct task source evidence",
+                Some("work-direct-1663".into()),
+                Some(json!({"cmd": "echo direct-task-1663"})),
+                0,
+                0,
+            ))
+            .unwrap();
+
+        let mut work_item = work_item_with_workspace(
+            "default",
+            "direct work item ref",
+            WorkItemState::Open,
+            "ws-holon",
+        );
+        work_item.id = "work-direct-1663".into();
+        work_item.todo_list = vec![TodoItem {
+            text: "prove direct work item get".into(),
+            state: TodoItemState::InProgress,
+        }];
+        storage.append_work_item(&work_item).unwrap();
+
+        storage
+            .append_context_episode(&ContextEpisodeRecord {
+                id: "episode-direct-1663".into(),
+                agent_id: "default".into(),
+                workspace_id: "ws-holon".into(),
+                created_at: Utc::now(),
+                finalized_at: Utc::now(),
+                start_turn_index: 1,
+                end_turn_index: 2,
+                start_message_count: 1,
+                end_message_count: 2,
+                boundary_reason: EpisodeBoundaryReason::HardTurnCap,
+                current_work_item_id: Some("work-direct-1663".into()),
+                objective: Some("runtime refs".into()),
+                work_summary: Some("direct episode source".into()),
+                scope_hints: vec![],
+                source_turn_ids: vec![],
+                source_refs: vec![],
+                generated_by: None,
+                operator_intents: vec![],
+                runtime_facts: vec![],
+                task_results: vec![],
+                unresolved_items: vec![],
+                model_inferences: vec![],
+                summary: "direct episode evidence after stale index".into(),
+                working_set_files: vec![],
+                commands: vec![],
+                verification: vec![],
+                decisions: vec![],
+                carry_forward: vec![],
+                waiting_on: vec![],
+            })
+            .unwrap();
+
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-direct-1663".into(),
+                agent_id: "default".into(),
+                work_item_id: Some("work-direct-1663".into()),
+                turn_index: 0,
+                turn_id: None,
+                tool_name: "ExecCommand".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 10,
+                authority_class: crate::types::AuthorityClass::OperatorInstruction,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: json!({"cmd": "printf direct-tool-1663"}),
+                output: json!({
+                    "stdout_preview": "direct-tool-1663",
+                    "stderr_preview": "",
+                    "truncated": false
+                }),
+                summary: "command exited with status 0".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            get_memory(&storage, &brief_ref, None, None)
+                .unwrap()
+                .unwrap()
+                .content,
+            "direct result evidence after index rebuild"
+        );
+        assert!(get_memory(&storage, "task:task-direct-1663", None, None)
+            .unwrap()
+            .unwrap()
+            .content
+            .contains("direct task source evidence"));
+        assert!(
+            get_memory(&storage, "work_item:work-direct-1663", None, None)
+                .unwrap()
+                .unwrap()
+                .content
+                .contains("prove direct work item get")
+        );
+        assert!(
+            get_memory(&storage, "episode:episode-direct-1663", None, None)
+                .unwrap()
+                .unwrap()
+                .content
+                .contains("direct episode evidence after stale index")
+        );
+        assert!(
+            get_memory(&storage, "tool_execution:tool-direct-1663:cmd", None, None)
+                .unwrap()
+                .unwrap()
+                .content
+                .contains("direct-tool-1663")
+        );
+    }
+
+    #[test]
+    fn ack_briefs_are_not_semantic_memory_get_sources() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let ack = brief_with_workspace(
+            "default",
+            BriefKind::Ack,
+            "Queued work: direct ack should stay lifecycle evidence",
+            "ws-holon",
+        );
+        let ack_ref = format!("brief:{}", ack.id);
+        storage.append_brief(&ack).unwrap();
+
+        assert!(get_memory(&storage, &ack_ref, None, Some("ws-holon"))
+            .unwrap()
+            .is_none());
+        assert!(
+            !search_memory(&storage, "direct ack", 10, Some("ws-holon"), false)
+                .unwrap()
+                .iter()
+                .any(|result| result.source_ref == ack_ref)
+        );
+    }
+
+    #[test]
     fn memory_get_returns_db_backed_runtime_evidence_content() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
@@ -2113,11 +2306,10 @@ mod tests {
 
         storage.append_brief(&brief).unwrap();
         assert!(!storage.ledger_dir().join("briefs.jsonl").exists());
-        rebuild_memory_index(&storage, Some("ws-holon")).unwrap();
 
         let memory = get_memory(&storage, &brief_ref, None, Some("ws-holon"))
             .unwrap()
-            .expect("DB-backed runtime evidence should be indexed");
+            .expect("DB-backed runtime evidence should be directly retrievable");
         assert_eq!(memory.content, body);
         assert!(!memory.truncated);
     }

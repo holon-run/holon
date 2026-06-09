@@ -4,25 +4,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
+    memory::refs::{RuntimeRef, ALLOWED_SOURCE_REF_PREFIXES},
     runtime::RuntimeHandle,
     tool::{helpers::invalid_tool_input, spec::typed_spec, ToolError},
     types::{AuthorityClass, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
-use crate::tool::helpers::{parse_tool_args, validate_non_empty};
+use crate::tool::helpers::parse_tool_args;
 
 pub(crate) const NAME: &str = "MemoryGet";
 const MAX_CHARS_MAX: usize = 50_000;
-const ALLOWED_SOURCE_REF_PREFIXES: &[&str] = &[
-    "agent_memory:",
-    "workspace_profile:",
-    "brief:",
-    "episode:",
-    "work_item:",
-    "tool_execution:",
-    "task:",
-];
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -64,10 +56,10 @@ pub(crate) async fn execute(
         .with_details(json!({
             "source_ref": source_ref,
             "allowed_source_ref_prefixes": ALLOWED_SOURCE_REF_PREFIXES,
-            "reason": "source_ref was syntactically valid but is not present in the current visible memory index",
+            "reason": "source_ref was syntactically valid but is not present in the current visible runtime sources",
         }))
         .with_recovery_hint(
-            "call MemorySearch again and pass one of its returned source_ref values verbatim, or copy an available prompt source_ref such as brief_ref/cmd_ref/stdout_ref/stderr_ref/output_ref verbatim",
+            "copy an available prompt source_ref such as brief_ref/cmd_ref/stdout_ref/stderr_ref/output_ref verbatim, or call MemorySearch to discover a visible source_ref",
         )
         .into());
     };
@@ -75,92 +67,9 @@ pub(crate) async fn execute(
 }
 
 fn validate_source_ref(source_ref: String) -> Result<String> {
-    let source_ref = validate_non_empty(source_ref, NAME, "source_ref")?;
-    if source_ref.chars().any(char::is_whitespace) {
-        return Err(invalid_tool_input(
-            NAME,
-            "MemoryGet `source_ref` must be a single opaque handle without whitespace",
-            json!({
-                "field": "source_ref",
-                "source_ref": source_ref,
-                "validation_error": "must not contain whitespace",
-            }),
-            "copy a source_ref exactly from MemorySearch.results[].source_ref; do not paste snippets or paths",
-        ));
-    }
-
-    let Some((prefix, suffix)) = source_ref.split_once(':') else {
-        return Err(invalid_source_ref_error(
-            &source_ref,
-            "missing source_ref prefix",
-        ));
-    };
-    let prefix = format!("{prefix}:");
-    if prefix == "tool_execution:" {
-        return validate_tool_execution_source_ref(&source_ref, suffix);
-    }
-
-    if suffix.is_empty() {
-        return Err(invalid_source_ref_error(
-            &source_ref,
-            "missing source_ref identifier",
-        ));
-    }
-    if !suffix
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
-    {
-        return Err(invalid_source_ref_error(
-            &source_ref,
-            "source_ref identifier must be an opaque id, not a path, URL, or query",
-        ));
-    }
-
-    if !ALLOWED_SOURCE_REF_PREFIXES.contains(&prefix.as_str()) {
-        return Err(invalid_source_ref_error(
-            &source_ref,
-            "unsupported source_ref prefix",
-        ));
-    }
-
-    Ok(source_ref)
-}
-
-fn validate_tool_execution_source_ref(source_ref: &str, suffix: &str) -> Result<String> {
-    let parts = suffix.split(':').collect::<Vec<_>>();
-    let valid = match parts.as_slice() {
-        [tool_execution_id, selector] => {
-            valid_source_ref_segment(tool_execution_id) && valid_tool_execution_selector(selector)
-        }
-        [tool_execution_id, "batch_item", index, selector] => {
-            valid_source_ref_segment(tool_execution_id)
-                && valid_batch_item_index(index)
-                && valid_tool_execution_selector(selector)
-        }
-        _ => false,
-    };
-    if !valid {
-        return Err(invalid_source_ref_error(
-            source_ref,
-            "tool_execution source_ref must match tool_execution:<id>:{cmd,stdout,stderr,output} or tool_execution:<id>:batch_item:<index>:{cmd,stdout,stderr,output}",
-        ));
-    }
-    Ok(source_ref.to_string())
-}
-
-fn valid_tool_execution_selector(selector: &str) -> bool {
-    matches!(selector, "cmd" | "stdout" | "stderr" | "output")
-}
-
-fn valid_batch_item_index(index: &str) -> bool {
-    index.parse::<usize>().is_ok_and(|index| index >= 1) && !index.starts_with('0')
-}
-
-fn valid_source_ref_segment(segment: &str) -> bool {
-    !segment.is_empty()
-        && segment
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    RuntimeRef::parse(&source_ref)
+        .map(|parsed| parsed.source_ref())
+        .map_err(|error| invalid_source_ref_error(&source_ref, error.validation_error()))
 }
 
 fn validate_max_chars(max_chars: Option<usize>) -> Result<Option<usize>> {
@@ -187,14 +96,14 @@ fn validate_max_chars(max_chars: Option<usize>) -> Result<Option<usize>> {
 fn invalid_source_ref_error(source_ref: &str, validation_error: &'static str) -> anyhow::Error {
     invalid_tool_input(
         NAME,
-        "MemoryGet `source_ref` must be copied from MemorySearch results",
+        "MemoryGet `source_ref` must be a standardized runtime ref",
         json!({
             "field": "source_ref",
             "source_ref": source_ref,
             "validation_error": validation_error,
             "allowed_source_ref_prefixes": ALLOWED_SOURCE_REF_PREFIXES,
         }),
-        "call MemorySearch first and copy one returned source_ref verbatim; use ExecCommand for workspace files or skill docs instead of MemoryGet",
+        "copy an available prompt source_ref verbatim, or call MemorySearch to discover a visible source_ref; use ExecCommand for workspace files or skill docs instead of MemoryGet",
     )
 }
 
@@ -273,7 +182,7 @@ mod tests {
             assert_eq!(error.kind, "invalid_tool_input");
             assert_eq!(
                 error.recovery_hint.as_deref(),
-                Some("call MemorySearch first and copy one returned source_ref verbatim; use ExecCommand for workspace files or skill docs instead of MemoryGet")
+                Some("copy an available prompt source_ref verbatim, or call MemorySearch to discover a visible source_ref; use ExecCommand for workspace files or skill docs instead of MemoryGet")
             );
         }
     }
