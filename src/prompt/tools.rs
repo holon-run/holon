@@ -272,14 +272,11 @@ mod tests {
             .expect("task control section");
         assert!(section
             .content
-            .contains("Do not use TaskOutput polling as the default way"));
-        assert!(section
+            .contains("Use TaskOutput for bounded output inspection"));
+        assert!(section.content.contains("not routine completion polling"));
+        assert!(!section
             .content
             .contains("call WaitFor with wake=task_result"));
-        assert!(section.content.contains("resource set to the task id"));
-        assert!(section
-            .content
-            .contains("bounded output inspection or an explicit current-turn check"));
     }
 
     #[test]
@@ -325,33 +322,34 @@ mod tests {
             .content
             .contains("independent lifecycle and completion criteria"));
         assert!(section.content.contains("not as a scratchpad"));
+        assert!(section.content.contains("transient current-turn plan"));
+        assert!(section.content.contains("default planning tool"));
         assert!(section
             .content
-            .contains("not for transient current-turn steps"));
-        assert!(section.content.contains("not as a default planning tool"));
+            .contains("PickWorkItem makes an existing open item current"));
+        assert!(section
+            .content
+            .contains("lets the runtime record the continuation"));
+        assert!(section
+            .content
+            .contains("instead of you manually blocking the caller"));
         assert!(section.content.contains("Reuse the current WorkItem"));
         assert!(section
             .content
-            .contains("continuous discussion, planning threads"));
+            .contains("Continuous discussion, planning threads"));
         assert!(section.content.contains("candidate issue screening"));
         assert!(section
             .content
-            .contains("Do not create a new WorkItem just to refine"));
-        assert!(section
-            .content
-            .contains("switch candidates inside the same planning thread"));
-        assert!(section
-            .content
-            .contains("update its objective, plan_status, and todo_list"));
-        assert!(section.content.contains("edit the plan artifact file"));
+            .contains("should normally update one WorkItem rather than create another"));
+        assert!(section.content.contains("edit plan_artifact.path directly"));
         assert!(section.content.contains("plan_status=ready"));
         assert!(section.content.contains("Use WaitFor, not UpdateWorkItem"));
         assert!(section
             .content
-            .contains("update objective or plan_status and edit the plan artifact"));
+            .contains("Update objective, plan_status, plan artifact, or todo_list"));
         assert!(section
             .content
-            .contains("Update todo_list after material progress"));
+            .contains("material progress, verification, blockers"));
         assert!(!section
             .content
             .contains("use ApplyPatch first and update the work item afterward"));
@@ -363,13 +361,9 @@ mod tests {
             .content
             .contains("promotes that exact text as the canonical completion report"));
         assert!(!section.content.contains("result_summary"));
-        assert!(section.content.contains("specific wait with WaitFor"));
         assert!(section
             .content
-            .contains("instead of silently widening exploration"));
-        assert!(section
-            .content
-            .contains("audit whether the acceptance evidence is present"));
+            .contains("audit whether acceptance evidence is present"));
     }
 
     #[test]
@@ -385,17 +379,16 @@ mod tests {
             .iter()
             .find(|s| s.name == "tool_work_item_scheduling")
             .expect("work item scheduling section");
-        assert!(section.content.contains("open runnable WorkItem"));
-        assert!(section.content.contains("system tick"));
-        assert!(section.content.contains("Ending the current response"));
         assert!(section
             .content
-            .contains("does not change WorkItem readiness"));
-        assert!(section.content.contains("Use WaitFor to record"));
-        assert!(section.content.contains("operator_input waits"));
-        assert!(section
-            .content
-            .contains("Keep runnable WorkItems only for work that is actually ready"));
+            .contains("Use WorkItem scheduling views to choose or verify focus"));
+        assert!(section.content.contains("`queued`/`runnable`"));
+        assert!(section.content.contains("`yielded` means parked"));
+        assert!(section.content.contains("continuation frame"));
+        assert!(section.content.contains("should not be treated as blocked"));
+        assert!(section.content.contains("`blocked`/`waiting_for_operator`"));
+        assert!(section.content.contains("Ending a response"));
+        assert!(section.content.contains("only yields the turn"));
     }
 
     #[test]
@@ -419,13 +412,11 @@ mod tests {
             .iter()
             .find(|s| s.name == "tool_work_item_read")
             .expect("work item read section");
-        assert!(section.content.contains("current_work_item_id as focus"));
-        assert!(section.content.contains("open/completed"));
+        assert!(section.content.contains("current focus"));
+        assert!(section.content.contains("lifecycle"));
+        assert!(section.content.contains("yielded"));
         assert!(section.content.contains("waiting_for_operator"));
         assert!(section.content.contains("runnable"));
-        assert!(section
-            .content
-            .contains("derived from scheduler readiness plus current focus"));
         assert!(section.content.contains("before relying on memory briefs"));
     }
 
