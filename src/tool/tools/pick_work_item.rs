@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    runtime::{RuntimeHandle, WorkItemFocusTransition},
+    runtime::{RuntimeHandle, WorkItemContinuationSummary, WorkItemFocusTransition},
     tool::helpers::{normalize_optional_non_empty, parse_tool_args, validate_non_empty},
     tool::spec::typed_spec,
     types::{AuthorityClass, ToolCapabilityFamily, WorkItemRecord},
@@ -29,6 +29,10 @@ pub(crate) struct PickWorkItemResult {
     pub(crate) current_work_item: WorkItemRecord,
     pub(crate) current_work_item_id: String,
     pub(crate) transition: WorkItemFocusTransition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) continuation_created: Option<WorkItemContinuationSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) continuation_resolved: Option<WorkItemContinuationSummary>,
     pub(crate) binding_note: String,
 }
 
@@ -63,6 +67,8 @@ pub(crate) async fn execute(
             current_work_item,
             current_work_item_id,
             transition: picked.transition,
+            continuation_created: picked.continuation_created,
+            continuation_resolved: picked.continuation_resolved,
             binding_note: "subsequent tool calls in this turn are bound to the new current work item unless they explicitly specify another work_item_id".into(),
         },
     )

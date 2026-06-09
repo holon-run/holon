@@ -603,7 +603,7 @@
       "stability": "stable"
     },
     {
-      "description": "Make an existing open work item the current work-item focus for this agent. Include reason when switching away from runnable current work; blocked work items may be picked for inspection but remain non-runnable.\n",
+      "description": "Make an existing open work item the current work-item focus for this agent. When switching from a different runnable current work item, the runtime yields that current item to the picked item and resumes it when the picked item completes. Blocked work items may be picked for inspection but remain non-runnable.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -672,7 +672,7 @@
       "stability": "stable"
     },
     {
-      "description": "List recent work items with explicit current, open, completed, queued, blocked, waiting_for_operator, and runnable views. Use this before relying on memory briefs for work-item focus.\n",
+      "description": "List recent work items with explicit current, open, completed, queued, yielded, blocked, waiting_for_operator, and runnable views. Use this before relying on memory briefs for work-item focus.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -686,6 +686,7 @@
               "completed",
               "current",
               "queued",
+              "yielded",
               "blocked",
               "waiting_for_operator",
               "runnable",
@@ -803,7 +804,7 @@
       "stability": "stable"
     },
     {
-      "description": "Mark an open work item completed. Write the operator-facing completion report as assistant text in the same round; the runtime promotes that text after this tool succeeds.\n",
+      "description": "Mark an open work item completed. Write the operator-facing completion report as assistant text in the same round; the runtime promotes that text after this tool succeeds. If this work item has a yielded direct caller, completion resumes that caller as current and the turn closes for scheduler continuation.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {

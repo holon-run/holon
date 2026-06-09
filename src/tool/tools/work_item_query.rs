@@ -24,6 +24,7 @@ pub(crate) enum WorkItemLifecycleView {
 pub(crate) enum WorkItemFocusView {
     Current,
     Queued,
+    Yielded,
     Blocked,
     Completed,
 }
@@ -145,7 +146,16 @@ pub(crate) async fn view_for_record(
             .map(WaitConditionSummary::from)
             .collect(),
     };
-    let readiness = readiness_for_view(&record, &active_wait_conditions);
+    let is_yielded = runtime
+        .storage()
+        .latest_active_work_item_continuation_for_suspended(&record.agent_id, &record.id)?
+        .is_some();
+    let readiness = readiness_for_view(&record, &active_wait_conditions, is_yielded);
+    let focus = if is_yielded && !is_current && record.state == WorkItemState::Open {
+        WorkItemFocusView::Yielded
+    } else {
+        focus
+    };
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,
@@ -290,9 +300,13 @@ pub(crate) fn focus_view(record: &WorkItemRecord, is_current: bool) -> WorkItemF
 pub(crate) fn readiness_for_view(
     record: &WorkItemRecord,
     active_wait_conditions: &[WaitConditionSummary],
+    is_yielded: bool,
 ) -> WorkItemReadiness {
     if record.state == WorkItemState::Completed {
         return WorkItemReadiness::Completed;
+    }
+    if is_yielded {
+        return WorkItemReadiness::Yielded;
     }
     if active_wait_conditions
         .iter()

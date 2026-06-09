@@ -1,1 +1,1 @@
-Make an existing open work item the current work-item focus for this agent. Include reason when switching away from runnable current work; blocked work items may be picked for inspection but remain non-runnable.
+Make an existing open work item the current work-item focus for this agent. When switching from a different runnable current work item, the runtime yields that current item to the picked item and resumes it when the picked item completes. Blocked work items may be picked for inspection but remain non-runnable.

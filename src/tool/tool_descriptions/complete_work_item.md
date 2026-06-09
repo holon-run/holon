@@ -1,1 +1,1 @@
-Mark an open work item completed. Write the operator-facing completion report as assistant text in the same round; the runtime promotes that text after this tool succeeds.
+Mark an open work item completed. Write the operator-facing completion report as assistant text in the same round; the runtime promotes that text after this tool succeeds. If this work item has a yielded direct caller, completion resumes that caller as current and the turn closes for scheduler continuation.

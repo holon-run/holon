@@ -8,9 +8,9 @@ use crate::types::{
     DeliverySummaryRecord, FailureArtifact, FailureArtifactCategory, SpawnAgentModelRequest,
     SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, SpawnAgentResult, TaskHandle,
     TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus,
-    TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef, WorkItemDelegationRecord,
-    WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
-    CHILD_AGENT_TASK_KIND,
+    TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef, WorkItemContinuationFrame,
+    WorkItemContinuationReturnPolicy, WorkItemDelegationRecord, WorkItemDelegationState,
+    WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState, CHILD_AGENT_TASK_KIND,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -46,11 +46,28 @@ pub struct WorkItemFocusTransition {
     pub warnings: Vec<WorkItemFocusTransitionWarning>,
 }
 
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct WorkItemContinuationSummary {
+    pub frame_id: String,
+    pub suspended_work_item_id: String,
+    pub active_work_item_id: String,
+    pub return_policy: WorkItemContinuationReturnPolicy,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct PickedWorkItem {
     pub previous_work_item: Option<WorkItemRecord>,
     pub current_work_item: WorkItemRecord,
     pub transition: WorkItemFocusTransition,
+    pub continuation_created: Option<WorkItemContinuationSummary>,
+    pub continuation_resolved: Option<WorkItemContinuationSummary>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletedWorkItem {
+    pub work_item: WorkItemRecord,
+    pub continuation_resumed: Option<WorkItemContinuationSummary>,
 }
 
 fn child_agent_task_detail(workspace_mode: ChildAgentWorkspaceMode) -> serde_json::Value {
@@ -2155,7 +2172,8 @@ impl RuntimeHandle {
         reason: Option<String>,
     ) -> Result<PickedWorkItem> {
         let agent_id = self.agent_id().await?;
-        let current_id = self.agent_state().await?.current_work_item_id;
+        let state = self.agent_state().await?;
+        let current_id = state.current_work_item_id.clone();
         let previous = match current_id.as_deref() {
             Some(id) => self.inner.runtime_db.work_items().latest(id)?,
             None => None,
@@ -2169,12 +2187,109 @@ impl RuntimeHandle {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         });
-        let previous_readiness = previous.as_ref().map(WorkItemRecord::readiness);
-        let current_readiness = record.readiness();
+        let work_queue = self.inner.storage.work_queue_prompt_projection()?;
+        let previous_readiness = previous.as_ref().map(|record| {
+            work_queue
+                .readiness
+                .iter()
+                .find(|item| item.work_item.id == record.id)
+                .map(|item| item.readiness)
+                .unwrap_or_else(|| record.readiness())
+        });
+        let current_readiness = work_queue
+            .readiness
+            .iter()
+            .find(|item| item.work_item.id == record.id)
+            .map(|item| item.readiness)
+            .unwrap_or_else(|| record.readiness());
         let mut warnings = Vec::new();
-        if switching
-            && previous.as_ref().is_some_and(WorkItemRecord::is_runnable)
+        let mut continuation_created = None;
+        let mut continuation_resolved = None;
+        let target_was_yielded = self
+            .inner
+            .storage
+            .latest_active_work_item_continuation_for_suspended(&agent_id, &record.id)?
+            .is_some();
+        if let Some(frame) = self
+            .inner
+            .storage
+            .latest_active_work_item_continuation_for_suspended(&agent_id, &record.id)?
+        {
+            let resolved = frame.resume("explicit_pick");
+            self.inner
+                .storage
+                .append_work_item_continuation(&resolved)?;
+            continuation_resolved = Some(continuation_summary(&resolved, "explicit_pick"));
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_continuation_resumed",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "frame": resolved,
+                    "reason": "explicit_pick",
+                }),
+            ))?;
+        }
+        if let Some(frame) = current_id.as_deref().and_then(|id| {
+            self.inner
+                .storage
+                .latest_active_work_item_continuation_for_suspended(&agent_id, id)
+                .ok()
+                .flatten()
+        }) {
+            let cancelled = frame.cancel("current_focus_reselected");
+            self.inner
+                .storage
+                .append_work_item_continuation(&cancelled)?;
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_continuation_cancelled",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "frame": cancelled,
+                    "reason": "current_focus_reselected",
+                }),
+            ))?;
+        }
+        let yield_current = switching
+            && !target_was_yielded
+            && previous_readiness == Some(WorkItemReadiness::Runnable)
+            && previous
+                .as_ref()
+                .is_some_and(|record| record.state == WorkItemState::Open)
+            && record.state == WorkItemState::Open;
+        if yield_current {
+            if let Some(existing) = self
+                .inner
+                .storage
+                .latest_active_work_item_continuation_for_active(&agent_id, &record.id)?
+            {
+                return Err(anyhow!(
+                    "cannot yield to work item {} because continuation {} already uses it as active work item",
+                    record.id,
+                    existing.id
+                ));
+            }
+            if let Some(previous) = previous.as_ref() {
+                let frame = WorkItemContinuationFrame::new_on_completed(
+                    agent_id.clone(),
+                    previous.id.clone(),
+                    record.id.clone(),
+                    state.current_turn_id.clone(),
+                );
+                self.inner.storage.append_work_item_continuation(&frame)?;
+                continuation_created = Some(continuation_summary(&frame, "pick_work_item"));
+                self.inner.storage.append_event(&AuditEvent::new(
+                    "work_item_continuation_created",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "frame": frame,
+                        "reason": "pick_work_item",
+                    }),
+                ))?;
+            }
+        } else if switching
+            && previous_readiness == Some(WorkItemReadiness::Runnable)
             && normalized_reason.is_none()
+            && !target_was_yielded
         {
             warnings.push(WorkItemFocusTransitionWarning {
                 code: "missing_pick_reason_for_runnable_focus_switch".into(),
@@ -2183,13 +2298,17 @@ impl RuntimeHandle {
         }
         let switch_kind = if !switching {
             "same_work_item"
-        } else if previous.as_ref().is_some_and(WorkItemRecord::is_runnable) {
+        } else if continuation_created.is_some() {
+            "yield_current"
+        } else if continuation_resolved.is_some() {
+            "explicit_yield_return"
+        } else if previous_readiness == Some(WorkItemReadiness::Runnable) {
             "explicit_focus_override"
         } else {
             "explicit_focus_pick"
         }
         .to_string();
-        let current_focus_mode = if record.is_runnable() {
+        let current_focus_mode = if current_readiness == WorkItemReadiness::Runnable {
             "runnable"
         } else {
             "inspection"
@@ -2227,12 +2346,16 @@ impl RuntimeHandle {
                 "switch_kind": transition.switch_kind.clone(),
                 "current_focus_mode": transition.current_focus_mode.clone(),
                 "warnings": transition.warnings.clone(),
+                "continuation_created": continuation_created.clone(),
+                "continuation_resolved": continuation_resolved.clone(),
             }),
         ))?;
         Ok(PickedWorkItem {
             previous_work_item: previous,
             current_work_item: record,
             transition,
+            continuation_created,
+            continuation_resolved,
         })
     }
 
@@ -2428,10 +2551,24 @@ impl RuntimeHandle {
         work_item_id: String,
         warnings: Vec<serde_json::Value>,
     ) -> Result<WorkItemRecord> {
+        Ok(self
+            .complete_work_item_with_continuation(work_item_id, warnings)
+            .await?
+            .work_item)
+    }
+
+    pub async fn complete_work_item_with_continuation(
+        &self,
+        work_item_id: String,
+        warnings: Vec<serde_json::Value>,
+    ) -> Result<CompletedWorkItem> {
         let agent_id = self.agent_id().await?;
         let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if existing.state == WorkItemState::Completed {
-            return Ok(existing);
+            return Ok(CompletedWorkItem {
+                work_item: existing,
+                continuation_resumed: None,
+            });
         }
         let mut record = WorkItemRecord {
             revision: existing.revision + 1,
@@ -2469,6 +2606,9 @@ impl RuntimeHandle {
             "work_item_completed",
         )
         .await?;
+        let continuation_resumed = self
+            .resume_direct_caller_after_work_item_completed(&agent_id, &record)
+            .await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_written",
             serde_json::json!({
@@ -2476,10 +2616,14 @@ impl RuntimeHandle {
                 "record": record,
                 "warnings": warnings.clone(),
                 "warning_count": warnings.len(),
+                "continuation_resumed": continuation_resumed.clone(),
             }),
         ))?;
         self.inner.notify.notify_one();
-        Ok(record)
+        Ok(CompletedWorkItem {
+            work_item: record,
+            continuation_resumed,
+        })
     }
 
     pub async fn promote_work_item_completion_report(
@@ -2610,6 +2754,91 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    async fn resume_direct_caller_after_work_item_completed(
+        &self,
+        agent_id: &str,
+        completed: &WorkItemRecord,
+    ) -> Result<Option<WorkItemContinuationSummary>> {
+        let Some(frame) = self
+            .inner
+            .storage
+            .latest_active_work_item_continuation_for_active(agent_id, &completed.id)?
+        else {
+            return Ok(None);
+        };
+        let Some(suspended) = self
+            .inner
+            .runtime_db
+            .work_items()
+            .latest(&frame.suspended_work_item_id)?
+        else {
+            let cancelled = frame.cancel("suspended_work_item_missing");
+            self.inner
+                .storage
+                .append_work_item_continuation(&cancelled)?;
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_continuation_cancelled",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "frame": cancelled,
+                    "reason": "suspended_work_item_missing",
+                }),
+            ))?;
+            return Ok(None);
+        };
+        if suspended.agent_id != agent_id || suspended.state != WorkItemState::Open {
+            let cancelled = frame.cancel("suspended_work_item_not_open");
+            self.inner
+                .storage
+                .append_work_item_continuation(&cancelled)?;
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_continuation_cancelled",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "frame": cancelled,
+                    "reason": "suspended_work_item_not_open",
+                    "suspended_work_item_state": suspended.state,
+                }),
+            ))?;
+            return Ok(None);
+        }
+
+        let resumed = frame.resume("active_work_item_completed");
+        self.inner.storage.append_work_item_continuation(&resumed)?;
+        {
+            let mut guard = self.inner.agent.lock().await;
+            guard.state.current_work_item_id = Some(suspended.id.clone());
+            guard.state.current_turn_work_item_id = Some(suspended.id.clone());
+            self.inner.storage.write_agent(&guard.state)?;
+        }
+        self.inner
+            .runtime_db
+            .work_items()
+            .set_current_focus(agent_id, Some(&suspended.id))?;
+        let summary = continuation_summary(&resumed, "active_work_item_completed");
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_continuation_resumed",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "frame": resumed,
+                "reason": "active_work_item_completed",
+                "completed_work_item_id": completed.id,
+                "resumed_work_item_id": suspended.id,
+            }),
+        ))?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_continuation_scheduler_evidence",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "reason": "continuation_resumed",
+                "work_item_id": suspended.id,
+                "completed_work_item_id": completed.id,
+                "continuation_frame_id": summary.frame_id,
+            }),
+        ))?;
+        Ok(Some(summary))
+    }
+
     pub(super) fn validate_owned_work_item(
         &self,
         agent_id: &str,
@@ -2673,6 +2902,19 @@ impl RuntimeHandle {
             ))?;
         }
         Ok(released)
+    }
+}
+
+fn continuation_summary(
+    frame: &WorkItemContinuationFrame,
+    reason: impl Into<String>,
+) -> WorkItemContinuationSummary {
+    WorkItemContinuationSummary {
+        frame_id: frame.id.clone(),
+        suspended_work_item_id: frame.suspended_work_item_id.clone(),
+        active_work_item_id: frame.active_work_item_id.clone(),
+        return_policy: frame.return_policy,
+        reason: reason.into(),
     }
 }
 

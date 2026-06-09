@@ -3,6 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    runtime::WorkItemContinuationSummary,
     tool::helpers::{parse_tool_args_with_recovery_hint, validate_non_empty},
     types::{TodoItem, TodoItemState},
 };
@@ -79,6 +80,8 @@ pub(crate) struct WorkItemMutationResult {
     pub(crate) warnings: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) completed_transition: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) continuation_resumed: Option<WorkItemContinuationSummary>,
 }
 
 impl WorkItemMutationResult {
@@ -87,6 +90,7 @@ impl WorkItemMutationResult {
             work_item,
             warnings: Vec::new(),
             completed_transition: None,
+            continuation_resumed: None,
         }
     }
 
@@ -99,6 +103,15 @@ impl WorkItemMutationResult {
             work_item,
             warnings,
             completed_transition: Some(completed_transition),
+            continuation_resumed: None,
         }
+    }
+
+    pub(crate) fn with_continuation_resumed(
+        mut self,
+        continuation_resumed: Option<WorkItemContinuationSummary>,
+    ) -> Self {
+        self.continuation_resumed = continuation_resumed;
+        self
     }
 }

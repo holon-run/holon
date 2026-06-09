@@ -15,8 +15,8 @@ use crate::types::{
     ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord, ExternalTriggerScope,
     ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord,
     TimerStatus, ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord,
-    WorkItemDelegationRecord, WorkItemRecord, WorkItemState, WorkingMemoryDelta, WorkspaceEntry,
-    WorkspaceOccupancyRecord,
+    WorkItemContinuationFrame, WorkItemDelegationRecord, WorkItemRecord, WorkItemState,
+    WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
@@ -90,6 +90,10 @@ pub struct AgentIdentityRepository<'a> {
 }
 
 pub struct WorkItemDelegationRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+pub struct WorkItemContinuationRepository<'a> {
     db: &'a RuntimeDb,
 }
 
@@ -537,6 +541,84 @@ impl WorkItemDelegationRepository<'_> {
             .optional()?
             .map(|payload| decode_work_item_delegation_payload(&payload))
             .transpose()
+    }
+}
+
+impl WorkItemContinuationRepository<'_> {
+    pub fn import_empty(&self) -> Result<()> {
+        if self
+            .db
+            .storage_domain_is_complete("work_item_continuations", "db")?
+        {
+            return Ok(());
+        }
+        self.db
+            .run_storage_domain_import("work_item_continuations", "new-domain", "db", |_tx| {
+                Ok(serde_json::json!({ "imported_records": 0 }))
+            })
+    }
+
+    pub fn upsert(&self, record: &WorkItemContinuationFrame) -> Result<()> {
+        self.db
+            .transaction(|tx| upsert_work_item_continuation_tx(tx, record))
+    }
+
+    pub fn recent(&self, limit: usize) -> Result<Vec<WorkItemContinuationFrame>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM work_item_continuations
+             ORDER BY updated_at DESC, created_at DESC, continuation_id ASC
+             LIMIT ?1",
+        )?;
+        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
+        let mut records: Vec<_> = rows
+            .map(|row| decode_work_item_continuation_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
+    }
+
+    pub fn recent_for_agent(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkItemContinuationFrame>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM work_item_continuations
+             WHERE agent_id = ?1
+             ORDER BY updated_at DESC, created_at DESC, continuation_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+        let mut records: Vec<_> = rows
+            .map(|row| decode_work_item_continuation_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
+    }
+
+    pub fn active_for_agent(&self, agent_id: &str) -> Result<Vec<WorkItemContinuationFrame>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM work_item_continuations
+             WHERE agent_id = ?1 AND state = 'active'
+             ORDER BY updated_at DESC, created_at DESC, continuation_id ASC",
+        )?;
+        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_work_item_continuation_payload(&row?))
+            .collect()
     }
 }
 
@@ -2518,6 +2600,52 @@ fn upsert_work_item_delegation_tx(
     Ok(())
 }
 
+fn upsert_work_item_continuation_tx(
+    tx: &Transaction<'_>,
+    record: &WorkItemContinuationFrame,
+) -> Result<()> {
+    let payload_json = serde_json::to_string(record)?;
+    let return_policy = enum_string(&record.return_policy)?;
+    let state = enum_string(&record.state)?;
+    tx.execute(
+        "INSERT INTO work_item_continuations (
+            continuation_id, agent_id, suspended_work_item_id, active_work_item_id,
+            return_policy, state, created_at, updated_at, resolved_at, cancelled_at,
+            resolution_reason, last_turn_id, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(continuation_id) DO UPDATE SET
+            agent_id = excluded.agent_id,
+            suspended_work_item_id = excluded.suspended_work_item_id,
+            active_work_item_id = excluded.active_work_item_id,
+            return_policy = excluded.return_policy,
+            state = excluded.state,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            resolved_at = excluded.resolved_at,
+            cancelled_at = excluded.cancelled_at,
+            resolution_reason = excluded.resolution_reason,
+            last_turn_id = excluded.last_turn_id,
+            payload_json = excluded.payload_json
+         WHERE excluded.updated_at >= work_item_continuations.updated_at",
+        params![
+            record.id,
+            record.agent_id,
+            record.suspended_work_item_id,
+            record.active_work_item_id,
+            return_policy,
+            state,
+            timestamp(record.created_at),
+            timestamp(record.updated_at),
+            record.resolved_at.map(timestamp),
+            record.cancelled_at.map(timestamp),
+            record.resolution_reason.as_deref(),
+            record.turn_id.as_deref(),
+            payload_json,
+        ],
+    )?;
+    Ok(())
+}
+
 fn upsert_working_memory_delta_tx(tx: &Transaction<'_>, record: &WorkingMemoryDelta) -> Result<()> {
     anyhow::ensure!(
         !record.agent_id.trim().is_empty(),
@@ -3451,6 +3579,10 @@ fn decode_work_item_delegation_payload(payload: &str) -> Result<WorkItemDelegati
     serde_json::from_str(payload).context("decoding work item delegation payload from runtime db")
 }
 
+fn decode_work_item_continuation_payload(payload: &str) -> Result<WorkItemContinuationFrame> {
+    serde_json::from_str(payload).context("decoding work item continuation payload from runtime db")
+}
+
 fn decode_working_memory_delta_payload(payload: &str) -> Result<WorkingMemoryDelta> {
     serde_json::from_str(payload).context("decoding working memory delta payload from runtime db")
 }
@@ -4167,6 +4299,34 @@ CREATE INDEX IF NOT EXISTS idx_context_episodes_work_item
   ON context_episodes(work_item_id);
 "#,
     },
+    Migration {
+        version: 12,
+        name: "work_item_continuation_stack",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS work_item_continuations (
+  continuation_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  suspended_work_item_id TEXT NOT NULL,
+  active_work_item_id TEXT NOT NULL,
+  return_policy TEXT NOT NULL,
+  state TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  resolved_at TEXT,
+  cancelled_at TEXT,
+  resolution_reason TEXT,
+  last_turn_id TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_item_continuations_agent_state
+  ON work_item_continuations(agent_id, state);
+CREATE INDEX IF NOT EXISTS idx_work_item_continuations_suspended
+  ON work_item_continuations(agent_id, suspended_work_item_id, state);
+CREATE INDEX IF NOT EXISTS idx_work_item_continuations_active
+  ON work_item_continuations(agent_id, active_work_item_id, state);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -4278,6 +4438,10 @@ impl RuntimeDb {
         WorkItemDelegationRepository { db: self }
     }
 
+    pub fn work_item_continuations(&self) -> WorkItemContinuationRepository<'_> {
+        WorkItemContinuationRepository { db: self }
+    }
+
     pub fn working_memory_deltas(&self) -> WorkingMemoryDeltaRepository<'_> {
         WorkingMemoryDeltaRepository { db: self }
     }
@@ -4317,6 +4481,11 @@ impl RuntimeDb {
                 domain: "work_item_delegations",
                 canonical_source: "db",
                 legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
+            },
+            ExpectedStorageDomain {
+                domain: "work_item_continuations",
+                canonical_source: "db",
+                legacy_jsonl_posture: LegacyJsonlPosture::Disabled,
             },
             ExpectedStorageDomain {
                 domain: "working_memory_deltas",
