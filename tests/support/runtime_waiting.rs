@@ -549,7 +549,7 @@ pub async fn multi_session_state_is_isolated() -> Result<()> {
     let a = host.get_or_create_agent("alpha").await?;
     let b = host.get_or_create_agent("beta").await?;
 
-    a.enqueue(MessageEnvelope::new(
+    let alpha_message = MessageEnvelope::new(
         "alpha",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
@@ -558,9 +558,9 @@ pub async fn multi_session_state_is_isolated() -> Result<()> {
         MessageBody::Text {
             text: "alpha".into(),
         },
-    ))
-    .await?;
-    b.enqueue(MessageEnvelope::new(
+    );
+    a.enqueue(alpha_message.clone()).await?;
+    let beta_message = MessageEnvelope::new(
         "beta",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator { actor_id: None },
@@ -569,16 +569,29 @@ pub async fn multi_session_state_is_isolated() -> Result<()> {
         MessageBody::Text {
             text: "beta".into(),
         },
-    ))
-    .await?;
+    );
+    b.enqueue(beta_message.clone()).await?;
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
     let alpha_briefs = a.recent_briefs(10).await?;
     let beta_briefs = b.recent_briefs(10).await?;
-    assert_eq!(alpha_briefs.len(), 2);
-    assert_eq!(beta_briefs.len(), 2);
+    assert_eq!(alpha_briefs.len(), 1);
+    assert_eq!(beta_briefs.len(), 1);
     assert_eq!(alpha_briefs[0].agent_id, "alpha");
     assert_eq!(beta_briefs[0].agent_id, "beta");
+
+    let alpha_events = a.recent_events(100).await?;
+    let beta_events = b.recent_events(100).await?;
+    assert!(alpha_events.iter().any(|event| {
+        event.kind == "message_acknowledged"
+            && event.data["message_id"].as_str() == Some(alpha_message.id.as_str())
+            && event.data["summary"].as_str() == Some("Queued work: alpha")
+    }));
+    assert!(beta_events.iter().any(|event| {
+        event.kind == "message_acknowledged"
+            && event.data["message_id"].as_str() == Some(beta_message.id.as_str())
+            && event.data["summary"].as_str() == Some("Queued work: beta")
+    }));
     Ok(())
 }
 
