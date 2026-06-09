@@ -29,6 +29,7 @@ implementation and tests.
 - [Work Item Continuation Stack](./work-item-continuation-stack.md)
 - [Long-Lived Context Memory](./long-lived-context-memory.md)
 - [Agent and Workspace Memory](./agent-and-workspace-memory.md)
+- [Runtime Ref Resolution and MemoryGet](./runtime-ref-resolution-and-memory-get.md)
 - [Turn-Local Context Compaction](./turn-local-context-compaction.md)
 - [OpenAI Remote Compaction Boundary](./openai-remote-compaction.md)
 - [Turn Model Lineage And Recovery](./turn-model-lineage-and-recovery.md)
