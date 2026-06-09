@@ -253,6 +253,7 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         "operator_notification_requested" => OperatorEventCategory::OperatorNotification,
         "brief_created" => OperatorEventCategory::Brief,
         "operator_interjection_admitted"
+        | "message_acknowledged"
         | "message_enqueued"
         | "message_admitted"
         | "message_processing_started"
@@ -683,6 +684,7 @@ fn event_text(
     match kind {
         "operator_notification_requested" => operator_notification_text(payload, fallback_summary),
         "brief_created" => brief_text(payload),
+        "message_acknowledged" => simple_event_text("Message acknowledged", ack_body(payload)),
         "message_enqueued" => simple_event_text("Message queued", message_body_preview(payload)),
         "message_admitted" => simple_event_text("Message admitted", message_id_body(payload)),
         "message_processing_started" => {
@@ -944,6 +946,10 @@ fn first_string_field(payload: &Value, fields: &[&str]) -> Option<String> {
 
 fn message_id_body(payload: &Value) -> Option<String> {
     first_string_field(payload, &["message_id", "id"]).map(|id| format!("message {id}"))
+}
+
+fn ack_body(payload: &Value) -> Option<String> {
+    first_string_field(payload, &["summary"]).or_else(|| message_id_body(payload))
 }
 
 fn message_body_preview(payload: &Value) -> Option<String> {

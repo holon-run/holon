@@ -111,10 +111,9 @@ pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> R
     }));
 
     let briefs = runtime.recent_briefs(10).await?;
-    assert!(briefs.iter().any(|brief| {
+    assert!(!briefs.iter().any(|brief| {
         brief.kind == BriefKind::Ack
             && brief.related_message_id.as_deref() == Some(message.id.as_str())
-            && brief.text == "Queued work: exercise the turn boundary"
     }));
     assert!(briefs.iter().any(|brief| {
         brief.kind == BriefKind::Result
@@ -123,6 +122,11 @@ pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> R
     }));
 
     let events = runtime.recent_events(20).await?;
+    assert!(events.iter().any(|event| {
+        event.kind == "message_acknowledged"
+            && event.data["message_id"].as_str() == Some(message.id.as_str())
+            && event.data["summary"].as_str() == Some("Queued work: exercise the turn boundary")
+    }));
     let terminal_event = events
         .iter()
         .find(|event| event.kind == "turn_terminal")

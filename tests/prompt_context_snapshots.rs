@@ -499,15 +499,6 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
     let mut operator_message_with_turn = operator_message.clone();
     operator_message_with_turn.turn_id = Some("turn_op_test".into());
     storage.append_message(&operator_message_with_turn)?;
-    let mut ack_brief = BriefRecord::new(
-        "default",
-        BriefKind::Ack,
-        "Started cargo test runtime_flow.",
-        Some(operator_message.id.clone()),
-        Some("task_exec_1".into()),
-    );
-    ack_brief.id = "brief_started_runtime_flow".into();
-    storage.append_brief(&ack_brief)?;
     let mut turn_index_brief = BriefRecord::new(
         "default",
         BriefKind::Result,
@@ -612,7 +603,6 @@ Recent turns:
   - continuation trigger: a task-result continuation
   - operator input: Run cargo test runtime_flow and report back.
   - produced briefs:
-    - Ack: Started cargo test runtime_flow. brief_ref=brief:brief_started_runtime_flow
     - Result: Captured completion report promotion. brief_ref=brief:brief_completion_report_promotion
   - tool executions:
     - [trusted_system][success] ExecCommand Run command: cargo test runtime_flow tool_execution_id=tool_exec_1
@@ -1831,7 +1821,7 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
     storage.append_message(&first_operator)?;
     storage.append_brief(&BriefRecord::new(
         "default",
-        BriefKind::Ack,
+        BriefKind::Result,
         "Started deterministic fixture construction.",
         Some(first_operator.id.clone()),
         None,
@@ -2217,7 +2207,7 @@ fn multi_turn_context_eval_keeps_compacted_and_interleaved_work_items_clear() ->
     storage.append_message(&recent_operator)?;
     storage.append_brief(&BriefRecord::new(
         "default",
-        BriefKind::Ack,
+        BriefKind::Result,
         "Active work resumed after compaction.",
         Some(recent_operator.id.clone()),
         None,

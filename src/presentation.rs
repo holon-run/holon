@@ -1164,7 +1164,6 @@ impl PresentationReducer {
 
 fn brief_result_item(event: &ProjectionEventRecord) -> Option<(String, PresentationItem)> {
     match serde_json::from_value::<BriefRecord>(event.payload.clone()) {
-        Ok(brief) if is_operator_queue_ack(&brief) => None,
         Ok(brief) => {
             let key = format!("id:{}", brief.id);
             Some((
@@ -1378,17 +1377,6 @@ fn operator_message_item(event: &ProjectionEventRecord) -> Option<(String, Strin
     Some((key, text))
 }
 
-fn is_operator_queue_ack(brief: &BriefRecord) -> bool {
-    // This matches the canonical operator-input acknowledgement from
-    // `brief::make_ack`; arbitrary Ack briefs should still render normally.
-    brief.kind == BriefKind::Ack
-        && brief.related_message_id.is_some()
-        && brief
-            .text
-            .trim_start()
-            .starts_with(crate::brief::QUEUED_WORK_ACK_PREFIX)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FinalBriefText {
     agent_id: String,
@@ -1400,7 +1388,6 @@ fn final_brief_texts(events: &[ProjectionEventRecord]) -> Vec<FinalBriefText> {
         .iter()
         .filter(|event| event.kind == "brief_created")
         .filter_map(|event| serde_json::from_value::<BriefRecord>(event.payload.clone()).ok())
-        .filter(|brief| !is_operator_queue_ack(brief))
         .filter(|brief| !brief.text.trim().is_empty())
         .map(|brief| FinalBriefText {
             agent_id: brief.agent_id,
@@ -3389,7 +3376,7 @@ mod tests {
     }
 
     #[test]
-    fn reducer_filters_canonical_operator_queue_ack_briefs() {
+    fn reducer_keeps_legacy_ack_briefs_as_assistant_results() {
         let message = crate::types::MessageEnvelope::new(
             "default",
             crate::types::MessageKind::OperatorPrompt,
@@ -3407,7 +3394,7 @@ mod tests {
         let mut reducer = PresentationReducer::new();
         let items = reducer.reduce(&[event]);
 
-        assert!(items.is_empty());
+        assert_eq!(items.len(), 1);
     }
 
     #[test]

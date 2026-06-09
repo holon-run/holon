@@ -400,6 +400,29 @@ fn apply_brief_event(app: &mut TuiApp, brief: BriefRecord) {
     );
 }
 
+fn apply_event(app: &mut TuiApp, event_type: &str, payload: serde_json::Value) {
+    let event_id = format!("evt-{event_type}");
+    let projection = app
+        .projection
+        .get_or_insert_with(|| TuiProjection::from_snapshot(sample_snapshot("default", "evt-0")));
+    projection.apply_event(
+        AgentStreamEvent {
+            id: event_id.clone(),
+            event: event_type.into(),
+            data: StreamEventEnvelope {
+                id: event_id,
+                event_seq: 0,
+                ts: Utc::now(),
+                agent_id: "default".into(),
+                event_type: event_type.into(),
+                provenance: None,
+                payload,
+            },
+        },
+        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+}
+
 fn rendered_buffer_text(terminal: &Terminal<TestBackend>) -> String {
     terminal
         .backend()
@@ -2445,25 +2468,21 @@ fn chat_text_renders_brief_events_from_projection() {
 }
 
 #[test]
-fn chat_text_filters_operator_queue_ack_but_keeps_result_brief_events() {
+fn chat_text_ignores_ack_lifecycle_event_but_keeps_result_brief_events() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    let message = crate::types::MessageEnvelope::new(
-        "default",
-        crate::types::MessageKind::OperatorPrompt,
-        crate::types::MessageOrigin::Operator { actor_id: None },
-        crate::types::AuthorityClass::OperatorInstruction,
-        crate::types::Priority::Normal,
-        crate::types::MessageBody::Text {
-            text: "duplicate".into(),
-        },
+    apply_event(
+        &mut app,
+        "message_acknowledged",
+        json!({
+            "agent_id": "default",
+            "message_id": "msg-duplicate",
+            "summary": "Queued work: duplicate",
+        }),
     );
-    let ack = crate::brief::make_ack("default", &message);
-    assert!(ack.text.starts_with(crate::brief::QUEUED_WORK_ACK_PREFIX));
-    apply_brief_event(&mut app, ack);
     apply_brief_event(
         &mut app,
         BriefRecord {
