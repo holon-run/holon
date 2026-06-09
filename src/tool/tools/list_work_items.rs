@@ -126,6 +126,7 @@ pub(crate) async fn execute(
                 args.include_todo_list,
                 delivery_summaries.as_ref(),
                 Some(&wait_conditions),
+                Some(&yielded_ids),
             )
             .await?,
         );

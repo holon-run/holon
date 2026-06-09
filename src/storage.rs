@@ -2171,6 +2171,11 @@ impl AppStorage {
         &self,
         agent_id: &str,
     ) -> Result<Vec<WorkItemContinuationFrame>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .work_item_continuations()
+                .active_for_agent(agent_id);
+        }
         Ok(self
             .latest_work_item_continuations()?
             .into_iter()

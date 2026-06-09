@@ -68,8 +68,16 @@ pub(crate) async fn execute(
         .complete_work_item_with_continuation(work_item_id, warnings_json(&warnings))
         .await?;
     let context = query_context(runtime).await?;
-    let work_item =
-        view_for_record(runtime, &context, completed.work_item, true, None, None).await?;
+    let work_item = view_for_record(
+        runtime,
+        &context,
+        completed.work_item,
+        true,
+        None,
+        None,
+        None,
+    )
+    .await?;
     serialize_success(
         NAME,
         &WorkItemMutationResult::with_completion_transition(

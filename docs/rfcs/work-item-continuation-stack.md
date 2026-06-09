@@ -1,5 +1,6 @@
 ---
 title: RFC: Work Item Continuation Stack
+Handle: rfc-work-item-continuation-stack
 date: 2026-06-09
 status: draft
 issue:

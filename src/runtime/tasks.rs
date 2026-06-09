@@ -2205,16 +2205,12 @@ impl RuntimeHandle {
         let mut warnings = Vec::new();
         let mut continuation_created = None;
         let mut continuation_resolved = None;
-        let target_was_yielded = self
+        let target_yielded_frame = self
             .inner
             .storage
-            .latest_active_work_item_continuation_for_suspended(&agent_id, &record.id)?
-            .is_some();
-        if let Some(frame) = self
-            .inner
-            .storage
-            .latest_active_work_item_continuation_for_suspended(&agent_id, &record.id)?
-        {
+            .latest_active_work_item_continuation_for_suspended(&agent_id, &record.id)?;
+        let target_was_yielded = target_yielded_frame.is_some();
+        if let Some(frame) = target_yielded_frame {
             let resolved = frame.resume("explicit_pick");
             self.inner
                 .storage
@@ -2229,25 +2225,25 @@ impl RuntimeHandle {
                 }),
             ))?;
         }
-        if let Some(frame) = current_id.as_deref().and_then(|id| {
-            self.inner
+        if let Some(id) = current_id.as_deref() {
+            if let Some(frame) = self
+                .inner
                 .storage
-                .latest_active_work_item_continuation_for_suspended(&agent_id, id)
-                .ok()
-                .flatten()
-        }) {
-            let cancelled = frame.cancel("current_focus_reselected");
-            self.inner
-                .storage
-                .append_work_item_continuation(&cancelled)?;
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_continuation_cancelled",
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "frame": cancelled,
-                    "reason": "current_focus_reselected",
-                }),
-            ))?;
+                .latest_active_work_item_continuation_for_suspended(&agent_id, id)?
+            {
+                let cancelled = frame.cancel("current_focus_reselected");
+                self.inner
+                    .storage
+                    .append_work_item_continuation(&cancelled)?;
+                self.inner.storage.append_event(&AuditEvent::new(
+                    "work_item_continuation_cancelled",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "frame": cancelled,
+                        "reason": "current_focus_reselected",
+                    }),
+                ))?;
+            }
         }
         let yield_current = switching
             && !target_was_yielded
