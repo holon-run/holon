@@ -13,9 +13,9 @@ use crate::{
         ContextEpisodeRecord, ContinuationClass, ContinuationResolution, ContinuationTriggerKind,
         ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView,
-        TodoItemState, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind, TurnRecord,
-        WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WorkItemRecord,
-        WorkingMemoryDelta, WorkingMemorySnapshot,
+        TodoItemState, ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry,
+        TranscriptEntryKind, TurnRecord, WaitingIntentRecord, WaitingIntentScope,
+        WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
     },
 };
 
@@ -1852,11 +1852,21 @@ fn render_turn_records_with_budget(
                 .find(|record| turn_record_matches_message(record, operator))
         })
         .map(|record| record.turn_id.as_str());
+    let detailed_tool_turn_id = continuation_turn_id.map(ToOwned::to_owned).or_else(|| {
+        turn_records
+            .iter()
+            .rev()
+            .find(|record| continuation_turn_id.is_none_or(|turn_id| record.turn_id != turn_id))
+            .map(|record| record.turn_id.clone())
+    });
 
     let mut rendered_turns = turn_records
         .iter()
         .filter(|record| continuation_turn_id.is_none_or(|turn_id| record.turn_id != turn_id))
-        .filter_map(|record| render_turn_record_projection(record, messages, briefs, tools, None))
+        .filter_map(|record| {
+            let detail_tools = detailed_tool_turn_id.as_deref() == Some(record.turn_id.as_str());
+            render_turn_record_projection(record, messages, briefs, tools, None, detail_tools)
+        })
         .collect::<Vec<_>>();
 
     if let Some(operator) = latest_operator_for_continuation {
@@ -1872,6 +1882,7 @@ fn render_turn_records_with_budget(
                 briefs,
                 tools,
                 current_work_item,
+                true,
             ) {
                 rendered_turns.push(rendered);
             }
@@ -1891,6 +1902,7 @@ fn render_turn_record_projection(
     briefs: &[BriefRecord],
     tools: &[ToolExecutionRecord],
     continuation: Option<&MessageEnvelope>,
+    detail_tools: bool,
 ) -> Option<String> {
     let is_legacy_synthetic_record = record.turn_id.starts_with("legacy-");
     let trigger_message = record
@@ -1971,11 +1983,23 @@ fn render_turn_record_projection(
         .tool_execution_ids
         .iter()
         .filter_map(|id| tools.iter().find(|tool| tool.id == *id))
-        .map(render_recent_tool_execution)
         .collect::<Vec<_>>();
     if !related_tools.is_empty() {
         lines.push("  - tool executions:".to_string());
-        lines.extend(related_tools.into_iter().map(|tool| format!("    {tool}")));
+        if detail_tools {
+            lines.extend(
+                related_tools
+                    .into_iter()
+                    .map(render_recent_tool_execution)
+                    .map(|tool| format!("    {tool}")),
+            );
+        } else {
+            lines.extend(
+                render_recent_tool_execution_rollup(&related_tools)
+                    .into_iter()
+                    .map(|tool| format!("    {tool}")),
+            );
+        }
     }
 
     Some(lines.join("\n"))
@@ -1989,9 +2013,16 @@ fn render_current_continuation_turn_record_projection(
     briefs: &[BriefRecord],
     tools: &[ToolExecutionRecord],
     current_work_item: Option<&WorkItemRecord>,
+    detail_tools: bool,
 ) -> Option<String> {
-    let mut rendered =
-        render_turn_record_projection(record, messages, briefs, tools, Some(current_message))?;
+    let mut rendered = render_turn_record_projection(
+        record,
+        messages,
+        briefs,
+        tools,
+        Some(current_message),
+        detail_tools,
+    )?;
     let mut lines = vec![
         format!(
             "  - current relation: {}",
@@ -2091,26 +2122,8 @@ fn sanitize_inline(value: &str) -> String {
 
 fn command_output_refs(record: &ToolExecutionRecord, batch_item_index: Option<usize>) -> String {
     let output = match (record.tool_name.as_str(), batch_item_index) {
-        ("ExecCommand", None) => record
-            .output
-            .get("result")
-            .or_else(|| {
-                record
-                    .output
-                    .get("envelope")
-                    .and_then(|value| value.get("result"))
-            })
-            .unwrap_or(&record.output),
-        ("ExecCommandBatch", Some(index)) => match record
-            .output
-            .get("result")
-            .or_else(|| {
-                record
-                    .output
-                    .get("envelope")
-                    .and_then(|value| value.get("result"))
-            })
-            .unwrap_or(&record.output)
+        ("ExecCommand", None) => tool_result_payload(record),
+        ("ExecCommandBatch", Some(index)) => match tool_result_payload(record)
             .get("items")
             .and_then(Value::as_array)
             .and_then(|items| items.get(index.saturating_sub(1)))
@@ -2140,11 +2153,234 @@ fn command_output_refs(record: &ToolExecutionRecord, batch_item_index: Option<us
     )
 }
 
+fn tool_result_payload(record: &ToolExecutionRecord) -> &Value {
+    record
+        .output
+        .get("result")
+        .or_else(|| {
+            record
+                .output
+                .get("envelope")
+                .and_then(|value| value.get("result"))
+        })
+        .unwrap_or(&record.output)
+}
+
+fn tool_execution_rollup_ref(record: &ToolExecutionRecord) -> String {
+    crate::tool::helpers::command_output_source_ref(&record.id, None, "output")
+}
+
+fn status_label(status: &ToolExecutionStatus) -> &'static str {
+    match status {
+        ToolExecutionStatus::Success => "success",
+        ToolExecutionStatus::Error => "error",
+    }
+}
+
+fn command_disposition(record: &ToolExecutionRecord) -> Option<&str> {
+    tool_result_payload(record)
+        .get("disposition")
+        .and_then(Value::as_str)
+}
+
+fn command_task_id(record: &ToolExecutionRecord) -> Option<&str> {
+    tool_result_payload(record)
+        .get("task_handle")
+        .and_then(|handle| handle.get("task_id"))
+        .and_then(Value::as_str)
+}
+
+fn command_exit_status(record: &ToolExecutionRecord) -> Option<i64> {
+    tool_result_payload(record)
+        .get("exit_status")
+        .or_else(|| tool_result_payload(record).get("exit_code"))
+        .and_then(Value::as_i64)
+}
+
+fn command_has_nonzero_exit_status(record: &ToolExecutionRecord) -> bool {
+    command_exit_status(record).is_some_and(|status| status != 0)
+}
+
+fn value_has_artifact(value: &Value) -> bool {
+    value
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .is_some_and(|artifacts| !artifacts.is_empty())
+        || [
+            "artifact",
+            "stdout_artifact",
+            "stderr_artifact",
+            "output_artifact",
+        ]
+        .iter()
+        .any(|key| value.get(key).is_some())
+}
+
+fn value_is_truncated(value: &Value) -> bool {
+    [
+        "truncated",
+        "initial_output_truncated",
+        "stdout_truncated",
+        "stderr_truncated",
+        "output_truncated",
+    ]
+    .iter()
+    .any(|key| value.get(key).and_then(Value::as_bool).unwrap_or(false))
+}
+
+fn tool_execution_needs_old_turn_alert(record: &ToolExecutionRecord) -> bool {
+    matches!(record.status, ToolExecutionStatus::Error)
+        || command_has_nonzero_exit_status(record)
+        || (record.tool_name == "ExecCommandBatch" && batch_item_counts(record).failed > 0)
+        || matches!(
+            command_disposition(record),
+            Some("promoted_to_task" | "already_running")
+        )
+        || value_is_truncated(tool_result_payload(record))
+        || value_has_artifact(tool_result_payload(record))
+}
+
+fn tool_execution_needs_old_turn_failure_count(record: &ToolExecutionRecord) -> bool {
+    matches!(record.status, ToolExecutionStatus::Error)
+        || command_has_nonzero_exit_status(record)
+        || (record.tool_name == "ExecCommandBatch" && batch_item_counts(record).failed > 0)
+}
+
+#[derive(Default)]
+struct BatchItemCounts {
+    total: usize,
+    succeeded: usize,
+    failed: usize,
+    promoted: usize,
+    unknown: usize,
+}
+
+fn batch_item_counts(record: &ToolExecutionRecord) -> BatchItemCounts {
+    let total = record
+        .input
+        .get("items")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let mut counts = BatchItemCounts {
+        total,
+        ..BatchItemCounts::default()
+    };
+    let Some(items) = tool_result_payload(record)
+        .get("items")
+        .and_then(Value::as_array)
+    else {
+        counts.unknown = total;
+        return counts;
+    };
+    for item in items.iter().take(total) {
+        let result = item.get("result").unwrap_or(item);
+        match result.get("disposition").and_then(Value::as_str) {
+            Some("promoted_to_task" | "already_running") => counts.promoted += 1,
+            _ => {
+                let status = result
+                    .get("exit_status")
+                    .or_else(|| result.get("exit_code"))
+                    .and_then(Value::as_i64);
+                match status {
+                    Some(0) => counts.succeeded += 1,
+                    Some(_) => counts.failed += 1,
+                    None => counts.unknown += 1,
+                }
+            }
+        }
+    }
+    counts.unknown += total.saturating_sub(items.len());
+    counts
+}
+
+fn render_recent_tool_execution_rollup(records: &[&ToolExecutionRecord]) -> Vec<String> {
+    let total = records.len();
+    let success = records
+        .iter()
+        .filter(|record| !tool_execution_needs_old_turn_failure_count(record))
+        .count();
+    let error = records
+        .iter()
+        .filter(|record| tool_execution_needs_old_turn_failure_count(record))
+        .count();
+    let promoted = records
+        .iter()
+        .filter(|record| {
+            matches!(
+                command_disposition(record),
+                Some("promoted_to_task" | "already_running")
+            )
+        })
+        .count();
+    let mut refs = records
+        .iter()
+        .take(6)
+        .map(|record| tool_execution_rollup_ref(record))
+        .collect::<Vec<_>>();
+    if records.len() > refs.len() {
+        refs.push(format!("+{} more", records.len() - refs.len()));
+    }
+    let mut lines = vec![format!(
+        "- summary: total={total} success={success} error={error} promoted={promoted} refs=[{}]",
+        refs.join(", ")
+    )];
+    lines.extend(
+        records
+            .iter()
+            .filter(|record| tool_execution_needs_old_turn_alert(record))
+            .map(|record| render_recent_tool_execution_alert(record)),
+    );
+    lines
+}
+
+fn render_recent_tool_execution_alert(record: &ToolExecutionRecord) -> String {
+    let mut parts = vec![
+        format!(
+            "- alert: {} status={} tool_execution_id={}",
+            record.tool_name,
+            status_label(&record.status),
+            sanitize_inline(&record.id)
+        ),
+        format!(
+            "summary={}",
+            sanitize_inline(&truncate_text(&record.summary, 160))
+        ),
+    ];
+    if let Some(disposition) = command_disposition(record) {
+        parts.push(format!("disposition={disposition}"));
+    }
+    if let Some(task_id) = command_task_id(record) {
+        parts.push(format!("task_id={}", sanitize_inline(task_id)));
+    }
+    if let Some(exit_status) = command_exit_status(record) {
+        parts.push(format!("exit_status={exit_status}"));
+    }
+    if record.tool_name == "ExecCommand" {
+        parts.push(format!(
+            "cmd_ref={}",
+            crate::tool::helpers::command_receipt_source_ref(&record.id, None)
+        ));
+        let output_refs = command_output_refs(record, None);
+        if !output_refs.is_empty() {
+            parts.push(output_refs.trim().to_string());
+        }
+        if let Some(cmd) = record.input.get("cmd").and_then(Value::as_str) {
+            parts.push(format!(
+                "cmd_preview={}",
+                crate::tool::helpers::command_preview(cmd)
+            ));
+        }
+    }
+    parts.join(" ")
+}
+
 fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
     let prefix = format!(
-        "- [{}][{:?}] {}",
+        "- [{}][{}] {} {}",
         trust_label(&record.authority_class),
-        record.status,
+        status_label(&record.status),
+        record.tool_name,
         record.summary
     );
     match record.tool_name.as_str() {
@@ -2154,19 +2390,22 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
             .and_then(Value::as_str)
             .map(|cmd| {
                 format!(
-                    "{prefix} tool_execution_id={} cmd_digest={} cmd_ref={}{} cmd_preview={}",
+                    "{prefix} tool_execution_id={} cmd_ref={}{}{} cmd_preview={}",
                     record.id,
-                    crate::tool::helpers::command_digest(cmd),
                     crate::tool::helpers::command_receipt_source_ref(&record.id, None),
                     command_output_refs(record, None),
+                    command_task_id(record)
+                        .map(|task_id| format!(" task_id={}", sanitize_inline(task_id)))
+                        .unwrap_or_default(),
                     crate::tool::helpers::command_preview(cmd)
                 )
             })
-            .unwrap_or(prefix),
+            .unwrap_or_else(|| format!("{prefix} tool_execution_id={}", record.id)),
         "ExecCommandBatch" => {
             let Some(items) = record.input.get("items").and_then(Value::as_array) else {
-                return prefix;
+                return format!("{prefix} tool_execution_id={}", record.id);
             };
+            let counts = batch_item_counts(record);
             let refs = items
                 .iter()
                 .enumerate()
@@ -2174,8 +2413,7 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
                     let cmd = item.get("cmd").and_then(Value::as_str)?;
                     let index = offset + 1;
                     Some(format!(
-                        "{{index={index}, cmd_digest={}, cmd_ref={},{} cmd_preview={}}}",
-                        crate::tool::helpers::command_digest(cmd),
+                        "{{index={index}, cmd_ref={},{} cmd_preview={}}}",
                         crate::tool::helpers::command_receipt_source_ref(&record.id, Some(index)),
                         command_output_refs(record, Some(index)),
                         crate::tool::helpers::command_preview(cmd)
@@ -2186,13 +2424,18 @@ fn render_recent_tool_execution(record: &ToolExecutionRecord) -> String {
                 prefix
             } else {
                 format!(
-                    "{prefix} tool_execution_id={} batch_cmds=[{}]",
+                    "{prefix} tool_execution_id={} batch_items={} succeeded={} failed={} promoted={} unknown={} batch_cmds=[{}]",
                     record.id,
+                    counts.total,
+                    counts.succeeded,
+                    counts.failed,
+                    counts.promoted,
+                    counts.unknown,
                     refs.join(", ")
                 )
             }
         }
-        _ => prefix,
+        _ => format!("{prefix} tool_execution_id={}", record.id),
     }
 }
 
@@ -3479,7 +3722,7 @@ mod tests {
         assert!(rendered.contains("stdout_ref=tool_execution:tool-context-1246:stdout"));
         assert!(rendered.contains("stderr_ref=tool_execution:tool-context-1246:stderr"));
         assert!(rendered.contains("output_ref=tool_execution:tool-context-1246:output"));
-        assert!(rendered.contains("cmd_digest="));
+        assert!(!rendered.contains("cmd_digest="));
         assert!(rendered.contains("[omitted: command contains heredoc or inline script]"));
         assert!(!rendered.contains("context_receipt_middle_1246"));
     }
@@ -3507,8 +3750,8 @@ mod tests {
             output: json!({
                 "result": {
                     "items": [
-                        {"result": {"stdout_preview": "foo\n", "stderr_preview": "", "artifacts": []}},
-                        {"result": {"stdout_preview": "hidden_batch_1246\n", "stderr_preview": "", "artifacts": []}}
+                        {"result": {"exit_status": 0, "stdout_preview": "foo\n", "stderr_preview": "", "artifacts": []}},
+                        {"result": {"exit_status": 0, "stdout_preview": "hidden_batch_1246\n", "stderr_preview": "", "artifacts": []}}
                     ]
                 }
             }),
@@ -3531,7 +3774,9 @@ mod tests {
             .contains("stderr_ref=tool_execution:tool-context-batch-1246:batch_item:2:stderr"));
         assert!(rendered
             .contains("output_ref=tool_execution:tool-context-batch-1246:batch_item:2:output"));
-        assert!(rendered.contains("cmd_digest="));
+        assert!(rendered.contains("batch_items=2"));
+        assert!(rendered.contains("succeeded=2"));
+        assert!(!rendered.contains("cmd_digest="));
         assert!(!rendered.contains("hidden_batch_1246"));
     }
 
@@ -3561,6 +3806,202 @@ mod tests {
         assert!(!rendered.contains("stdout_ref="));
         assert!(!rendered.contains("stderr_ref="));
         assert!(!rendered.contains("output_ref="));
+    }
+
+    #[test]
+    fn recent_turns_compacts_older_successful_tool_executions() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        let older_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Inspect the old context path.".into(),
+            },
+        );
+        storage.append_message(&older_message).unwrap();
+        let older_tool = ToolExecutionRecord {
+            id: "tool-old-compact".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 1,
+            turn_id: Some("turn-old-compact".into()),
+            tool_name: "ExecCommand".into(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 10,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": "rg old_context_path src"}),
+            output: json!({"exit_status": 0}),
+            summary: "older successful tool summary should be compacted".into(),
+            invocation_surface: None,
+        };
+        storage.append_tool_execution(&older_tool).unwrap();
+        let mut older_turn = TurnRecord::new("default", "turn-old-compact", 1);
+        older_turn.input_message_ids = vec![older_message.id.clone()];
+        older_turn.tool_execution_ids = vec![older_tool.id.clone()];
+        older_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &older_message,
+        ));
+        storage.append_turn(&older_turn).unwrap();
+
+        let newer_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Inspect the new context path.".into(),
+            },
+        );
+        storage.append_message(&newer_message).unwrap();
+        let newer_tool = ToolExecutionRecord {
+            id: "tool-new-detail".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 2,
+            turn_id: Some("turn-new-detail".into()),
+            tool_name: "ExecCommand".into(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 10,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": "rg new_context_path src"}),
+            output: json!({"exit_status": 0}),
+            summary: "newer detailed tool summary remains visible".into(),
+            invocation_surface: None,
+        };
+        storage.append_tool_execution(&newer_tool).unwrap();
+        let mut newer_turn = TurnRecord::new("default", "turn-new-detail", 2);
+        newer_turn.input_message_ids = vec![newer_message.id.clone()];
+        newer_turn.tool_execution_ids = vec![newer_tool.id.clone()];
+        newer_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+            &newer_message,
+        ));
+        storage.append_turn(&newer_turn).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue.".into(),
+            },
+        );
+        let context = build_context(
+            &storage,
+            &AgentState::new("default"),
+            &execution_snapshot_for(&AgentState::new("default")),
+            &SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                prompt_budget_estimated_tokens: 8192,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+        let recent_turns = context
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section")
+            .content
+            .clone();
+
+        assert!(
+            recent_turns.contains(
+                "- summary: total=1 success=1 error=0 promoted=0 refs=[tool_execution:tool-old-compact:output]"
+            ),
+            "{recent_turns}"
+        );
+        assert!(!recent_turns.contains("older successful tool summary should be compacted"));
+        assert!(recent_turns.contains("newer detailed tool summary remains visible"));
+        assert!(recent_turns.contains("cmd_ref=tool_execution:tool-new-detail:cmd"));
+    }
+
+    #[test]
+    fn older_turn_tool_rollup_retains_failure_and_promoted_alerts() {
+        let success = ToolExecutionRecord {
+            id: "tool-rollup-success".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 1,
+            turn_id: Some("turn-rollup".into()),
+            tool_name: "ExecCommand".into(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 10,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": "echo ok"}),
+            output: json!({"exit_status": 0}),
+            summary: "successful old command should not get alert".into(),
+            invocation_surface: None,
+        };
+        let failed = ToolExecutionRecord {
+            id: "tool-rollup-failed".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 1,
+            turn_id: Some("turn-rollup".into()),
+            tool_name: "ExecCommand".into(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 10,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": "cargo test failing_path"}),
+            output: json!({"exit_status": 101, "stderr_preview": "failed"}),
+            summary: "cargo test failing_path failed".into(),
+            invocation_surface: None,
+        };
+        let promoted = ToolExecutionRecord {
+            id: "tool-rollup-promoted".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 1,
+            turn_id: Some("turn-rollup".into()),
+            tool_name: "ExecCommand".into(),
+            created_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: 10,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: json!({"cmd": "sleep 120"}),
+            output: json!({
+                "result": {
+                    "disposition": "promoted_to_task",
+                    "task_handle": {"task_id": "task-promoted-1"},
+                    "initial_output_truncated": true,
+                    "initial_output_preview": "still running"
+                }
+            }),
+            summary: "sleep promoted to task".into(),
+            invocation_surface: None,
+        };
+        let records = vec![&success, &failed, &promoted];
+        let rendered = render_recent_tool_execution_rollup(&records).join("\n");
+
+        assert!(rendered.contains("total=3 success=2 error=1 promoted=1"));
+        assert!(rendered.contains("refs=[tool_execution:tool-rollup-success:output"));
+        assert!(rendered.contains("alert: ExecCommand status=success"));
+        assert!(rendered.contains("tool_execution_id=tool-rollup-failed"));
+        assert!(rendered.contains("exit_status=101"));
+        assert!(rendered.contains("cmd_ref=tool_execution:tool-rollup-failed:cmd"));
+        assert!(rendered.contains("stdout_ref=tool_execution:tool-rollup-failed:stdout"));
+        assert!(rendered.contains("disposition=promoted_to_task"));
+        assert!(rendered.contains("task_id=task-promoted-1"));
+        assert!(!rendered.contains("successful old command should not get alert"));
     }
 
     #[test]

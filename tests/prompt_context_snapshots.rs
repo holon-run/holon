@@ -615,7 +615,7 @@ Recent turns:
     - Ack: Started cargo test runtime_flow. brief_ref=brief:brief_started_runtime_flow
     - Result: Captured completion report promotion. brief_ref=brief:brief_completion_report_promotion
   - tool executions:
-    - [trusted_system][Success] Run command: cargo test runtime_flow
+    - [trusted_system][success] ExecCommand Run command: cargo test runtime_flow tool_execution_id=tool_exec_1
   - current relation: a task-result continuation
   - current input: Command task completed successfully: cargo test runtime_flow
   - current work item: work_runtime_flow :: Track runtime flow

@@ -119,11 +119,21 @@ item` are only added when the current runtime continuation is being rendered
 against the latest trusted operator input. Trusted operator input uses
 `operator asked`; other inputs use `input`.
 
-Tool rows are compact evidence handles, not full output dumps. For command
-tools they include stable trace fields such as `tool_execution_id`,
-`cmd_digest`, `cmd_ref`, and `cmd_preview`; for command batches they include
-one such tuple per batch item. The stable refs are the path for retrieving
-fuller command evidence outside the prompt budget.
+Tool rows are compact evidence handles, not full output dumps. The immediately
+previous turn, or the trusted operator turn currently being continued by a
+runtime wake, may include compact per-tool detail such as `tool_execution_id`,
+tool name, status, command preview, task id, `cmd_ref`, and available
+`stdout_ref` / `stderr_ref` / `output_ref` values. Command digests are omitted
+from the normal prompt because the refs already provide the recovery path and
+the digest rarely helps model-facing continuity.
+
+Older recent turns do not expand command batches or repeat full per-tool
+metadata by default. They render a small aggregate line with total,
+success/error/promoted counts, plus retrievable refs such as
+`tool_execution:<id>:output`. Older failed, non-zero-exit,
+promoted/running, truncated, or artifact-producing tool executions may add one
+compact alert row with the status, exit status, summary, task id, and retrieval
+refs needed for follow-up inspection.
 
 The target `TurnRecord`-first renderer should keep the same operator-facing
 shape but use the durable turn record as the join spine. A full turn can be
@@ -188,10 +198,11 @@ Recommended trimming rules:
   operator-input `Ack` records are produced when the runtime accepts/queues the
   message before model execution; once the same turn also shows the input and
   later result, the ack adds little model value.
-- Keep successful tool executions as compact evidence rows. Do not inline long
-  command output, screenshots, raw JSON, or artifact contents.
-- Prefer dropping older successful tool rows before dropping trusted operator
-  input or latest outcome rows.
+- Keep successful tool executions as compact evidence rows for the immediately
+  previous turn. Do not inline long command output, screenshots, raw JSON, or
+  artifact contents.
+- Aggregate older successful tool rows before dropping trusted operator input
+  or latest outcome rows.
 - Keep failed, cancelled, promoted/running, truncated, artifact-producing, and
   unmatched tools visible via `recent_tool_alerts` if they are omitted from a
   turn body.
