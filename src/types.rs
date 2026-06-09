@@ -3291,6 +3291,7 @@ pub enum WorkItemPlanStatus {
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemReadiness {
     Runnable,
+    Yielded,
     WaitingForOperator,
     Blocked,
     Completed,
@@ -3300,6 +3301,7 @@ pub enum WorkItemReadiness {
 #[serde(rename_all = "snake_case")]
 pub enum WorkItemSchedulingState {
     Runnable,
+    YieldedToWorkItem,
     WaitingOperator,
     WaitingTask,
     WaitingExternal,
@@ -3452,6 +3454,7 @@ impl WorkItemRecord {
     pub fn readiness(&self) -> WorkItemReadiness {
         match self.scheduling_state(None) {
             WorkItemSchedulingState::Runnable => WorkItemReadiness::Runnable,
+            WorkItemSchedulingState::YieldedToWorkItem => WorkItemReadiness::Yielded,
             WorkItemSchedulingState::WaitingOperator => WorkItemReadiness::WaitingForOperator,
             WorkItemSchedulingState::WaitingTask
             | WorkItemSchedulingState::WaitingExternal
@@ -3468,6 +3471,85 @@ impl WorkItemRecord {
 
     pub fn is_waiting_for_operator(&self) -> bool {
         self.readiness() == WorkItemReadiness::WaitingForOperator
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemContinuationReturnPolicy {
+    OnCompleted,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemContinuationState {
+    Active,
+    Resumed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkItemContinuationFrame {
+    pub id: String,
+    pub agent_id: String,
+    pub suspended_work_item_id: String,
+    pub active_work_item_id: String,
+    pub return_policy: WorkItemContinuationReturnPolicy,
+    pub state: WorkItemContinuationState,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
+impl WorkItemContinuationFrame {
+    pub fn new_on_completed(
+        agent_id: impl Into<String>,
+        suspended_work_item_id: impl Into<String>,
+        active_work_item_id: impl Into<String>,
+        turn_id: Option<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: ids::work_item_continuation_id(),
+            agent_id: agent_id.into(),
+            suspended_work_item_id: suspended_work_item_id.into(),
+            active_work_item_id: active_work_item_id.into(),
+            return_policy: WorkItemContinuationReturnPolicy::OnCompleted,
+            state: WorkItemContinuationState::Active,
+            created_at: now,
+            updated_at: now,
+            resolved_at: None,
+            cancelled_at: None,
+            resolution_reason: None,
+            turn_id,
+        }
+    }
+
+    pub fn resume(mut self, reason: impl Into<String>) -> Self {
+        let now = Utc::now();
+        self.state = WorkItemContinuationState::Resumed;
+        self.updated_at = now;
+        self.resolved_at = Some(now);
+        self.cancelled_at = None;
+        self.resolution_reason = Some(reason.into());
+        self
+    }
+
+    pub fn cancel(mut self, reason: impl Into<String>) -> Self {
+        let now = Utc::now();
+        self.state = WorkItemContinuationState::Cancelled;
+        self.updated_at = now;
+        self.cancelled_at = Some(now);
+        self.resolved_at = None;
+        self.resolution_reason = Some(reason.into());
+        self
     }
 }
 

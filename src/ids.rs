@@ -94,6 +94,10 @@ pub fn work_item_delegation_id() -> String {
     runtime_id("delegation")
 }
 
+pub fn work_item_continuation_id() -> String {
+    runtime_id("wic")
+}
+
 pub fn capability_id(prefix: &str) -> String {
     format!(
         "{prefix}_{}{}",
@@ -135,6 +139,7 @@ mod tests {
             (workspace_occupancy_id(), "occ"),
             (audit_event_id(), "event"),
             (work_item_delegation_id(), "delegation"),
+            (work_item_continuation_id(), "wic"),
         ] {
             assert_runtime_id(&id, prefix);
         }

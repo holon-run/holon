@@ -469,6 +469,14 @@ fn collect_pending_followups(
     );
     items.extend(
         projection
+            .yielded
+            .iter()
+            .filter(|item| !item.is_current)
+            .take(2)
+            .map(|item| format!("yielded: {}", truncate_line(&item.record().objective, 120))),
+    );
+    items.extend(
+        projection
             .waiting_for_operator
             .iter()
             .filter(|item| !item.is_current)

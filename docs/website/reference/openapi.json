@@ -598,6 +598,7 @@
               "current_readiness": {
                 "enum": [
                   "runnable",
+                  "yielded",
                   "waiting_for_operator",
                   "blocked",
                   "completed"
@@ -610,6 +611,7 @@
               "previous_readiness": {
                 "enum": [
                   "runnable",
+                  "yielded",
                   "waiting_for_operator",
                   "blocked",
                   "completed",

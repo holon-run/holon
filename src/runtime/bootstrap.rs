@@ -519,6 +519,9 @@ fn prepare_runtime_storage(
             .work_item_delegations()
             .import_legacy(storage.read_recent_work_item_delegations(usize::MAX)?)?;
     }
+    if !storage_domain_complete(&runtime_db, "work_item_continuations")? {
+        runtime_db.work_item_continuations().import_empty()?;
+    }
     if !storage_domain_complete(&runtime_db, "working_memory_deltas")? {
         runtime_db
             .working_memory_deltas()

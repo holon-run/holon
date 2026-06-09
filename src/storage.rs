@@ -24,9 +24,9 @@ use crate::{
         TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
         TranscriptEntry, TurnRecord, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
         WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WakeSource,
-        WorkItemDelegationRecord, WorkItemDelegationState, WorkItemReadiness, WorkItemRecord,
-        WorkItemSchedulingState, WorkItemState, WorkingMemoryDelta, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        WorkItemContinuationFrame, WorkItemContinuationState, WorkItemDelegationRecord,
+        WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState,
+        WorkItemState, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -44,6 +44,7 @@ pub struct WorkQueuePromptProjection {
     pub current_runnable: Option<WorkItemReadinessProjection>,
     pub triggered_blocked: Vec<WorkItemReadinessProjection>,
     pub queued_runnable: Vec<WorkItemReadinessProjection>,
+    pub yielded: Vec<WorkItemReadinessProjection>,
     pub waiting_for_operator: Vec<WorkItemReadinessProjection>,
     pub blocked: Vec<WorkItemReadinessProjection>,
     pub completed_recent: Vec<WorkItemReadinessProjection>,
@@ -66,6 +67,7 @@ impl WorkQueuePromptProjection {
     pub fn has_non_current_candidates(&self) -> bool {
         self.triggered_blocked.iter().any(|item| !item.is_current)
             || self.queued_runnable.iter().any(|item| !item.is_current)
+            || self.yielded.iter().any(|item| !item.is_current)
             || self
                 .waiting_for_operator
                 .iter()
@@ -95,6 +97,7 @@ pub enum WorkItemCandidateClass {
     TriggeredBlocked,
     QueuedRunnable,
     WaitingForOperator,
+    Yielded,
     Blocked,
     CompletedRecent,
 }
@@ -175,6 +178,7 @@ pub struct AppStorage {
     work_items_path: PathBuf,
     delivery_summaries_path: PathBuf,
     work_item_delegations_path: PathBuf,
+    work_item_continuations_path: PathBuf,
     timers_path: PathBuf,
     tools_path: PathBuf,
     turns_path: PathBuf,
@@ -278,6 +282,7 @@ impl AppStorage {
             work_items_path: ledger_dir.join("work_items.jsonl"),
             delivery_summaries_path: ledger_dir.join("delivery_summaries.jsonl"),
             work_item_delegations_path: ledger_dir.join("work_item_delegations.jsonl"),
+            work_item_continuations_path: ledger_dir.join("work_item_continuations.jsonl"),
             timers_path: ledger_dir.join("timers.jsonl"),
             tools_path: ledger_dir.join("tools.jsonl"),
             turns_path: ledger_dir.join("turns.jsonl"),
@@ -545,6 +550,14 @@ impl AppStorage {
             return Ok(());
         }
         self.append_jsonl(&self.work_item_delegations_path, record)
+    }
+
+    pub fn append_work_item_continuation(&self, record: &WorkItemContinuationFrame) -> Result<()> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.work_item_continuations().upsert(record)?;
+            return Ok(());
+        }
+        self.append_jsonl(&self.work_item_continuations_path, record)
     }
 
     pub fn append_timer(&self, timer: &TimerRecord) -> Result<()> {
@@ -1226,6 +1239,21 @@ impl AppStorage {
         read_recent_jsonl(&self.work_item_delegations_path, limit)
     }
 
+    pub fn read_recent_work_item_continuations(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<WorkItemContinuationFrame>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .work_item_continuations()
+                    .recent_for_agent(&agent_id, limit);
+            }
+            return runtime_db.work_item_continuations().recent(limit);
+        }
+        read_recent_jsonl(&self.work_item_continuations_path, limit)
+    }
+
     pub fn read_recent_timers(&self, limit: usize) -> Result<Vec<TimerRecord>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             if let Some(agent_id) = self.current_agent_id()? {
@@ -1724,6 +1752,13 @@ impl AppStorage {
             .filter(|task| task.is_blocking())
             .filter_map(|task| task.effective_work_item_id().map(str::to_string))
             .collect::<std::collections::BTreeSet<_>>();
+        let active_continuation_suspended_ids = self
+            .latest_active_work_item_continuations_for_agent(
+                self.current_agent_id()?.as_deref().unwrap_or_default(),
+            )?
+            .into_iter()
+            .map(|frame| frame.suspended_work_item_id)
+            .collect::<std::collections::BTreeSet<_>>();
         let mut readiness = latest
             .values()
             .cloned()
@@ -1739,15 +1774,19 @@ impl AppStorage {
                 let has_active_task_waits = active_task_waits.contains(&item.id)
                     || wait_condition.is_some_and(|states| states.task);
                 let has_triggered_waits = last_triggered_at.is_some();
-                let scheduling_state = item.scheduling_state(if has_active_task_waits {
-                    Some(WorkItemSchedulingState::WaitingTask)
+                let yielded = item.state == WorkItemState::Open
+                    && active_continuation_suspended_ids.contains(&item.id);
+                let scheduling_state = if yielded {
+                    WorkItemSchedulingState::YieldedToWorkItem
+                } else if has_active_task_waits {
+                    item.scheduling_state(Some(WorkItemSchedulingState::WaitingTask))
                 } else {
-                    wait_condition_state.or_else(|| {
+                    item.scheduling_state(wait_condition_state.or_else(|| {
                         active_waits
                             .contains_key(&item.id)
                             .then_some(WorkItemSchedulingState::WaitingExternal)
-                    })
-                });
+                    }))
+                };
                 let readiness = readiness_for_scheduling_state(scheduling_state);
                 let candidate_class =
                     if is_current && scheduling_state == WorkItemSchedulingState::Runnable {
@@ -1758,6 +1797,8 @@ impl AppStorage {
                         WorkItemCandidateClass::TriggeredBlocked
                     } else if scheduling_state == WorkItemSchedulingState::Runnable {
                         WorkItemCandidateClass::QueuedRunnable
+                    } else if scheduling_state == WorkItemSchedulingState::YieldedToWorkItem {
+                        WorkItemCandidateClass::Yielded
                     } else if scheduling_state == WorkItemSchedulingState::WaitingOperator {
                         WorkItemCandidateClass::WaitingForOperator
                     } else {
@@ -1795,6 +1836,12 @@ impl AppStorage {
             .take(5)
             .cloned()
             .collect::<Vec<_>>();
+        let yielded = readiness
+            .iter()
+            .filter(|item| item.candidate_class == WorkItemCandidateClass::Yielded)
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>();
         let waiting_for_operator = readiness
             .iter()
             .filter(|item| item.candidate_class == WorkItemCandidateClass::WaitingForOperator)
@@ -1819,6 +1866,7 @@ impl AppStorage {
             .filter(|item| {
                 item.state == WorkItemState::Open
                     && Some(item.id.as_str()) != current_work_item_id.as_deref()
+                    && !active_continuation_suspended_ids.contains(&item.id)
                     && !active_task_waits.contains(&item.id)
                     && !active_wait_conditions
                         .get(&item.id)
@@ -1835,6 +1883,7 @@ impl AppStorage {
             current_runnable,
             triggered_blocked,
             queued_runnable,
+            yielded,
             waiting_for_operator,
             blocked,
             completed_recent,
@@ -2107,6 +2156,54 @@ impl AppStorage {
             latest.insert(record.delegation_id.clone(), record);
         }
         Ok(latest.into_values().collect())
+    }
+
+    pub fn latest_work_item_continuations(&self) -> Result<Vec<WorkItemContinuationFrame>> {
+        let records = self.read_recent_work_item_continuations(usize::MAX)?;
+        let mut latest = std::collections::BTreeMap::new();
+        for record in records {
+            latest.insert(record.id.clone(), record);
+        }
+        Ok(latest.into_values().collect())
+    }
+
+    pub fn latest_active_work_item_continuations_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<WorkItemContinuationFrame>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .work_item_continuations()
+                .active_for_agent(agent_id);
+        }
+        Ok(self
+            .latest_work_item_continuations()?
+            .into_iter()
+            .filter(|record| record.agent_id == agent_id)
+            .filter(|record| record.state == WorkItemContinuationState::Active)
+            .collect())
+    }
+
+    pub fn latest_active_work_item_continuation_for_suspended(
+        &self,
+        agent_id: &str,
+        work_item_id: &str,
+    ) -> Result<Option<WorkItemContinuationFrame>> {
+        Ok(self
+            .latest_active_work_item_continuations_for_agent(agent_id)?
+            .into_iter()
+            .find(|record| record.suspended_work_item_id == work_item_id))
+    }
+
+    pub fn latest_active_work_item_continuation_for_active(
+        &self,
+        agent_id: &str,
+        work_item_id: &str,
+    ) -> Result<Option<WorkItemContinuationFrame>> {
+        Ok(self
+            .latest_active_work_item_continuations_for_agent(agent_id)?
+            .into_iter()
+            .find(|record| record.active_work_item_id == work_item_id))
     }
 
     pub fn open_work_item_delegation_for_child(
@@ -2773,6 +2870,9 @@ fn compare_readiness_projection_order(
                         compare_timestamp_asc(left.work_item.created_at, right.work_item.created_at)
                     })
             }
+            WorkItemCandidateClass::Yielded => {
+                compare_timestamp_desc(left.work_item.updated_at, right.work_item.updated_at)
+            }
             WorkItemCandidateClass::WaitingForOperator
             | WorkItemCandidateClass::Blocked
             | WorkItemCandidateClass::CompletedRecent => {
@@ -2801,6 +2901,7 @@ fn blocked_rank(record: &WorkItemRecord) -> u8 {
 fn readiness_for_scheduling_state(state: WorkItemSchedulingState) -> WorkItemReadiness {
     match state {
         WorkItemSchedulingState::Runnable => WorkItemReadiness::Runnable,
+        WorkItemSchedulingState::YieldedToWorkItem => WorkItemReadiness::Yielded,
         WorkItemSchedulingState::WaitingOperator => WorkItemReadiness::WaitingForOperator,
         WorkItemSchedulingState::WaitingTask
         | WorkItemSchedulingState::WaitingExternal
@@ -2816,9 +2917,10 @@ fn candidate_class_rank(class: WorkItemCandidateClass) -> u8 {
         WorkItemCandidateClass::CurrentRunnable => 0,
         WorkItemCandidateClass::TriggeredBlocked => 1,
         WorkItemCandidateClass::QueuedRunnable => 2,
-        WorkItemCandidateClass::WaitingForOperator => 3,
-        WorkItemCandidateClass::Blocked => 4,
-        WorkItemCandidateClass::CompletedRecent => 5,
+        WorkItemCandidateClass::Yielded => 3,
+        WorkItemCandidateClass::WaitingForOperator => 4,
+        WorkItemCandidateClass::Blocked => 5,
+        WorkItemCandidateClass::CompletedRecent => 6,
     }
 }
 

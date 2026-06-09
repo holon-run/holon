@@ -1022,6 +1022,13 @@ fn render_work_item_candidates(
     )?;
     append_candidate_group(
         &mut lines,
+        "Parked/Yielded work items:",
+        &projection.yielded,
+        &completion_reports,
+        agent_home,
+    )?;
+    append_candidate_group(
+        &mut lines,
         "Waiting for operator:",
         &projection.waiting_for_operator,
         &completion_reports,
@@ -1083,6 +1090,7 @@ fn append_candidate_group(
         let view = match item.candidate_class {
             crate::storage::WorkItemCandidateClass::TriggeredBlocked => "triggered_blocked",
             crate::storage::WorkItemCandidateClass::QueuedRunnable => "queued_runnable",
+            crate::storage::WorkItemCandidateClass::Yielded => "yielded",
             crate::storage::WorkItemCandidateClass::WaitingForOperator => "waiting_for_operator",
             crate::storage::WorkItemCandidateClass::Blocked => "blocked",
             crate::storage::WorkItemCandidateClass::CompletedRecent => "completed_recent",

@@ -93,7 +93,7 @@ pub(crate) async fn execute(
     let updated_context = query_context(runtime).await?;
     let work_item = match registration.work_item {
         Some(record) => {
-            Some(view_for_record(runtime, &updated_context, record, true, None, None).await?)
+            Some(view_for_record(runtime, &updated_context, record, true, None, None, None).await?)
         }
         None => None,
     };

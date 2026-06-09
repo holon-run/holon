@@ -2,7 +2,8 @@ use super::super::*;
 use super::support::*;
 use crate::types::{
     WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WaitingIntentScope, WakeSource,
-    WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState, AGENT_HOME_WORKSPACE_ID,
+    WorkItemContinuationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemSchedulingState,
+    AGENT_HOME_WORKSPACE_ID,
 };
 use std::{fs::OpenOptions, io::Write};
 
@@ -4698,7 +4699,7 @@ async fn pick_blocked_work_item_reports_inspection_focus() {
 }
 
 #[tokio::test]
-async fn pick_without_reason_warns_when_switching_from_runnable_current_work() {
+async fn pick_from_runnable_current_yields_and_complete_resumes_caller() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -4727,27 +4728,212 @@ async fn pick_without_reason_warns_when_switching_from_runnable_current_work() {
         .await
         .unwrap();
 
-    assert_eq!(picked.transition.previous_work_item_id, Some(current.id));
+    assert_eq!(
+        picked.transition.previous_work_item_id,
+        Some(current.id.clone())
+    );
     assert_eq!(
         picked.transition.previous_readiness,
         Some(WorkItemReadiness::Runnable)
     );
-    assert_eq!(picked.transition.switch_kind, "explicit_focus_override");
-    assert_eq!(picked.transition.warnings.len(), 1);
-    assert_eq!(
-        picked.transition.warnings[0].code,
-        "missing_pick_reason_for_runnable_focus_switch"
-    );
-    let events = runtime.storage().read_recent_events(10).unwrap();
-    let event = events
+    assert_eq!(picked.transition.switch_kind, "yield_current");
+    assert!(picked.transition.warnings.is_empty());
+    let created = picked
+        .continuation_created
+        .as_ref()
+        .expect("continuation frame should be created");
+    assert_eq!(created.suspended_work_item_id.as_str(), current.id.as_str());
+    assert_eq!(created.active_work_item_id.as_str(), next.id.as_str());
+    let frames = runtime.storage().latest_work_item_continuations().unwrap();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].state, WorkItemContinuationState::Active);
+
+    let projection = runtime.storage().work_queue_prompt_projection().unwrap();
+    let yielded = projection
+        .yielded
         .iter()
-        .find(|event| {
-            event.kind == "work_item_picked"
-                && event.data["current_work_item_id"].as_str() == Some(next.id.as_str())
-        })
-        .expect("work_item_picked event");
+        .find(|item| item.work_item.id == current.id)
+        .expect("current should be yielded after picking next");
     assert_eq!(
-        event.data["warnings"][0]["code"].as_str(),
-        Some("missing_pick_reason_for_runnable_focus_switch")
+        yielded.scheduling_state,
+        WorkItemSchedulingState::YieldedToWorkItem
     );
+    assert_eq!(yielded.readiness, WorkItemReadiness::Yielded);
+    assert!(!projection
+        .queued_runnable
+        .iter()
+        .any(|item| item.work_item.id == current.id));
+    assert!(!projection
+        .blocked
+        .iter()
+        .any(|item| item.work_item.id == current.id));
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (yielded_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "yielded".into(),
+                name: "ListWorkItems".into(),
+                input: serde_json::json!({"filter": "yielded"}),
+            },
+        )
+        .await
+        .unwrap();
+    let yielded_payload = yielded_result.envelope.result.unwrap();
+    assert_eq!(yielded_payload["total_matching"].as_u64(), Some(1));
+    assert_eq!(
+        yielded_payload["work_items"][0]["id"].as_str(),
+        Some(current.id.as_str())
+    );
+    assert_eq!(
+        yielded_payload["work_items"][0]["focus"].as_str(),
+        Some("yielded")
+    );
+    assert_eq!(
+        yielded_payload["work_items"][0]["readiness"].as_str(),
+        Some("yielded")
+    );
+
+    let completed = runtime
+        .complete_work_item_with_continuation(next.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    let resumed = completed
+        .continuation_resumed
+        .expect("completion should resume direct caller");
+    assert_eq!(resumed.suspended_work_item_id.as_str(), current.id.as_str());
+    assert_eq!(resumed.active_work_item_id.as_str(), next.id.as_str());
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(current.id.as_str())
+    );
+    assert_eq!(
+        state.current_turn_work_item_id.as_deref(),
+        Some(current.id.as_str())
+    );
+    let frames = runtime.storage().latest_work_item_continuations().unwrap();
+    assert_eq!(frames[0].state, WorkItemContinuationState::Resumed);
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "work_item_continuation_scheduler_evidence"
+            && event.data["reason"].as_str() == Some("continuation_resumed")
+            && event.data["work_item_id"].as_str() == Some(current.id.as_str())
+    }));
+}
+
+#[tokio::test]
+async fn work_item_continuation_stack_resumes_nested_callers() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let track = runtime
+        .create_work_item("track".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let issue = runtime
+        .create_work_item("issue".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let review = runtime
+        .create_work_item("review".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+
+    runtime.pick_work_item(track.id.clone()).await.unwrap();
+    runtime.pick_work_item(issue.id.clone()).await.unwrap();
+    runtime.pick_work_item(review.id.clone()).await.unwrap();
+
+    let active = runtime
+        .storage()
+        .latest_active_work_item_continuations_for_agent("default")
+        .unwrap();
+    assert_eq!(active.len(), 2);
+
+    runtime
+        .complete_work_item_with_continuation(review.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(issue.id.as_str())
+    );
+    let active = runtime
+        .storage()
+        .latest_active_work_item_continuations_for_agent("default")
+        .unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].suspended_work_item_id, track.id);
+    assert_eq!(active[0].active_work_item_id, issue.id);
+
+    runtime
+        .complete_work_item_with_continuation(issue.id.clone(), Vec::new())
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(track.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn explicit_pick_of_yielded_work_item_resolves_frame_without_new_yield() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let current = runtime
+        .create_work_item("current runnable".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let next = runtime
+        .create_work_item("next runnable".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(current.id.clone()).await.unwrap();
+    runtime.pick_work_item(next.id.clone()).await.unwrap();
+
+    let picked = runtime
+        .pick_work_item_with_reason(current.id.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(picked.transition.switch_kind, "explicit_yield_return");
+    assert!(picked.continuation_created.is_none());
+    assert!(picked.continuation_resolved.is_some());
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(current.id.as_str())
+    );
+    assert!(runtime
+        .storage()
+        .latest_active_work_item_continuation_for_suspended("default", &current.id)
+        .unwrap()
+        .is_none());
+    let frames = runtime.storage().latest_work_item_continuations().unwrap();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].state, WorkItemContinuationState::Resumed);
 }

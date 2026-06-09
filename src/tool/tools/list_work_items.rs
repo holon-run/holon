@@ -36,6 +36,7 @@ pub(crate) enum ListWorkItemsFilter {
     Completed,
     Current,
     Queued,
+    Yielded,
     Blocked,
     WaitingForOperator,
     Runnable,
@@ -88,6 +89,12 @@ pub(crate) async fn execute(
         .await?;
     records.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     let all_wait_conditions = active_wait_conditions_by_work_item(runtime, &records)?;
+    let yielded_ids = runtime
+        .storage()
+        .latest_active_work_item_continuations_for_agent(&agent_id)?
+        .into_iter()
+        .map(|frame| frame.suspended_work_item_id)
+        .collect::<std::collections::BTreeSet<_>>();
     let matching = records
         .into_iter()
         .filter(|record| {
@@ -95,7 +102,7 @@ pub(crate) async fn execute(
                 .get(&record.id)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            matches_filter(record, waits, &context, &filter)
+            matches_filter(record, waits, &yielded_ids, &context, &filter)
         })
         .collect::<Vec<_>>();
     let total_matching = matching.len();
@@ -119,6 +126,7 @@ pub(crate) async fn execute(
                 args.include_todo_list,
                 delivery_summaries.as_ref(),
                 Some(&wait_conditions),
+                Some(&yielded_ids),
             )
             .await?,
         );
@@ -139,12 +147,14 @@ pub(crate) async fn execute(
 fn matches_filter(
     record: &crate::types::WorkItemRecord,
     active_wait_conditions: &[WaitConditionSummary],
+    yielded_ids: &std::collections::BTreeSet<String>,
     context: &WorkItemQueryContext,
     filter: &ListWorkItemsFilter,
 ) -> bool {
     let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
         && record.state == WorkItemState::Open;
-    let readiness = readiness_for_view(record, active_wait_conditions);
+    let is_yielded = record.state == WorkItemState::Open && yielded_ids.contains(&record.id);
+    let readiness = readiness_for_view(record, active_wait_conditions, is_yielded);
     match filter {
         ListWorkItemsFilter::All => true,
         ListWorkItemsFilter::Open => lifecycle_view(&record.state) == WorkItemLifecycleView::Open,
@@ -157,6 +167,7 @@ fn matches_filter(
                 && record.state == WorkItemState::Open
                 && readiness == WorkItemReadiness::Runnable
         }
+        ListWorkItemsFilter::Yielded => readiness == WorkItemReadiness::Yielded,
         ListWorkItemsFilter::Blocked => !is_current && readiness == WorkItemReadiness::Blocked,
         ListWorkItemsFilter::WaitingForOperator => {
             readiness == WorkItemReadiness::WaitingForOperator

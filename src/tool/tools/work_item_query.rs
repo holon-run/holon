@@ -24,6 +24,7 @@ pub(crate) enum WorkItemLifecycleView {
 pub(crate) enum WorkItemFocusView {
     Current,
     Queued,
+    Yielded,
     Blocked,
     Completed,
 }
@@ -84,6 +85,7 @@ pub(crate) struct WorkItemQueryContext {
 
 pub(crate) type WorkItemDeliverySummaryMap = BTreeMap<String, DeliverySummaryRecord>;
 pub(crate) type WorkItemWaitConditionSummaryMap = BTreeMap<String, Vec<WaitConditionSummary>>;
+pub(crate) type WorkItemYieldedSet = BTreeSet<String>;
 
 pub(crate) async fn query_context(runtime: &RuntimeHandle) -> Result<WorkItemQueryContext> {
     let state = runtime.agent_state().await?;
@@ -116,6 +118,7 @@ pub(crate) async fn view_for_record(
     include_todo_list: bool,
     delivery_summaries: Option<&WorkItemDeliverySummaryMap>,
     wait_conditions: Option<&WorkItemWaitConditionSummaryMap>,
+    yielded_ids: Option<&WorkItemYieldedSet>,
 ) -> Result<WorkItemView> {
     let is_current = context.current_work_item_id.as_deref() == Some(record.id.as_str())
         && record.state == WorkItemState::Open;
@@ -145,7 +148,19 @@ pub(crate) async fn view_for_record(
             .map(WaitConditionSummary::from)
             .collect(),
     };
-    let readiness = readiness_for_view(&record, &active_wait_conditions);
+    let is_yielded = match yielded_ids {
+        Some(yielded_ids) => yielded_ids.contains(&record.id),
+        None => runtime
+            .storage()
+            .latest_active_work_item_continuation_for_suspended(&record.agent_id, &record.id)?
+            .is_some(),
+    };
+    let readiness = readiness_for_view(&record, &active_wait_conditions, is_yielded);
+    let focus = if is_yielded && !is_current && record.state == WorkItemState::Open {
+        WorkItemFocusView::Yielded
+    } else {
+        focus
+    };
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,
@@ -290,9 +305,13 @@ pub(crate) fn focus_view(record: &WorkItemRecord, is_current: bool) -> WorkItemF
 pub(crate) fn readiness_for_view(
     record: &WorkItemRecord,
     active_wait_conditions: &[WaitConditionSummary],
+    is_yielded: bool,
 ) -> WorkItemReadiness {
     if record.state == WorkItemState::Completed {
         return WorkItemReadiness::Completed;
+    }
+    if is_yielded {
+        return WorkItemReadiness::Yielded;
     }
     if active_wait_conditions
         .iter()

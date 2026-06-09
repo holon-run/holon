@@ -1536,6 +1536,7 @@ fn export_scheduler_fixture(
             "current_work_item_id": work_queue.current.as_ref().map(|item| item.id.clone()),
             "current_work_item_revision": work_queue.current.as_ref().map(|item| item.revision),
             "queued_work_items": work_queue.queued_runnable.len(),
+            "yielded_work_items": work_queue.yielded.len(),
             "triggered_blocked_work_items": work_queue.triggered_blocked.len(),
             "waiting_for_operator_work_items": work_queue.waiting_for_operator.len(),
             "blocked_work_items": work_queue.blocked.len(),

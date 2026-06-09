@@ -26,6 +26,7 @@ implementation and tests.
 - [Objective, Delta, and Acceptance Boundary](./objective-delta-and-acceptance-boundary.md)
 - [Work Item Runtime Model](./work-item-runtime-model.md)
 - [Work Item Centered Agent Runtime](./work-item-centered-agent-runtime.md)
+- [Work Item Continuation Stack](./work-item-continuation-stack.md)
 - [Long-Lived Context Memory](./long-lived-context-memory.md)
 - [Agent and Workspace Memory](./agent-and-workspace-memory.md)
 - [Turn-Local Context Compaction](./turn-local-context-compaction.md)
