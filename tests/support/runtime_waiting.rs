@@ -121,7 +121,7 @@ pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> R
             && brief.text == "turn boundary result"
     }));
 
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(100).await?;
     assert!(events.iter().any(|event| {
         event.kind == "message_acknowledged"
             && event.data["message_id"].as_str() == Some(message.id.as_str())
@@ -155,13 +155,20 @@ pub async fn message_processing_creates_briefs_and_sleeps() -> Result<()> {
             text: "hello".into(),
         },
     );
-    runtime.enqueue(message).await?;
+    runtime.enqueue(message.clone()).await?;
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
     let briefs = runtime.recent_briefs(10).await?;
-    assert_eq!(briefs.len(), 2);
-    assert_eq!(briefs[0].text, "Queued work: hello");
-    assert_eq!(briefs[1].text, "stub result");
+    assert_eq!(briefs.len(), 1);
+    assert_eq!(briefs[0].kind, BriefKind::Result);
+    assert_eq!(briefs[0].text, "stub result");
+
+    let events = runtime.recent_events(100).await?;
+    assert!(events.iter().any(|event| {
+        event.kind == "message_acknowledged"
+            && event.data["message_id"].as_str() == Some(message.id.as_str())
+            && event.data["summary"].as_str() == Some("Queued work: hello")
+    }));
 
     let session = runtime.agent_state().await?;
     assert_eq!(session.status, AgentStatus::Asleep);
@@ -201,20 +208,25 @@ pub async fn terminal_brief_uses_last_assistant_message_without_terminal_deliver
     .await?;
 
     let briefs = runtime.recent_briefs(10).await?;
-    assert_eq!(briefs.len(), 2);
-    assert_eq!(briefs[0].text, "Queued work: write and verify a file");
+    assert_eq!(briefs.len(), 1);
+    assert_eq!(briefs[0].kind, BriefKind::Result);
     assert_eq!(
-        briefs[1].text,
+        briefs[0].text,
         "Verification is complete. I'll package the final answer now."
     );
     assert!(
-        !briefs[1]
+        !briefs[0]
             .text
             .contains("Let me create a summary document of what was changed."),
         "persisted result brief should come from the terminal turn, not a tool-round preamble: {}",
-        briefs[1].text
+        briefs[0].text
     );
-    let events = runtime.recent_events(20).await?;
+    let events = runtime.recent_events(100).await?;
+    assert!(events.iter().any(|event| {
+        event.kind == "message_acknowledged"
+            && event.data["message_id"].as_str() == Some(message.id.as_str())
+            && event.data["summary"].as_str() == Some("Queued work: write and verify a file")
+    }));
     let terminal_event = events
         .iter()
         .find(|event| event.kind == "turn_terminal")

@@ -1165,6 +1165,9 @@ impl PresentationReducer {
 fn brief_result_item(event: &ProjectionEventRecord) -> Option<(String, PresentationItem)> {
     match serde_json::from_value::<BriefRecord>(event.payload.clone()) {
         Ok(brief) => {
+            if brief.kind == BriefKind::Ack {
+                return None;
+            }
             let key = format!("id:{}", brief.id);
             Some((
                 key,
@@ -3376,7 +3379,7 @@ mod tests {
     }
 
     #[test]
-    fn reducer_keeps_legacy_ack_briefs_as_assistant_results() {
+    fn reducer_filters_legacy_ack_briefs_from_assistant_results() {
         let message = crate::types::MessageEnvelope::new(
             "default",
             crate::types::MessageKind::OperatorPrompt,
@@ -3394,7 +3397,7 @@ mod tests {
         let mut reducer = PresentationReducer::new();
         let items = reducer.reduce(&[event]);
 
-        assert_eq!(items.len(), 1);
+        assert!(items.is_empty());
     }
 
     #[test]
