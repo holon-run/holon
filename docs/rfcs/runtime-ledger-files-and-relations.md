@@ -148,7 +148,7 @@ The current runtime storage creates the following files under
 | `operator_transport_bindings.jsonl` | `OperatorTransportBinding` | Operator transport binding state. |
 | `operator_delivery_records.jsonl` | `OperatorDeliveryRecord` | Per-surface operator delivery attempts/results. |
 | `working_memory_deltas.jsonl` | `WorkingMemoryDelta` | Append-only memory state deltas. |
-| `context_episodes.jsonl` | `ContextEpisodeRecord` | Compacted episode/context summaries and recovery anchors. |
+| `context_episodes.jsonl` | `ContextEpisodeRecord` | Episode boundary and recovery anchor records. |
 | `workspaces.jsonl` | `WorkspaceEntry` | Workspace registry state. |
 | `workspace_occupancies.jsonl` | `WorkspaceOccupancyRecord` | Active workspace occupancy history. |
 | `agent_identities.jsonl` | `AgentIdentityRecord` | Agent identity/profile history. |
@@ -184,7 +184,7 @@ progress.
 | `operator_transport_bindings.jsonl` | Operator transport binding APIs append binding records. | Operator delivery and storage helpers read latest bindings to route user-facing output. |
 | `operator_delivery_records.jsonl` | Operator delivery APIs append submitted/completed delivery attempt records. | Operator APIs and delivery diagnostics read recent/latest delivery attempts per surface. |
 | `working_memory_deltas.jsonl` | Working memory APIs append memory state deltas. | Working memory projection rebuilds current memory from deltas; prompt context uses the projected memory, not raw deltas. |
-| `context_episodes.jsonl` | Episode compaction and memory episode paths append compacted context episodes. | Prompt context and memory index rebuild read episodes as long-lived context evidence and recovery anchors. |
+| `context_episodes.jsonl` | Episode compaction and memory episode paths append context episode anchors. | Prompt context and memory index rebuild read anchors as long-lived context evidence and recovery anchors. |
 | `workspaces.jsonl` | Runtime bootstrap, host registry, lifecycle workspace APIs, and tests append workspace registry entries. | Workspace registry, memory indexing, and lifecycle APIs reconstruct available workspaces and active project context. |
 | `workspace_occupancies.jsonl` | Host registry appends occupancy enter/leave records. | Host/runtime coordination uses occupancy history to reason about active workspace ownership. |
 | `agent_identities.jsonl` | Host and host registry append identity/profile records for public and child agents. | Host/runtime identity lookup and recovery reconstruct known agents and their profile/ownership history. |
@@ -340,10 +340,10 @@ agent_identities.jsonl
 separate from prompt summaries because memory has its own authority and curation
 rules.
 
-`context_episodes.jsonl` records compaction episodes, boundary summaries, and
-recovery anchors. Episodes are useful context evidence, but they should not
-override original message, tool, or turn records when those records are still
-available.
+`context_episodes.jsonl` records episode boundary and recovery anchors. The
+runtime DB stores the imported projection in `context_episode_anchors`.
+Episodes are useful context evidence, but they should not override original
+message, tool, or turn records when those records are still available.
 
 Workspace and identity ledgers record runtime configuration and occupancy. They
 are context for execution, not substitutes for task or message ledgers.
@@ -555,8 +555,8 @@ The graph should preserve two boundaries:
 1. A reference does not transfer authority. A model-generated brief that
    references an operator message does not become operator instruction.
 2. A projection does not become source of truth. `recent_turns`,
-   `context_episodes`, and event-stream summaries can explain prior state but
-   should not override canonical domain records.
+   `context_episode_anchors`, and event-stream summaries can explain prior
+   state but should not override canonical domain records.
 
 ## Ordering and revision model
 
@@ -950,7 +950,7 @@ For example:
 - `tools` preserves side-effect invocation/result evidence.
 - `briefs` and `delivery_summaries` preserve generated outcome and delivery
   evidence.
-- `context_episodes` preserves compaction/recovery anchors.
+- `context_episode_anchors` preserves compaction/recovery anchors.
 
 These records can be stored in specialized tables or a shared
 `evidence_records` table with indexes by record id, turn id, message id, task

@@ -22,6 +22,7 @@ use crate::types::{
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
 const TASK_PAYLOAD_ARRAY_LIMIT: usize = 64;
 const EVIDENCE_PREVIEW_LIMIT: usize = 2048;
+const CONTEXT_EPISODE_ANCHORS_DOMAIN: &str = "context_episode_anchors";
 
 #[derive(Debug, Clone)]
 pub struct RuntimeDb {
@@ -675,12 +676,12 @@ impl ContextEpisodeRepository<'_> {
     pub fn import_legacy(&self, records: Vec<ContextEpisodeRecord>) -> Result<()> {
         if self
             .db
-            .storage_domain_is_complete("context_episodes", "db")?
+            .storage_domain_is_complete(CONTEXT_EPISODE_ANCHORS_DOMAIN, "db")?
         {
             return Ok(());
         }
         self.db
-            .run_storage_domain_import("context_episodes", "jsonl", "db", |tx| {
+            .run_storage_domain_import(CONTEXT_EPISODE_ANCHORS_DOMAIN, "jsonl", "db", |tx| {
                 let latest = reduce_context_episode_records(records);
                 for record in latest.values() {
                     upsert_context_episode_tx(tx, record)?;
@@ -702,7 +703,7 @@ impl ContextEpisodeRepository<'_> {
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
             "SELECT payload_json
-             FROM context_episodes
+             FROM context_episode_anchors
              ORDER BY ended_at DESC, started_at DESC, episode_id ASC
              LIMIT ?1",
         )?;
@@ -726,7 +727,7 @@ impl ContextEpisodeRepository<'_> {
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
             "SELECT payload_json
-             FROM context_episodes
+             FROM context_episode_anchors
              WHERE agent_id = ?1
              ORDER BY ended_at DESC, started_at DESC, episode_id ASC
              LIMIT ?2",
@@ -2688,7 +2689,7 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
     let payload_json = serde_json::to_string(record)?;
     let boundary_reason = enum_string(&record.boundary_reason)?;
     tx.execute(
-        "INSERT INTO context_episodes (
+        "INSERT INTO context_episode_anchors (
             episode_id, agent_id, workspace_id, work_item_id, boundary_reason,
             start_turn_index, end_turn_index, started_at, ended_at, payload_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -2702,7 +2703,7 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
             started_at = excluded.started_at,
             ended_at = excluded.ended_at,
             payload_json = excluded.payload_json
-         WHERE excluded.ended_at >= context_episodes.ended_at",
+         WHERE excluded.ended_at >= context_episode_anchors.ended_at",
         params![
             record.id,
             record.agent_id,
@@ -4269,7 +4270,7 @@ CREATE TABLE IF NOT EXISTS working_memory_deltas (
   payload_json TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS context_episodes (
+CREATE TABLE IF NOT EXISTS context_episode_anchors (
   episode_id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
   workspace_id TEXT NOT NULL,
@@ -4290,10 +4291,10 @@ CREATE INDEX IF NOT EXISTS idx_work_item_delegations_state
   ON work_item_delegations(state);
 CREATE INDEX IF NOT EXISTS idx_working_memory_deltas_revision
   ON working_memory_deltas(agent_id, to_revision, created_at);
-CREATE INDEX IF NOT EXISTS idx_context_episodes_agent_turn
-  ON context_episodes(agent_id, end_turn_index);
-CREATE INDEX IF NOT EXISTS idx_context_episodes_work_item
-  ON context_episodes(work_item_id);
+CREATE INDEX IF NOT EXISTS idx_context_episode_anchors_agent_turn
+  ON context_episode_anchors(agent_id, end_turn_index);
+CREATE INDEX IF NOT EXISTS idx_context_episode_anchors_work_item
+  ON context_episode_anchors(work_item_id);
 "#,
     },
     Migration {
@@ -4322,6 +4323,34 @@ CREATE INDEX IF NOT EXISTS idx_work_item_continuations_suspended
   ON work_item_continuations(agent_id, suspended_work_item_id, state);
 CREATE INDEX IF NOT EXISTS idx_work_item_continuations_active
   ON work_item_continuations(agent_id, active_work_item_id, state);
+"#,
+    },
+    Migration {
+        version: 13,
+        name: "context_episode_anchors_table",
+        sql: r#"
+DROP INDEX IF EXISTS idx_context_episodes_agent_turn;
+DROP INDEX IF EXISTS idx_context_episodes_work_item;
+DROP TABLE IF EXISTS context_episodes;
+DELETE FROM storage_domains WHERE domain = 'context_episodes';
+
+CREATE TABLE IF NOT EXISTS context_episode_anchors (
+  episode_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  work_item_id TEXT,
+  boundary_reason TEXT NOT NULL,
+  start_turn_index INTEGER NOT NULL,
+  end_turn_index INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_context_episode_anchors_agent_turn
+  ON context_episode_anchors(agent_id, end_turn_index);
+CREATE INDEX IF NOT EXISTS idx_context_episode_anchors_work_item
+  ON context_episode_anchors(work_item_id);
 "#,
     },
 ];
@@ -4490,7 +4519,7 @@ impl RuntimeDb {
                 legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
-                domain: "context_episodes",
+                domain: CONTEXT_EPISODE_ANCHORS_DOMAIN,
                 canonical_source: "db",
                 legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
@@ -5137,6 +5166,7 @@ mod tests {
             "workspace_entries",
             "workspace_occupancies",
             "agent_identities",
+            "context_episode_anchors",
         ] {
             let count: i64 = connection.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -5150,17 +5180,97 @@ mod tests {
     }
 
     #[test]
-    fn runtime_db_context_episodes_schema_has_no_summary_column() -> Result<()> {
+    fn runtime_db_context_episode_anchors_schema_replaces_legacy_episode_table() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let connection = db.connection()?;
-        let mut statement = connection.prepare("PRAGMA table_info(context_episodes)")?;
+        assert!(!table_exists(&connection, "context_episodes")?);
+        let mut statement = connection.prepare("PRAGMA table_info(context_episode_anchors)")?;
         let columns = statement
             .query_map([], |row| row.get::<_, String>(1))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         assert!(!columns.iter().any(|column| column == "summary"));
         assert!(columns.iter().any(|column| column == "payload_json"));
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_db_migration_drops_unreleased_context_episodes_table() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let connection = open_connection(&db_path)?;
+            connection.execute_batch(
+                r#"
+CREATE TABLE schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at TEXT NOT NULL
+);
+CREATE TABLE storage_domains (
+  domain TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL,
+  import_status TEXT NOT NULL,
+  canonical_source TEXT NOT NULL,
+  source_checkpoint_json TEXT,
+  imported_at TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE context_episodes (
+  episode_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  work_item_id TEXT,
+  boundary_reason TEXT NOT NULL,
+  start_turn_index INTEGER NOT NULL,
+  end_turn_index INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+CREATE INDEX idx_context_episodes_agent_turn
+  ON context_episodes(agent_id, end_turn_index);
+CREATE INDEX idx_context_episodes_work_item
+  ON context_episodes(work_item_id);
+INSERT INTO context_episodes (
+  episode_id, agent_id, workspace_id, boundary_reason,
+  start_turn_index, end_turn_index, started_at, ended_at, summary, payload_json
+) VALUES (
+  'episode-old', 'default', 'agent_home', 'hard_turn_cap',
+  1, 2, '2026-06-10T00:00:00Z', '2026-06-10T00:01:00Z',
+  'legacy summary', '{}'
+);
+INSERT INTO storage_domains (
+  domain, schema_version, import_status, canonical_source, updated_at
+) VALUES (
+  'context_episodes', 1, 'complete', 'db', '2026-06-10T00:01:00Z'
+);
+"#,
+            )?;
+            for migration in &MIGRATIONS[..12] {
+                connection.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+                    (
+                        migration.version,
+                        migration.name,
+                        Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    ),
+                )?;
+            }
+        }
+
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = open_connection(&db_path)?;
+
+        assert!(!table_exists(&connection, "context_episodes")?);
+        assert!(table_exists(&connection, "context_episode_anchors")?);
+        let old_domain_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM storage_domains WHERE domain = 'context_episodes'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(old_domain_count, 0);
         Ok(())
     }
 
