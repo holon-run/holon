@@ -5,19 +5,24 @@ use serde_json::Value;
 
 use crate::{
     prompt::{PromptSection, PromptStability},
-    storage::AppStorage,
+    storage::{is_active_task_status, AppStorage},
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::helpers::truncate_text,
     types::{
         AdmissionContext, AgentState, AuthorityClass, BriefRecord, CallbackDeliveryMode,
-        ContextEpisodeRecord, ContinuationClass, ContinuationResolution, ContinuationTriggerKind,
-        ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView,
-        TodoItemState, ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry,
-        TranscriptEntryKind, TurnRecord, WaitingIntentRecord, WaitingIntentScope,
-        WaitingIntentStatus, WorkItemRecord, WorkItemRefStatus, WorkingMemorySnapshot,
+        ChildSupervisionProjection, CommandTaskStatusSnapshot, ContextEpisodeRecord,
+        ContinuationClass, ContinuationResolution, ContinuationTriggerKind, ExternalTriggerRecord,
+        ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
+        MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TaskRecord, TodoItemState,
+        ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnRecord,
+        WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WorkItemRecord,
+        WorkItemRefStatus, WorkingMemorySnapshot,
     },
 };
+
+const ACTIVE_TASKS_CONTEXT_LIMIT: usize = 5;
+const ACTIVE_TASK_SUMMARY_CHAR_BUDGET: usize = 240;
+const ACTIVE_TASK_CMD_PREVIEW_CHAR_BUDGET: usize = 240;
 
 #[derive(Debug, Clone)]
 pub struct ContextConfig {
@@ -173,6 +178,19 @@ pub fn build_context_with_default_external_ingress(
             ),
         ),
     );
+    let active_task_count = storage.active_task_count_for_agent(&agent.id)?;
+    if active_task_count > 0 {
+        let active_tasks =
+            storage.latest_active_task_records_for_agent(&agent.id, ACTIVE_TASKS_CONTEXT_LIMIT)?;
+        push_budgeted_section(
+            &mut sections,
+            &mut remaining_budget,
+            section(
+                "active_tasks",
+                render_active_tasks(&active_tasks, active_task_count),
+            ),
+        );
+    }
 
     if let Some(summary) = &agent.context_summary {
         if !summary.trim().is_empty() {
@@ -805,6 +823,122 @@ fn push_budgeted_section(
     *remaining_budget = remaining_budget.saturating_sub(estimate_section_tokens(&section));
     sections.push(section);
     true
+}
+
+fn render_active_tasks(tasks: &[TaskRecord], total_count: usize) -> String {
+    let mut lines = vec![format!(
+        "Active managed tasks (bounded to {ACTIVE_TASKS_CONTEXT_LIMIT}; use ListTasks for the full list):"
+    )];
+
+    for task in tasks
+        .iter()
+        .filter(|task| is_active_task_status(&task.status))
+    {
+        let task_id = sanitize_inline(&task.id);
+        lines.push(format!("- task_id: {task_id}"));
+        lines.push(format!("  task_ref: task:{task_id}"));
+        lines.push(format!("  kind: {}", sanitize_inline(task.kind.as_str())));
+        if let Some(summary) = task
+            .summary
+            .as_deref()
+            .filter(|summary| !summary.trim().is_empty())
+        {
+            lines.push(format!(
+                "  summary: {}",
+                sanitize_inline(&truncate_text(summary, ACTIVE_TASK_SUMMARY_CHAR_BUDGET))
+            ));
+        }
+        if let Some(work_item_id) = task.effective_work_item_id() {
+            lines.push(format!(
+                "  associated_work_item: {}",
+                sanitize_inline(work_item_id)
+            ));
+        }
+
+        if let Some(command) = CommandTaskStatusSnapshot::from_task_record(task) {
+            lines.push("  command:".to_string());
+            render_active_task_command(&mut lines, &command);
+        }
+
+        if let Some(child) = ChildSupervisionProjection::from_task_record(task) {
+            lines.push("  child_agent:".to_string());
+            lines.push(format!(
+                "    child_agent_id: {}",
+                sanitize_inline(&child.child_agent_id)
+            ));
+            if let Some(workspace_mode) = child.workspace_mode {
+                lines.push(format!(
+                    "    workspace_mode: {}",
+                    sanitize_inline(workspace_mode.label())
+                ));
+            }
+            lines.push(format!(
+                "    followup_target: {}",
+                sanitize_inline(&child.followup_target)
+            ));
+            lines.push(format!(
+                "    cleanup_owner: {}",
+                sanitize_inline(&child.cleanup_owner)
+            ));
+            if let Some(worktree) = child.worktree {
+                if let Some(path) = worktree.worktree_path {
+                    lines.push(format!("    worktree_path: {}", sanitize_inline(&path)));
+                }
+            }
+        }
+
+        lines.push("  retrieval:".to_string());
+        lines.push(format!(
+            "    status: use TaskStatus({}) for lifecycle details",
+            task_id
+        ));
+        lines.push(format!(
+            "    output: use TaskOutput({}) for bounded/current output when available",
+            task_id
+        ));
+    }
+
+    if total_count > tasks.len() {
+        lines.push(format!(
+            "... {} more active tasks not shown; use ListTasks for the full active task list.",
+            total_count - tasks.len()
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn render_active_task_command(lines: &mut Vec<String>, command: &CommandTaskStatusSnapshot) {
+    if let Some(cmd) = command.cmd.as_deref().filter(|cmd| !cmd.trim().is_empty()) {
+        lines.push(format!(
+            "    cmd_preview: {}",
+            sanitize_inline(&truncate_text(
+                &crate::tool::helpers::command_preview(cmd),
+                ACTIVE_TASK_CMD_PREVIEW_CHAR_BUDGET
+            ))
+        ));
+    }
+    if let Some(cmd_digest) = command.cmd_digest.as_deref() {
+        lines.push(format!("    cmd_digest: {}", sanitize_inline(cmd_digest)));
+    }
+    if let Some(workdir) = command.workdir.as_deref() {
+        lines.push(format!("    workdir: {}", sanitize_inline(workdir)));
+    }
+    if command.tty == Some(true) {
+        lines.push("    tty: true".to_string());
+    }
+    if command.accepts_input == Some(true) {
+        lines.push("    accepts_input: true".to_string());
+        if let Some(input_target) = command.input_target.as_deref() {
+            lines.push(format!(
+                "    input_target: {}",
+                sanitize_inline(input_target)
+            ));
+        }
+    }
+    if let Some(output_path) = command.output_path.as_deref() {
+        lines.push(format!("    output_path: {}", sanitize_inline(output_path)));
+    }
 }
 
 fn fit_section_to_budget(section: PromptSection, budget: usize) -> Option<PromptSection> {
@@ -2867,10 +3001,10 @@ mod tests {
             AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
             AgentVisibility, AuthorityClass, BriefKind, BriefRecord, CallbackDeliveryMode,
             ContextEpisodeRecord, ContinuationTriggerKind, EpisodeBoundaryReason,
-            ExternalTriggerScope, LoadedAgentsMd, MessageKind, MessageOrigin, Priority, TodoItem,
-            TodoItemState, ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry,
-            TranscriptEntryKind, WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus,
-            WorkItemRef, WorkItemRefKind, WorkItemRefStatus, WorkItemState,
+            ExternalTriggerScope, LoadedAgentsMd, MessageKind, MessageOrigin, Priority, TaskKind,
+            TaskStatus, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
+            TranscriptEntry, TranscriptEntryKind, WaitingIntentRecord, WaitingIntentScope,
+            WaitingIntentStatus, WorkItemRef, WorkItemRefKind, WorkItemRefStatus, WorkItemState,
         },
     };
 
@@ -2887,6 +3021,58 @@ mod tests {
         turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(message));
         storage.append_turn(&turn).unwrap();
         turn
+    }
+
+    fn context_for_storage(storage: &AppStorage, agent_id: &str) -> BuiltContext {
+        let current_message = MessageEnvelope::new(
+            agent_id,
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue".to_string(),
+            },
+        );
+        let session = AgentState::new(agent_id);
+        build_context(
+            storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 4,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 4,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn active_task(
+        id: &str,
+        agent_id: &str,
+        status: TaskStatus,
+        detail: Option<Value>,
+    ) -> TaskRecord {
+        let now = chrono::Utc::now();
+        TaskRecord {
+            id: id.to_string(),
+            agent_id: agent_id.to_string(),
+            kind: TaskKind::CommandTask,
+            status,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: Some("work-current".to_string()),
+            summary: Some("Run a long verification task".to_string()),
+            detail,
+            recovery: None,
+        }
     }
 
     #[test]
@@ -5412,6 +5598,198 @@ mod tests {
         assert!(execution_section
             .content
             .contains("child_process_containment: not_enforced"));
+    }
+
+    #[test]
+    fn build_context_omits_active_tasks_when_none() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        let built = context_for_storage(&storage, "default");
+
+        assert!(built
+            .sections
+            .iter()
+            .all(|section| section.name != "active_tasks"));
+    }
+
+    #[test]
+    fn build_context_includes_active_command_task_projection() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage
+            .append_task(&active_task(
+                "task-running",
+                "default",
+                TaskStatus::Running,
+                Some(json!({
+                    "cmd": "cargo test a_very_long_target_name_that_should_still_be_previewed_without_reading_output",
+                    "cmd_digest": "cmd-123",
+                    "workdir": "/workspace",
+                    "tty": true,
+                    "accepts_input": true,
+                    "input_target": "stdin",
+                    "output_path": "/tmp/holon-task-output.txt",
+                })),
+            ))
+            .unwrap();
+
+        let built = context_for_storage(&storage, "default");
+        let active_tasks = built
+            .sections
+            .iter()
+            .find(|section| section.name == "active_tasks")
+            .expect("active_tasks section")
+            .content
+            .clone();
+
+        assert!(active_tasks.contains("Active managed tasks"));
+        assert!(active_tasks.contains("- task_id: task-running"));
+        assert!(active_tasks.contains("task_ref: task:task-running"));
+        assert!(active_tasks.contains("kind: command_task"));
+        assert!(active_tasks.contains("summary: Run a long verification task"));
+        assert!(active_tasks.contains("associated_work_item: work-current"));
+        assert!(active_tasks.contains("cmd_preview: cargo test"));
+        assert!(active_tasks.contains("cmd_digest: cmd-123"));
+        assert!(active_tasks.contains("workdir: /workspace"));
+        assert!(active_tasks.contains("tty: true"));
+        assert!(active_tasks.contains("accepts_input: true"));
+        assert!(active_tasks.contains("input_target: stdin"));
+        assert!(active_tasks.contains("output_path: /tmp/holon-task-output.txt"));
+        assert!(active_tasks.contains("use TaskStatus(task-running)"));
+        assert!(active_tasks.contains("use TaskOutput(task-running)"));
+        assert!(!active_tasks.contains("status: running"));
+        assert!(!active_tasks.contains("wait_policy"));
+    }
+
+    #[test]
+    fn build_context_sanitizes_active_task_scalars_and_command_preview() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let task = TaskRecord {
+            summary: Some("Run verification\ninjected: true".to_string()),
+            work_item_id: Some("work-current\nspoofed: true".to_string()),
+            ..active_task(
+                "task-running",
+                "default",
+                TaskStatus::Running,
+                Some(json!({
+                    "cmd": "TOKEN=abc123 python - <<'PY'\nprint('FINAL_SECRET_MARKER')\nPY",
+                    "cmd_digest": "cmd-123\nspoofed: true",
+                    "workdir": "/workspace\nspoofed: true",
+                    "output_path": "/tmp/holon-task-output.txt\nspoofed: true",
+                })),
+            )
+        };
+        storage.append_task(&task).unwrap();
+
+        let built = context_for_storage(&storage, "default");
+        let active_tasks = built
+            .sections
+            .iter()
+            .find(|section| section.name == "active_tasks")
+            .expect("active_tasks section")
+            .content
+            .clone();
+
+        assert!(active_tasks.contains("summary: Run verification injected: true"));
+        assert!(active_tasks.contains("associated_work_item: work-current spoofed: true"));
+        assert!(active_tasks
+            .contains("cmd_preview: [omitted: command contains heredoc or inline script]"));
+        assert!(active_tasks.contains("cmd_digest: cmd-123 spoofed: true"));
+        assert!(active_tasks.contains("workdir: /workspace spoofed: true"));
+        assert!(active_tasks.contains("output_path: /tmp/holon-task-output.txt spoofed: true"));
+        assert!(!active_tasks.contains("TOKEN=abc123"));
+        assert!(!active_tasks.contains("FINAL_SECRET_MARKER"));
+        assert!(!active_tasks.contains("\ninjected: true"));
+        assert!(!active_tasks.contains("\nspoofed: true"));
+    }
+
+    #[test]
+    fn build_context_scopes_active_tasks_to_current_agent() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage
+            .append_task(&active_task(
+                "task-default",
+                "default",
+                TaskStatus::Running,
+                None,
+            ))
+            .unwrap();
+        storage
+            .append_task(&active_task(
+                "task-other",
+                "other",
+                TaskStatus::Running,
+                None,
+            ))
+            .unwrap();
+
+        let built = context_for_storage(&storage, "default");
+        let active_tasks = built
+            .sections
+            .iter()
+            .find(|section| section.name == "active_tasks")
+            .expect("active_tasks section")
+            .content
+            .clone();
+
+        assert!(active_tasks.contains("task-default"));
+        assert!(!active_tasks.contains("task-other"));
+    }
+
+    #[test]
+    fn build_context_omits_terminal_tasks_from_active_tasks() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        storage
+            .append_task(&active_task(
+                "task-completed",
+                "default",
+                TaskStatus::Completed,
+                None,
+            ))
+            .unwrap();
+
+        let built = context_for_storage(&storage, "default");
+
+        assert!(built
+            .sections
+            .iter()
+            .all(|section| section.name != "active_tasks"));
+    }
+
+    #[test]
+    fn build_context_limits_active_tasks_and_reports_hidden_count() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        for index in 0..(ACTIVE_TASKS_CONTEXT_LIMIT + 1) {
+            storage
+                .append_task(&active_task(
+                    &format!("task-{index}"),
+                    "default",
+                    TaskStatus::Running,
+                    None,
+                ))
+                .unwrap();
+        }
+
+        let built = context_for_storage(&storage, "default");
+        let active_tasks = built
+            .sections
+            .iter()
+            .find(|section| section.name == "active_tasks")
+            .expect("active_tasks section")
+            .content
+            .clone();
+
+        assert_eq!(
+            active_tasks.matches("- task_id:").count(),
+            ACTIVE_TASKS_CONTEXT_LIMIT
+        );
+        assert!(active_tasks.contains("... 1 more active tasks not shown"));
+        assert!(active_tasks.contains("use ListTasks for the full active task list"));
     }
 
     #[test]
