@@ -2690,8 +2690,8 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
     tx.execute(
         "INSERT INTO context_episodes (
             episode_id, agent_id, workspace_id, work_item_id, boundary_reason,
-            start_turn_index, end_turn_index, started_at, ended_at, summary, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            start_turn_index, end_turn_index, started_at, ended_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(episode_id) DO UPDATE SET
             agent_id = excluded.agent_id,
             workspace_id = excluded.workspace_id,
@@ -2701,7 +2701,6 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
             end_turn_index = excluded.end_turn_index,
             started_at = excluded.started_at,
             ended_at = excluded.ended_at,
-            summary = excluded.summary,
             payload_json = excluded.payload_json
          WHERE excluded.ended_at >= context_episodes.ended_at",
         params![
@@ -2714,7 +2713,6 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
             record.end_turn_index as i64,
             timestamp(record.created_at),
             timestamp(record.finalized_at),
-            record.summary,
             payload_json,
         ],
     )?;
@@ -4281,7 +4279,6 @@ CREATE TABLE IF NOT EXISTS context_episodes (
   end_turn_index INTEGER NOT NULL,
   started_at TEXT NOT NULL,
   ended_at TEXT NOT NULL,
-  summary TEXT NOT NULL,
   payload_json TEXT NOT NULL
 );
 
@@ -5149,6 +5146,21 @@ mod tests {
             assert_eq!(count, 1, "missing table {table}");
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_db_context_episodes_schema_has_no_summary_column() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = db.connection()?;
+        let mut statement = connection.prepare("PRAGMA table_info(context_episodes)")?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        assert!(!columns.iter().any(|column| column == "summary"));
+        assert!(columns.iter().any(|column| column == "payload_json"));
         Ok(())
     }
 

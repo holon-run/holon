@@ -146,26 +146,28 @@ independent authority to update curated memory.
 
 ### Episode Memory
 
-Episode memory is the archive of completed coherent work chunks.
+Episode memory is the archive of completed coherent work chunks. It is a
+retrieval-anchor surface, not a transcript summary.
 
-An active episode builder accumulates relevant evidence while work progresses:
+An active episode anchor tracks why a work segment exists and which exact
+runtime evidence can be fetched later:
 
 - active work item id
-- delivery target
-- work summary
-- scope hints
+- bounded objective or work-summary preview
 - touched files
-- commands
-- verification evidence
-- decisions
+- source turn refs such as `turn:<id>`
+- linked runtime refs exposed by the source turns
 - carry-forward follow-ups
 - waiting state
 
-When a boundary is reached, the runtime finalizes the builder into an immutable
-`ContextEpisodeRecord` and appends it to durable storage.
+When a boundary is reached, the runtime finalizes the anchor into an immutable
+`ContextEpisodeRecord` and appends it to durable storage. The record should
+prefer refs over prose; command output, task results, and turn details remain
+reachable through `MemoryGet` rather than being copied into the episode.
 
 Archived episodes are selected into prompt context by relevance and budget.
-They are not all rendered by default.
+They are not all rendered by default, and selected episodes render as bounded
+anchor blocks with retrieval hints.
 
 ## Lifecycle
 
@@ -208,7 +210,7 @@ The preferred order is:
 
 1. stable system and policy prompt
 2. `AgentScoped` working memory
-3. selected `AgentScoped` relevant episode memory
+3. selected `AgentScoped` relevant episode anchors
 4. `TurnScoped` pending working-memory delta
 5. `TurnScoped` active work item and current plan
 6. `TurnScoped` queued and waiting work items
@@ -234,14 +236,15 @@ omitted or truncated before displacing higher-value state such as:
 - current input
 - active work item
 - working memory
-- selected relevant episode memory
+- selected relevant episode anchors
 - pending memory delta
 
 The runtime should reserve budget for current input before adding memory
 sections.
 
 Episode memory selection should consider both relevance and recency, then render
-only the top records that fit the remaining budget.
+only the top anchor records that fit the remaining budget. The prompt projection
+should include refs and short previews, not archived summaries.
 
 ## Provider Cache Behavior
 
