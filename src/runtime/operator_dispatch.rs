@@ -85,19 +85,6 @@ impl RuntimeHandle {
                 "rendered_system_chars": built.rendered_system_prompt.chars().count(),
             }),
         ))?;
-        if built
-            .context_sections
-            .iter()
-            .any(|section| section.name == "working_memory_delta")
-        {
-            let mut guard = self.inner.agent.lock().await;
-            mark_working_memory_prompted(
-                &mut guard.state,
-                built.cache_identity.working_memory_revision,
-            );
-            self.inner.storage.write_agent(&guard.state)?;
-        }
-
         let outcome = self
             .run_agent_loop(
                 &message.agent_id,

@@ -138,7 +138,7 @@ The current runtime storage creates the following files under
 | `delivery_summaries.jsonl` | `DeliverySummaryRecord` | Delivery closure records for result/completion reporting. |
 | `events.jsonl` | `AuditEvent` | Audit/event-stream/debug mirror with event cursor semantics. |
 | `tasks.jsonl` | `TaskRecord` | Managed task lifecycle history. |
-| `work_items.jsonl` | `WorkItemRecord` | Work item lifecycle history and latest resumable objective state. |
+| `work_items.jsonl` | `WorkItemRecord` | Work item lifecycle history, latest resumable objective state, and runtime-derived work refs. |
 | `work_item_delegations.jsonl` | `WorkItemDelegationRecord` | Parent/child work delegation lifecycle. |
 | `timers.jsonl` | `TimerRecord` | Timer lifecycle state and fire counters. |
 | `waiting_intents.jsonl` | `WaitingIntentRecord` | Historical wait intent records. |
@@ -147,7 +147,6 @@ The current runtime storage creates the following files under
 | `operator_notifications.jsonl` | `OperatorNotificationRecord` | Operator-facing notification lifecycle. |
 | `operator_transport_bindings.jsonl` | `OperatorTransportBinding` | Operator transport binding state. |
 | `operator_delivery_records.jsonl` | `OperatorDeliveryRecord` | Per-surface operator delivery attempts/results. |
-| `working_memory_deltas.jsonl` | `WorkingMemoryDelta` | Append-only memory state deltas. |
 | `context_episodes.jsonl` | `ContextEpisodeRecord` | Episode boundary and recovery anchor records. |
 | `workspaces.jsonl` | `WorkspaceEntry` | Workspace registry state. |
 | `workspace_occupancies.jsonl` | `WorkspaceOccupancyRecord` | Active workspace occupancy history. |
@@ -169,12 +168,12 @@ progress.
 | `queue_entries.jsonl` | `Runtime::enqueue`, dequeue/processing paths, interjection handling, and scheduler tests append queue lifecycle snapshots for a `message_id`. | Scheduler and work-queue projection use latest queue state to decide runnable/queued items. Delivery helpers use it to bind queued/admitted messages to later output. |
 | `turns.jsonl` | Turn finalization appends a lightweight `TurnRecord` after a terminal turn result or failure path has enough linkage evidence. | Prompt projection should increasingly use it as the recent-turn causal spine. Tests and diagnostics read it to verify turn linkage. |
 | `transcript.jsonl` | Runtime turn execution, message dispatch, failure handling, subagent handling, and host bootstrap append model-facing entries and assign `transcript_seq`. | Prompt context currently reads recent transcript as a compatibility/context source. Runtime lifecycle and tests use it for provider round recovery and model-facing trace assertions. |
-| `tools.jsonl` | Tool execution paths append `ToolExecutionRecord`; command-like tools also mark the memory index dirty. | Prompt context, working memory projection, task output, and tests read recent tool evidence so agents can recover side effects without rerunning tools. |
+| `tools.jsonl` | Tool execution paths append `ToolExecutionRecord`; command-like tools also mark the memory index dirty. | Prompt context, work-ref extraction, task output, and tests read recent tool evidence so agents can recover side effects without rerunning tools. |
 | `briefs.jsonl` | Runtime delivery, memory refresh, task reducer, tests, and completion paths append generated `BriefRecord` summaries. | Prompt context, delivery APIs, memory indexing, scheduler signals, and turn finalization read briefs as result/failure/status evidence. Current code still includes `Ack` briefs, but this RFC treats ordinary acks as a design gap. |
 | `delivery_summaries.jsonl` | Completion and delivery paths append `DeliverySummaryRecord`. | Work item query tools, run-once helpers, delivery helpers, and turn finalization use it to bind user-facing closure back to turns and work items. |
 | `events.jsonl` | `Runtime::append_audit_event`, HTTP/operator surfaces, scheduler, wait mirroring, turn finalization, command-task handling, and lifecycle paths append audit events and assign `event_seq`. | HTTP event streams, diagnostics, lifecycle counters, scheduler signals, recovery tests, and TUI/debug views use it for cursorable audit evidence. It is not the canonical domain store. |
 | `tasks.jsonl` | Task reducer, command task, child-agent supervision, task tools, tests, and run-once fixtures append task lifecycle snapshots. | Recovery snapshots, task list/status/output APIs, scheduler blocking checks, memory indexing, and prompt/work item projections reconstruct latest task state from this history. |
-| `work_items.jsonl` | Work item tools, lifecycle APIs, wait helpers, task helpers, memory refresh, and tests append work item revisions/state snapshots. | Work queue projection, scheduler readiness, prompt current/queued/blocked sections, memory indexing, work item query tools, and recovery reconstruct latest state by work item id. |
+| `work_items.jsonl` | Work item tools, lifecycle APIs, wait helpers, task helpers, turn-closure work-ref refresh, and tests append work item revisions/state snapshots. | Work queue projection, scheduler readiness, prompt current/queued/blocked sections, current work refs, memory indexing, work item query tools, and recovery reconstruct latest state by work item id. |
 | `work_item_delegations.jsonl` | Task completion/delegation paths and tests append parent/child delegation state. | Recovery and latest-delegation helpers reconstruct child-agent ownership and delegation lifecycle. |
 | `timers.jsonl` | Wait/timer runtime paths append timer creation, update, and fire-state records. | Scheduler and recovery use latest timer state and fire counters to decide timer wakes. |
 | `waiting_intents.jsonl` | Legacy wait APIs and compatibility paths append wait intent records; `append_waiting_intent` also mirrors to `wait_conditions.jsonl`. | Prompt context and memory refresh still read latest active waiting intents for compatibility. This overlaps with wait conditions and is a refactor target. |
@@ -183,7 +182,6 @@ progress.
 | `operator_notifications.jsonl` | Operator notification APIs append notification lifecycle records. | Operator APIs read recent notifications for display and delivery decisions. |
 | `operator_transport_bindings.jsonl` | Operator transport binding APIs append binding records. | Operator delivery and storage helpers read latest bindings to route user-facing output. |
 | `operator_delivery_records.jsonl` | Operator delivery APIs append submitted/completed delivery attempt records. | Operator APIs and delivery diagnostics read recent/latest delivery attempts per surface. |
-| `working_memory_deltas.jsonl` | Working memory APIs append memory state deltas. | Working memory projection rebuilds current memory from deltas; prompt context uses the projected memory, not raw deltas. |
 | `context_episodes.jsonl` | Episode compaction and memory episode paths append context episode anchors. | Prompt context and memory index rebuild read anchors as long-lived context evidence and recovery anchors. |
 | `workspaces.jsonl` | Runtime bootstrap, host registry, lifecycle workspace APIs, and tests append workspace registry entries. | Workspace registry, memory indexing, and lifecycle APIs reconstruct available workspaces and active project context. |
 | `workspace_occupancies.jsonl` | Host registry appends occupancy enter/leave records. | Host/runtime coordination uses occupancy history to reason about active workspace ownership. |
@@ -329,16 +327,17 @@ merged with `wait_conditions.jsonl` if the wait model is simplified.
 Context ledgers store long-lived agent context and runtime ownership state.
 
 ```text
-working_memory_deltas.jsonl
 context_episodes.jsonl
 workspaces.jsonl
 workspace_occupancies.jsonl
 agent_identities.jsonl
 ```
 
-`working_memory_deltas.jsonl` records memory state changes. It should remain
-separate from prompt summaries because memory has its own authority and curation
-rules.
+Current work continuity is stored on `WorkItemRecord`: the current WorkItem,
+todo list, blocked state, plan artifact, and runtime-derived `work_refs`.
+Work refs point back to files, tools, issues, PRs, tasks, waits, memory records,
+or other retrievable evidence. They are not model-authored summaries and do not
+need a separate working-memory delta ledger.
 
 `context_episodes.jsonl` records episode boundary and recovery anchors. The
 runtime DB stores the imported projection in `context_episode_anchors`.
@@ -940,7 +939,7 @@ delivery summaries
 provider traces
 artifact metadata
 context episodes
-working memory evidence
+work item refs evidence
 ```
 
 For example:

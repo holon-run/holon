@@ -41,6 +41,7 @@ mod tui_markdown;
 pub mod types;
 pub mod web;
 pub mod work_item_plan;
+pub mod work_item_refs;
 
 #[cfg(test)]
 mod test_env;

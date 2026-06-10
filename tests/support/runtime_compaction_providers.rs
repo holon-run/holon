@@ -369,12 +369,6 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                 .as_ref()
                 .map(|cache| cache.compression_epoch)
                 .unwrap_or_default(),
-            working_memory_revision: request
-                .prompt_frame
-                .cache
-                .as_ref()
-                .map(|cache| cache.working_memory_revision)
-                .unwrap_or_default(),
         });
 
         match call_index {

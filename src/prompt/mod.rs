@@ -48,7 +48,6 @@ pub struct PromptCacheIdentity {
     pub agent_id: String,
     pub prompt_cache_key: String,
     pub context_fingerprint: String,
-    pub working_memory_revision: u64,
     pub compression_epoch: u64,
 }
 
@@ -131,10 +130,6 @@ impl EffectivePrompt {
         output.push(format!(
             "Context fingerprint: {}",
             self.cache_identity.context_fingerprint
-        ));
-        output.push(format!(
-            "Working memory revision: {}",
-            self.cache_identity.working_memory_revision
         ));
         output.push(format!(
             "Compression epoch: {}",
@@ -351,7 +346,6 @@ pub fn build_effective_prompt_with_default_external_ingress(
             agent_id: session.id.clone(),
             prompt_cache_key: prompt_cache_key(&session.id, &cache_scope_fingerprint),
             context_fingerprint,
-            working_memory_revision: session.working_memory.working_memory_revision,
             compression_epoch: session.working_memory.compression_epoch,
         },
         system_sections,
@@ -403,7 +397,6 @@ fn prompt_context_fingerprint(
     let payload = json!({
         "agent_id": session.id,
         "compacted_message_count": session.compacted_message_count,
-        "working_memory_revision": session.working_memory.working_memory_revision,
         "compression_epoch": session.working_memory.compression_epoch,
         "execution_semantics": execution_semantic_cache_payload(execution),
         "system_sections": system_sections,
@@ -854,7 +847,6 @@ mod tests {
             agent_id: "default".into(),
             prompt_cache_key: "default".into(),
             context_fingerprint: "fingerprint-default".into(),
-            working_memory_revision: 3,
             compression_epoch: 1,
         }
     }

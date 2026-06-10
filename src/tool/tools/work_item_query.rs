@@ -8,7 +8,8 @@ use crate::{
     runtime::RuntimeHandle,
     types::{
         DeliverySummaryRecord, TodoItem, WaitConditionKind, WaitConditionSummary,
-        WorkItemPlanArtifact, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
+        WorkItemPlanArtifact, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemRef,
+        WorkItemState,
     },
 };
 
@@ -63,6 +64,8 @@ pub(crate) struct WorkItemView {
     pub(crate) plan_artifact: WorkItemPlanArtifact,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) todo_list: Vec<TodoItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) work_refs: Vec<WorkItemRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) blocked_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,6 +177,7 @@ pub(crate) async fn view_for_record(
         plan_status: record.plan_status,
         plan_artifact,
         todo_list,
+        work_refs: record.work_refs,
         blocked_by: record.blocked_by,
         recheck_at: record.recheck_at,
         recheck_consumed_at: record.recheck_consumed_at,

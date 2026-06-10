@@ -1,7 +1,7 @@
 ---
 title: RFC: Long-Lived Context Memory
 date: 2026-04-23
-status: draft
+status: draft; partially superseded by current WorkItem refs
 ---
 
 # RFC: Long-Lived Context Memory
@@ -91,7 +91,7 @@ Examples include:
 - work plans
 - waiting intents
 - context episode records
-- working memory deltas
+- current WorkItem refs
 
 The ledger is not prompt-bounded. Compression changes the model-visible
 projection, not the audit trail.
@@ -119,9 +119,9 @@ It contains volatile, recent, directly actionable information:
 
 Hot turn context is `TurnScoped` and should be aggressively budgeted.
 
-### Working Memory
+### Current Work Context
 
-Working memory is the compact current-state projection of the agent.
+Current work context is the compact current-state projection of the agent.
 
 It answers:
 
@@ -134,15 +134,14 @@ It answers:
 - what follow-ups remain?
 - what is the agent waiting on?
 
-The runtime stores this as `WorkingMemoryState.current_working_memory`, with a
-monotonic `working_memory_revision`.
+The prompt-facing authority is the current `WorkItemRecord` plus its
+runtime-derived `work_refs`. Work refs point back to files, tool executions,
+issues, PRs, tasks, waits, memory records, or other retrievable evidence.
 
-Working memory is derived from durable runtime state, not authored as a
-free-form model summary.
-
-Working memory is a request and continuity projection. Updating working memory
-does not write curated durable memory, and compaction output must not be used as
-independent authority to update curated memory.
+Current work context is derived from durable runtime state, not authored as a
+free-form model summary. Updating it does not write curated durable memory, and
+compaction output must not be used as independent authority to update curated
+memory.
 
 ### Episode Memory
 
@@ -177,13 +176,12 @@ Context memory changes at turn boundaries.
 
 After a turn reaches closure, the runtime should:
 
-1. derive the next `WorkingMemorySnapshot`
-2. compare it with the previous snapshot
-3. append a `WorkingMemoryDelta` when the snapshot changed
-4. update `working_memory_revision`
-5. keep the delta pending until it has been rendered into a prompt
-6. merge the turn evidence into the active episode builder
-7. finalize the active episode if a boundary was crossed
+1. derive current WorkItem refs from trusted input and current-turn tool
+   evidence
+2. append a new `WorkItemRecord` revision if refs changed
+3. derive the next runtime-owned continuity snapshot for episode construction
+4. merge the turn evidence into the active episode builder
+5. finalize the active episode if a boundary was crossed
 
 This keeps memory extraction deterministic and tied to runtime evidence.
 
@@ -209,22 +207,16 @@ should have explicit stability and budget behavior.
 The preferred order is:
 
 1. stable system and policy prompt
-2. `AgentScoped` working memory
-3. selected `AgentScoped` relevant episode anchors
-4. `TurnScoped` pending working-memory delta
-5. `TurnScoped` active work item and current plan
-6. `TurnScoped` queued and waiting work items
-7. `TurnScoped` recent messages, briefs, tools, and latest result
-8. current input and continuation context
+2. selected `AgentScoped` relevant episode anchors
+3. `TurnScoped` active WorkItem, current plan, todo list, and work refs
+4. `TurnScoped` queued and waiting work items
+5. `TurnScoped` recent turns, briefs, tools, and latest result
+6. current input and continuation context
 
-Working memory should be rendered whenever it is non-empty.
-
-The pending working-memory delta should be rendered only until the runtime has
-confirmed that the target revision has appeared in a prompt. After that it can
-be cleared.
+Current WorkItem context should be rendered whenever there is active work.
 
 The legacy `context_summary` may remain only as fallback when structured
-working memory is empty.
+runtime context is empty.
 
 ## Budgeting
 
@@ -235,9 +227,8 @@ omitted or truncated before displacing higher-value state such as:
 
 - current input
 - active work item
-- working memory
+- current work refs
 - selected relevant episode anchors
-- pending memory delta
 
 The runtime should reserve budget for current input before adding memory
 sections.
@@ -260,10 +251,8 @@ The prompt cache identity should include:
 
 - agent id
 - agent prompt cache key
-- working memory revision
 - compression epoch
 
-`working_memory_revision` changes when current agent working memory changes.
 `compression_epoch` changes when archived episode memory or fallback compaction
 changes the stable context shape.
 
@@ -322,19 +311,20 @@ the deterministic working memory model.
 
 The agent should see memory as prompt text, not as hidden runtime state.
 
-If the runtime updates memory after a turn, the next prompt must expose:
+If the runtime updates current work context after a turn, the next prompt must
+expose:
 
-- the new `working_memory`
-- a compact `working_memory_delta` describing what changed
+- the current WorkItem
+- current work refs derived from runtime evidence
 
 This avoids the failure mode where runtime state changes but the model has no
-observable signal that its memory projection changed.
+observable signal that its work projection changed.
 
 ## Acceptance Criteria
 
 - A long-running agent can continue after old transcript tail is omitted.
 - Current work item, plan, waiting state, and relevant evidence remain visible.
-- Working memory changes produce durable deltas.
+- Work ref changes produce WorkItem revisions.
 - Episode records are finalized at meaningful boundaries.
 - Prompt assembly respects an estimated token budget.
 - Provider prompt cache identity does not churn when memory is unchanged.
@@ -344,10 +334,6 @@ observable signal that its memory projection changed.
 
 The current implementation maps to this RFC through:
 
-- `WorkingMemoryState`
-- `WorkingMemorySnapshot`
-- `WorkingMemoryDelta`
-- `TurnMemoryDelta`
 - `ActiveEpisodeBuilder`
 - `ContextEpisodeRecord`
 - `refresh_working_memory`

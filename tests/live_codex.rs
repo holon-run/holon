@@ -51,7 +51,6 @@ fn live_append_match_prompt_frame() -> ProviderPromptFrame {
             agent_id: "live-openai-codex-append-match".into(),
             prompt_cache_key: "live-openai-codex-append-match".into(),
             context_fingerprint: "live-openai-codex-append-match".into(),
-            working_memory_revision: 1,
             compression_epoch: 0,
         }),
     )

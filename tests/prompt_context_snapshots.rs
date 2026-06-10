@@ -17,7 +17,7 @@ use holon::{
         ContinuationClass, ContinuationResolution, ContinuationTriggerKind, LoadedAgentsMd,
         MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
         SkillsRuntimeView, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
-        WaitingReason, WorkItemRecord, WorkItemState, WorkingMemoryDelta, WorkingMemorySnapshot,
+        WaitingReason, WorkItemRecord, WorkItemState, WorkingMemorySnapshot,
     },
 };
 use serde_json::{json, Value};
@@ -49,7 +49,7 @@ Process execution guarantees:
   - secret_isolation: not_enforced
   - child_process_containment: not_enforced"#;
 
-const CONTEXT_CONTRACT: &str = r#"Interpret the memory block with this priority: current work item objective first, durable plan artifact second, todo_list third, working memory delta next, and rolling working memory after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and plan artifact as the ground truth unless the current input explicitly changes it."#;
+const CONTEXT_CONTRACT: &str = r#"Interpret the memory block with this priority: current work item objective first, durable plan artifact second, todo_list third, and current work refs after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and plan artifact as the ground truth unless the current input explicitly changes it."#;
 
 fn sample_identity() -> AgentIdentityView {
     AgentIdentityView {
@@ -685,19 +685,6 @@ fn operator_turn_context_snapshot_includes_work_memory_and_active_work() -> Resu
         plan: Some(vec!["capture operator surface snapshot"].join("\n")),
         ..WorkingMemorySnapshot::default()
     };
-    session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
-        agent_id: "default".into(),
-        from_revision: 2,
-        to_revision: 3,
-        created_at_turn: 4,
-        reason: holon::types::WorkingMemoryUpdateReason::TerminalTurnCompleted,
-        changed_fields: vec!["plan".into()],
-        summary_lines: vec![
-            "captured the baseline operator turn layout".into(),
-            "queued callback and task-result follow-up snapshots".into(),
-        ],
-    });
-
     let rendered = render_context_snapshot(&storage, &session, &current_message, None)?;
     let expected = format!(
         r#"## agent
@@ -705,24 +692,6 @@ Agent id: default
 
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
-
-## working_memory
-Working memory:
-- Current work item id: work_prompt
-- Objective: Ship prompt snapshot coverage
-- Work summary: prompt snapshot coverage
-- Plan:
-  capture operator surface snapshot
-
-## working_memory_delta
-Working memory updated since the last prompt:
-- Revision: 2 -> 3
-- Reason: terminal_turn_completed
-- Changed fields:
-  - plan
-- Summary:
-  - captured the baseline operator turn layout
-  - queued callback and task-result follow-up snapshots
 
 ## current_work_item
 Current work item:
@@ -1064,14 +1033,6 @@ Agent id: default
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
 
-## working_memory
-Working memory:
-- Current work item id: work_active
-- Objective: Complete snapshot coverage expansion
-- Work summary: expand prompt context snapshot coverage
-- Plan:
-  add active work with queued work test
-
 ## current_work_item
 Current work item:
 - Id: work_active
@@ -1154,8 +1115,6 @@ fn operator_turn_without_working_memory_delta() -> Result<()> {
         plan: Some(vec!["verify delta absence"].join("\n")),
         ..WorkingMemorySnapshot::default()
     };
-    // No pending_working_memory_delta set
-
     let rendered = render_context_snapshot(&storage, &session, &current_message, None)?;
     let expected = format!(
         r#"## agent
@@ -1163,14 +1122,6 @@ Agent id: default
 
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
-
-## working_memory
-Working memory:
-- Current work item id: work_no_delta
-- Objective: Test delta absence
-- Work summary: test working memory delta absence
-- Plan:
-  verify delta absence
 
 ## current_work_item
 Current work item:
@@ -1264,19 +1215,6 @@ fn callback_with_active_work_and_delta() -> Result<()> {
         ),
         ..WorkingMemorySnapshot::default()
     };
-    session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
-        agent_id: "default".into(),
-        from_revision: 5,
-        to_revision: 6,
-        created_at_turn: 12,
-        reason: holon::types::WorkingMemoryUpdateReason::TaskRejoined,
-        changed_fields: vec!["plan".into(), "waiting_on".into()],
-        summary_lines: vec![
-            "CI pipeline completed successfully".into(),
-            "ready to proceed with next work item".into(),
-        ],
-    });
-
     let rendered = render_context_snapshot(&storage, &session, &callback_message, None)?;
     let expected = format!(
         r#"## agent
@@ -1284,25 +1222,6 @@ Agent id: default
 
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
-
-## working_memory
-Working memory:
-- Current work item id: work_ci
-- Objective: Handle CI callback
-- Work summary: process CI completion callback
-- Plan:
-  wait for CI callback process CI result update work item status
-
-## working_memory_delta
-Working memory updated since the last prompt:
-- Revision: 5 -> 6
-- Reason: task_rejoined
-- Changed fields:
-  - plan
-  - waiting_on
-- Summary:
-  - CI pipeline completed successfully
-  - ready to proceed with next work item
 
 ## current_work_item
 Current work item:
@@ -1420,14 +1339,6 @@ Agent id: default
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
 
-## working_memory
-Working memory:
-- Current work item id: work_waiting
-- Objective: External service integration
-- Work summary: waiting for external service response
-- Plan:
-  wait for rate limit reset retry API request
-
 ## current_work_item
 Current work item:
 - Id: work_waiting
@@ -1523,8 +1434,6 @@ fn post_compaction_snapshot_preserves_continuity() -> Result<()> {
     );
 
     let mut session = AgentState::new("default");
-    // Simulate post-compaction state with higher revision numbers
-    session.working_memory.working_memory_revision = 8;
     session.current_work_item_id = Some(work_item.id.clone());
     session.working_memory.current_working_memory = WorkingMemorySnapshot {
         current_work_item_id: Some(work_item.id.clone()),
@@ -1540,19 +1449,6 @@ fn post_compaction_snapshot_preserves_continuity() -> Result<()> {
         ),
         ..WorkingMemorySnapshot::default()
     };
-    session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
-        agent_id: "default".into(),
-        from_revision: 7,
-        to_revision: 8,
-        created_at_turn: 15,
-        reason: holon::types::WorkingMemoryUpdateReason::TerminalTurnCompleted,
-        changed_fields: vec!["working_memory_revision".into()],
-        summary_lines: vec![
-            "compaction applied, context compressed".into(),
-            "continuity preserved through working memory snapshot".into(),
-        ],
-    });
-
     let rendered = render_context_snapshot(&storage, &session, &current_message, None)?;
     let expected = format!(
         r#"## agent
@@ -1560,24 +1456,6 @@ Agent id: default
 
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
-
-## working_memory
-Working memory:
-- Current work item id: work_compaction
-- Objective: Long-running task with compaction
-- Work summary: task spanning multiple compaction points
-- Plan:
-  complete initial phase work on expanded coverage final verification
-
-## working_memory_delta
-Working memory updated since the last prompt:
-- Revision: 7 -> 8
-- Reason: terminal_turn_completed
-- Changed fields:
-  - working_memory_revision
-- Summary:
-  - compaction applied, context compressed
-  - continuity preserved through working memory snapshot
 
 ## current_work_item
 Current work item:
@@ -1694,20 +1572,6 @@ fn task_result_with_multiple_work_items() -> Result<()> {
         ),
         ..WorkingMemorySnapshot::default()
     };
-    session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
-        agent_id: "default".into(),
-        from_revision: 3,
-        to_revision: 4,
-        created_at_turn: 8,
-        reason: holon::types::WorkingMemoryUpdateReason::TaskRejoined,
-        changed_fields: vec!["plan".into()],
-        summary_lines: vec![
-            "cargo test completed successfully".into(),
-            "120 tests passed, 0 failed".into(),
-            "ready to proceed with verification".into(),
-        ],
-    });
-
     let rendered = render_context_snapshot(&storage, &session, &task_result, Some(&continuation))?;
     let expected = format!(
         r#"## agent
@@ -1715,25 +1579,6 @@ Agent id: default
 
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
-
-## working_memory
-Working memory:
-- Current work item id: work_test
-- Objective: Test execution and verification
-- Work summary: run cargo test and verify results
-- Plan:
-  execute cargo test verify test results document any failures
-
-## working_memory_delta
-Working memory updated since the last prompt:
-- Revision: 3 -> 4
-- Reason: task_rejoined
-- Changed fields:
-  - plan
-- Summary:
-  - cargo test completed successfully
-  - 120 tests passed, 0 failed
-  - ready to proceed with verification
 
 ## current_work_item
 Current work item:
@@ -2127,8 +1972,6 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
         Some("multi_turn_context_issue_list_continuity"),
     )?;
     let diagnostics = analyze_context(&rendered);
-    let working_memory =
-        section_content(&rendered, "working_memory").expect("working memory section");
     let current_work_item =
         section_content(&rendered, "current_work_item").expect("current work section");
     let recent_turns = section_content(&rendered, "recent_turns").expect("recent turns section");
@@ -2136,7 +1979,7 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
 
     for issue in initial_issue_list {
         assert!(
-            working_memory.contains(issue) || current_work_item.contains(issue),
+            current_work_item.contains(issue),
             "initial issue should remain in authoritative state: {issue}\n{rendered}"
         );
     }

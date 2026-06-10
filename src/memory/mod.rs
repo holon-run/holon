@@ -8,4 +8,4 @@ pub use index::{
     get_memory, rebuild_memory_index, repair_memory_index_for_paths, search_memory,
     MemoryGetResult, MemorySearchResult,
 };
-pub use working::{mark_working_memory_prompted, refresh_working_memory};
+pub use working::refresh_working_memory;

@@ -406,17 +406,18 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
             .agent
             .agent
             .working_memory
-            .working_memory_revision,
-        0,
-        "working memory should not update mid-tool-loop"
+            .current_working_memory
+            .current_work_item_id,
+        None,
+        "AgentGet should not invent WorkItem focus mid-tool-loop"
     );
 
     let state = runtime.agent_state().await?;
-    assert_eq!(
-        state.working_memory.working_memory_revision, 0,
-        "tool-result prose alone should not churn working memory"
-    );
-    assert!(state.working_memory.pending_working_memory_delta.is_none());
+    assert!(state
+        .working_memory
+        .current_working_memory
+        .current_work_item_id
+        .is_none());
     let prompt = runtime
         .preview_prompt(
             "continue the work".into(),

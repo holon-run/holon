@@ -16,7 +16,7 @@ use crate::types::{
     ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord,
     TimerStatus, ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord,
     WorkItemContinuationFrame, WorkItemDelegationRecord, WorkItemRecord, WorkItemState,
-    WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
+    WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
@@ -95,10 +95,6 @@ pub struct WorkItemDelegationRepository<'a> {
 }
 
 pub struct WorkItemContinuationRepository<'a> {
-    db: &'a RuntimeDb,
-}
-
-pub struct WorkingMemoryDeltaRepository<'a> {
     db: &'a RuntimeDb,
 }
 
@@ -620,55 +616,6 @@ impl WorkItemContinuationRepository<'_> {
         let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
         rows.map(|row| decode_work_item_continuation_payload(&row?))
             .collect()
-    }
-}
-
-impl WorkingMemoryDeltaRepository<'_> {
-    pub fn import_legacy(&self, records: Vec<WorkingMemoryDelta>) -> Result<()> {
-        if self
-            .db
-            .storage_domain_is_complete("working_memory_deltas", "db")?
-        {
-            return Ok(());
-        }
-        self.db
-            .run_storage_domain_import("working_memory_deltas", "jsonl", "db", |tx| {
-                let imported_records = records.len();
-                for record in records {
-                    upsert_working_memory_delta_tx(tx, &record)?;
-                }
-                Ok(serde_json::json!({ "imported_records": imported_records }))
-            })
-    }
-
-    pub fn upsert(&self, record: &WorkingMemoryDelta) -> Result<()> {
-        self.db
-            .transaction(|tx| upsert_working_memory_delta_tx(tx, record))
-    }
-
-    pub fn recent_for_agent(
-        &self,
-        agent_id: &str,
-        limit: usize,
-    ) -> Result<Vec<WorkingMemoryDelta>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let connection = self.db.connection()?;
-        let mut statement = connection.prepare(
-            "SELECT payload_json
-             FROM working_memory_deltas
-             WHERE agent_id = ?1
-             ORDER BY created_at DESC, memory_delta_id ASC
-             LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_working_memory_delta_payload(&row?))
-            .collect::<Result<_>>()?;
-        records.reverse();
-        Ok(records)
     }
 }
 
@@ -2647,44 +2594,6 @@ fn upsert_work_item_continuation_tx(
     Ok(())
 }
 
-fn upsert_working_memory_delta_tx(tx: &Transaction<'_>, record: &WorkingMemoryDelta) -> Result<()> {
-    anyhow::ensure!(
-        !record.agent_id.trim().is_empty(),
-        "working memory delta requires an agent_id"
-    );
-    let payload_json = serde_json::to_string(record)?;
-    let reason = enum_string(&record.reason)?;
-    let memory_delta_id = format!(
-        "memory-delta-{}-{}-{}-{}",
-        record.agent_id, record.from_revision, record.to_revision, record.created_at_turn
-    );
-    tx.execute(
-        "INSERT INTO working_memory_deltas (
-            memory_delta_id, agent_id, from_revision, to_revision, created_at_turn, reason,
-            created_at, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-         ON CONFLICT(memory_delta_id) DO UPDATE SET
-            agent_id = excluded.agent_id,
-            from_revision = excluded.from_revision,
-            to_revision = excluded.to_revision,
-            created_at_turn = excluded.created_at_turn,
-            reason = excluded.reason,
-            created_at = excluded.created_at,
-            payload_json = excluded.payload_json",
-        params![
-            memory_delta_id,
-            record.agent_id,
-            record.from_revision as i64,
-            record.to_revision as i64,
-            record.created_at_turn as i64,
-            reason,
-            timestamp_from_turn(record.created_at_turn),
-            payload_json,
-        ],
-    )?;
-    Ok(())
-}
-
 fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord) -> Result<()> {
     let payload_json = serde_json::to_string(record)?;
     let boundary_reason = enum_string(&record.boundary_reason)?;
@@ -2718,10 +2627,6 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
         ],
     )?;
     Ok(())
-}
-
-fn timestamp_from_turn(turn_index: u64) -> String {
-    format!("turn:{turn_index:020}")
 }
 
 fn upsert_external_trigger_tx(tx: &Transaction<'_>, record: &ExternalTriggerRecord) -> Result<()> {
@@ -3582,10 +3487,6 @@ fn decode_work_item_continuation_payload(payload: &str) -> Result<WorkItemContin
     serde_json::from_str(payload).context("decoding work item continuation payload from runtime db")
 }
 
-fn decode_working_memory_delta_payload(payload: &str) -> Result<WorkingMemoryDelta> {
-    serde_json::from_str(payload).context("decoding working memory delta payload from runtime db")
-}
-
 fn decode_context_episode_payload(payload: &str) -> Result<ContextEpisodeRecord> {
     serde_json::from_str(payload).context("decoding context episode payload from runtime db")
 }
@@ -4259,17 +4160,6 @@ CREATE TABLE IF NOT EXISTS work_item_delegations (
   payload_json TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS working_memory_deltas (
-  memory_delta_id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL,
-  from_revision INTEGER NOT NULL,
-  to_revision INTEGER NOT NULL,
-  created_at_turn INTEGER NOT NULL,
-  reason TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  payload_json TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS context_episode_anchors (
   episode_id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
@@ -4289,8 +4179,6 @@ CREATE INDEX IF NOT EXISTS idx_work_item_delegations_child
   ON work_item_delegations(child_agent_id, child_work_item_id);
 CREATE INDEX IF NOT EXISTS idx_work_item_delegations_state
   ON work_item_delegations(state);
-CREATE INDEX IF NOT EXISTS idx_working_memory_deltas_revision
-  ON working_memory_deltas(agent_id, to_revision, created_at);
 CREATE INDEX IF NOT EXISTS idx_context_episode_anchors_agent_turn
   ON context_episode_anchors(agent_id, end_turn_index);
 CREATE INDEX IF NOT EXISTS idx_context_episode_anchors_work_item
@@ -4351,6 +4239,15 @@ CREATE INDEX IF NOT EXISTS idx_context_episode_anchors_agent_turn
   ON context_episode_anchors(agent_id, end_turn_index);
 CREATE INDEX IF NOT EXISTS idx_context_episode_anchors_work_item
   ON context_episode_anchors(work_item_id);
+"#,
+    },
+    Migration {
+        version: 14,
+        name: "drop_working_memory_deltas",
+        sql: r#"
+DROP INDEX IF EXISTS idx_working_memory_deltas_revision;
+DROP TABLE IF EXISTS working_memory_deltas;
+DELETE FROM storage_domains WHERE domain = 'working_memory_deltas';
 "#,
     },
 ];
@@ -4468,10 +4365,6 @@ impl RuntimeDb {
         WorkItemContinuationRepository { db: self }
     }
 
-    pub fn working_memory_deltas(&self) -> WorkingMemoryDeltaRepository<'_> {
-        WorkingMemoryDeltaRepository { db: self }
-    }
-
     pub fn context_episodes(&self) -> ContextEpisodeRepository<'_> {
         ContextEpisodeRepository { db: self }
     }
@@ -4512,11 +4405,6 @@ impl RuntimeDb {
                 domain: "work_item_continuations",
                 canonical_source: "db",
                 legacy_jsonl_posture: LegacyJsonlPosture::Disabled,
-            },
-            ExpectedStorageDomain {
-                domain: "working_memory_deltas",
-                canonical_source: "db",
-                legacy_jsonl_posture: LegacyJsonlPosture::LegacyImportOnly,
             },
             ExpectedStorageDomain {
                 domain: CONTEXT_EPISODE_ANCHORS_DOMAIN,
@@ -4750,7 +4638,6 @@ impl RuntimeDb {
         for migration in MIGRATIONS {
             apply_migration(&mut connection, migration)?;
         }
-        repair_unreleased_working_memory_delta_scope(&mut connection)?;
         Ok(())
     }
 }
@@ -4865,55 +4752,7 @@ fn apply_migration(connection: &mut Connection, migration: &Migration) -> Result
     Ok(())
 }
 
-fn repair_unreleased_working_memory_delta_scope(connection: &mut Connection) -> Result<()> {
-    if !table_exists(connection, "working_memory_deltas")?
-        || table_has_column(connection, "working_memory_deltas", "agent_id")?
-    {
-        return Ok(());
-    }
-
-    let backup_table =
-        next_legacy_backup_table_name(connection, "working_memory_deltas_unscoped_legacy")?;
-    let transaction = connection.transaction()?;
-    transaction.execute_batch(&format!(
-        r#"
-DROP INDEX IF EXISTS idx_working_memory_deltas_revision;
-ALTER TABLE working_memory_deltas RENAME TO {backup_table};
-CREATE TABLE working_memory_deltas (
-  memory_delta_id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL,
-  from_revision INTEGER NOT NULL,
-  to_revision INTEGER NOT NULL,
-  created_at_turn INTEGER NOT NULL,
-  reason TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  payload_json TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_working_memory_deltas_revision
-  ON working_memory_deltas(agent_id, to_revision, created_at);
-"#,
-    ))?;
-    transaction.execute(
-        "DELETE FROM storage_domains WHERE domain = ?1",
-        ["working_memory_deltas"],
-    )?;
-    transaction.commit()?;
-    Ok(())
-}
-
-fn next_legacy_backup_table_name(connection: &Connection, base_name: &str) -> Result<String> {
-    if !table_exists(connection, base_name)? {
-        return Ok(base_name.to_string());
-    }
-    for suffix in 2.. {
-        let candidate = format!("{base_name}_{suffix}");
-        if !table_exists(connection, &candidate)? {
-            return Ok(candidate);
-        }
-    }
-    unreachable!("unbounded suffix search should find a table name")
-}
-
+#[cfg(test)]
 fn table_exists(connection: &Connection, table_name: &str) -> Result<bool> {
     let exists = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
@@ -4921,17 +4760,6 @@ fn table_exists(connection: &Connection, table_name: &str) -> Result<bool> {
         |row| row.get::<_, bool>(0),
     )?;
     Ok(exists)
-}
-
-fn table_has_column(connection: &Connection, table_name: &str, column_name: &str) -> Result<bool> {
-    let mut statement = connection.prepare(&format!("PRAGMA table_info({table_name})"))?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
-    for row in rows {
-        if row? == column_name {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 fn current_schema_version(connection: &Connection) -> Result<i64> {
@@ -5294,14 +5122,13 @@ INSERT INTO storage_domains (
     }
 
     #[test]
-    fn runtime_db_migration_repairs_unreleased_working_memory_delta_scope() -> Result<()> {
+    fn runtime_db_migration_drops_unreleased_working_memory_deltas() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         {
             let connection = open_connection(&db_path)?;
             connection.execute_batch(
                 r#"
-DROP TABLE working_memory_deltas;
 CREATE TABLE working_memory_deltas (
   memory_delta_id TEXT PRIMARY KEY,
   from_revision INTEGER NOT NULL,
@@ -5340,25 +5167,16 @@ CREATE TABLE working_memory_deltas (
                     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 ),
             )?;
+            connection.execute("DELETE FROM schema_migrations WHERE version = 14", [])?;
         }
 
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let connection = open_connection(&db_path)?;
-        assert!(table_has_column(
-            &connection,
-            "working_memory_deltas",
-            "agent_id"
-        )?);
-        assert!(table_exists(
+        assert!(!table_exists(&connection, "working_memory_deltas")?);
+        assert!(!table_exists(
             &connection,
             "working_memory_deltas_unscoped_legacy"
         )?);
-        let backup_count: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM working_memory_deltas_unscoped_legacy",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(backup_count, 1);
         let domain_count: i64 = connection.query_row(
             "SELECT COUNT(*) FROM storage_domains WHERE domain = ?1",
             ["working_memory_deltas"],

@@ -136,7 +136,6 @@ async fn live_provider_accepts_tool_result_continuation_with_runtime_tools() -> 
                     agent_id: "live-anthropic-continuation".into(),
                     prompt_cache_key: "live-anthropic-continuation".into(),
                     context_fingerprint: "live-anthropic-continuation".into(),
-                    working_memory_revision: 0,
                     compression_epoch: 0,
                 }),
             ),

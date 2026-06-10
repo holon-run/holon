@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::WorkItemState;
 
 pub(super) struct MessageDispatchPlan {
     pub(super) prior_closure: ClosureDecision,
@@ -177,13 +178,10 @@ impl RuntimeHandle {
         let final_closure = self.current_closure_decision().await?;
         {
             let mut guard = self.inner.agent.lock().await;
-            let memory_refresh = refresh_working_memory(
-                &self.inner.storage,
-                &mut guard.state,
-                &message,
-                &prior_closure,
-                &final_closure,
-            )?;
+            let work_refs_changed =
+                self.refresh_current_work_item_refs(&mut guard.state, &message)?;
+            let memory_refresh =
+                refresh_working_memory(&self.inner.storage, &mut guard.state, &final_closure)?;
             let episode_changed = refresh_episode_memory(
                 &self.inner.storage,
                 &mut guard.state,
@@ -192,9 +190,8 @@ impl RuntimeHandle {
                 &final_closure,
                 &memory_refresh.previous_snapshot,
                 &memory_refresh.current_snapshot,
-                &memory_refresh.turn_memory_delta,
             )?;
-            if memory_refresh.working_memory_updated || episode_changed {
+            if work_refs_changed || memory_refresh.working_memory_updated || episode_changed {
                 self.inner.storage.write_agent(&guard.state)?;
             }
         }
@@ -208,6 +205,59 @@ impl RuntimeHandle {
 
         info!("processed message {}", message.id);
         Ok(())
+    }
+
+    fn refresh_current_work_item_refs(
+        &self,
+        agent: &mut AgentState,
+        message: &MessageEnvelope,
+    ) -> Result<bool> {
+        let Some(work_item_id) = agent
+            .current_turn_work_item_id
+            .as_deref()
+            .or(agent.current_work_item_id.as_deref())
+        else {
+            return Ok(false);
+        };
+        let Some(mut record) = self.inner.storage.latest_work_item(work_item_id)? else {
+            return Ok(false);
+        };
+        if record.state != WorkItemState::Open {
+            return Ok(false);
+        }
+
+        let tools = self.inner.storage.read_recent_tool_executions(64)?;
+        let mut additions = crate::work_item_refs::message_work_refs(message);
+        additions.extend(crate::work_item_refs::current_turn_tool_refs(
+            &tools,
+            agent.current_turn_id.as_deref(),
+            agent.turn_index,
+            &record.id,
+        ));
+        if additions.is_empty() {
+            return Ok(false);
+        }
+
+        let merged = crate::work_item_refs::merge_work_refs(&record.work_refs, additions);
+        if merged == record.work_refs {
+            return Ok(false);
+        }
+        let previous_count = record.work_refs.len();
+        record.work_refs = merged;
+        record.revision = record.revision.saturating_add(1);
+        record.updated_at = Utc::now();
+        self.inner.storage.append_work_item(&record)?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_refs_updated",
+            serde_json::json!({
+                "agent_id": agent.id,
+                "work_item_id": record.id,
+                "revision": record.revision,
+                "previous_ref_count": previous_count,
+                "ref_count": record.work_refs.len(),
+            }),
+        ))?;
+        Ok(true)
     }
 
     pub(super) fn record_incoming_transcript_entry(&self, message: &MessageEnvelope) -> Result<()> {

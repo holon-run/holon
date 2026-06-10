@@ -26,7 +26,7 @@ use crate::{
         WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WakeSource,
         WorkItemContinuationFrame, WorkItemContinuationState, WorkItemDelegationRecord,
         WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState,
-        WorkItemState, WorkingMemoryDelta, WorkspaceEntry, WorkspaceOccupancyRecord,
+        WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -190,7 +190,6 @@ pub struct AppStorage {
     operator_notifications_path: PathBuf,
     operator_transport_bindings_path: PathBuf,
     operator_delivery_records_path: PathBuf,
-    working_memory_deltas_path: PathBuf,
     context_episodes_path: PathBuf,
     workspaces_path: PathBuf,
     occupancies_path: PathBuf,
@@ -294,7 +293,6 @@ impl AppStorage {
             operator_notifications_path: ledger_dir.join("operator_notifications.jsonl"),
             operator_transport_bindings_path: ledger_dir.join("operator_transport_bindings.jsonl"),
             operator_delivery_records_path: ledger_dir.join("operator_delivery_records.jsonl"),
-            working_memory_deltas_path: ledger_dir.join("working_memory_deltas.jsonl"),
             context_episodes_path: ledger_dir.join("context_episodes.jsonl"),
             workspaces_path: ledger_dir.join("workspaces.jsonl"),
             occupancies_path: ledger_dir.join("workspace_occupancies.jsonl"),
@@ -703,15 +701,6 @@ impl AppStorage {
         self.append_jsonl(&self.operator_delivery_records_path, record)
     }
 
-    pub fn append_working_memory_delta(&self, record: &WorkingMemoryDelta) -> Result<()> {
-        let record = self.working_memory_delta_for_scope(record)?;
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.working_memory_deltas().upsert(&record)?;
-            return Ok(());
-        }
-        self.append_jsonl(&self.working_memory_deltas_path, &record)
-    }
-
     pub fn append_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.context_episodes().upsert(record)?;
@@ -861,25 +850,6 @@ impl AppStorage {
         self.agent_id
             .clone()
             .ok_or_else(|| anyhow::anyhow!("agent-scoped storage operation requires an agent id"))
-    }
-
-    fn working_memory_delta_for_scope(
-        &self,
-        record: &WorkingMemoryDelta,
-    ) -> Result<WorkingMemoryDelta> {
-        let agent_id = self.storage_agent_id()?;
-        if record.agent_id.is_empty() {
-            let mut record = record.clone();
-            record.agent_id = agent_id;
-            return Ok(record);
-        }
-        anyhow::ensure!(
-            record.agent_id == agent_id,
-            "agent-scoped storage for `{}` cannot use working memory delta for `{}`",
-            agent_id,
-            record.agent_id
-        );
-        Ok(record.clone())
     }
 
     pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
@@ -1376,22 +1346,6 @@ impl AppStorage {
         limit: usize,
     ) -> Result<Vec<OperatorDeliveryRecord>> {
         read_recent_jsonl(&self.operator_delivery_records_path, limit)
-    }
-
-    pub fn read_recent_working_memory_deltas(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<WorkingMemoryDelta>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            return runtime_db
-                .working_memory_deltas()
-                .recent_for_agent(&self.storage_agent_id()?, limit);
-        }
-        let records = read_recent_jsonl(&self.working_memory_deltas_path, limit)?;
-        records
-            .into_iter()
-            .map(|record| self.working_memory_delta_for_scope(&record))
-            .collect()
     }
 
     pub fn read_recent_context_episodes(&self, limit: usize) -> Result<Vec<ContextEpisodeRecord>> {
@@ -2994,7 +2948,7 @@ mod tests {
         MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
         TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TodoItem, TodoItemState,
         ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, WorkItemPlanStatus,
-        WorkItemState, WorkingMemoryUpdateReason,
+        WorkItemState,
     };
 
     use super::*;
@@ -3917,15 +3871,6 @@ mod tests {
 
         let delegation =
             WorkItemDelegationRecord::new("default", "parent-work", "child-agent", "child-work");
-        let memory_delta = WorkingMemoryDelta {
-            agent_id: "default".into(),
-            from_revision: 1,
-            to_revision: 2,
-            created_at_turn: 7,
-            reason: WorkingMemoryUpdateReason::TaskRejoined,
-            changed_fields: vec!["pending_followups".into()],
-            summary_lines: vec!["updated pending follow-ups".into()],
-        };
         let now = Utc::now();
         let episode = ContextEpisodeRecord {
             id: "ep_db_only".into(),
@@ -3952,14 +3897,9 @@ mod tests {
         };
 
         storage.append_work_item_delegation(&delegation).unwrap();
-        storage.append_working_memory_delta(&memory_delta).unwrap();
         storage.append_context_episode(&episode).unwrap();
 
-        for file_name in [
-            "work_item_delegations.jsonl",
-            "working_memory_deltas.jsonl",
-            "context_episodes.jsonl",
-        ] {
+        for file_name in ["work_item_delegations.jsonl", "context_episodes.jsonl"] {
             assert!(
                 !storage.ledger_dir().join(file_name).exists(),
                 "{file_name} should not be a live compat export after db cutover"
@@ -3975,10 +3915,6 @@ mod tests {
                 .latest_work_item_delegation_for_child("child-agent")
                 .unwrap(),
             Some(delegation)
-        );
-        assert_eq!(
-            storage.read_recent_working_memory_deltas(10).unwrap(),
-            vec![memory_delta]
         );
         assert_eq!(
             storage.read_recent_context_episodes(10).unwrap(),
@@ -4475,57 +4411,6 @@ mod tests {
         storage.write_agent(&AgentState::new("default")).unwrap();
 
         assert_eq!(storage.current_agent_id().unwrap(), None);
-    }
-
-    #[test]
-    fn db_backed_working_memory_deltas_are_scoped_to_current_agent() {
-        let dir = tempdir().unwrap();
-        let runtime_db = RuntimeDb::open_and_migrate(
-            dir.path().join("state/runtime.sqlite"),
-            dir.path().join("state/runtime.lock"),
-        )
-        .unwrap();
-        let agent_a =
-            AppStorage::new_for_agent(dir.path().join("agents/agent-a"), "agent-a").unwrap();
-        let agent_b =
-            AppStorage::new_for_agent(dir.path().join("agents/agent-b"), "agent-b").unwrap();
-        agent_a
-            .enable_scheduler_control_plane_db(runtime_db.clone())
-            .unwrap();
-        agent_b
-            .enable_scheduler_control_plane_db(runtime_db)
-            .unwrap();
-
-        let delta_a = WorkingMemoryDelta {
-            agent_id: "agent-a".into(),
-            from_revision: 0,
-            to_revision: 1,
-            created_at_turn: 1,
-            reason: WorkingMemoryUpdateReason::TerminalTurnCompleted,
-            changed_fields: vec!["plan".into()],
-            summary_lines: vec!["agent-a plan changed".into()],
-        };
-        let delta_b = WorkingMemoryDelta {
-            agent_id: "agent-b".into(),
-            from_revision: 0,
-            to_revision: 1,
-            created_at_turn: 1,
-            reason: WorkingMemoryUpdateReason::TaskRejoined,
-            changed_fields: vec!["waiting_on".into()],
-            summary_lines: vec!["agent-b wait changed".into()],
-        };
-
-        agent_a.append_working_memory_delta(&delta_a).unwrap();
-        agent_b.append_working_memory_delta(&delta_b).unwrap();
-
-        assert_eq!(
-            agent_a.read_recent_working_memory_deltas(10).unwrap(),
-            vec![delta_a]
-        );
-        assert_eq!(
-            agent_b.read_recent_working_memory_deltas(10).unwrap(),
-            vec![delta_b]
-        );
     }
 
     #[test]
