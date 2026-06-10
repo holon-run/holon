@@ -393,7 +393,7 @@ fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
     let dir = tempdir()?;
     let storage = AppStorage::new(dir.path())?;
 
-    let previous_operator = MessageEnvelope::new(
+    let mut previous_operator = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
@@ -409,6 +409,7 @@ fn recent_turns_snapshot_links_operator_input_to_result_brief() -> Result<()> {
         MessageDeliverySurface::CliPrompt,
         AdmissionContext::LocalProcess,
     );
+    previous_operator.id = "msg_focused_prompt_projection".into();
     storage.append_message(&previous_operator)?;
     let mut result_brief = BriefRecord::new(
         "default",
@@ -462,7 +463,7 @@ Current input relation: current_input is the latest trusted operator input.
 Recent turns:
 - Turn message_seq 1:
   - trigger: trusted operator input
-  - operator input: Run the focused prompt projection test.
+  - operator input full: Run the focused prompt projection test. message_ref=message:msg_focused_prompt_projection
   - produced briefs:
     - Result full:
       Focused prompt projection test passed.
@@ -482,7 +483,7 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
     let dir = tempdir()?;
     let storage = AppStorage::new(dir.path())?;
 
-    let operator_message = MessageEnvelope::new(
+    let mut operator_message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
@@ -498,6 +499,7 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
         MessageDeliverySurface::CliPrompt,
         AdmissionContext::LocalProcess,
     );
+    operator_message.id = "msg_runtime_flow_operator".into();
     let mut operator_message_with_turn = operator_message.clone();
     operator_message_with_turn.turn_id = Some("turn_op_test".into());
     storage.append_message(&operator_message_with_turn)?;
@@ -603,7 +605,7 @@ Recent turns:
   - trigger: trusted operator input
   - continues input: message_seq 1
   - continuation trigger: a task-result continuation
-  - operator input: Run cargo test runtime_flow and report back.
+  - operator input full: Run cargo test runtime_flow and report back. message_ref=message:msg_runtime_flow_operator
   - produced briefs:
     - Result full:
       Captured completion report promotion.

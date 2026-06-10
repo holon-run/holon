@@ -1496,16 +1496,34 @@ fn message_body_text(body: &MessageBody) -> String {
     }
 }
 
-fn render_recent_turn_input_line(message: &MessageEnvelope) -> String {
+fn render_recent_turn_input_line(
+    message: &MessageEnvelope,
+    mode: RecentTurnProjectionMode,
+) -> String {
+    let message_ref = format!("message:{}", sanitize_inline(&message.id));
     if is_trusted_operator_input(message) {
-        format!(
-            "  - operator input: {}",
-            sanitize_inline(&message_body_text(&message.body))
-        )
+        let body = message_body_text(&message.body);
+        let preview_limit = match mode {
+            RecentTurnProjectionMode::Continuity => usize::MAX,
+            RecentTurnProjectionMode::Nearby => 360,
+            RecentTurnProjectionMode::Older => 180,
+        };
+        let sanitized = sanitize_inline(&body);
+        if matches!(mode, RecentTurnProjectionMode::Continuity)
+            || sanitized.chars().count() <= preview_limit
+        {
+            format!("  - operator input full: {sanitized} message_ref={message_ref}")
+        } else {
+            let preview = truncate_text(&sanitized, preview_limit);
+            format!(
+                "  - operator input preview: {preview} [truncated; full via message_ref={message_ref}]"
+            )
+        }
     } else {
         format!(
-            "  - input: {}",
-            sanitize_inline(&body_preview(&message.body))
+            "  - input: {} message_ref={}",
+            sanitize_inline(&body_preview(&message.body)),
+            message_ref
         )
     }
 }
@@ -2133,7 +2151,7 @@ fn render_turn_record_projection(
         ));
     }
     if let Some(trigger_message) = trigger_message {
-        lines.push(render_recent_turn_input_line(trigger_message));
+        lines.push(render_recent_turn_input_line(trigger_message, mode));
     }
 
     let mut related_briefs = Vec::new();
@@ -3212,7 +3230,8 @@ mod tests {
             .clone();
         assert!(recent_turns.contains("- Turn turn_index 1:"));
         assert!(recent_turns.contains("  - turn_id: turn-db-context"));
-        assert!(recent_turns.contains("  - operator input: Use the database turn spine."));
+        assert!(recent_turns.contains("  - operator input full: Use the database turn spine."));
+        assert!(recent_turns.contains(&format!("message_ref=message:{}", operator.id)));
         assert!(recent_turns.contains("Rendered from DB turn record."));
         assert!(recent_turns.contains("brief_ref=brief:brief-db-context"));
     }
@@ -3503,10 +3522,56 @@ mod tests {
             .content
             .clone();
 
-        assert!(recent_turns.contains("  - operator input: "));
+        assert!(recent_turns.contains("  - operator input full: "));
+        assert!(recent_turns.contains(&format!("message_ref=message:{}", operator.id)));
         assert!(recent_turns.contains(long_tail));
         assert!(!recent_turns.contains("  - operator asked: "));
         assert!(recent_turns.contains("brief_ref=brief:brief-full-operator-input"));
+    }
+
+    #[test]
+    fn older_recent_turn_operator_input_is_previewed_with_message_ref() {
+        let long_tail = "older-operator-tail-hidden-behind-message-ref";
+        let message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: format!("{} {long_tail}", "older operator input. ".repeat(40)),
+            },
+        );
+        let brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "brief anchor remains visible",
+            Some(message.id.clone()),
+            None,
+        );
+        let mut turn = TurnRecord::new("default", "turn-old-message-preview", 1);
+        turn.input_message_ids = vec![message.id.clone()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+
+        let rendered = render_turn_record_projection(
+            &turn,
+            &[message.clone()],
+            &[brief],
+            &[],
+            None,
+            RecentTurnProjectionMode::Older,
+            20_000,
+        )
+        .expect("older turn should render");
+
+        assert!(rendered.contains("operator input preview:"));
+        assert!(rendered.contains(&format!(
+            "[truncated; full via message_ref=message:{}]",
+            message.id
+        )));
+        assert!(!rendered.contains(long_tail));
+        assert!(rendered.contains("brief_ref=brief:"));
     }
 
     #[test]

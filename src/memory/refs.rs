@@ -9,6 +9,9 @@ pub(crate) enum RuntimeRef {
     Brief {
         id: String,
     },
+    Message {
+        id: String,
+    },
     Turn {
         id: String,
     },
@@ -56,6 +59,7 @@ pub(crate) const ALLOWED_SOURCE_REF_PREFIXES: &[&str] = &[
     "agent_memory:",
     "workspace_profile:",
     "brief:",
+    "message:",
     "turn:",
     "episode:",
     "work_item:",
@@ -99,6 +103,9 @@ impl RuntimeRef {
             "brief" => Ok(Self::Brief {
                 id: suffix.to_string(),
             }),
+            "message" => Ok(Self::Message {
+                id: suffix.to_string(),
+            }),
             "turn" => Ok(Self::Turn {
                 id: suffix.to_string(),
             }),
@@ -124,6 +131,7 @@ impl RuntimeRef {
                 format!("workspace_profile:{workspace_id}")
             }
             Self::Brief { id } => format!("brief:{id}"),
+            Self::Message { id } => format!("message:{id}"),
             Self::Turn { id } => format!("turn:{id}"),
             Self::Episode { id } => format!("episode:{id}"),
             Self::WorkItem { id } => format!("work_item:{id}"),
@@ -232,6 +240,7 @@ mod tests {
             "agent_memory:self",
             "workspace_profile:ws-123",
             "brief:abc",
+            "message:msg_123",
             "turn:turn_123",
             "episode:ep_123",
             "work_item:work_123",
