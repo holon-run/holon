@@ -20,8 +20,9 @@ use crate::{
         command_digest, command_output_source_ref, command_preview, command_receipt_source_ref,
     },
     types::{
-        BriefKind, BriefRecord, CommandTaskStatusSnapshot, ContextEpisodeRecord, TaskRecord,
-        TaskStatus, ToolExecutionRecord, TurnRecord, WorkItemRecord, WorkspaceEntry,
+        BriefKind, BriefRecord, CommandTaskStatusSnapshot, ContextEpisodeRecord, MessageBody,
+        MessageEnvelope, TaskRecord, TaskStatus, ToolExecutionRecord, TurnRecord, WorkItemRecord,
+        WorkspaceEntry,
     },
 };
 
@@ -958,6 +959,7 @@ fn document_for_runtime_ref(
             workspace_profile_document_by_id(storage, workspace_id)
         }
         RuntimeRef::Brief { id } => brief_document_by_id(storage, id),
+        RuntimeRef::Message { id } => message_document_by_id(storage, id),
         RuntimeRef::Turn { id } => turn_document_by_id(storage, id),
         RuntimeRef::Episode { id } => context_episode_document_by_id(storage, id),
         RuntimeRef::WorkItem { id } => work_item_document_by_id(storage, id),
@@ -1128,6 +1130,109 @@ fn brief_document_by_id(storage: &AppStorage, brief_id: &str) -> Result<Option<M
     Ok(brief
         .filter(semantic_brief_is_retrievable)
         .map(|brief| brief_document(storage, brief)))
+}
+
+fn message_document_by_id(
+    storage: &AppStorage,
+    message_id: &str,
+) -> Result<Option<MemoryDocument>> {
+    Ok(storage
+        .read_message_by_id(message_id)?
+        .map(message_document))
+}
+
+fn message_document(message: MessageEnvelope) -> MemoryDocument {
+    let body = message_document_body(&message);
+    let title = format!("Message {}", message.id);
+    MemoryDocument {
+        source_ref: format!("message:{}", message.id),
+        source_kind: "message".into(),
+        scope_kind: "workspace".into(),
+        workspace_id: None,
+        agent_id: message.agent_id.clone(),
+        source_path: None,
+        title,
+        sanitized_excerpt: excerpt(&body),
+        body,
+        metadata: json!({
+            "message_id": message.id,
+            "turn_id": message.turn_id,
+            "message_seq": message.message_seq,
+            "work_item_id": message.work_item_id,
+            "task_id": message.task_id,
+            "governance_surface": "runtime_evidence",
+            "provenance_class": "message_envelope",
+            "trust_class": "runtime_evidence",
+        }),
+        updated_at: message.created_at,
+    }
+}
+
+fn message_document_body(message: &MessageEnvelope) -> String {
+    let mut lines = vec![
+        format!("message_ref: message:{}", message.id),
+        format!("message_id: {}", message.id),
+    ];
+    if let Some(turn_id) = message.turn_id.as_deref() {
+        lines.push(format!("turn_ref: turn:{turn_id}"));
+    }
+    if let Some(message_seq) = message.message_seq {
+        lines.push(format!("message_seq: {message_seq}"));
+    }
+    lines.push(format!("kind: {:?}", message.kind));
+    lines.push(format!("origin: {:?}", message.origin));
+    lines.push(format!("authority_class: {:?}", message.authority_class));
+    lines.push(format!("priority: {:?}", message.priority));
+    if let Some(trigger_kind) = message.trigger_kind {
+        lines.push(format!("trigger_kind: {:?}", trigger_kind));
+    }
+    if let Some(work_item_id) = message.work_item_id.as_deref() {
+        lines.push(format!("work_item_ref: work_item:{work_item_id}"));
+    }
+    if let Some(task_id) = message.task_id.as_deref() {
+        lines.push(format!("task_ref: task:{task_id}"));
+    }
+    if let Some(delivery_surface) = message.delivery_surface {
+        lines.push(format!("delivery_surface: {:?}", delivery_surface));
+    }
+    if let Some(admission_context) = message.admission_context {
+        lines.push(format!("admission_context: {:?}", admission_context));
+    }
+    if !message.source_refs.is_empty() {
+        lines.push(format!(
+            "source_refs: {}",
+            message
+                .source_refs
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let body = message_body_text_for_memory(&message.body);
+    lines.push("body:".to_string());
+    lines.push(truncate_multiline(&body, 8_000));
+    lines.join("\n")
+}
+
+fn message_body_text_for_memory(body: &MessageBody) -> String {
+    match body {
+        MessageBody::Text { text } => text.clone(),
+        MessageBody::Json { value } => {
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        }
+        MessageBody::Brief { text, .. } => text.clone(),
+    }
+}
+
+fn truncate_multiline(value: &str, limit: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(limit).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}\n[truncated]")
+    } else {
+        truncated
+    }
 }
 
 fn context_episode_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
@@ -1307,13 +1412,23 @@ fn turn_document_body(turn: &TurnRecord) -> String {
     if let Some(trigger) = turn.trigger.as_ref() {
         lines.push(format!("trigger_kind: {:?}", trigger.kind));
         if let Some(message_id) = trigger.message_id.as_deref() {
-            lines.push(format!("trigger_message_id: {message_id}"));
+            lines.push(format!("trigger_message_ref: message:{message_id}"));
         }
     }
     if let Some(work_item_id) = turn.current_work_item_id.as_deref() {
         lines.push(format!("current_work_item_ref: work_item:{work_item_id}"));
     }
-    append_id_list(&mut lines, "input_message_ids", &turn.input_message_ids);
+    if !turn.input_message_ids.is_empty() {
+        lines.push(format!(
+            "input_message_refs: {}",
+            turn.input_message_ids
+                .iter()
+                .take(12)
+                .map(|id| format!("message:{id}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if !turn.tool_execution_ids.is_empty() {
         append_id_list(&mut lines, "tool_execution_ids", &turn.tool_execution_ids);
         lines.push(format!(
@@ -2365,6 +2480,23 @@ mod tests {
         let brief_ref = format!("brief:{}", brief.id);
         storage.append_brief(&brief).unwrap();
 
+        let mut message = MessageEnvelope::new(
+            "default",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            MessageBody::Text {
+                text: "direct message source evidence".into(),
+            },
+        );
+        message.id = "msg-direct-1663".into();
+        message.turn_id = Some("turn-direct-1663".into());
+        message.message_seq = Some(7);
+        storage.append_message(&message).unwrap();
+
         storage
             .append_task(&task_record(
                 "task-direct-1663",
@@ -2421,6 +2553,8 @@ mod tests {
 
         let mut turn = TurnRecord::new("default", "turn-direct-1663", 7);
         turn.current_work_item_id = Some("work-direct-1663".into());
+        turn.input_message_ids = vec![message.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
         turn.tool_execution_ids = vec!["tool-direct-1663".into()];
         turn.produced_brief_ids = vec![brief.id.clone()];
         storage.append_turn(&turn).unwrap();
@@ -2461,6 +2595,19 @@ mod tests {
             .unwrap()
             .content
             .contains("direct task source evidence"));
+        let message_memory = get_memory(&storage, "message:msg-direct-1663", None, None)
+            .unwrap()
+            .expect("message memory source should be gettable");
+        assert_eq!(message_memory.kind, "message");
+        assert!(message_memory
+            .content
+            .contains("message_ref: message:msg-direct-1663"));
+        assert!(message_memory
+            .content
+            .contains("turn_ref: turn:turn-direct-1663"));
+        assert!(message_memory
+            .content
+            .contains("direct message source evidence"));
         assert!(
             get_memory(&storage, "work_item:work-direct-1663", None, None)
                 .unwrap()
@@ -2494,6 +2641,12 @@ mod tests {
             .contains("current_work_item_ref: work_item:work-direct-1663"));
         assert!(turn_memory
             .content
+            .contains("trigger_message_ref: message:msg-direct-1663"));
+        assert!(turn_memory
+            .content
+            .contains("input_message_refs: message:msg-direct-1663"));
+        assert!(turn_memory
+            .content
             .contains("tool_execution:tool-direct-1663:output"));
         assert!(turn_memory.content.contains(&format!("brief:{}", brief.id)));
         assert!(
@@ -2502,6 +2655,32 @@ mod tests {
                 .unwrap()
                 .content
                 .contains("direct-tool-1663")
+        );
+    }
+
+    #[test]
+    fn memory_get_message_refs_are_scoped_to_current_agent() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+
+        let mut other_agent_message = MessageEnvelope::new(
+            "other-agent",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            MessageBody::Text {
+                text: "other agent secret message".into(),
+            },
+        );
+        other_agent_message.id = "msg-other-agent-1685".into();
+        storage.append_message(&other_agent_message).unwrap();
+
+        assert!(
+            get_memory(&storage, "message:msg-other-agent-1685", None, None)
+                .unwrap()
+                .is_none()
         );
     }
 

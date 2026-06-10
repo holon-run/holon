@@ -1120,9 +1120,14 @@ impl AppStorage {
                 .messages()
                 .by_id(self.current_agent_id()?.as_deref(), message_id);
         }
+        let current_agent_id = self.current_agent_id()?;
         let mut found = None;
         scan_jsonl_reverse::<MessageEnvelope, _>(&self.messages_path, |message| {
-            if message.id == message_id {
+            if current_agent_id
+                .as_deref()
+                .is_none_or(|agent_id| message.agent_id == agent_id)
+                && message.id == message_id
+            {
                 found = Some(message);
                 return false;
             }
