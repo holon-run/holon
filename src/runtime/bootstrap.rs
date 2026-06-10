@@ -527,7 +527,7 @@ fn prepare_runtime_storage(
             .working_memory_deltas()
             .import_legacy(storage.read_recent_working_memory_deltas(usize::MAX)?)?;
     }
-    if !storage_domain_complete(&runtime_db, "context_episodes")? {
+    if !storage_domain_complete(&runtime_db, "context_episode_anchors")? {
         runtime_db
             .context_episodes()
             .import_legacy(storage.read_recent_context_episodes(usize::MAX)?)?;
