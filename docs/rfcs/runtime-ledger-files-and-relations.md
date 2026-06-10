@@ -135,7 +135,7 @@ The current runtime storage creates the following files under
 | `transcript.jsonl` | `TranscriptEntry` | Model-facing conversation trace and provider round history. |
 | `tools.jsonl` | `ToolExecutionRecord` | Tool invocation, side-effect, and verification evidence. |
 | `briefs.jsonl` | `BriefRecord` | User/model-visible outcome or status summaries. |
-| `delivery_summaries.jsonl` | `DeliverySummaryRecord` | Delivery closure records for result/completion reporting. |
+| `delivery_summaries.jsonl` | `DeliverySummaryRecord` | Retired legacy delivery closure records; new WorkItem completion reports use result briefs. |
 | `events.jsonl` | `AuditEvent` | Audit/event-stream/debug mirror with event cursor semantics. |
 | `tasks.jsonl` | `TaskRecord` | Managed task lifecycle history. |
 | `work_items.jsonl` | `WorkItemRecord` | Work item lifecycle history, latest resumable objective state, and runtime-derived work refs. |
@@ -170,7 +170,7 @@ progress.
 | `transcript.jsonl` | Runtime turn execution, message dispatch, failure handling, subagent handling, and host bootstrap append model-facing entries and assign `transcript_seq`. | Prompt context currently reads recent transcript as a compatibility/context source. Runtime lifecycle and tests use it for provider round recovery and model-facing trace assertions. |
 | `tools.jsonl` | Tool execution paths append `ToolExecutionRecord`; command-like tools also mark the memory index dirty. | Prompt context, work-ref extraction, task output, and tests read recent tool evidence so agents can recover side effects without rerunning tools. |
 | `briefs.jsonl` | Runtime delivery, memory refresh, task reducer, tests, and completion paths append generated `BriefRecord` summaries. | Prompt context, delivery APIs, memory indexing, scheduler signals, and turn finalization read briefs as result/failure/status evidence. Current code still includes `Ack` briefs, but this RFC treats ordinary acks as a design gap. |
-| `delivery_summaries.jsonl` | Completion and delivery paths append `DeliverySummaryRecord`. | Work item query tools, run-once helpers, delivery helpers, and turn finalization use it to bind user-facing closure back to turns and work items. |
+| `delivery_summaries.jsonl` | Retired legacy completion evidence; new WorkItem completion promotion should not append `DeliverySummaryRecord`. | Legacy fallback readers may use it for old local data. Active WorkItem query, run-once, and turn projection should prefer `BriefRecord(kind=Result)` via `WorkItemRecord.result_brief_id` / `produced_brief_ids`. |
 | `events.jsonl` | `Runtime::append_audit_event`, HTTP/operator surfaces, scheduler, wait mirroring, turn finalization, command-task handling, and lifecycle paths append audit events and assign `event_seq`. | HTTP event streams, diagnostics, lifecycle counters, scheduler signals, recovery tests, and TUI/debug views use it for cursorable audit evidence. It is not the canonical domain store. |
 | `tasks.jsonl` | Task reducer, command task, child-agent supervision, task tools, tests, and run-once fixtures append task lifecycle snapshots. | Recovery snapshots, task list/status/output APIs, scheduler blocking checks, memory indexing, and prompt/work item projections reconstruct latest task state from this history. |
 | `work_items.jsonl` | Work item tools, lifecycle APIs, wait helpers, task helpers, turn-closure work-ref refresh, and tests append work item revisions/state snapshots. | Work queue projection, scheduler readiness, prompt current/queued/blocked sections, current work refs, memory indexing, work item query tools, and recovery reconstruct latest state by work item id. |
@@ -287,7 +287,10 @@ result/failure/wait. Long term, this RFC recommends moving ordinary admission
 acknowledgements out of the brief concept and into queue or turn lifecycle
 records.
 
-`delivery_summaries.jsonl` records user-facing closure and completion delivery.
+`delivery_summaries.jsonl` is retired legacy storage for user-facing closure and
+completion delivery. New WorkItem completion report text is stored once in a
+`BriefRecord(kind=Result, work_item_id=...)`, and the WorkItem stores the
+canonical brief id.
 `operator_notifications.jsonl` and `operator_delivery_records.jsonl` record
 operator notification and transport delivery lifecycle. These records should
 reference the brief, message, work item, or turn they deliver rather than
@@ -947,8 +950,8 @@ For example:
 - `messages` preserves authority-bearing admitted input and wake envelopes.
 - `transcript` preserves model-facing context and provider conversation trace.
 - `tools` preserves side-effect invocation/result evidence.
-- `briefs` and `delivery_summaries` preserve generated outcome and delivery
-  evidence.
+- `briefs` preserve generated outcome evidence; retired `delivery_summaries`
+  may remain only as legacy delivery evidence.
 - `context_episode_anchors` preserves compaction/recovery anchors.
 
 These records can be stored in specialized tables or a shared

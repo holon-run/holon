@@ -658,7 +658,11 @@ async fn work_item_query_tools_return_current_open_done_views() {
     );
     assert_eq!(
         completed_payload["work_item"]["completion_report"]["source"].as_str(),
-        Some("work_item_result_summary")
+        Some("result_brief")
+    );
+    assert_eq!(
+        completed_payload["work_item"]["completion_report"]["brief_id"].as_str(),
+        completed.result_brief_id.as_deref()
     );
     assert_eq!(
         completed_payload["work_item"]["completion_report"]["source_turn_index"].as_u64(),
@@ -1994,13 +1998,7 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         .unwrap()
         .unwrap();
     assert_eq!(completed.state, WorkItemState::Completed);
-    assert_eq!(completed.result_summary.as_deref(), Some(report_text));
-    let summary = runtime
-        .storage()
-        .latest_delivery_summary(&work_item.id)
-        .unwrap()
-        .expect("completion report should persist delivery summary");
-    assert_eq!(summary.text, report_text);
+    assert_eq!(completed.result_summary, None);
     let briefs = runtime.recent_briefs(10).await.unwrap();
     let result_briefs = briefs
         .iter()
@@ -2015,7 +2013,16 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         result_briefs[0].work_item_id.as_deref(),
         Some(work_item.id.as_str())
     );
+    assert_eq!(
+        completed.result_brief_id.as_deref(),
+        Some(result_briefs[0].id.as_str())
+    );
     assert_eq!(result_briefs[0].turn_index, Some(1));
+    assert!(runtime
+        .storage()
+        .latest_delivery_summary(&work_item.id)
+        .unwrap()
+        .is_none());
     assert!(
         !briefs.iter().any(|brief| {
             brief.kind == BriefKind::Result
@@ -2467,16 +2474,25 @@ async fn multiple_complete_work_items_in_one_round_do_not_promote_or_short_circu
             .unwrap()
             .unwrap();
         assert_eq!(completed.state, WorkItemState::Completed);
-        assert_eq!(completed.result_summary.as_deref(), Some(report_text));
+        assert_eq!(completed.result_summary, None);
+        let result_brief_id = completed
+            .result_brief_id
+            .as_deref()
+            .expect("completion report should store result brief id");
         assert_eq!(
             runtime
                 .storage()
-                .latest_delivery_summary(work_item_id)
+                .read_brief_by_id(result_brief_id)
                 .unwrap()
-                .expect("completion report should persist delivery summary")
+                .expect("completion result brief should exist")
                 .text,
             report_text
         );
+        assert!(runtime
+            .storage()
+            .latest_delivery_summary(work_item_id)
+            .unwrap()
+            .is_none());
     }
     assert_eq!(
         *provider.calls.lock().await,
@@ -2595,16 +2611,22 @@ async fn repeated_complete_work_item_does_not_overwrite_existing_report() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        completed.result_summary.as_deref(),
-        Some("Original completion report")
-    );
-    let summary = runtime
+    assert_eq!(completed.result_summary, None);
+    let result_brief_id = completed
+        .result_brief_id
+        .as_deref()
+        .expect("original result brief id should remain");
+    let brief = runtime
+        .storage()
+        .read_brief_by_id(result_brief_id)
+        .unwrap()
+        .expect("original result brief should remain");
+    assert_eq!(brief.text, "Original completion report");
+    assert!(runtime
         .storage()
         .latest_delivery_summary(&work_item.id)
         .unwrap()
-        .expect("original delivery summary should remain");
-    assert_eq!(summary.text, "Original completion report");
+        .is_none());
     let transcript = runtime.storage().read_recent_transcript(10).unwrap();
     let tool_results = transcript
         .iter()

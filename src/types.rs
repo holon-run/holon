@@ -3356,6 +3356,8 @@ pub struct WorkItemRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recheck_consumed_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_brief_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_summary: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -3386,6 +3388,7 @@ impl WorkItemRecord {
             blocked_by: None,
             recheck_at: None,
             recheck_consumed_at: None,
+            result_brief_id: None,
             result_summary: None,
             created_at: now,
             updated_at: now,

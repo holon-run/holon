@@ -5,10 +5,10 @@ use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
     AgentProfilePreset, BriefKind, BriefRecord, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot,
-    DeliverySummaryRecord, FailureArtifact, FailureArtifactCategory, SpawnAgentModelRequest,
-    SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, SpawnAgentResult, TaskHandle,
-    TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus,
-    TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef, WorkItemContinuationFrame,
+    FailureArtifact, FailureArtifactCategory, SpawnAgentModelRequest, SpawnAgentModelResolution,
+    SpawnAgentModelResolutionStatus, SpawnAgentResult, TaskHandle, TaskInputResult, TaskKind,
+    TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus, TaskOutputSnapshot,
+    TaskStatusSnapshot, TodoItem, ToolArtifactRef, WorkItemContinuationFrame,
     WorkItemContinuationReturnPolicy, WorkItemDelegationRecord, WorkItemDelegationState,
     WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState, CHILD_AGENT_TASK_KIND,
 };
@@ -2572,6 +2572,7 @@ impl RuntimeHandle {
             blocked_by: None,
             recheck_at: None,
             recheck_consumed_at: None,
+            result_brief_id: existing.result_brief_id.clone(),
             result_summary: existing.result_summary.clone(),
             updated_at: Utc::now(),
             ..existing
@@ -2664,45 +2665,34 @@ impl RuntimeHandle {
                 existing,
             ));
         }
-        if existing.result_summary.as_deref() == Some(report_text) {
-            return Ok(WorkItemCompletionReportPromotionOutcome::Unchanged(
-                existing,
-            ));
+        if let Some(result_brief_id) = existing.result_brief_id.as_deref() {
+            if let Some(brief) = self.inner.storage.read_brief_by_id(result_brief_id)? {
+                if brief.text.trim() == report_text {
+                    return Ok(WorkItemCompletionReportPromotionOutcome::Unchanged(
+                        existing,
+                    ));
+                }
+            }
         }
+        let current_turn_id = {
+            let guard = self.inner.agent.lock().await;
+            guard.state.current_turn_id.clone()
+        };
+        let mut brief =
+            BriefRecord::new(agent_id.clone(), BriefKind::Result, report_text, None, None);
+        brief.work_item_id = Some(existing.id.clone());
+        brief.workspace_id = existing.workspace_id.clone();
+        brief.turn_index = source_turn_index;
+        brief.turn_id = current_turn_id;
+        self.persist_brief(&brief).await?;
         let record = WorkItemRecord {
             revision: existing.revision + 1,
-            result_summary: Some(report_text.to_string()),
+            result_brief_id: Some(brief.id.clone()),
             updated_at: Utc::now(),
             ..existing
         };
         self.inner.runtime_db.work_items().upsert(&record, false)?;
         self.inner.storage.append_work_item(&record)?;
-        let evidence = serde_json::json!({
-            "source": "same_round_complete_work_item",
-            "source_turn_index": source_turn_index,
-            "source_round": source_round,
-            "warnings": warnings.clone(),
-        });
-        let current_turn_id = {
-            let guard = self.inner.agent.lock().await;
-            guard.state.current_turn_id.clone()
-        };
-        let mut delivery_summary = DeliverySummaryRecord::new(
-            agent_id.clone(),
-            record.id.clone(),
-            report_text,
-            source_turn_index,
-            Some(evidence.clone()),
-        );
-        delivery_summary.turn_id = current_turn_id.clone();
-        self.persist_delivery_summary_evidence(&delivery_summary)?;
-        let mut brief =
-            BriefRecord::new(agent_id.clone(), BriefKind::Result, report_text, None, None);
-        brief.work_item_id = Some(record.id.clone());
-        brief.workspace_id = record.workspace_id.clone();
-        brief.turn_index = source_turn_index;
-        brief.turn_id = current_turn_id;
-        self.persist_brief(&brief).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_completion_report_promoted",
             serde_json::json!({
@@ -2714,14 +2704,12 @@ impl RuntimeHandle {
                 "text_preview": crate::tool::helpers::truncate_text(report_text, 600),
                 "warnings": warnings.clone(),
                 "warning_count": warnings.len(),
-                "delivery_summary_id": delivery_summary.id.clone(),
                 "brief_id": brief.id.clone(),
             }),
         ))?;
         Ok(WorkItemCompletionReportPromotionOutcome::Promoted(
             WorkItemCompletionReportPromotion {
                 record,
-                delivery_summary_id: delivery_summary.id,
                 brief_id: brief.id,
             },
         ))

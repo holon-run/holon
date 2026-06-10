@@ -33,6 +33,7 @@ pub(crate) enum WorkItemFocusView {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorkItemCompletionReportSource {
+    ResultBrief,
     WorkItemResultSummary,
     DeliverySummary,
 }
@@ -41,6 +42,8 @@ pub(crate) enum WorkItemCompletionReportSource {
 pub(crate) struct WorkItemCompletionReportView {
     pub(crate) text: String,
     pub(crate) source: WorkItemCompletionReportSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) brief_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) delivery_summary_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -239,6 +242,17 @@ fn completion_report_for_record(
     if record.state != WorkItemState::Completed {
         return Ok(None);
     }
+    if let Some(brief_id) = record
+        .result_brief_id
+        .as_ref()
+        .filter(|brief_id| !brief_id.trim().is_empty())
+    {
+        if let Some(brief) = runtime.storage().read_brief_by_id(brief_id)? {
+            if !brief.text.trim().is_empty() {
+                return Ok(Some(completion_report_view_from_brief(brief)));
+            }
+        }
+    }
     let cached_delivery_summary = delivery_summaries
         .and_then(|summaries| summaries.get(&record.id))
         .cloned();
@@ -279,9 +293,23 @@ fn completion_report_view(
     WorkItemCompletionReportView {
         text,
         source,
+        brief_id: None,
         delivery_summary_id: delivery_summary.map(|summary| summary.id.clone()),
         source_turn_index: delivery_summary.and_then(|summary| summary.source_turn_index),
         created_at: delivery_summary.map(|summary| summary.created_at),
+    }
+}
+
+fn completion_report_view_from_brief(
+    brief: crate::types::BriefRecord,
+) -> WorkItemCompletionReportView {
+    WorkItemCompletionReportView {
+        text: brief.text,
+        source: WorkItemCompletionReportSource::ResultBrief,
+        brief_id: Some(brief.id),
+        delivery_summary_id: None,
+        source_turn_index: brief.turn_index,
+        created_at: Some(brief.created_at),
     }
 }
 
