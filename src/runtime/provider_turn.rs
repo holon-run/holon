@@ -92,7 +92,6 @@ fn prompt_cache_from_effective_prompt(effective_prompt: &EffectivePrompt) -> Pro
         agent_id: effective_prompt.cache_identity.agent_id.clone(),
         prompt_cache_key: effective_prompt.cache_identity.prompt_cache_key.clone(),
         context_fingerprint: effective_prompt.cache_identity.context_fingerprint.clone(),
-        working_memory_revision: effective_prompt.cache_identity.working_memory_revision,
         compression_epoch: effective_prompt.cache_identity.compression_epoch,
     }
 }
@@ -245,14 +244,6 @@ mod tests {
                 .prompt_frame
                 .cache
                 .as_ref()
-                .map(|cache| cache.working_memory_revision),
-            Some(4)
-        );
-        assert_eq!(
-            request
-                .prompt_frame
-                .cache
-                .as_ref()
                 .map(|cache| cache.context_fingerprint.as_str()),
             Some("fingerprint-default")
         );
@@ -299,7 +290,6 @@ mod tests {
                 agent_id: "default".into(),
                 prompt_cache_key: "default".into(),
                 context_fingerprint: "fingerprint-default".into(),
-                working_memory_revision: 4,
                 compression_epoch: 2,
             },
             system_sections: vec![],
@@ -348,7 +338,6 @@ mod tests {
                 agent_id: "default".into(),
                 prompt_cache_key: "default".into(),
                 context_fingerprint: "fingerprint-default".into(),
-                working_memory_revision: 7,
                 compression_epoch: 3,
             },
             system_sections: vec![
@@ -452,7 +441,6 @@ mod tests {
                 agent_id: "default".to_string(),
                 prompt_cache_key: "default".to_string(),
                 context_fingerprint: "fingerprint-default".to_string(),
-                working_memory_revision: 4,
                 compression_epoch: 2,
             }),
         );

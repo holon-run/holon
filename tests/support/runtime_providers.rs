@@ -22,7 +22,6 @@ use super::runtime_helpers::{delegated_prompt_text, preserves_prior_tool_context
 pub struct CapturedTurnRequest {
     pub prompt_text: String,
     pub compression_epoch: u64,
-    pub working_memory_revision: u64,
 }
 
 // ============================================================================
@@ -613,12 +612,6 @@ impl AgentProvider for RecordingPromptProvider {
                 .cache
                 .as_ref()
                 .map(|cache| cache.compression_epoch)
-                .unwrap_or_default(),
-            working_memory_revision: request
-                .prompt_frame
-                .cache
-                .as_ref()
-                .map(|cache| cache.working_memory_revision)
                 .unwrap_or_default(),
         });
 

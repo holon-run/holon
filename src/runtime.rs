@@ -60,7 +60,7 @@ use crate::{
     context::{maybe_compact_agent, ContextConfig},
     host::RuntimeHostBridge,
     ingress::WakeDisposition,
-    memory::{mark_working_memory_prompted, refresh_episode_memory, refresh_working_memory},
+    memory::{refresh_episode_memory, refresh_working_memory},
     prompt::{
         build_effective_prompt, build_effective_prompt_with_default_external_ingress,
         EffectivePrompt,

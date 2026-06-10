@@ -276,7 +276,6 @@ pub async fn task_result_rejoin_after_compaction_preserves_current_work_truth() 
     let requests = provider.captured_requests().await;
     let task_rejoin = &requests[1];
     assert!(task_rejoin.compression_epoch > 0);
-    assert!(task_rejoin.working_memory_revision > 0);
     assert!(task_rejoin
         .prompt_text
         .contains("Close the compaction regression gap"));

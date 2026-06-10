@@ -1430,59 +1430,6 @@ pub struct WorkingMemorySnapshot {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkingMemoryUpdateReason {
-    TerminalTurnCompleted,
-    TaskRejoined,
-    WakeResumed,
-    ActiveWorkChanged,
-    ScopeHintsChanged,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkingMemoryDelta {
-    #[serde(default)]
-    pub agent_id: String,
-    pub from_revision: u64,
-    pub to_revision: u64,
-    pub created_at_turn: u64,
-    pub reason: WorkingMemoryUpdateReason,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub changed_fields: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub summary_lines: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct TurnMemoryDelta {
-    pub turn_index: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    #[serde(default)]
-    pub active_work_changed: bool,
-    #[serde(default)]
-    pub plan_changed: bool,
-    #[serde(default)]
-    pub todo_list_changed: bool,
-    #[serde(default)]
-    pub scope_hints_changed: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub touched_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub commands: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub verification: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub decisions: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pending_followups: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub waiting_on: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub task_results: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum EpisodeBoundaryReason {
     ActiveWorkSwitched,
     WaitBoundary,
@@ -1625,15 +1572,9 @@ pub struct ContextEpisodeRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct WorkingMemoryState {
     #[serde(default)]
-    pub working_memory_revision: u64,
-    #[serde(default)]
     pub compression_epoch: u64,
     #[serde(default)]
     pub current_working_memory: WorkingMemorySnapshot,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_working_memory_delta: Option<WorkingMemoryDelta>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_prompted_working_memory_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_episode_id: Option<String>,
     #[serde(default)]
@@ -3344,6 +3285,50 @@ pub struct WorkItemPlanArtifact {
     pub preview_complete: bool,
 }
 
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemRefKind {
+    File,
+    ToolExecution,
+    Issue,
+    Pr,
+    Url,
+    Memory,
+    Task,
+    Wait,
+    Workspace,
+    Other,
+}
+
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemRefStatus {
+    Active,
+    Resolved,
+    Stale,
+    Archived,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct WorkItemRef {
+    pub kind: WorkItemRefKind,
+    #[serde(rename = "ref")]
+    pub ref_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub reason: String,
+    pub status: WorkItemRefStatus,
+    pub last_seen_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub metadata: serde_json::Map<String, Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct WorkItemRecord {
     pub id: String,
@@ -3362,6 +3347,8 @@ pub struct WorkItemRecord {
     pub plan_artifact: Option<WorkItemPlanArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub todo_list: Vec<TodoItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_refs: Vec<WorkItemRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3395,6 +3382,7 @@ impl WorkItemRecord {
             legacy_inline_plan: None,
             plan_artifact: None,
             todo_list: Vec::new(),
+            work_refs: Vec::new(),
             blocked_by: None,
             recheck_at: None,
             recheck_consumed_at: None,

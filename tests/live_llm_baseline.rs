@@ -91,7 +91,6 @@ fn anthropic_cache_frame() -> ProviderPromptFrame {
             agent_id: "live-llm-baseline-cache".into(),
             prompt_cache_key: "live-llm-baseline-cache".into(),
             context_fingerprint: "live-llm-baseline-cache".into(),
-            working_memory_revision: 1,
             compression_epoch: 0,
         }),
     )

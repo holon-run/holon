@@ -4455,18 +4455,6 @@ async fn queued_notification_keeps_working_memory_unfocused_before_pick() {
         .current_working_memory
         .current_work_item_id
         .is_none());
-    assert!(
-        state.working_memory.working_memory_revision > 0,
-        "working memory should refresh after queued notification"
-    );
-    let deltas = runtime
-        .storage()
-        .read_recent_working_memory_deltas(10)
-        .unwrap();
-    assert!(!deltas.iter().any(|delta| delta
-        .changed_fields
-        .iter()
-        .any(|field| field == "current_work_item_id")));
     assert!(state
         .working_memory
         .active_episode_builder

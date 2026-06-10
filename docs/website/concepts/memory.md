@@ -1,6 +1,6 @@
 ---
 title: Memory system
-summary: How Holon's memory layers preserve continuity across turns — working memory, episodes, durable ledger, and indexed search.
+summary: How Holon's memory layers preserve continuity across turns — work items, work refs, episodes, durable ledger, and indexed search.
 order: 15
 ---
 
@@ -18,7 +18,7 @@ Holon's context memory has four layers, each with a distinct role:
 Durable Ledger  ──── append-only audit trail (messages, briefs, tool calls, tasks)
      │
      ▼
-Working Memory  ──── compact current-state snapshot rebuilt after each turn
+Current Work Context ─ current WorkItem, todo state, waits, and refs
      │
      ▼
 Episode Memory  ──── archived records of completed work chunks
@@ -34,31 +34,31 @@ The append-only source of truth. Every runtime event is recorded:
 - Messages and briefs
 - Tool executions and command results
 - Task lifecycle transitions
-- Work item state changes
-- Working memory deltas
+- Work item state changes and current work refs
 - Episode records
 
 The ledger is **not prompt-bounded**. It grows indefinitely as the audit
 trail. The model-visible projection is a compressed selection, not a full
 replay.
 
-### Working Memory
+### Current Work Context
 
-Working memory is the compact current-state snapshot that answers:
+Current work context is the compact runtime-owned projection that answers:
 
 - What work is active right now?
-- What is the delivery target?
-- Which constraints and scope limits apply?
-- What follow-ups remain?
-- What is the agent waiting on?
+- What is the current objective and plan?
+- Which todo items, waits, and blockers matter?
+- Which files, tool outputs, issues, PRs, tasks, or memories should remain easy
+  to reopen?
 
-It is derived deterministically from runtime state and rebuilt after each turn
-reaches closure. When the snapshot changes, the runtime appends a
-**working memory delta** to the ledger.
+The prompt-facing authority is the current `WorkItemRecord` plus its
+runtime-derived `work_refs`. Work refs are extracted at turn closure from
+trusted runtime evidence such as current input source refs and tool execution
+records. The model does not author them directly.
 
-Working memory is **not free-form summary**. It is a structured projection of
-the runtime's own records — current work item, active todo list, pending
-follow-ups, and waiting conditions.
+Current work context is **not free-form summary**. It is a structured projection
+of the runtime's own records: current WorkItem state, active todo list,
+blockers, waiting conditions, and refs back to retrievable evidence.
 
 ### Episode Memory
 
@@ -89,8 +89,8 @@ Each turn assembles a prompt from budgeted memory sections:
 - Turn-based context projection (linked turns, result briefs, task results,
   and work item transitions)
 - Current work item and plan
+- Current work refs
 - Relevant episode memory
-- Working memory snapshot
 - Execution environment projection
 
 This assembly keeps prompt size bounded while preserving continuity.
@@ -128,8 +128,8 @@ rendering every archived episode into every prompt.
 
 Memory is tightly coupled to work items:
 
-- **Current work item** anchors the working memory snapshot — objective,
-  plan, todo list, and blocked status.
+- **Current work item** anchors the live continuity state: objective, plan,
+  todo list, blocked status, and current work refs.
 - **Episode records** are scoped to work items. When a work item completes,
   its accumulated evidence becomes an archived episode.
 - If a current work item and an episode both match the prompt, the work item

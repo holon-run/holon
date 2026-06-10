@@ -15,7 +15,7 @@ use crate::{
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView,
         TodoItemState, ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry,
         TranscriptEntryKind, TurnRecord, WaitingIntentRecord, WaitingIntentScope,
-        WaitingIntentStatus, WorkItemRecord, WorkingMemoryDelta, WorkingMemorySnapshot,
+        WaitingIntentStatus, WorkItemRecord, WorkItemRefStatus, WorkingMemorySnapshot,
     },
 };
 
@@ -174,16 +174,7 @@ pub fn build_context_with_default_external_ingress(
         ),
     );
 
-    if !working_memory_is_empty(&agent.working_memory.current_working_memory) {
-        push_budgeted_section(
-            &mut sections,
-            &mut remaining_budget,
-            section(
-                "working_memory",
-                render_working_memory(&agent.working_memory.current_working_memory),
-            ),
-        );
-    } else if let Some(summary) = &agent.context_summary {
+    if let Some(summary) = &agent.context_summary {
         if !summary.trim().is_empty() {
             push_budgeted_section(
                 &mut sections,
@@ -192,16 +183,6 @@ pub fn build_context_with_default_external_ingress(
                     "compacted_summary",
                     format!("Compacted agent summary:\n{summary}"),
                 ),
-            );
-        }
-    }
-
-    if let Some(delta) = &agent.working_memory.pending_working_memory_delta {
-        if let Some(content) = render_working_memory_delta_with_budget(delta, remaining_budget) {
-            push_budgeted_section(
-                &mut sections,
-                &mut remaining_budget,
-                turn_section("working_memory_delta", content),
             );
         }
     }
@@ -215,6 +196,13 @@ pub fn build_context_with_default_external_ingress(
                 render_current_work_item(work_item, storage.data_dir(), &active_waiting_intents),
             ),
         );
+        if let Some(content) = render_current_work_refs(work_item) {
+            push_budgeted_section(
+                &mut sections,
+                &mut remaining_budget,
+                turn_section("current_work_refs", content),
+            );
+        }
     }
 
     let recent_turn_window_start = recent_turn_window_start(&turn_records);
@@ -368,7 +356,7 @@ pub fn build_context_with_default_external_ingress(
         &mut remaining_budget,
         section(
             "context_contract",
-            "Interpret the memory block with this priority: current work item objective first, durable plan artifact second, todo_list third, working memory delta next, and rolling working memory after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and plan artifact as the ground truth unless the current input explicitly changes it."
+            "Interpret the memory block with this priority: current work item objective first, durable plan artifact second, todo_list third, and current work refs after that. This is an interpretation priority, not a guarantee about section ordering. Use prior briefs and recent tool results as continuity evidence across turns. When sources differ on task scope, treat the current work item's `objective` and plan artifact as the ground truth unless the current input explicitly changes it."
                 .to_string(),
         ),
     );
@@ -913,6 +901,55 @@ fn render_current_work_item(
     lines.join("\n")
 }
 
+fn render_current_work_refs(work_item: &WorkItemRecord) -> Option<String> {
+    let refs = work_item
+        .work_refs
+        .iter()
+        .filter(|work_ref| work_ref.status == WorkItemRefStatus::Active)
+        .take(crate::work_item_refs::MAX_ACTIVE_WORK_REFS)
+        .collect::<Vec<_>>();
+    if refs.is_empty() {
+        return None;
+    }
+    let mut lines = vec!["Current WorkItem refs. Reopen only when needed:".to_string()];
+    for work_ref in refs {
+        let title = work_ref
+            .title
+            .as_deref()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or(&work_ref.ref_id);
+        let source = work_ref
+            .source_ref
+            .as_deref()
+            .map(|source_ref| format!(" :: source_ref={source_ref}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- [{}] {} :: ref={} :: reason={}{}",
+            work_ref_kind_label(work_ref.kind),
+            truncate_text(title, 120),
+            work_ref.ref_id,
+            truncate_text(&work_ref.reason, 140),
+            source
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+fn work_ref_kind_label(kind: crate::types::WorkItemRefKind) -> &'static str {
+    match kind {
+        crate::types::WorkItemRefKind::File => "file",
+        crate::types::WorkItemRefKind::ToolExecution => "tool_execution",
+        crate::types::WorkItemRefKind::Issue => "issue",
+        crate::types::WorkItemRefKind::Pr => "pr",
+        crate::types::WorkItemRefKind::Url => "url",
+        crate::types::WorkItemRefKind::Memory => "memory",
+        crate::types::WorkItemRefKind::Task => "task",
+        crate::types::WorkItemRefKind::Wait => "wait",
+        crate::types::WorkItemRefKind::Workspace => "workspace",
+        crate::types::WorkItemRefKind::Other => "other",
+    }
+}
+
 fn work_item_plan_status_label(status: crate::types::WorkItemPlanStatus) -> &'static str {
     match status {
         crate::types::WorkItemPlanStatus::Draft => "draft",
@@ -1188,129 +1225,6 @@ fn render_work_item_plan_artifact_lines(
 
 fn working_memory_is_empty(snapshot: &WorkingMemorySnapshot) -> bool {
     snapshot == &WorkingMemorySnapshot::default()
-}
-
-fn render_working_memory(snapshot: &WorkingMemorySnapshot) -> String {
-    let mut lines = vec!["Working memory:".to_string()];
-    if let Some(current_work_item_id) = snapshot.current_work_item_id.as_deref() {
-        lines.push(format!("- Current work item id: {current_work_item_id}"));
-    }
-    if let Some(objective) = snapshot.objective.as_deref() {
-        lines.push(format!("- Objective: {objective}"));
-    }
-    if let Some(work_summary) = snapshot.work_summary.as_deref() {
-        lines.push(format!("- Work summary: {work_summary}"));
-    }
-    if let Some(plan) = snapshot.plan.as_deref() {
-        lines.push("- Plan:".to_string());
-        lines.push(format!(
-            "  {}",
-            truncate_text(&plan.replace('\n', " "), 160)
-        ));
-    }
-    if !snapshot.todo_list.is_empty() {
-        lines.push("- Todo list:".to_string());
-        let active_items = snapshot
-            .todo_list
-            .iter()
-            .filter(|item| item.state != TodoItemState::Completed)
-            .take(3);
-        lines.extend(active_items.map(|item| format!("  - {}", render_todo_item_compact(item))));
-        let omitted = snapshot
-            .todo_list
-            .iter()
-            .filter(|item| item.state != TodoItemState::Completed)
-            .skip(3)
-            .count();
-        if omitted > 0 {
-            lines.push(format!(
-                "  - ... {omitted} more active todo item(s) omitted"
-            ));
-        }
-    }
-    if !snapshot.working_set_files.is_empty() {
-        lines.push("- Working set files:".to_string());
-        lines.extend(
-            snapshot
-                .working_set_files
-                .iter()
-                .map(|path| format!("  - {path}")),
-        );
-    }
-    if !snapshot.pending_followups.is_empty() {
-        lines.push("- Pending follow-ups:".to_string());
-        lines.extend(
-            snapshot
-                .pending_followups
-                .iter()
-                .map(|followup| format!("  - {followup}")),
-        );
-    }
-    if !snapshot.waiting_on.is_empty() {
-        lines.push("- Waiting on:".to_string());
-        lines.extend(
-            snapshot
-                .waiting_on
-                .iter()
-                .map(|waiting| format!("  - {waiting}")),
-        );
-    }
-    lines.join("\n")
-}
-
-fn render_todo_item_compact(item: &crate::types::TodoItem) -> String {
-    let state = match item.state {
-        TodoItemState::Pending => "pending",
-        TodoItemState::InProgress => "in_progress",
-        TodoItemState::Completed => "completed",
-    };
-    format!("[{state}] {}", truncate_text(&item.text, 120))
-}
-
-fn render_working_memory_delta_with_budget(
-    delta: &WorkingMemoryDelta,
-    budget: usize,
-) -> Option<String> {
-    let mut lines = vec!["Working memory updated since the last prompt:".to_string()];
-    lines.push(format!(
-        "- Revision: {} -> {}",
-        delta.from_revision, delta.to_revision
-    ));
-    lines.push(format!(
-        "- Reason: {}",
-        serde_json::to_string(&delta.reason)
-            .unwrap_or_else(|_| "\"terminal_turn_completed\"".to_string())
-            .trim_matches('"')
-    ));
-    if !delta.changed_fields.is_empty() {
-        lines.push("- Changed fields:".to_string());
-        lines.extend(
-            delta
-                .changed_fields
-                .iter()
-                .map(|field| format!("  - {field}")),
-        );
-    }
-    if !delta.summary_lines.is_empty() {
-        lines.push("- Summary:".to_string());
-        let mut summary_lines = Vec::new();
-        let mut summary_budget = budget.saturating_sub(estimate_text_tokens(&lines.join("\n")));
-        for line in &delta.summary_lines {
-            let rendered = format!("  - {line}");
-            let cost = estimate_text_tokens(&rendered);
-            if !summary_lines.is_empty() && cost > summary_budget {
-                summary_lines.push("  - [truncated working memory delta]".to_string());
-                break;
-            }
-            summary_budget = summary_budget.saturating_sub(cost);
-            summary_lines.push(rendered);
-        }
-        lines.extend(summary_lines);
-    }
-    if lines.len() <= 3 && delta.summary_lines.is_empty() {
-        return None;
-    }
-    Some(lines.join("\n"))
 }
 
 fn kind_label(message: &MessageEnvelope) -> String {
@@ -2600,7 +2514,7 @@ struct EpisodeSelectionAnchor<'a> {
 
 fn build_relevant_episode_memory_section(
     episodes: &[ContextEpisodeRecord],
-    agent: &AgentState,
+    _agent: &AgentState,
     current_work_item: Option<&WorkItemRecord>,
     current_message: &MessageEnvelope,
     config: &ContextConfig,
@@ -2611,28 +2525,52 @@ fn build_relevant_episode_memory_section(
         return None;
     }
 
-    let working_memory = &agent.working_memory.current_working_memory;
+    let work_ref_values = current_work_item
+        .map(|item| {
+            item.work_refs
+                .iter()
+                .filter(|work_ref| work_ref.status == WorkItemRefStatus::Active)
+                .map(|work_ref| work_ref.ref_id.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let working_set_files = current_work_item
+        .map(|item| {
+            item.work_refs
+                .iter()
+                .filter(|work_ref| work_ref.status == WorkItemRefStatus::Active)
+                .filter(|work_ref| work_ref.kind == crate::types::WorkItemRefKind::File)
+                .map(|work_ref| work_ref.ref_id.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let pending_followups = current_work_item
+        .map(|item| {
+            item.todo_list
+                .iter()
+                .filter(|todo| todo.state != TodoItemState::Completed)
+                .map(|todo| todo.text.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let waiting_on = current_work_item
+        .and_then(|item| item.blocked_by.clone().map(|blocked| vec![blocked]))
+        .unwrap_or_default();
     let query_text = format!(
         "{}\n{}\n{}",
         body_preview(&current_message.body),
-        working_memory.work_summary.as_deref().unwrap_or_default(),
+        work_ref_values.join("\n"),
         current_work_item
             .map(|item| item.objective.as_str())
             .unwrap_or_default()
     );
     let anchor = EpisodeSelectionAnchor {
-        current_work_item_id: working_memory
-            .current_work_item_id
-            .as_deref()
-            .or_else(|| current_work_item.map(|item| item.id.as_str())),
-        objective: working_memory
-            .objective
-            .as_deref()
-            .or_else(|| current_work_item.map(|item| item.objective.as_str())),
-        work_summary: working_memory.work_summary.as_deref(),
-        working_set_files: &working_memory.working_set_files,
-        pending_followups: &working_memory.pending_followups,
-        waiting_on: &working_memory.waiting_on,
+        current_work_item_id: current_work_item.map(|item| item.id.as_str()),
+        objective: current_work_item.map(|item| item.objective.as_str()),
+        work_summary: None,
+        working_set_files: &working_set_files,
+        pending_followups: &pending_followups,
+        waiting_on: &waiting_on,
         query_text,
     };
 
@@ -2932,7 +2870,7 @@ mod tests {
             ExternalTriggerScope, LoadedAgentsMd, MessageKind, MessageOrigin, Priority, TodoItem,
             TodoItemState, ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry,
             TranscriptEntryKind, WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus,
-            WorkItemState,
+            WorkItemRef, WorkItemRefKind, WorkItemRefStatus, WorkItemState,
         },
     };
 
@@ -3462,7 +3400,6 @@ mod tests {
             plan: Some(vec!["[InProgress] keep cache identity stable"].join("\n")),
             ..WorkingMemorySnapshot::default()
         };
-        session.working_memory.working_memory_revision = 3;
         session.working_memory.compression_epoch = 7;
 
         let config = ContextConfig {
@@ -4524,7 +4461,7 @@ mod tests {
     }
 
     #[test]
-    fn build_context_prefers_structured_working_memory_and_turn_delta() {
+    fn build_context_omits_working_memory_sections_by_default() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
@@ -4546,15 +4483,6 @@ mod tests {
             plan: Some(vec!["[InProgress] wire post-turn refresh"].join("\n")),
             ..WorkingMemorySnapshot::default()
         };
-        session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
-            agent_id: "default".into(),
-            from_revision: 0,
-            to_revision: 1,
-            created_at_turn: 1,
-            reason: crate::types::WorkingMemoryUpdateReason::TerminalTurnCompleted,
-            changed_fields: vec!["plan".into()],
-            summary_lines: vec!["updated plan: [InProgress] wire post-turn refresh".into()],
-        });
 
         let built = build_context(
             &storage,
@@ -4573,15 +4501,15 @@ mod tests {
         )
         .unwrap();
 
-        assert!(built
+        assert!(!built
             .sections
             .iter()
             .any(|section| section.name == "working_memory"));
-        assert!(built
+        assert!(!built
             .sections
             .iter()
             .any(|section| section.name == "working_memory_delta"));
-        assert!(!built
+        assert!(built
             .sections
             .iter()
             .any(|section| section.name == "compacted_summary"));
@@ -4675,16 +4603,18 @@ mod tests {
         )
         .unwrap();
 
-        let working_memory = built
+        assert!(!built
             .sections
             .iter()
-            .find(|section| section.name == "working_memory")
-            .expect("working memory section should be present");
-        assert!(!working_memory
-            .content
-            .contains("leave flaky verification as raw evidence"));
-        assert!(!working_memory.content.contains("Latest verified result"));
-        assert!(!working_memory.content.contains("cargo test wake_path"));
+            .any(|section| section.name == "working_memory"));
+        let rendered_context = built
+            .sections
+            .iter()
+            .map(|section| section.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered_context.contains("leave flaky verification as raw evidence"));
+        assert!(!rendered_context.contains("Latest verified result"));
 
         let recent_turns = built
             .sections
@@ -4993,6 +4923,28 @@ mod tests {
                 state: TodoItemState::InProgress,
             },
         ];
+        active.work_refs = vec![
+            WorkItemRef {
+                kind: WorkItemRefKind::File,
+                ref_id: "src/context.rs".into(),
+                title: Some("src/context.rs".into()),
+                reason: "file changed by ApplyPatch".into(),
+                status: WorkItemRefStatus::Active,
+                last_seen_at: chrono::Utc::now(),
+                source_ref: None,
+                metadata: serde_json::Map::new(),
+            },
+            WorkItemRef {
+                kind: WorkItemRefKind::Issue,
+                ref_id: "github:holon-run/holon#1662".into(),
+                title: Some("holon-run/holon#1662".into()),
+                reason: "GitHub command inspected".into(),
+                status: WorkItemRefStatus::Active,
+                last_seen_at: chrono::Utc::now(),
+                source_ref: Some("tool_execution:tool-current:cmd".into()),
+                metadata: serde_json::Map::new(),
+            },
+        ];
         storage.append_work_item(&active).unwrap();
         storage
             .append_waiting_intent(&WaitingIntentRecord {
@@ -5171,6 +5123,21 @@ mod tests {
         assert!(!active_section
             .content
             .contains("other agent wait must not leak"));
+        let refs_section = built
+            .sections
+            .iter()
+            .find(|section| section.name == "current_work_refs")
+            .expect("current_work_refs section should be present");
+        assert!(refs_section.content.contains("[file] src/context.rs"));
+        assert!(refs_section
+            .content
+            .contains("[issue] holon-run/holon#1662"));
+        assert!(refs_section
+            .content
+            .contains("ref=github:holon-run/holon#1662"));
+        assert!(refs_section
+            .content
+            .contains("source_ref=tool_execution:tool-current:cmd"));
 
         let trace_section = built
             .sections
@@ -6199,15 +6166,6 @@ mod tests {
             plan: Some(vec!["finish wake-path regression"].join("\n")),
             ..WorkingMemorySnapshot::default()
         };
-        session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
-            agent_id: "default".into(),
-            from_revision: 1,
-            to_revision: 2,
-            created_at_turn: 2,
-            reason: crate::types::WorkingMemoryUpdateReason::TerminalTurnCompleted,
-            changed_fields: vec!["plan".into()],
-            summary_lines: vec!["updated plan: finish wake-path regression".into()],
-        });
 
         let built = build_context(
             &storage,
@@ -6235,43 +6193,15 @@ mod tests {
             .position(|name| *name == "current_input")
             .unwrap();
 
-        if let Some(working_memory_index) = section_names
+        assert!(!section_names.iter().any(|name| *name == "working_memory"));
+        assert!(!section_names
             .iter()
-            .position(|name| *name == "working_memory")
-        {
-            assert!(working_memory_index < current_input_index);
-        }
-        if let Some(delta_index) = section_names
-            .iter()
-            .position(|name| *name == "working_memory_delta")
-        {
-            assert!(delta_index < current_input_index);
-        }
+            .any(|name| *name == "working_memory_delta"));
         if let Some(active_work_index) = section_names
             .iter()
             .position(|name| *name == "current_work_item")
         {
             assert!(active_work_index < current_input_index);
-        }
-        if let (Some(working_memory_index), Some(delta_index)) = (
-            section_names
-                .iter()
-                .position(|name| *name == "working_memory"),
-            section_names
-                .iter()
-                .position(|name| *name == "working_memory_delta"),
-        ) {
-            assert!(working_memory_index < delta_index);
-        }
-        if let (Some(delta_index), Some(active_work_index)) = (
-            section_names
-                .iter()
-                .position(|name| *name == "working_memory_delta"),
-            section_names
-                .iter()
-                .position(|name| *name == "current_work_item"),
-        ) {
-            assert!(delta_index < active_work_index);
         }
 
         let trimmed_hot_tail = render_budgeted_lines(
@@ -6290,7 +6220,7 @@ mod tests {
     }
 
     #[test]
-    fn build_context_omits_working_memory_delta_when_budget_is_exhausted() {
+    fn build_context_omits_working_memory_delta_even_when_legacy_snapshot_exists() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
 
@@ -6311,19 +6241,6 @@ mod tests {
             plan: Some(vec!["[InProgress] wire prompt render acknowledgement"].join("\n")),
             ..WorkingMemorySnapshot::default()
         };
-        session.working_memory.pending_working_memory_delta = Some(WorkingMemoryDelta {
-            agent_id: "default".into(),
-            from_revision: 4,
-            to_revision: 5,
-            created_at_turn: 7,
-            reason: crate::types::WorkingMemoryUpdateReason::TerminalTurnCompleted,
-            changed_fields: vec!["plan".into()],
-            summary_lines: vec![
-                "updated the plan with a long-form explanation of why prompt rendering acknowledgement must happen after budgeted assembly rather than before prompt construction".into(),
-                "recorded the continuity decision that pending deltas stay durable across turns until the model actually sees the delta section in a rendered prompt".into(),
-                "captured low-budget prompt coverage for the interactive runtime path that previously cleared the delta too early".into(),
-            ],
-        });
 
         let built = build_context(
             &storage,

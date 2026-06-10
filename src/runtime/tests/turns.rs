@@ -117,10 +117,9 @@ async fn first_provider_round_records_prompt_cache_identity_fields() {
     )
     .unwrap();
     let mut prompt = test_effective_prompt();
-    prompt.cache_identity.working_memory_revision = 7;
     prompt.cache_identity.compression_epoch = 3;
-    prompt.cache_identity.prompt_cache_key = "default:wm7:ce3".into();
-    prompt.cache_identity.context_fingerprint = "fingerprint-wm7-ce3".into();
+    prompt.cache_identity.prompt_cache_key = "default:ce3".into();
+    prompt.cache_identity.context_fingerprint = "fingerprint-ce3".into();
 
     runtime
         .run_agent_loop(
@@ -141,16 +140,12 @@ async fn first_provider_round_records_prompt_cache_identity_fields() {
         .expect("missing provider_round_completed");
     assert_eq!(
         provider_event.data["prompt_cache_key"].as_str(),
-        Some("default:wm7:ce3")
-    );
-    assert_eq!(
-        provider_event.data["working_memory_revision"].as_u64(),
-        Some(7)
+        Some("default:ce3")
     );
     assert_eq!(provider_event.data["compression_epoch"].as_u64(), Some(3));
     assert_eq!(
         provider_event.data["context_fingerprint"].as_str(),
-        Some("fingerprint-wm7-ce3")
+        Some("fingerprint-ce3")
     );
 
     let transcript = runtime.storage().read_recent_transcript(10).unwrap();
@@ -160,16 +155,12 @@ async fn first_provider_round_records_prompt_cache_identity_fields() {
         .expect("missing assistant round transcript");
     assert_eq!(
         assistant_round.data["prompt_cache_key"].as_str(),
-        Some("default:wm7:ce3")
-    );
-    assert_eq!(
-        assistant_round.data["working_memory_revision"].as_u64(),
-        Some(7)
+        Some("default:ce3")
     );
     assert_eq!(assistant_round.data["compression_epoch"].as_u64(), Some(3));
     assert_eq!(
         assistant_round.data["context_fingerprint"].as_str(),
-        Some("fingerprint-wm7-ce3")
+        Some("fingerprint-ce3")
     );
 }
 
@@ -561,10 +552,6 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
     assert_eq!(
         round_four_event.data["prompt_cache_key"].as_str(),
         Some("default")
-    );
-    assert_eq!(
-        round_four_event.data["working_memory_revision"].as_u64(),
-        Some(1)
     );
     assert_eq!(round_four_event.data["compression_epoch"].as_u64(), Some(0));
     let transcript = runtime.storage().read_recent_transcript(20).unwrap();

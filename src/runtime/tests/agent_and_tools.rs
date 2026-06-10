@@ -1236,7 +1236,6 @@ fn current_input_summary_extracts_body_from_context_section() {
             agent_id: "default".into(),
             prompt_cache_key: "default".into(),
             context_fingerprint: "fingerprint-default".into(),
-            working_memory_revision: 1,
             compression_epoch: 0,
         },
         system_sections: vec![],
@@ -1255,96 +1254,5 @@ fn current_input_summary_extracts_body_from_context_section() {
     assert_eq!(
         current_input_summary(&prompt),
         "Fix the failing benchmark output."
-    );
-}
-
-#[tokio::test]
-async fn interactive_turn_keeps_pending_working_memory_delta_when_prompt_omits_it() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(StubProvider::new("done")),
-        "default".into(),
-        ContextConfig {
-            recent_messages: 4,
-            recent_briefs: 4,
-            prompt_budget_estimated_tokens: 140,
-            ..context_config()
-        },
-    )
-    .unwrap();
-
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.working_memory.current_working_memory = crate::types::WorkingMemorySnapshot {
-            objective: Some("ship the prompt delta gating fix".into()),
-            plan: Some(vec!["[InProgress] wire prompt render acknowledgement"].join("\n")),
-            ..crate::types::WorkingMemorySnapshot::default()
-        };
-        guard.state.working_memory.working_memory_revision = 5;
-        guard.state.working_memory.pending_working_memory_delta =
-            Some(crate::types::WorkingMemoryDelta {
-                agent_id: "default".into(),
-                from_revision: 4,
-                to_revision: 5,
-                created_at_turn: 7,
-                reason: crate::types::WorkingMemoryUpdateReason::TerminalTurnCompleted,
-                changed_fields: vec!["plan".into()],
-                summary_lines: vec![
-                    "updated the plan with a long-form explanation of why prompt rendering acknowledgement must happen after budgeted assembly rather than before prompt construction".into(),
-                    "recorded the continuity decision that pending deltas stay durable across turns until the model actually sees the delta section in a rendered prompt".into(),
-                    "captured low-budget prompt coverage for the interactive runtime path that previously cleared the delta too early".into(),
-                ],
-            });
-        runtime.inner.storage.write_agent(&guard.state).unwrap();
-    }
-
-    let preview = runtime
-        .preview_prompt(
-            "Continue the runtime memory work and report the latest status.".into(),
-            AuthorityClass::OperatorInstruction,
-        )
-        .await
-        .unwrap();
-    assert!(!preview
-        .context_sections
-        .iter()
-        .any(|section| section.name == "working_memory_delta"));
-
-    let message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator { actor_id: None },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "Continue the runtime memory work and report the latest status.".into(),
-        },
-    );
-    runtime
-        .process_interactive_message(
-            &message,
-            None,
-            LoopControlOptions {
-                max_tool_rounds: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let state = runtime.agent_state().await.unwrap();
-    let pending = state
-        .working_memory
-        .pending_working_memory_delta
-        .as_ref()
-        .expect("pending delta should remain until rendered");
-    assert_eq!(pending.to_revision, 5);
-    assert_eq!(
-        state.working_memory.last_prompted_working_memory_revision,
-        None
     );
 }

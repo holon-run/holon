@@ -6,7 +6,7 @@ use crate::{
     types::{
         ActiveEpisodeBuilder, AgentState, ClosureDecision, ClosureOutcome,
         ContextEpisodeGeneratedBy, ContextEpisodeRecord, EpisodeBoundaryReason, MessageEnvelope,
-        MessageKind, RuntimePosture, TurnMemoryDelta, WorkingMemorySnapshot,
+        MessageKind, RuntimePosture, WorkingMemorySnapshot,
     },
 };
 
@@ -23,17 +23,14 @@ pub fn refresh_episode_memory(
     current_closure: &ClosureDecision,
     previous_snapshot: &WorkingMemorySnapshot,
     current_snapshot: &WorkingMemorySnapshot,
-    turn_delta: &TurnMemoryDelta,
 ) -> Result<bool> {
-    let has_material_state =
-        should_start_next_episode(current_snapshot, current_closure, turn_delta);
+    let has_material_state = should_start_next_episode(current_snapshot, current_closure);
     let boundary = derive_boundary_reason(
         trigger,
         prior_closure,
         current_closure,
         previous_snapshot,
         current_snapshot,
-        turn_delta,
         agent
             .working_memory
             .active_episode_builder
@@ -64,12 +61,7 @@ pub fn refresh_episode_memory(
                 message_count,
                 agent.turn_index.max(1),
             );
-            merge_into_active_episode(
-                &mut next_builder,
-                turn_delta,
-                current_snapshot,
-                message_count,
-            );
+            merge_into_active_episode(&mut next_builder, agent, current_snapshot, message_count);
             agent.working_memory.active_episode_id = Some(next_builder.id.clone());
             agent.working_memory.active_episode_builder = Some(next_builder);
         } else {
@@ -85,8 +77,16 @@ pub fn refresh_episode_memory(
         changed = true;
     }
 
+    let current_turn_index = agent.turn_index;
+    let current_turn_id = agent.current_turn_id.clone();
     if let Some(builder) = agent.working_memory.active_episode_builder.as_mut() {
-        merge_into_active_episode(builder, turn_delta, current_snapshot, message_count);
+        merge_into_active_episode_with_turn(
+            builder,
+            current_turn_index,
+            current_turn_id.as_deref(),
+            current_snapshot,
+            message_count,
+        );
         agent.working_memory.active_episode_id = Some(builder.id.clone());
         changed = true;
     }
@@ -131,26 +131,42 @@ fn episode_phase_snapshot<'a>(
 
 fn merge_into_active_episode(
     builder: &mut ActiveEpisodeBuilder,
-    turn_delta: &TurnMemoryDelta,
+    agent: &AgentState,
     current_snapshot: &WorkingMemorySnapshot,
     message_count: usize,
 ) {
-    builder.latest_turn_index = turn_delta.turn_index.max(builder.latest_turn_index);
+    merge_into_active_episode_with_turn(
+        builder,
+        agent.turn_index,
+        agent.current_turn_id.as_deref(),
+        current_snapshot,
+        message_count,
+    );
+}
+
+fn merge_into_active_episode_with_turn(
+    builder: &mut ActiveEpisodeBuilder,
+    turn_index: u64,
+    turn_id: Option<&str>,
+    current_snapshot: &WorkingMemorySnapshot,
+    message_count: usize,
+) {
+    builder.latest_turn_index = turn_index.max(1).max(builder.latest_turn_index);
     builder.latest_message_count = message_count.max(builder.latest_message_count);
 
     merge_unique(
         &mut builder.working_set_files,
-        &turn_delta.touched_files,
+        &current_snapshot.working_set_files,
         EPISODE_FILE_LIMIT,
     );
     merge_unique(
         &mut builder.carry_forward,
-        &turn_delta.pending_followups,
+        &current_snapshot.pending_followups,
         EPISODE_CARRY_FORWARD_LIMIT,
     );
     merge_unique(
         &mut builder.waiting_on,
-        &turn_delta.waiting_on,
+        &current_snapshot.waiting_on,
         EPISODE_CARRY_FORWARD_LIMIT,
     );
     merge_unique(
@@ -158,7 +174,7 @@ fn merge_into_active_episode(
         &current_snapshot.scope_hints,
         EPISODE_SCOPE_HINT_LIMIT,
     );
-    if let Some(turn_id) = turn_delta.turn_id.as_deref() {
+    if let Some(turn_id) = turn_id {
         merge_unique(
             &mut builder.source_turn_ids,
             &[turn_id.to_string()],
@@ -222,17 +238,16 @@ fn derive_boundary_reason(
     current_closure: &ClosureDecision,
     previous_snapshot: &WorkingMemorySnapshot,
     current_snapshot: &WorkingMemorySnapshot,
-    turn_delta: &TurnMemoryDelta,
     builder_start_turn: u64,
     current_turn_index: u64,
 ) -> Option<EpisodeBoundaryReason> {
     if matches!(
         trigger.kind,
         MessageKind::TaskResult | MessageKind::TaskStatus
-    ) && (turn_delta.active_work_changed
+    ) && (snapshot_active_work_changed(previous_snapshot, current_snapshot)
         || prior_closure.waiting_reason.is_some()
-        || !turn_delta.pending_followups.is_empty()
-        || !turn_delta.waiting_on.is_empty())
+        || !current_snapshot.pending_followups.is_empty()
+        || !current_snapshot.waiting_on.is_empty())
     {
         return Some(EpisodeBoundaryReason::TaskRejoined);
     }
@@ -263,13 +278,21 @@ fn derive_boundary_reason(
 fn should_start_next_episode(
     snapshot: &WorkingMemorySnapshot,
     current_closure: &ClosureDecision,
-    turn_delta: &TurnMemoryDelta,
 ) -> bool {
     has_structured_episode_anchor(snapshot)
         || current_closure.outcome == ClosureOutcome::Waiting
-        || !turn_delta.touched_files.is_empty()
-        || !turn_delta.pending_followups.is_empty()
-        || !turn_delta.waiting_on.is_empty()
+        || !snapshot.working_set_files.is_empty()
+        || !snapshot.pending_followups.is_empty()
+        || !snapshot.waiting_on.is_empty()
+}
+
+fn snapshot_active_work_changed(
+    previous_snapshot: &WorkingMemorySnapshot,
+    current_snapshot: &WorkingMemorySnapshot,
+) -> bool {
+    previous_snapshot.current_work_item_id != current_snapshot.current_work_item_id
+        || previous_snapshot.objective != current_snapshot.objective
+        || previous_snapshot.work_summary != current_snapshot.work_summary
 }
 
 fn has_structured_episode_anchor(snapshot: &WorkingMemorySnapshot) -> bool {
@@ -404,19 +427,13 @@ mod tests {
         let storage = AppStorage::new(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 3;
+        agent.current_turn_id = Some("turn-switch-3".into());
         agent.total_message_count = 9;
 
         let previous = snapshot("work_a", "fix exporter");
-        let current = snapshot("work_b", "review CI");
-        let delta = TurnMemoryDelta {
-            turn_index: 3,
-            turn_id: Some("turn-switch-3".into()),
-            touched_files: vec!["src/export.rs".into()],
-            commands: vec!["cargo test --test metrics_export".into()],
-            verification: vec!["cargo test --test metrics_export passed".into()],
-            pending_followups: vec!["run full suite".into()],
-            ..TurnMemoryDelta::default()
-        };
+        let mut current = snapshot("work_b", "review CI");
+        current.working_set_files = vec!["src/export.rs".into()];
+        current.pending_followups = vec!["run full suite".into()];
 
         let changed = refresh_episode_memory(
             &storage,
@@ -426,7 +443,6 @@ mod tests {
             &closure(None),
             &previous,
             &current,
-            &delta,
         )
         .unwrap();
 
@@ -470,6 +486,7 @@ mod tests {
         let storage = AppStorage::new(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 4;
+        agent.current_turn_id = Some("turn-anchor-review".into());
         agent.total_message_count = 10;
 
         let previous = snapshot("work_a", "draft episode anchors");
@@ -478,12 +495,6 @@ mod tests {
             work_summary: Some("respond to review".into()),
             ..previous.clone()
         };
-        let delta = TurnMemoryDelta {
-            turn_index: 4,
-            turn_id: Some("turn-anchor-review".into()),
-            ..TurnMemoryDelta::default()
-        };
-
         let changed = refresh_episode_memory(
             &storage,
             &mut agent,
@@ -492,7 +503,6 @@ mod tests {
             &closure(None),
             &previous,
             &current,
-            &delta,
         )
         .unwrap();
 
@@ -528,6 +538,7 @@ mod tests {
         let storage = AppStorage::new(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 2;
+        agent.current_turn_id = Some("turn-planning-anchor".into());
         agent.total_message_count = 4;
 
         let current = WorkingMemorySnapshot {
@@ -544,11 +555,6 @@ mod tests {
             &closure(None),
             &WorkingMemorySnapshot::default(),
             &current,
-            &TurnMemoryDelta {
-                turn_index: 2,
-                turn_id: Some("turn-planning-anchor".into()),
-                ..TurnMemoryDelta::default()
-            },
         )
         .unwrap();
 
@@ -573,6 +579,7 @@ mod tests {
         let storage = AppStorage::new(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 6;
+        agent.current_turn_id = Some("turn-stable-6".into());
         agent.total_message_count = 14;
 
         let previous = snapshot("work_a", "stabilize runtime");
@@ -581,16 +588,6 @@ mod tests {
             pending_followups: vec!["resume after review".into()],
             ..previous.clone()
         };
-        let delta = TurnMemoryDelta {
-            turn_index: 6,
-            turn_id: Some("turn-stable-6".into()),
-            decisions: vec!["defer follow-up until review lands".into()],
-            pending_followups: current.pending_followups.clone(),
-            waiting_on: current.waiting_on.clone(),
-            task_results: vec!["task task_1: child completed verification".into()],
-            ..TurnMemoryDelta::default()
-        };
-
         refresh_episode_memory(
             &storage,
             &mut agent,
@@ -599,7 +596,6 @@ mod tests {
             &closure(Some(crate::types::WaitingReason::AwaitingExternalChange)),
             &previous,
             &current,
-            &delta,
         )
         .unwrap();
 
@@ -637,10 +633,6 @@ mod tests {
             &closure(None),
             &WorkingMemorySnapshot::default(),
             &WorkingMemorySnapshot::default(),
-            &TurnMemoryDelta {
-                turn_index: 2,
-                ..TurnMemoryDelta::default()
-            },
         )
         .unwrap();
 
@@ -659,11 +651,6 @@ mod tests {
 
         let previous = snapshot("work_a", "finish exporter");
         let current = snapshot("work_b", "stabilize runtime");
-        let delta = TurnMemoryDelta {
-            turn_index: 5,
-            active_work_changed: true,
-            ..TurnMemoryDelta::default()
-        };
 
         refresh_episode_memory(
             &storage,
@@ -673,7 +660,6 @@ mod tests {
             &closure(None),
             &previous,
             &current,
-            &delta,
         )
         .unwrap();
 

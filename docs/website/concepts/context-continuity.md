@@ -23,7 +23,7 @@ A Holon prompt is assembled from several sections with different jobs:
 |---------|---------|
 | **Current input and continuation anchor** | The event that woke the agent and the trusted operator intent it continues. |
 | **Current work item** | The active objective, durable plan, todo list, and any waiting state. |
-| **Working memory** | A compact snapshot of current state and follow-ups derived from runtime records. |
+| **Current work refs** | Runtime-derived refs to files, tools, issues, PRs, tasks, waits, or memory records relevant to the active work item. |
 | **Relevant episode memory** | Archived completed work selected by relevance and budget. |
 | **Recent runtime evidence** | Recent messages, result briefs, task results, tool executions, and wakeups when they are directly useful. |
 | **Execution environment** | The current workspace, runtime capabilities, and scoped guidance. |
@@ -135,7 +135,7 @@ the only source of memory.
 ## See Also
 
 - [Runtime Model](/concepts/runtime-model.md) — Agents, work items, tasks, and wakeups
-- [Memory System](/concepts/memory.md) — Working memory, episode memory, durable ledger, and search
+- [Memory System](/concepts/memory.md) — Work items, work refs, episode memory, durable ledger, and search
 - [Trust Boundaries](/concepts/trust-boundaries.md) — Origin and trust classification
 - RFC: [Turn-Based Context Projection](https://github.com/holon-run/holon/blob/main/docs/rfcs/turn-based-context-projection.md)
 - RFC: [Long-Lived Context Memory](https://github.com/holon-run/holon/blob/main/docs/rfcs/long-lived-context-memory.md)

@@ -50,7 +50,7 @@ out, and the state disappears. Holon is different because:
 ## Deeper reading
 
 The **memory system** page explains how Holon preserves continuity across
-turns through working memory, episode archives, and indexed search.
+turns through work items, work refs, episode archives, and indexed search.
 
 The **context continuity** page explains how Holon assembles bounded prompt
 context from turns, work items, task results, briefs, and structured episodes
@@ -84,7 +84,7 @@ These are maintainer-facing documents; you do not need them to use Holon.
   <!-- mdorigin:index kind=article -->
 
 - [Memory system](./memory.md)
-  How Holon's memory layers preserve continuity across turns — working memory, episodes, durable ledger, and indexed search.
+  How Holon's memory layers preserve continuity across turns — work items, work refs, episodes, durable ledger, and indexed search.
   <!-- mdorigin:index kind=article -->
 
 - [Trust boundaries](./trust-boundaries.md)

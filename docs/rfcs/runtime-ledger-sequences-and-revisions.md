@@ -32,8 +32,8 @@ Holon already has several ordering and version fields:
 - `AuditEvent.event_seq` for event-stream cursor and SSE ordering
 - `AgentState.turn_index` for agent turn progression
 - `WorkItemRecord.revision` for mutable WorkItem lifecycle updates
-- `WorkingMemoryState.working_memory_revision` and memory deltas for memory
-  state transitions
+- `WorkItemRecord.work_refs` updates under the WorkItem revision for current
+  context references
 - local counters such as transcript `round`, timer `fire_count`, wait
   `trigger_count`, and command batch item indexes
 
@@ -246,8 +246,6 @@ Holon already has several fields that fit this model:
 | `TurnTerminalRecord.turn_index` | execution sequence reference | per-agent turn progression |
 | `ToolExecutionRecord.turn_index` | execution sequence reference | per-agent turn progression |
 | `WorkItemRecord.revision` | object revision | one WorkItem |
-| `WorkingMemoryState.working_memory_revision` | state revision | one working-memory state |
-| `WorkingMemoryDelta.from_revision` / `to_revision` | revision edge | one working-memory state |
 | transcript `round` | parent-local order | one model turn |
 | timer `fire_count` | object-local counter | one timer |
 | wait `trigger_count` | object-local counter | one wait intent |
