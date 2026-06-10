@@ -3730,6 +3730,7 @@ mod tests {
             LoadedAgentsMd::default(),
             &crate::types::SkillsRuntimeView::default(),
             &[],
+            crate::tool::ApplyPatchSurface::UnifiedDiffJson,
             None,
         )
         .unwrap();
@@ -3761,6 +3762,7 @@ mod tests {
             LoadedAgentsMd::default(),
             &crate::types::SkillsRuntimeView::default(),
             &[],
+            crate::tool::ApplyPatchSurface::UnifiedDiffJson,
             None,
         )
         .unwrap();

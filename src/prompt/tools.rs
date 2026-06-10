@@ -4,7 +4,12 @@
 //! Each tool section is emitted only when that tool is available.
 
 use super::{section, PromptSection, PromptStability};
-use crate::tool::ToolSpec;
+use crate::tool::{ApplyPatchSurface, ToolSpec};
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ToolPromptContext {
+    pub apply_patch_surface: Option<ApplyPatchSurface>,
+}
 
 fn guidance(content: &'static str) -> String {
     content
@@ -27,6 +32,13 @@ fn guidance_template(content: &'static str, replacements: &[(&str, &str)]) -> St
 /// guidance section that is emitted only when that tool is present in the
 /// available tools list.
 pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
+    tool_sections_with_context(available_tools, ToolPromptContext::default())
+}
+
+pub fn tool_sections_with_context(
+    available_tools: &[ToolSpec],
+    context: ToolPromptContext,
+) -> Vec<PromptSection> {
     let mut sections = Vec::new();
     let names = available_tools
         .iter()
@@ -130,12 +142,22 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         ));
     }
     if let Some(apply_patch_tool) = apply_patch_tool {
-        let invocation_contract = if apply_patch_tool.freeform_grammar.is_some() {
+        let apply_patch_surface = context.apply_patch_surface.unwrap_or_else(|| {
+            if apply_patch_tool.freeform_grammar.is_some() {
+                ApplyPatchSurface::CodexDslFreeform
+            } else {
+                ApplyPatchSurface::UnifiedDiffJson
+            }
+        });
+        let invocation_contract = if matches!(
+            apply_patch_surface,
+            ApplyPatchSurface::CodexDslFreeform
+        ) {
             "Current ApplyPatch surface is Codex DSL freeform: send raw `*** Begin Patch` / `*** End Patch` text directly. Do not wrap it in JSON, and do not use `patch` or `input` fields."
         } else {
             "Current ApplyPatch surface is a JSON/function tool: call it with exactly `{\"patch\":\"--- a/path\\n+++ b/path\\n@@ -1,1 +1,1 @@\\n-old\\n+new\\n\"}`. Do not use `input`, and do not send a raw freeform diff body."
         };
-        let patch_language = if apply_patch_tool.freeform_grammar.is_some() {
+        let patch_language = if matches!(apply_patch_surface, ApplyPatchSurface::CodexDslFreeform) {
             "express ordinary file mutation as Codex DSL with `*** Add File`, `*** Delete File`, or `*** Update File` hunks"
         } else {
             "express ordinary file mutation as unified diff text"
@@ -153,9 +175,17 @@ pub fn tool_sections(available_tools: &[ToolSpec]) -> Vec<PromptSection> {
         ));
     }
     if names.contains(&"ApplyPatch") {
-        let format_guidance = if apply_patch_tool
-            .and_then(|tool| tool.freeform_grammar.as_ref())
-            .is_some()
+        let apply_patch_surface = context.apply_patch_surface.unwrap_or_else(|| {
+            if apply_patch_tool
+                .and_then(|tool| tool.freeform_grammar.as_ref())
+                .is_some()
+            {
+                ApplyPatchSurface::CodexDslFreeform
+            } else {
+                ApplyPatchSurface::UnifiedDiffJson
+            }
+        });
+        let format_guidance = if matches!(apply_patch_surface, ApplyPatchSurface::CodexDslFreeform)
         {
             "Use Codex DSL file hunks: `*** Add File`, `*** Delete File`, `*** Update File`, optional `*** Move to`, and `@@` chunk separators when useful. Prefer focused chunks with enough surrounding context to stay unambiguous. Blank context lines within update chunks must have a space prefix."
         } else {

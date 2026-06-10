@@ -269,6 +269,49 @@ async fn preview_prompt_keeps_json_apply_patch_for_generic_lineage_even_when_pro
 }
 
 #[tokio::test]
+async fn preview_prompt_uses_codex_apply_patch_surface_even_when_prompt_tools_are_lowered() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.model_override =
+            Some(crate::config::ModelRef::parse("openai-codex/gpt-5.3-codex-spark").unwrap());
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    let preview = runtime
+        .preview_prompt("edit a file".into(), AuthorityClass::OperatorInstruction)
+        .await
+        .unwrap();
+
+    assert!(preview
+        .rendered_system_prompt
+        .contains("Current ApplyPatch surface is Codex DSL freeform"));
+    assert!(preview
+        .rendered_system_prompt
+        .contains("send raw `*** Begin Patch` / `*** End Patch` text directly"));
+    assert!(preview
+        .rendered_system_prompt
+        .contains("Use Codex DSL file hunks"));
+    assert!(!preview
+        .rendered_system_prompt
+        .contains("Current ApplyPatch surface is a JSON/function tool"));
+    assert!(!preview
+        .rendered_system_prompt
+        .contains("Do not put old/new prose text"));
+}
+
+#[tokio::test]
 async fn filtered_tool_specs_keep_exec_command_visible_when_process_execution_disabled() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

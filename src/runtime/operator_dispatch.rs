@@ -1,5 +1,5 @@
 use super::*;
-use crate::tool::{apply_patch::ApplyPatchSurface, ToolSpec};
+use crate::tool::{ApplyPatchSurface, ToolSpec};
 
 impl RuntimeHandle {
     pub(super) async fn process_interactive_message(
@@ -41,7 +41,8 @@ impl RuntimeHandle {
             }
             let state = guard.state.clone();
             drop(guard);
-            let (provider, available_tools, _, _) = self.provider_tool_selection(&identity).await?;
+            let (provider, available_tools, apply_patch_surface, _, _) =
+                self.provider_tool_selection(&identity).await?;
             let prompt_tools = provider.prompt_tool_specs(&available_tools);
             let workspace = self.workspace_view_from_state(&state)?;
             let execution = self.execution_snapshot_for_view(
@@ -63,6 +64,7 @@ impl RuntimeHandle {
                 loaded_agents_md,
                 &skills,
                 &prompt_tools,
+                apply_patch_surface,
                 continuation_resolution,
                 default_external_ingress.as_ref(),
             )?
@@ -200,7 +202,8 @@ impl RuntimeHandle {
             .runtime_db
             .external_triggers()
             .latest(&default_external_ingress.external_trigger_id)?;
-        let (provider, available_tools, _, _) = self.provider_tool_selection(&identity).await?;
+        let (provider, available_tools, apply_patch_surface, _, _) =
+            self.provider_tool_selection(&identity).await?;
         let prompt_tools = provider.prompt_tool_specs(&available_tools);
         let execution = self.execution_snapshot().await?;
         let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
@@ -217,6 +220,7 @@ impl RuntimeHandle {
             loaded_agents_md,
             &skills,
             &prompt_tools,
+            apply_patch_surface,
             continuation.as_ref(),
             default_external_ingress.as_ref(),
         )
@@ -297,6 +301,7 @@ impl RuntimeHandle {
             loaded_agents_md,
             &skills,
             &[],
+            ApplyPatchSurface::UnifiedDiffJson,
             continuation.as_ref(),
         )
     }
@@ -307,6 +312,7 @@ impl RuntimeHandle {
     ) -> Result<(
         Arc<dyn AgentProvider>,
         Vec<ToolSpec>,
+        ApplyPatchSurface,
         Option<ProviderNativeWebSearchRequest>,
         BuiltinWebSearchSelectionDiagnostics,
     )> {
@@ -366,6 +372,7 @@ impl RuntimeHandle {
         Ok((
             provider,
             available_tools,
+            apply_patch_surface,
             native_web_search,
             native_web_search_selection.diagnostics,
         ))

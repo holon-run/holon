@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 pub(crate) use schema_support as schema;
 
 // Re-export the key types that are used throughout the codebase
+pub use apply_patch::ApplyPatchSurface;
 pub use dispatch::ToolRegistry;
 pub use error::ToolError;
 pub use spec::{ToolCall, ToolResult, ToolSpec};
