@@ -227,8 +227,7 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
 }
 
 #[tokio::test]
-async fn run_once_prefers_completed_work_item_delivery_summary_over_latest_turn_text() -> Result<()>
-{
+async fn run_once_prefers_completed_work_item_result_brief_over_latest_turn_text() -> Result<()> {
     let home_dir = tempdir()?.keep();
     let workspace_dir = tempdir()?.keep();
     let provider = Arc::new(WorkItemDeliverySummaryProvider::new());
@@ -279,11 +278,23 @@ async fn run_once_prefers_completed_work_item_delivery_summary_over_latest_turn_
     let runtime = host
         .get_public_agent_for_external_ingress("default")
         .await?;
-    let summary = runtime
+    let completed = runtime
+        .latest_work_item(&work_item.id)
+        .await?
+        .expect("completed work item should remain queryable");
+    let result_brief_id = completed
+        .result_brief_id
+        .as_deref()
+        .expect("completed work item should store a result brief id");
+    let result_brief = runtime
+        .storage()
+        .read_brief_by_id(result_brief_id)?
+        .expect("completed work item result brief should exist");
+    assert_eq!(result_brief.text, second.final_text);
+    assert!(runtime
         .storage()
         .latest_delivery_summary(&work_item.id)?
-        .expect("completed work item should persist a delivery summary");
-    assert_eq!(summary.text, second.final_text);
+        .is_none());
     assert_eq!(
         runtime.agent_state().await?.last_turn_token_usage,
         Some(TokenUsage::new(100, 50))
