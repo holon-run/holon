@@ -21,7 +21,7 @@ mod tasks;
 mod test_util;
 mod turn;
 mod waiting;
-mod workspace;
+pub(crate) mod workspace;
 mod worktree;
 
 pub use tasks::{

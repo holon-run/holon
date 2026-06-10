@@ -18,28 +18,34 @@ use tracing::warn;
 
 use crate::{
     agent_template::{
-        ensure_agent_home_agents_md_from_template_with_home,
+        discover_agent_templates_catalog, ensure_agent_home_agents_md_from_template_with_home,
         initialize_agent_home_from_template_with_catalog,
         initialize_agent_home_from_template_with_home, initialize_agent_home_without_template,
         seed_builtin_templates_for_home, DEFAULT_AGENT_TEMPLATE_ID,
     },
+    agents_md::load_agents_md,
     callbacks::hash_callback_token,
     config::{AppConfig, RuntimeModelCatalog},
     context::ContextConfig,
     host_registry::RuntimeRegistry,
     ids,
+    prompt::{build_effective_prompt, EffectivePrompt},
     provider::{build_provider_from_config, AgentProvider},
     runtime::{InitialWorkspaceBinding, RuntimeHandle},
     runtime_db::RuntimeDb,
+    skills::{load_skills_runtime_view, SkillVisibility},
     storage::AppStorage,
-    system::WorkspaceAccessMode,
+    system::{ExecutionScopeKind, HostLocalBoundary, WorkspaceAccessMode},
+    tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
     types::{
-        AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
-        AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus,
-        AgentSummary, AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome,
-        ExternalTriggerRecord, OperatorNotificationRecord, RuntimeFailureSummary,
-        SpawnAgentModelResolution, SpawnAgentModelResolutionStatus, TaskRecord, TaskStatus,
-        TranscriptEntry, TranscriptEntryKind, WorkspaceEntry, WorkspaceOccupancyRecord,
+        AdmissionContext, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
+        AgentListEntry, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState,
+        AgentStatus, AgentSummary, AgentVisibility, AuthorityClass, ChildAgentSummary,
+        ClosureOutcome, ExternalTriggerRecord, MessageBody, MessageDeliverySurface,
+        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
+        RuntimeFailureSummary, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
+        TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -107,6 +113,14 @@ fn stopped_unloaded_agent(agent_id: &str) -> AgentState {
     let mut agent = AgentState::new(agent_id.to_string());
     agent.status = AgentStatus::Stopped;
     agent
+}
+
+fn skill_visibility(identity: &AgentIdentityView) -> SkillVisibility {
+    if identity.kind == AgentKind::Default {
+        SkillVisibility::DefaultAgent
+    } else {
+        SkillVisibility::NonDefaultAgent
+    }
 }
 
 #[derive(Clone)]
@@ -743,6 +757,193 @@ impl RuntimeHost {
         }
         snapshots.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
         Ok(snapshots)
+    }
+
+    pub fn preview_public_agent_prompt(
+        &self,
+        agent_id: &str,
+        text: String,
+        authority_class: AuthorityClass,
+    ) -> std::result::Result<EffectivePrompt, PublicAgentError> {
+        let identity = self.public_agent_identity(agent_id)?;
+        self.preview_agent_prompt_from_storage(&identity, text, authority_class)
+            .map_err(PublicAgentError::Runtime)
+    }
+
+    pub fn preview_agent_prompt(
+        &self,
+        agent_id: &str,
+        text: String,
+        authority_class: AuthorityClass,
+    ) -> Result<EffectivePrompt> {
+        self.validate_agent_id(agent_id)?;
+        let identity = if agent_id == self.config().default_agent_id {
+            self.ensure_default_agent_identity()?;
+            self.agent_identity_record(agent_id)?.ok_or_else(|| {
+                anyhow!(
+                    "default agent {} identity missing after initialization",
+                    agent_id
+                )
+            })?
+        } else {
+            self.agent_identity_record(agent_id)?.ok_or_else(|| {
+                anyhow!(
+                    "agent {} not found; create it first with 'holon agent create {}'",
+                    agent_id,
+                    agent_id
+                )
+            })?
+        };
+        if identity.status == AgentRegistryStatus::Archived {
+            return Err(anyhow!("agent {} is archived", agent_id));
+        }
+        self.preview_agent_prompt_from_storage(&identity, text, authority_class)
+    }
+
+    pub fn public_agent_boundary_metadata(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<Value, PublicAgentError> {
+        let identity = self.public_agent_identity(agent_id)?;
+        self.agent_boundary_metadata_from_storage(&identity)
+            .map_err(PublicAgentError::Runtime)
+    }
+
+    fn preview_agent_prompt_from_storage(
+        &self,
+        identity: &AgentIdentityRecord,
+        text: String,
+        authority_class: AuthorityClass,
+    ) -> Result<EffectivePrompt> {
+        let storage = AppStorage::new_for_agent(
+            self.agent_data_dir(&identity.agent_id),
+            identity.agent_id.clone(),
+        )?;
+        let state = storage
+            .read_agent()?
+            .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
+        let identity_view =
+            AgentIdentityView::from_record(identity, &self.config().default_agent_id);
+        let message = MessageEnvelope::new(
+            identity.agent_id.clone(),
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("debug_prompt".into()),
+            },
+            authority_class,
+            Priority::Normal,
+            MessageBody::Text { text },
+        )
+        .with_admission(
+            MessageDeliverySurface::CliPrompt,
+            AdmissionContext::LocalProcess,
+        );
+        let workspace = crate::runtime::workspace::workspace_view_from_state(
+            &state,
+            storage.data_dir().to_path_buf(),
+        )?;
+        let execution = crate::runtime::workspace::build_effective_execution(
+            &storage,
+            ExecutionScopeKind::AgentTurn,
+            state.execution_profile.clone(),
+            workspace,
+            &state.attached_workspaces,
+        )
+        .snapshot();
+        let agent_home = self.agent_data_dir(&identity.agent_id);
+        let loaded_agents_md = load_agents_md(
+            std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+            agent_home.as_path(),
+            crate::runtime::workspace::workspace_anchor_for_state_ref(&state),
+        )?;
+        let mut skills = load_skills_runtime_view(
+            skill_visibility(&identity_view),
+            std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+            agent_home.as_path(),
+            state
+                .active_workspace_entry
+                .as_ref()
+                .map(|entry| entry.workspace_anchor.as_path()),
+            &state.active_skills,
+        )?;
+        skills.agent_templates_catalog = discover_agent_templates_catalog(
+            std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+            agent_home.as_path(),
+        );
+        let model_catalog = RuntimeModelCatalog::from_config(self.config());
+        let model_ref = model_catalog
+            .provider_chain_for_turn(
+                state.model_override.as_ref(),
+                state.pending_fallback_model.as_ref(),
+            )
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                crate::runtime::agent_model_state_for_catalog(
+                    &model_catalog,
+                    &self.runtime_context_config(),
+                    &state,
+                )
+                .effective_model
+            });
+        let provider = self
+            .inner
+            .static_provider
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(|| build_provider_from_config(self.config()))?;
+        let apply_patch_surface = ApplyPatchSurface::for_model_ref(&model_ref.as_string());
+        let registry = ToolRegistry::new(execution.execution_root.clone());
+        let available_tools = registry
+            .tool_specs_with_families_for_apply_patch_surface(apply_patch_surface)?
+            .into_iter()
+            .filter(|(family, _)| {
+                identity_view
+                    .profile_preset
+                    .allows_tool_capability_family(*family)
+            })
+            .map(|(_, tool)| tool)
+            .collect::<Vec<_>>();
+        let prompt_tools = provider.prompt_tool_specs(&available_tools);
+        build_effective_prompt(
+            &storage,
+            &state,
+            &execution,
+            &message,
+            &self.runtime_context_config(),
+            &execution.execution_root,
+            agent_home.as_path(),
+            &identity_view,
+            loaded_agents_md,
+            &skills,
+            &prompt_tools,
+            None,
+        )
+    }
+
+    fn agent_boundary_metadata_from_storage(
+        &self,
+        identity: &AgentIdentityRecord,
+    ) -> Result<Value> {
+        let storage = AppStorage::new_for_agent(
+            self.agent_data_dir(&identity.agent_id),
+            identity.agent_id.clone(),
+        )?;
+        let state = storage
+            .read_agent()?
+            .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
+        let workspace = crate::runtime::workspace::workspace_view_from_state(
+            &state,
+            storage.data_dir().to_path_buf(),
+        )?;
+        let execution = crate::runtime::workspace::build_effective_execution(
+            &storage,
+            ExecutionScopeKind::AgentTurn,
+            state.execution_profile.clone(),
+            workspace,
+            &state.attached_workspaces,
+        );
+        Ok(HostLocalBoundary::from_snapshot(&execution.snapshot()).audit_metadata())
     }
 
     pub async fn child_agent_summaries(
@@ -1823,6 +2024,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
+    use chrono::Utc;
     use tempfile::tempdir;
     use tokio::sync::Notify;
 
@@ -1836,8 +2038,8 @@ mod tests {
         types::{
             AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
             AgentSchedulingPosture, AgentStatus, AgentVisibility, AuthorityClass, ControlAction,
-            MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, TaskRecord,
-            TaskRecoverySpec, TaskStatus, TurnTerminalKind,
+            MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord,
+            QueueEntryStatus, TaskRecord, TaskRecoverySpec, TaskStatus, TurnTerminalKind,
         },
     };
 
@@ -1864,6 +2066,52 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    #[tokio::test]
+    async fn debug_prompt_preview_is_storage_only_and_leaves_queued_input_unchanged() {
+        let (_home, host) = test_host();
+        let agent_id = host.config().default_agent_id.clone();
+        let storage = AppStorage::new_for_agent(host.agent_data_dir(&agent_id), agent_id.clone())
+            .expect("storage");
+        let mut message = MessageEnvelope::new(
+            &agent_id,
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "queued user input".into(),
+            },
+        );
+        message.turn_id = Some("turn_queued".into());
+        storage.append_message(&message).unwrap();
+        storage
+            .append_queue_entry(&QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: agent_id.clone(),
+                priority: message.priority.clone(),
+                status: QueueEntryStatus::Queued,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+
+        let prompt = host
+            .preview_agent_prompt(
+                &agent_id,
+                "inspect prompt".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .unwrap();
+
+        assert!(prompt.render_dump().contains("inspect prompt"));
+        assert!(host.inner.agents.read().await.is_empty());
+        assert_eq!(storage.read_agent().unwrap(), None);
+        let entries = storage.latest_queue_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message_id, message.id);
+        assert_eq!(entries[0].status, QueueEntryStatus::Queued);
     }
 
     fn inherited_model_resolution(provider: &str, model: &str) -> SpawnAgentModelResolution {
