@@ -4603,16 +4603,18 @@ mod tests {
         )
         .unwrap();
 
-        let working_memory = built
+        assert!(!built
             .sections
             .iter()
-            .find(|section| section.name == "working_memory")
-            .expect("working memory section should be present");
-        assert!(!working_memory
-            .content
-            .contains("leave flaky verification as raw evidence"));
-        assert!(!working_memory.content.contains("Latest verified result"));
-        assert!(!working_memory.content.contains("cargo test wake_path"));
+            .any(|section| section.name == "working_memory"));
+        let rendered_context = built
+            .sections
+            .iter()
+            .map(|section| section.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered_context.contains("leave flaky verification as raw evidence"));
+        assert!(!rendered_context.contains("Latest verified result"));
 
         let recent_turns = built
             .sections

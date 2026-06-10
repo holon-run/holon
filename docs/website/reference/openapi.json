@@ -395,6 +395,71 @@
                 "format": "date-time",
                 "type": "string"
               },
+              "work_refs": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "file",
+                        "tool_execution",
+                        "issue",
+                        "pr",
+                        "url",
+                        "memory",
+                        "task",
+                        "wait",
+                        "workspace",
+                        "other"
+                      ],
+                      "type": "string"
+                    },
+                    "last_seen_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "metadata": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string"
+                    },
+                    "source_ref": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "active",
+                        "resolved",
+                        "stale",
+                        "archived"
+                      ],
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "ref",
+                    "reason",
+                    "status",
+                    "last_seen_at"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
               "workspace_id": {
                 "default": "agent_home",
                 "type": "string"
@@ -570,6 +635,71 @@
               "updated_at": {
                 "format": "date-time",
                 "type": "string"
+              },
+              "work_refs": {
+                "items": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "file",
+                        "tool_execution",
+                        "issue",
+                        "pr",
+                        "url",
+                        "memory",
+                        "task",
+                        "wait",
+                        "workspace",
+                        "other"
+                      ],
+                      "type": "string"
+                    },
+                    "last_seen_at": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "metadata": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string"
+                    },
+                    "source_ref": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "enum": [
+                        "active",
+                        "resolved",
+                        "stale",
+                        "archived"
+                      ],
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "ref",
+                    "reason",
+                    "status",
+                    "last_seen_at"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
               },
               "workspace_id": {
                 "default": "agent_home",
@@ -2780,6 +2910,71 @@
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "work_refs": {
+            "items": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "file",
+                    "tool_execution",
+                    "issue",
+                    "pr",
+                    "url",
+                    "memory",
+                    "task",
+                    "wait",
+                    "workspace",
+                    "other"
+                  ],
+                  "type": "string"
+                },
+                "last_seen_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "metadata": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "source_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "active",
+                    "resolved",
+                    "stale",
+                    "archived"
+                  ],
+                  "type": "string"
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "ref",
+                "reason",
+                "status",
+                "last_seen_at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
           },
           "workspace_id": {
             "default": "agent_home",
