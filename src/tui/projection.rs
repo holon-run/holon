@@ -23,7 +23,7 @@ use crate::{
         is_operator_event_in_display_mode, present_operator_event, OperatorEventCategory,
         OperatorEventPresentation, OperatorPresentationContext,
     },
-    presentation::event_has_live_working_activity_item,
+    presentation::render_live_working_activity_text,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         ActiveWorkspaceEntry, AgentState, AgentSummary, BriefRecord, ClosureDecision,
@@ -72,6 +72,12 @@ pub(crate) struct ProjectionEventRecord {
     pub(crate) payload: Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LiveWorkingActivityRecord {
+    pub(crate) event: ProjectionEventRecord,
+    pub(crate) rendered_body: String,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TuiProjection {
     pub(crate) agent: AgentSummary,
@@ -91,7 +97,7 @@ pub(crate) struct TuiProjection {
     pub(crate) stale_slices: BTreeSet<ProjectionSlice>,
     event_log: Vec<ProjectionEventRecord>,
     durable_conversation_log: Vec<ProjectionEventRecord>,
-    live_working_activity_events: Vec<ProjectionEventRecord>,
+    live_working_activity_events: Vec<LiveWorkingActivityRecord>,
 }
 
 impl TuiProjection {
@@ -764,7 +770,7 @@ impl TuiProjection {
     pub(crate) fn live_working_activity_events(
         &self,
         display_mode: OperatorDisplayMode,
-    ) -> Vec<&ProjectionEventRecord> {
+    ) -> Vec<&LiveWorkingActivityRecord> {
         if display_mode != OperatorDisplayMode::Info {
             return Vec::new();
         }
@@ -850,11 +856,18 @@ impl TuiProjection {
             return;
         }
 
-        if !event_has_live_working_activity_item(record) {
+        let Some(rendered_body) = render_live_working_activity_text(record) else {
             return;
-        }
+        };
 
-        push_limited(&mut self.live_working_activity_events, record.clone(), 8);
+        push_limited(
+            &mut self.live_working_activity_events,
+            LiveWorkingActivityRecord {
+                event: record.clone(),
+                rendered_body,
+            },
+            8,
+        );
     }
 
     fn is_live_working_activity_kind(kind: &str) -> bool {
