@@ -22,6 +22,7 @@ use crate::types::{
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
 const TASK_PAYLOAD_ARRAY_LIMIT: usize = 64;
 const EVIDENCE_PREVIEW_LIMIT: usize = 2048;
+const CONTEXT_EPISODE_SUMMARY_LIMIT: usize = 240;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeDb {
@@ -2723,13 +2724,15 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
 }
 
 fn context_episode_anchor_summary(record: &ContextEpisodeRecord) -> String {
-    record
+    let mut summary = record
         .work_summary
         .as_deref()
         .or(record.objective.as_deref())
         .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| format!("episode {}", record.id))
+        .unwrap_or_else(|| format!("episode {}", record.id));
+    truncate_string_in_place(&mut summary, CONTEXT_EPISODE_SUMMARY_LIMIT);
+    summary
 }
 
 fn timestamp_from_turn(turn_index: u64) -> String {
@@ -5014,7 +5017,7 @@ mod tests {
         system::WorkspaceAccessMode,
         types::{
             AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
-            AgentVisibility, BriefKind,
+            AgentVisibility, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason,
         },
     };
     use std::process::Command;
@@ -5117,6 +5120,40 @@ mod tests {
         identity.updated_at = identity.created_at + chrono::Duration::seconds(updated_offset);
         identity.status = AgentRegistryStatus::Active;
         identity
+    }
+
+    #[test]
+    fn context_episode_anchor_summary_normalizes_and_truncates() {
+        let now = Utc::now();
+        let record = ContextEpisodeRecord {
+            id: "episode-long-summary".into(),
+            agent_id: "default".into(),
+            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
+            created_at: now,
+            finalized_at: now,
+            start_turn_index: 1,
+            end_turn_index: 2,
+            start_message_count: 1,
+            end_message_count: 2,
+            boundary_reason: EpisodeBoundaryReason::HardTurnCap,
+            current_work_item_id: None,
+            objective: Some("fallback objective".into()),
+            work_summary: Some(format!("first\n{} last", "summary".repeat(80))),
+            scope_hints: Vec::new(),
+            source_turn_ids: Vec::new(),
+            source_refs: Vec::new(),
+            generated_by: None,
+            working_set_files: Vec::new(),
+            decisions: Vec::new(),
+            carry_forward: Vec::new(),
+            waiting_on: Vec::new(),
+        };
+
+        let summary = context_episode_anchor_summary(&record);
+
+        assert!(summary.len() <= CONTEXT_EPISODE_SUMMARY_LIMIT);
+        assert!(!summary.contains('\n'));
+        assert!(summary.starts_with("first summarysummary"));
     }
 
     #[test]

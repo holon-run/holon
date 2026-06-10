@@ -12,6 +12,7 @@ use crate::{
 
 const EPISODE_FILE_LIMIT: usize = 10;
 const EPISODE_CARRY_FORWARD_LIMIT: usize = 8;
+const EPISODE_SCOPE_HINT_LIMIT: usize = 8;
 const EPISODE_TURN_HARD_CAP: u64 = 12;
 
 pub fn refresh_episode_memory(
@@ -152,6 +153,11 @@ fn merge_into_active_episode(
         &turn_delta.waiting_on,
         EPISODE_CARRY_FORWARD_LIMIT,
     );
+    merge_unique(
+        &mut builder.scope_hints,
+        &current_snapshot.scope_hints,
+        EPISODE_SCOPE_HINT_LIMIT,
+    );
     if let Some(turn_id) = turn_delta.turn_id.as_deref() {
         merge_unique(
             &mut builder.source_turn_ids,
@@ -232,7 +238,9 @@ fn derive_boundary_reason(
     }
 
     if !working_snapshot_is_empty(previous_snapshot)
-        && previous_snapshot.current_work_item_id != current_snapshot.current_work_item_id
+        && (previous_snapshot.current_work_item_id != current_snapshot.current_work_item_id
+            || previous_snapshot.objective != current_snapshot.objective
+            || previous_snapshot.work_summary != current_snapshot.work_summary)
     {
         return Some(EpisodeBoundaryReason::ActiveWorkSwitched);
     }
@@ -257,11 +265,25 @@ fn should_start_next_episode(
     current_closure: &ClosureDecision,
     turn_delta: &TurnMemoryDelta,
 ) -> bool {
-    snapshot.current_work_item_id.is_some()
+    has_structured_episode_anchor(snapshot)
         || current_closure.outcome == ClosureOutcome::Waiting
         || !turn_delta.touched_files.is_empty()
         || !turn_delta.pending_followups.is_empty()
         || !turn_delta.waiting_on.is_empty()
+}
+
+fn has_structured_episode_anchor(snapshot: &WorkingMemorySnapshot) -> bool {
+    snapshot.current_work_item_id.is_some()
+        || non_empty_text(snapshot.objective.as_deref())
+        || non_empty_text(snapshot.work_summary.as_deref())
+        || snapshot
+            .scope_hints
+            .iter()
+            .any(|hint| non_empty_text(Some(hint)))
+}
+
+fn non_empty_text(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
 }
 
 fn finalize_episode(
@@ -440,6 +462,109 @@ mod tests {
             .any(|file| file == "src/export.rs"));
         assert!(next_builder.scope_hints.is_empty());
         assert_eq!(next_builder.current_work_item_id.as_deref(), Some("work_b"));
+    }
+
+    #[test]
+    fn refresh_episode_memory_finalizes_on_anchor_change_within_work_item() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.turn_index = 4;
+        agent.total_message_count = 10;
+
+        let previous = snapshot("work_a", "draft episode anchors");
+        let current = WorkingMemorySnapshot {
+            objective: Some("land episode anchors".into()),
+            work_summary: Some("respond to review".into()),
+            ..previous.clone()
+        };
+        let delta = TurnMemoryDelta {
+            turn_index: 4,
+            turn_id: Some("turn-anchor-review".into()),
+            ..TurnMemoryDelta::default()
+        };
+
+        let changed = refresh_episode_memory(
+            &storage,
+            &mut agent,
+            &message(MessageKind::OperatorPrompt),
+            &closure(None),
+            &closure(None),
+            &previous,
+            &current,
+            &delta,
+        )
+        .unwrap();
+
+        assert!(changed);
+        let episodes = storage.read_recent_context_episodes(4).unwrap();
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(
+            episodes[0].boundary_reason,
+            EpisodeBoundaryReason::ActiveWorkSwitched
+        );
+        assert_eq!(
+            episodes[0].objective.as_deref(),
+            Some("draft episode anchors")
+        );
+        let next_builder = agent
+            .working_memory
+            .active_episode_builder
+            .as_ref()
+            .expect("next builder should be present");
+        assert_eq!(
+            next_builder.objective.as_deref(),
+            Some("land episode anchors")
+        );
+        assert_eq!(
+            next_builder.work_summary.as_deref(),
+            Some("respond to review")
+        );
+    }
+
+    #[test]
+    fn refresh_episode_memory_starts_planning_anchor_without_work_item() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let mut agent = AgentState::new("default");
+        agent.turn_index = 2;
+        agent.total_message_count = 4;
+
+        let current = WorkingMemorySnapshot {
+            objective: Some("plan episode retrieval anchors".into()),
+            scope_hints: vec!["memory/episode.rs".into()],
+            ..WorkingMemorySnapshot::default()
+        };
+
+        let changed = refresh_episode_memory(
+            &storage,
+            &mut agent,
+            &message(MessageKind::OperatorPrompt),
+            &closure(None),
+            &closure(None),
+            &WorkingMemorySnapshot::default(),
+            &current,
+            &TurnMemoryDelta {
+                turn_index: 2,
+                turn_id: Some("turn-planning-anchor".into()),
+                ..TurnMemoryDelta::default()
+            },
+        )
+        .unwrap();
+
+        assert!(changed);
+        let builder = agent
+            .working_memory
+            .active_episode_builder
+            .as_ref()
+            .expect("planning anchor should start an episode");
+        assert!(builder.current_work_item_id.is_none());
+        assert_eq!(
+            builder.objective.as_deref(),
+            Some("plan episode retrieval anchors")
+        );
+        assert_eq!(builder.scope_hints, vec!["memory/episode.rs"]);
+        assert_eq!(builder.source_turn_ids, vec!["turn-planning-anchor"]);
     }
 
     #[test]

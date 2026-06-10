@@ -1545,7 +1545,7 @@ impl ActiveEpisodeBuilder {
             current_work_item_id: snapshot.current_work_item_id.clone(),
             objective: snapshot.objective.clone(),
             work_summary: snapshot.work_summary.clone(),
-            scope_hints: Vec::new(),
+            scope_hints: snapshot.scope_hints.clone(),
             working_set_files: snapshot.working_set_files.clone(),
             carry_forward: snapshot.pending_followups.clone(),
             waiting_on: snapshot.waiting_on.clone(),
