@@ -623,6 +623,13 @@ impl AppStorage {
         self.append_jsonl(&self.queue_entries_path, record)
     }
 
+    pub fn try_claim_queued_message(&self, record: &QueueEntryRecord) -> Result<bool> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.queue_entries().try_claim_queued_message(record);
+        }
+        anyhow::bail!("cannot atomically claim queued message without scheduler control-plane db")
+    }
+
     pub fn append_waiting_intent(&self, record: &WaitingIntentRecord) -> Result<()> {
         let wait_condition = wait_condition_from_waiting_intent(record);
         let event = external_wait_recoverability_event(&wait_condition);
@@ -2336,11 +2343,11 @@ impl AppStorage {
             .latest_queue_entries()?
             .into_iter()
             .filter_map(|entry| match entry.status {
-                crate::types::QueueEntryStatus::Queued
-                | crate::types::QueueEntryStatus::Dequeued => {
+                crate::types::QueueEntryStatus::Queued => {
                     messages_by_id.get(&entry.message_id).cloned()
                 }
-                crate::types::QueueEntryStatus::Processed
+                crate::types::QueueEntryStatus::Dequeued
+                | crate::types::QueueEntryStatus::Processed
                 | crate::types::QueueEntryStatus::Interjected
                 | crate::types::QueueEntryStatus::Aborted
                 | crate::types::QueueEntryStatus::Dropped => None,
@@ -4364,6 +4371,28 @@ mod tests {
     }
 
     #[test]
+    fn queue_claim_fails_fast_without_scheduler_control_plane_db() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let now = Utc::now();
+        let claim = QueueEntryRecord {
+            message_id: "message-1".into(),
+            agent_id: "default".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Dequeued,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let error = storage.try_claim_queued_message(&claim).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("without scheduler control-plane db"));
+        assert!(!storage.queue_entries_path.exists());
+    }
+
+    #[test]
     fn read_agent_maps_legacy_paused_status_to_stopped() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
@@ -5633,7 +5662,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_recovery_snapshot_replays_latest_unprocessed_messages() {
+    fn storage_recovery_snapshot_replays_latest_queued_messages() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         let queued = MessageEnvelope::new(
@@ -5710,9 +5739,8 @@ mod tests {
             .unwrap();
 
         let snapshot = storage.recovery_snapshot("default").unwrap();
-        assert_eq!(snapshot.replay_messages.len(), 2);
+        assert_eq!(snapshot.replay_messages.len(), 1);
         assert_eq!(snapshot.replay_messages[0].id, queued.id);
-        assert_eq!(snapshot.replay_messages[1].id, dequeued.id);
     }
 
     #[test]

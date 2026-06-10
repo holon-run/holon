@@ -13,10 +13,10 @@ use sha2::{Digest, Sha256};
 use crate::types::{
     AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, CallbackDeliveryMode,
     ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord, ExternalTriggerScope,
-    ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord,
-    TimerStatus, ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord,
-    WorkItemContinuationFrame, WorkItemDelegationRecord, WorkItemRecord, WorkItemState,
-    WorkspaceEntry, WorkspaceOccupancyRecord,
+    ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskRecord,
+    TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry, TurnRecord,
+    WaitConditionRecord, WorkItemContinuationFrame, WorkItemDelegationRecord, WorkItemRecord,
+    WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
@@ -995,6 +995,11 @@ impl QueueEntryRepository<'_> {
 
     pub fn upsert(&self, record: &QueueEntryRecord) -> Result<()> {
         self.db.transaction(|tx| upsert_queue_entry_tx(tx, record))
+    }
+
+    pub fn try_claim_queued_message(&self, record: &QueueEntryRecord) -> Result<bool> {
+        self.db
+            .transaction(|tx| try_claim_queued_message_tx(tx, record))
     }
 
     pub fn latest_all(&self) -> Result<Vec<QueueEntryRecord>> {
@@ -2901,6 +2906,45 @@ fn upsert_queue_entry_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Res
         ],
     )?;
     Ok(())
+}
+
+fn try_claim_queued_message_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Result<bool> {
+    let latest_status = tx
+        .query_row(
+            "SELECT status
+             FROM queue_entries
+             WHERE message_id = ?1 AND agent_id = ?2
+             ORDER BY updated_at DESC, created_at DESC
+             LIMIT 1",
+            params![record.message_id, record.agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let queued_status = enum_string(&QueueEntryStatus::Queued)?;
+    if latest_status.as_deref() != Some(queued_status.as_str()) {
+        return Ok(false);
+    }
+
+    let mut claimed = record.clone();
+    claimed.status = QueueEntryStatus::Dequeued;
+    let payload_json = serde_json::to_string(&claimed)?;
+    let priority = enum_string(&claimed.priority)?;
+    let status = enum_string(&claimed.status)?;
+    let changed = tx.execute(
+        "INSERT OR IGNORE INTO queue_entries (
+            message_id, agent_id, priority, status, created_at, updated_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            claimed.message_id,
+            claimed.agent_id,
+            priority,
+            status,
+            timestamp(claimed.created_at),
+            timestamp(claimed.updated_at),
+            payload_json,
+        ],
+    )?;
+    Ok(changed == 1)
 }
 
 fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
@@ -5271,6 +5315,70 @@ CREATE TABLE working_memory_deltas (
                 .collect::<Vec<_>>(),
             vec!["brief-a", "brief-b"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn queue_claim_allows_only_one_consumer_for_queued_message() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        let record = QueueEntryRecord {
+            message_id: "message-1".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        db.queue_entries().upsert(&record)?;
+
+        let mut claim = record.clone();
+        claim.status = QueueEntryStatus::Dequeued;
+        claim.updated_at = now + chrono::Duration::seconds(1);
+        assert!(db.queue_entries().try_claim_queued_message(&claim)?);
+
+        let mut duplicate_claim = claim.clone();
+        duplicate_claim.updated_at = now + chrono::Duration::seconds(2);
+        assert!(!db
+            .queue_entries()
+            .try_claim_queued_message(&duplicate_claim)?);
+
+        let latest = db.queue_entries().latest_all()?;
+        assert_eq!(latest.len(), 2);
+        assert!(latest.iter().any(|record| {
+            record.message_id == "message-1" && record.status == QueueEntryStatus::Queued
+        }));
+        assert!(latest.iter().any(|record| {
+            record.message_id == "message-1" && record.status == QueueEntryStatus::Dequeued
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn queue_claim_rejects_message_whose_latest_lifecycle_is_terminal() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-1".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut processed = queued.clone();
+        processed.status = QueueEntryStatus::Processed;
+        processed.updated_at = now + chrono::Duration::seconds(1);
+        db.queue_entries().upsert(&queued)?;
+        db.queue_entries().upsert(&processed)?;
+
+        let mut claim = queued;
+        claim.status = QueueEntryStatus::Dequeued;
+        claim.updated_at = now + chrono::Duration::seconds(2);
+        assert!(!db.queue_entries().try_claim_queued_message(&claim)?);
+
         Ok(())
     }
 

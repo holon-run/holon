@@ -10,5 +10,5 @@
   "active_agent_waiting_intents": 0,
   "active_timers": 0,
   "runtime_error": false,
-  "replay_message_ids": ["msg-queued", "msg-dequeued"]
+  "replay_message_ids": ["msg-queued"]
 }

@@ -1149,14 +1149,6 @@ impl RuntimeHandle {
 
             let message = scheduled.message.clone();
             self.append_state_changed_events(&scheduled.running_state)?;
-            self.inner.storage.append_queue_entry(&QueueEntryRecord {
-                message_id: message.id.clone(),
-                agent_id: message.agent_id.clone(),
-                priority: message.priority.clone(),
-                status: QueueEntryStatus::Dequeued,
-                created_at: message.created_at,
-                updated_at: Utc::now(),
-            })?;
 
             if let Err(err) = self
                 .process_message_with_plan(
