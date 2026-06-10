@@ -115,7 +115,6 @@ impl RuntimeHandle {
                             "message_id": message.id.clone(),
                             "reason": "work_item_completion_report_promoted",
                             "work_item_id": &promotion.work_item_id,
-                            "delivery_summary_id": &promotion.delivery_summary_id,
                             "brief_id": &promotion.brief_id,
                         }),
                     ))?;

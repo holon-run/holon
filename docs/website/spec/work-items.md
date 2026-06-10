@@ -37,7 +37,8 @@ A WorkItem is a durable objective record owned by an agent. It tracks:
 | `blocked_by` | Human-readable wait/blocker description for display |
 | `recheck_at` | Legacy fallback deadline for blocked re-evaluation |
 | `recheck_consumed_at` | Marker that the current recheck reminder was delivered |
-| `result_summary` | Completion summary (optional) |
+| `result_brief_id` | Canonical result `BriefRecord` id for a completed WorkItem report |
+| `result_summary` | Legacy completion summary fallback; new completion promotion should not write duplicate report text here |
 
 The Rust enum `WorkItemPlanStatus` uses PascalCase variants (`Draft`, `Ready`,
 `NeedsInput`), but all tool input/output uses snake_case (`draft`, `ready`,

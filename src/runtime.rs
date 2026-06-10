@@ -86,7 +86,7 @@ use crate::{
         AgentModelState, AgentState, AgentStatus, AgentSummary, AuditEvent, AuthorityClass,
         BriefRecord, CallbackDeliveryMode, CallbackDeliveryPayload, CallbackDeliveryResult,
         CallbackIngressDisposition, CancelWaitingResult, ClosureDecision, ContinuationResolution,
-        ControlAction, DeliverySummaryRecord, ExecCommandBatchItemStatus, ExecCommandBatchResult,
+        ControlAction, ExecCommandBatchItemStatus, ExecCommandBatchResult,
         ExternalTriggerCapability, ExternalTriggerRecord, ExternalTriggerScope,
         ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
@@ -108,7 +108,6 @@ use turn::LoopControlOptions;
 #[derive(Debug, Clone)]
 pub(super) struct WorkItemCompletionReportPromotion {
     pub(super) record: crate::types::WorkItemRecord,
-    pub(super) delivery_summary_id: String,
     pub(super) brief_id: String,
 }
 
@@ -118,7 +117,7 @@ pub(super) enum WorkItemCompletionReportPromotionOutcome {
     /// user-facing report for terminal delivery.
     Unchanged(crate::types::WorkItemRecord),
     /// Completion promoted the assistant's same-round report into the
-    /// WorkItem's delivery summary and result brief.
+    /// WorkItem's canonical result brief.
     Promoted(WorkItemCompletionReportPromotion),
 }
 
@@ -1055,17 +1054,6 @@ impl RuntimeHandle {
     pub(crate) fn persist_brief_evidence(&self, brief: &BriefRecord) -> Result<()> {
         self.inner.storage.append_brief(brief)?;
         self.inner.runtime_db.evidence().append_brief(brief)
-    }
-
-    pub(crate) fn persist_delivery_summary_evidence(
-        &self,
-        record: &DeliverySummaryRecord,
-    ) -> Result<()> {
-        self.inner.storage.append_delivery_summary(record)?;
-        self.inner
-            .runtime_db
-            .evidence()
-            .append_delivery_summary(record)
     }
 
     pub async fn run(self) -> Result<()> {

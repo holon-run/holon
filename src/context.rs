@@ -1175,7 +1175,7 @@ fn render_work_item_candidates(
     agent_id: &str,
     agent_home: &std::path::Path,
 ) -> Result<Option<String>> {
-    let completion_reports = latest_delivery_summary_text_by_work_item(storage, agent_id)?;
+    let completion_reports = latest_completion_report_by_work_item(storage, agent_id)?;
     let mut lines = vec!["Work item candidates by scheduler ranking:".to_string()];
     append_candidate_group(
         &mut lines,
@@ -1229,7 +1229,7 @@ fn append_candidate_group(
     lines: &mut Vec<String>,
     title: &str,
     items: &[crate::storage::WorkItemReadinessProjection],
-    completion_reports: &BTreeMap<String, String>,
+    completion_reports: &BTreeMap<String, CompletionReportProjection>,
     agent_home: &std::path::Path,
 ) -> Result<()> {
     if items.is_empty() {
@@ -1279,9 +1279,12 @@ fn append_candidate_group(
         }
         lines.push(summary);
         if let Some(report) = completion_report {
+            if let Some(brief_id) = report.brief_id.as_deref() {
+                lines.push(format!("  - Result ref: brief:{brief_id}"));
+            }
             lines.push(format!(
                 "  - Completion report: {}",
-                truncate_text(&report.replace('\n', " "), 240)
+                truncate_text(&report.text.replace('\n', " "), 240)
             ));
         }
         lines.extend(render_work_item_plan_artifact_lines(
@@ -1292,27 +1295,53 @@ fn append_candidate_group(
 }
 
 fn completion_report_for_work_item(
-    completion_reports: &BTreeMap<String, String>,
+    completion_reports: &BTreeMap<String, CompletionReportProjection>,
     record: &WorkItemRecord,
-) -> Option<String> {
+) -> Option<CompletionReportProjection> {
+    if let Some(report) = completion_reports.get(&record.id) {
+        return Some(report.clone());
+    }
     if let Some(summary) = record
         .result_summary
         .as_ref()
         .filter(|text| !text.is_empty())
     {
-        return Some(summary.clone());
+        return Some(CompletionReportProjection {
+            text: summary.clone(),
+            brief_id: None,
+        });
     }
-    completion_reports
-        .get(&record.id)
-        .filter(|text| !text.is_empty())
-        .cloned()
+    None
 }
 
-fn latest_delivery_summary_text_by_work_item(
+#[derive(Debug, Clone)]
+struct CompletionReportProjection {
+    text: String,
+    brief_id: Option<String>,
+}
+
+fn latest_completion_report_by_work_item(
     storage: &AppStorage,
     agent_id: &str,
-) -> Result<BTreeMap<String, String>> {
+) -> Result<BTreeMap<String, CompletionReportProjection>> {
     let mut summaries = BTreeMap::new();
+    for brief in storage
+        .read_recent_briefs(usize::MAX)?
+        .into_iter()
+        .rev()
+        .filter(|brief| brief.agent_id == agent_id)
+        .filter(|brief| brief.kind == crate::types::BriefKind::Result)
+        .filter(|brief| !brief.text.is_empty())
+    {
+        if let Some(work_item_id) = brief.work_item_id.as_ref() {
+            summaries
+                .entry(work_item_id.clone())
+                .or_insert_with(|| CompletionReportProjection {
+                    text: brief.text.clone(),
+                    brief_id: Some(brief.id.clone()),
+                });
+        }
+    }
     for summary in storage
         .read_recent_delivery_summaries(usize::MAX)?
         .into_iter()
@@ -1322,7 +1351,10 @@ fn latest_delivery_summary_text_by_work_item(
     {
         summaries
             .entry(summary.work_item_id)
-            .or_insert(summary.text);
+            .or_insert_with(|| CompletionReportProjection {
+                text: summary.text,
+                brief_id: None,
+            });
     }
     Ok(summaries)
 }
@@ -5418,11 +5450,20 @@ mod tests {
             "Already finished item",
             crate::types::WorkItemState::Completed,
         );
-        completed.result_summary = Some("Promoted completion report only.".into());
+        let mut completion_brief = crate::types::BriefRecord::new(
+            "default",
+            crate::types::BriefKind::Result,
+            "Promoted completion report only.",
+            None,
+            None,
+        );
+        completion_brief.work_item_id = Some(completed.id.clone());
+        completed.result_brief_id = Some(completion_brief.id.clone());
         storage.append_work_item(&triggered).unwrap();
         storage.append_work_item(&queued).unwrap();
         storage.append_work_item(&waiting).unwrap();
         storage.append_work_item(&completed).unwrap();
+        storage.append_brief(&completion_brief).unwrap();
         storage
             .append_waiting_intent(&WaitingIntentRecord {
                 id: "wait-triggered".into(),
@@ -5481,6 +5522,9 @@ mod tests {
         assert!(summary.content.contains("[waiting_for_operator]"));
         assert!(summary.content.contains("Recently completed work items:"));
         assert!(summary.content.contains("Already finished item"));
+        assert!(summary
+            .content
+            .contains(&format!("Result ref: brief:{}", completion_brief.id)));
         assert!(summary
             .content
             .contains("Completion report: Promoted completion report only."));

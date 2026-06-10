@@ -25,11 +25,12 @@ use crate::{
         ToolCall, ToolError, ToolSpec,
     },
     types::{
-        AdmissionContext, AuditEvent, AuthorityClass, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
-        TodoItemState, TokenUsage, TranscriptEntry, TranscriptEntryKind, TurnRecord,
-        TurnTerminalCheckpointRecord, TurnTerminalKind, TurnTerminalRecord, TurnTerminalSummary,
-        TurnTriggerSummary, WorkItemPlanStatus, WorkItemRecord,
+        AdmissionContext, AuditEvent, AuthorityClass, BriefKind, MessageBody,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        QueueEntryRecord, QueueEntryStatus, TodoItemState, TokenUsage, TranscriptEntry,
+        TranscriptEntryKind, TurnRecord, TurnTerminalCheckpointRecord, TurnTerminalKind,
+        TurnTerminalRecord, TurnTerminalSummary, TurnTriggerSummary, WorkItemPlanStatus,
+        WorkItemRecord,
     },
 };
 
@@ -62,7 +63,6 @@ pub(super) struct TurnTerminalDelivery {
 #[derive(Debug, Clone)]
 pub(super) struct TurnPromotedCompletionReport {
     pub(super) work_item_id: String,
-    pub(super) delivery_summary_id: String,
     pub(super) brief_id: String,
 }
 
@@ -1507,10 +1507,6 @@ impl RuntimeHandle {
             .inner
             .storage
             .read_recent_tool_executions(TURN_RECORD_SCAN_LIMIT)?;
-        let delivery_summaries = self
-            .inner
-            .storage
-            .read_recent_delivery_summaries(TURN_RECORD_SCAN_LIMIT)?;
         let wait_conditions = self
             .inner
             .storage
@@ -1550,20 +1546,14 @@ impl RuntimeHandle {
             })
             .map(|brief| brief.id.clone())
             .collect();
-        let turn_delivery_summaries = delivery_summaries
+        record.completed_work_item_ids = briefs
             .iter()
-            .filter(|summary| {
-                turn_optional_id_matches(summary.turn_id.as_deref(), turn_id)
-                    || summary.source_turn_index == Some(terminal.turn_index)
+            .filter(|brief| {
+                brief.kind == BriefKind::Result
+                    && (turn_optional_id_matches(brief.turn_id.as_deref(), turn_id)
+                        || brief.turn_index == Some(terminal.turn_index))
             })
-            .collect::<Vec<_>>();
-        record.delivery_summary_ids = turn_delivery_summaries
-            .iter()
-            .map(|summary| summary.id.clone())
-            .collect();
-        record.completed_work_item_ids = turn_delivery_summaries
-            .iter()
-            .map(|summary| summary.work_item_id.clone())
+            .filter_map(|brief| brief.work_item_id.clone())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -3143,7 +3133,6 @@ impl TurnExecution<'_> {
             promoted_completion_reports.extend(completion_promotions.into_iter().map(
                 |promotion| TurnPromotedCompletionReport {
                     work_item_id: promotion.record.id,
-                    delivery_summary_id: promotion.delivery_summary_id,
                     brief_id: promotion.brief_id,
                 },
             ));
@@ -3270,7 +3259,6 @@ impl RuntimeHandle {
                     "work_item_id": work_item_id,
                     "turn_index": turn_index,
                     "round": round,
-                    "delivery_summary_id": promotion.delivery_summary_id.clone(),
                     "brief_id": promotion.brief_id.clone(),
                     "text_preview": truncate_preview(report_text, ROUND_TEXT_PREVIEW_LIMIT),
                 }),

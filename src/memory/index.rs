@@ -1474,6 +1474,21 @@ fn work_item_document_body(item: &WorkItemRecord) -> String {
             lines.push(plan_artifact.preview.clone());
         }
     }
+    if let Some(result_brief_id) = item
+        .result_brief_id
+        .as_ref()
+        .filter(|result_brief_id| !result_brief_id.trim().is_empty())
+    {
+        lines.push(format!("Result ref: brief:{result_brief_id}"));
+    }
+    if let Some(result_summary) = item
+        .result_summary
+        .as_ref()
+        .filter(|result_summary| !result_summary.trim().is_empty())
+    {
+        lines.push("Legacy result summary:".into());
+        lines.push(result_summary.clone());
+    }
     if !item.todo_list.is_empty() {
         lines.push("Todo list:".into());
         for todo in &item.todo_list {
@@ -2340,12 +2355,13 @@ mod tests {
         ensure_agent_home_layout(dir.path()).unwrap();
         rebuild_memory_index(&storage, None).unwrap();
 
-        let brief = brief_with_workspace(
+        let mut brief = brief_with_workspace(
             "default",
             BriefKind::Result,
             "direct result evidence after index rebuild",
             "ws-holon",
         );
+        brief.work_item_id = Some("work-direct-1663".into());
         let brief_ref = format!("brief:{}", brief.id);
         storage.append_brief(&brief).unwrap();
 
@@ -2370,6 +2386,7 @@ mod tests {
             "ws-holon",
         );
         work_item.id = "work-direct-1663".into();
+        work_item.result_brief_id = Some(brief.id.clone());
         work_item.todo_list = vec![TodoItem {
             text: "prove direct work item get".into(),
             state: TodoItemState::InProgress,
@@ -2450,6 +2467,13 @@ mod tests {
                 .unwrap()
                 .content
                 .contains("prove direct work item get")
+        );
+        assert!(
+            get_memory(&storage, "work_item:work-direct-1663", None, None)
+                .unwrap()
+                .unwrap()
+                .content
+                .contains(&format!("Result ref: {brief_ref}"))
         );
         assert!(
             get_memory(&storage, "episode:episode-direct-1663", None, None)

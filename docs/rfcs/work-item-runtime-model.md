@@ -143,7 +143,7 @@ The minimal WorkItem state is:
 - `blocked_by`
 - `recheck_at`
 - `recheck_consumed_at`
-- `result_summary`
+- `result_brief_id`
 - `created_at`
 - `updated_at`
 
@@ -476,9 +476,10 @@ Other open WorkItems should be summarized compactly by id, objective, state,
 plan artifact preview, readiness, current todo, and blocker. Completed
 WorkItems should not replay raw transcript by default. They may appear as
 bounded recent completed summaries only when they have an explicit promoted
-completion report: prefer a non-empty `WorkItemRecord.result_summary`; otherwise
-use the newest non-empty `DeliverySummaryRecord.text` for the same work item
-(see [Work items spec](../website/spec/work-items.md) and the
+completion report: prefer `WorkItemRecord.result_brief_id` and resolve the
+referenced `BriefRecord(kind=Result, work_item_id=...)`; otherwise use
+legacy `result_summary` / `DeliverySummaryRecord.text` only as a best-effort
+fallback for old local data (see [Work items spec](../website/spec/work-items.md) and the
 [runtime spec aggregate index](../runtime-spec.md)).
 
 If the agent changes focus during a turn, the tool result must return the new

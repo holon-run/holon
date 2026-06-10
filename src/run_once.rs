@@ -113,6 +113,7 @@ struct RunBaseline {
     message_ids: HashSet<String>,
     event_ids: HashSet<String>,
     delivery_summary_ids: HashSet<String>,
+    brief_ids: HashSet<String>,
     turn_index: u64,
     total_input_tokens: u64,
     total_output_tokens: u64,
@@ -472,6 +473,12 @@ fn capture_baseline(
             .into_iter()
             .map(|item| item.id)
             .collect(),
+        brief_ids: runtime
+            .storage()
+            .read_recent_briefs(usize::MAX)?
+            .into_iter()
+            .map(|item| item.id)
+            .collect(),
         turn_index: state.turn_index,
         total_input_tokens: state.total_input_tokens,
         total_output_tokens: state.total_output_tokens,
@@ -745,6 +752,25 @@ async fn build_response(
         None
     };
     let raw_final_text = raw_final_text(&final_state, baseline, final_status);
+    let new_briefs = runtime
+        .storage()
+        .read_recent_briefs(usize::MAX)?
+        .into_iter()
+        .filter(|brief| !baseline.brief_ids.contains(&brief.id))
+        .collect::<Vec<_>>();
+    let new_brief_by_id = new_briefs
+        .iter()
+        .map(|brief| (brief.id.as_str(), brief))
+        .collect::<HashMap<_, _>>();
+    let promoted_completion_report_text = view
+        .new_events
+        .iter()
+        .filter(|event| event.kind == "work_item_completion_report_promoted")
+        .filter_map(|event| event.data["brief_id"].as_str())
+        .filter_map(|id| new_brief_by_id.get(id))
+        .last()
+        .map(|brief| brief.text.trim().to_string())
+        .filter(|text| !text.is_empty());
     let new_delivery_summaries = runtime
         .storage()
         .read_recent_delivery_summaries(usize::MAX)?
@@ -755,7 +781,7 @@ async fn build_response(
         .iter()
         .map(|summary| (summary.id.as_str(), summary))
         .collect::<HashMap<_, _>>();
-    let promoted_completion_report_text = view
+    let legacy_promoted_completion_report_text = view
         .new_events
         .iter()
         .filter(|event| event.kind == "work_item_completion_report_promoted")
@@ -764,12 +790,14 @@ async fn build_response(
         .last()
         .map(|summary| summary.text.trim().to_string())
         .filter(|text| !text.is_empty());
-    let delivery_summary_text = promoted_completion_report_text.or_else(|| {
-        new_delivery_summaries
-            .last()
-            .map(|summary| summary.text.trim().to_string())
-            .filter(|text| !text.is_empty())
-    });
+    let delivery_summary_text = promoted_completion_report_text
+        .or(legacy_promoted_completion_report_text)
+        .or_else(|| {
+            new_delivery_summaries
+                .last()
+                .map(|summary| summary.text.trim().to_string())
+                .filter(|text| !text.is_empty())
+        });
     let final_text = delivery_summary_text
         .or_else(|| raw_final_text.clone())
         .unwrap_or_default();
