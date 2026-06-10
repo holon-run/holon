@@ -64,15 +64,26 @@ pub fn merge_work_refs(existing: &[WorkItemRef], additions: Vec<WorkItemRef>) ->
             .entry(key)
             .and_modify(|existing| {
                 if work_ref.last_seen_at >= existing.last_seen_at {
-                    existing.title = work_ref.title.clone().or_else(|| existing.title.clone());
-                    existing.reason = work_ref.reason.clone();
-                    existing.status = work_ref.status;
-                    existing.last_seen_at = work_ref.last_seen_at;
-                    existing.source_ref = work_ref
+                    let title = work_ref.title.clone().or_else(|| existing.title.clone());
+                    let source_ref = work_ref
                         .source_ref
                         .clone()
                         .or_else(|| existing.source_ref.clone());
-                    existing.metadata.extend(work_ref.metadata.clone());
+                    let mut metadata = existing.metadata.clone();
+                    metadata.extend(work_ref.metadata.clone());
+                    let material_changed = existing.title != title
+                        || existing.reason != work_ref.reason
+                        || existing.status != work_ref.status
+                        || existing.source_ref != source_ref
+                        || existing.metadata != metadata;
+                    if material_changed {
+                        existing.title = title;
+                        existing.reason = work_ref.reason.clone();
+                        existing.status = work_ref.status;
+                        existing.last_seen_at = work_ref.last_seen_at;
+                        existing.source_ref = source_ref;
+                        existing.metadata = metadata;
+                    }
                 }
             })
             .or_insert_with(|| work_ref.clone());
@@ -564,5 +575,33 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].title.as_deref(), Some("new"));
         assert_eq!(merged[0].reason, "new reason");
+    }
+
+    #[test]
+    fn merge_work_refs_ignores_last_seen_only_changes() {
+        let now = Utc::now();
+        let existing = vec![WorkItemRef {
+            kind: WorkItemRefKind::File,
+            ref_id: "src/lib.rs".into(),
+            title: Some("same".into()),
+            reason: "same reason".into(),
+            status: WorkItemRefStatus::Active,
+            last_seen_at: now,
+            source_ref: Some("turn:old".into()),
+            metadata: serde_json::Map::new(),
+        }];
+        let additions = vec![WorkItemRef {
+            kind: WorkItemRefKind::File,
+            ref_id: "src/lib.rs".into(),
+            title: Some("same".into()),
+            reason: "same reason".into(),
+            status: WorkItemRefStatus::Active,
+            last_seen_at: now + chrono::Duration::seconds(1),
+            source_ref: Some("turn:old".into()),
+            metadata: serde_json::Map::new(),
+        }];
+
+        let merged = merge_work_refs(&existing, additions);
+        assert_eq!(merged, existing);
     }
 }
