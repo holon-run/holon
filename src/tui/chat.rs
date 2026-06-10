@@ -887,7 +887,7 @@ fn latest_action_event<'a>(
     events.iter().rev().copied().find(|event| {
         event.presentation.is_current_activity_candidate()
             && !is_progress_event(event)
-            && !action_event_body(event).is_empty()
+            && rendered_activity_body(event).is_some()
     })
 }
 
@@ -966,27 +966,33 @@ fn active_activity_body(
     latest_action: Option<&crate::tui::projection::ProjectionEventRecord>,
 ) -> String {
     let mut lines = Vec::new();
-    // Try the new presentation pipeline for a cleaner activity display.
-    let presentation_text = latest_action.and_then(|action| presentation_activity_text(action));
-    if let Some(text) = presentation_text.or_else(|| latest_assistant.map(|s| s.to_string())) {
+    if let Some(text) = latest_assistant {
         lines.push(format!("Assistant {}", trim_activity_line(&text, 120)));
     }
     if let Some(action) = latest_action {
-        lines.push(format!(
-            "Action    {}",
-            trim_activity_line(&action_event_body(action), 120)
-        ));
+        if let Some(text) = rendered_activity_body(action) {
+            lines.push(format!("Action    {}", trim_activity_line(&text, 120)));
+        }
     }
     lines.join("\n")
 }
 
-/// Try to produce a clean activity line via the PresentationReducer.
+fn rendered_activity_body(event: &ProjectionEventRecord) -> Option<String> {
+    presentation_activity_text(event).or_else(|| {
+        let body = action_event_body(event);
+        (!body.is_empty()).then_some(body)
+    })
+}
+
+/// Try to produce the same activity text that the level-4 timeline renders.
 fn presentation_activity_text(event: &ProjectionEventRecord) -> Option<String> {
     let mut reducer = PresentationReducer::new();
     let items = reducer.reduce(&[event.clone()]);
     for timed in &items {
-        if let PresentationItem::AssistantProgress { text, .. } = &timed.item {
-            return Some(text.clone());
+        if timed.item.is_live_working_activity_item() && timed.item.is_visible_at(4) {
+            if let Some(cell) = timed.item.render(4).into_iter().next() {
+                return Some(cell.body);
+            }
         }
     }
     None
