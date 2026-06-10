@@ -2763,6 +2763,64 @@ fn chat_display_mode_info_suppresses_successful_work_item_tool_activity() {
 }
 
 #[test]
+fn chat_display_mode_info_uses_rendered_list_work_items_activity() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    app.display_mode = OperatorDisplayMode::Info;
+    let mut snapshot = sample_snapshot("default", "evt-0");
+    snapshot.agent.agent.status = AgentStatus::AwakeRunning;
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.apply_stream_event(
+        AgentStreamEvent {
+            id: "evt-list-work-items".into(),
+            event: "tool_executed".into(),
+            data: StreamEventEnvelope {
+                id: "evt-list-work-items".into(),
+                event_seq: 2,
+                ts: Utc::now(),
+                agent_id: "default".into(),
+                event_type: "tool_executed".into(),
+                provenance: None,
+                payload: json!({
+                    "tool_name": "ListWorkItems",
+                    "status": "success",
+                    "summary": "Tool finished: ListWorkItems",
+                    "tool_result": {
+                        "filter": "open",
+                        "returned": 1,
+                        "total_matching": 1,
+                        "limit": 20,
+                        "work_items": [{
+                            "id": "work_123456789abcdef",
+                            "objective": "fix work item tui rendering",
+                            "state": "open",
+                            "readiness": "runnable"
+                        }]
+                    }
+                }),
+            },
+        },
+        &crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+        app.display_mode,
+    );
+    app.projection = Some(projection);
+
+    let items = collect_chat_items(&app);
+    let active_item = items.last().expect("active activity item");
+    match active_item {
+        ConversationCell::ActiveActivity { body, .. } => {
+            assert!(body.contains("Work items: filter=open returned=1 total=1 limit=20"));
+            assert!(body.contains("fix work item tui rendering"));
+            assert!(!body.contains("Tool finished: ListWorkItems"));
+        }
+        other => panic!("expected active activity item, got {other:?}"),
+    }
+}
+
+#[test]
 fn chat_display_mode_verbose_keeps_working_marker_without_activity_body() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
@@ -3474,7 +3532,7 @@ fn chat_deduplicates_replayed_projected_tool_events() {
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    let event = tool_executed_event_envelope("evt-tool", 43, "default", "PickWorkItem");
+    let event = tool_executed_event_envelope("evt-tool", 43, "default", "AgentGet");
     let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
     for _ in 0..2 {
         projection.apply_event(
@@ -3496,7 +3554,7 @@ fn chat_deduplicates_replayed_projected_tool_events() {
             matches!(
                 item,
                 ConversationCell::SystemNotice { body, .. }
-                    if body.contains("PickWorkItem")
+                    if body.contains("AgentGet")
             )
         })
         .count();
@@ -3512,7 +3570,7 @@ fn chat_keeps_distinct_projected_tool_events_with_same_body() {
     );
     let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
     for (id, event_seq) in [("evt-tool-1", 43), ("evt-tool-2", 44)] {
-        let event = tool_executed_event_envelope(id, event_seq, "default", "PickWorkItem");
+        let event = tool_executed_event_envelope(id, event_seq, "default", "AgentGet");
         projection.apply_event(
             AgentStreamEvent {
                 id: event.id.clone(),
@@ -3531,7 +3589,7 @@ fn chat_keeps_distinct_projected_tool_events_with_same_body() {
             matches!(
                 item,
                 ConversationCell::SystemNotice { body, .. }
-                    if body.contains("PickWorkItem")
+                    if body.contains("AgentGet")
             )
         })
         .count();

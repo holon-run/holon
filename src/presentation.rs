@@ -1615,7 +1615,7 @@ fn is_successful_work_item_tool_event(event: &ProjectionEventRecord) -> bool {
     }
     matches!(
         event.payload.get("tool_name").and_then(Value::as_str),
-        Some("CreateWorkItem" | "UpdateWorkItem" | "CompleteWorkItem")
+        Some("CreateWorkItem" | "UpdateWorkItem" | "PickWorkItem" | "CompleteWorkItem")
     )
 }
 
@@ -2613,6 +2613,24 @@ mod tests {
                 "tool_name": "UpdateWorkItem",
                 "status": "success",
                 "summary": "updated work item"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn reducer_suppresses_successful_pick_work_item_tool_bookkeeping() {
+        let event = make_event(
+            "tool_executed",
+            "Picked work item: PickWorkItem",
+            json!({
+                "tool_name": "PickWorkItem",
+                "status": "success",
+                "summary": "picked work item"
             }),
         );
 
