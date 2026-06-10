@@ -183,7 +183,7 @@ pub async fn preview_prompt_after_compaction_keeps_work_item_plan_and_pending_wo
         .contains("Already shipped shadow-state cleanup"));
     assert!(queued_blocked_section
         .content
-        .contains("Completion report: Promoted cleanup completion report."));
+        .contains("Completion summary: Promoted cleanup completion report."));
 
     Ok(())
 }

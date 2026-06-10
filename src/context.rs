@@ -1283,13 +1283,13 @@ fn append_candidate_group(
                 lines.push(format!("  - Result ref: brief:{brief_id}"));
             }
             lines.push(format!(
-                "  - Completion report: {}",
-                truncate_text(&report.text.replace('\n', " "), 240)
+                "  - Completion summary: {}",
+                truncate_text(&report.text.replace('\n', " "), 160)
             ));
         }
-        lines.extend(render_work_item_plan_artifact_lines(
-            record, agent_home, "  - ",
-        ));
+        if let Some(plan_ref) = render_work_item_plan_ref(record, agent_home) {
+            lines.push(format!("  - {plan_ref}"));
+        }
     }
     Ok(())
 }
@@ -1387,6 +1387,19 @@ fn render_work_item_plan_artifact_lines(
         );
     }
     lines
+}
+
+fn render_work_item_plan_ref(
+    work_item: &WorkItemRecord,
+    agent_home: &std::path::Path,
+) -> Option<String> {
+    if let Some(artifact) = work_item.plan_artifact.as_ref() {
+        return Some(format!("Plan ref: {}", artifact.path.display()));
+    }
+
+    crate::work_item_plan::ensure_plan_artifact(agent_home, work_item, None)
+        .ok()
+        .map(|artifact| format!("Plan ref: {}", artifact.path.display()))
 }
 
 fn working_memory_is_empty(snapshot: &WorkingMemorySnapshot) -> bool {
@@ -5592,12 +5605,11 @@ mod tests {
             .contains(&format!("Result ref: brief:{}", completion_brief.id)));
         assert!(summary
             .content
-            .contains("Completion report: Promoted completion report only."));
-        assert!(summary.content.contains("Plan artifact:"));
-        assert!(summary.content.contains("Plan preview:"));
-        assert!(summary.content.contains("Verify the queued path."));
-        assert!(summary.content.contains("Plan preview complete: false"));
-        assert!(summary.content.contains("Plan preview complete: true"));
+            .contains("Completion summary: Promoted completion report only."));
+        assert!(summary.content.contains("Plan ref:"));
+        assert!(!summary.content.contains("Plan preview:"));
+        assert!(!summary.content.contains("queued detail"));
+        assert!(!summary.content.contains("Plan preview complete:"));
     }
 
     #[test]
