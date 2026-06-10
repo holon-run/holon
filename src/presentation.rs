@@ -17,6 +17,8 @@ use crate::types::{
     WaitingIntentScope, WorkItemRecord,
 };
 
+pub(crate) const LIVE_WORKING_ACTIVITY_DISPLAY_LEVEL: u8 = 4;
+
 // ── Supporting types ───────────────────────────────────────────────────────
 
 /// Summary of a diff hunk: start line and line count.
@@ -424,12 +426,25 @@ impl PresentationItem {
     }
 }
 
-pub(crate) fn event_has_live_working_activity_item(event: &ProjectionEventRecord) -> bool {
+pub(crate) fn render_live_working_activity_text(event: &ProjectionEventRecord) -> Option<String> {
     let mut reducer = PresentationReducer::new();
-    reducer
-        .reduce(&[event.clone()])
-        .iter()
-        .any(|timed| timed.item.is_live_working_activity_item() && timed.item.is_visible_at(4))
+    let items = reducer.reduce(&[event.clone()]);
+    items.iter().find_map(|timed| {
+        if timed.item.is_live_working_activity_item()
+            && timed
+                .item
+                .is_visible_at(LIVE_WORKING_ACTIVITY_DISPLAY_LEVEL)
+        {
+            timed
+                .item
+                .render(LIVE_WORKING_ACTIVITY_DISPLAY_LEVEL)
+                .into_iter()
+                .next()
+                .map(|cell| cell.body)
+        } else {
+            None
+        }
+    })
 }
 
 // ── Renderable trait ───────────────────────────────────────────────────────

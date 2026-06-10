@@ -1,6 +1,8 @@
 use super::*;
 use crate::presentation::{PresentationItem, PresentationReducer, Renderable};
-use crate::tui::projection::{is_presentation_reducer_event, ProjectionEventRecord};
+use crate::tui::projection::{
+    is_presentation_reducer_event, LiveWorkingActivityRecord, ProjectionEventRecord,
+};
 use crossterm::event::KeyCode;
 use unicode_width::UnicodeWidthChar;
 
@@ -882,22 +884,20 @@ fn agent_has_active_activity(agent: &AgentSummary) -> bool {
 }
 
 fn latest_action_event<'a>(
-    events: &'a [&'a crate::tui::projection::ProjectionEventRecord],
-) -> Option<&'a crate::tui::projection::ProjectionEventRecord> {
+    events: &'a [&'a LiveWorkingActivityRecord],
+) -> Option<&'a LiveWorkingActivityRecord> {
     events.iter().rev().copied().find(|event| {
-        event.presentation.is_current_activity_candidate()
-            && !is_progress_event(event)
-            && rendered_activity_body(event).is_some()
+        event.event.presentation.is_current_activity_candidate()
+            && !is_progress_event(&event.event)
+            && !event.rendered_body.is_empty()
     })
 }
 
-fn latest_assistant_message(
-    hidden_events: &[&crate::tui::projection::ProjectionEventRecord],
-) -> Option<String> {
+fn latest_assistant_message(hidden_events: &[&LiveWorkingActivityRecord]) -> Option<String> {
     hidden_events
         .iter()
         .rev()
-        .find_map(|event| assistant_message_from_event(event))
+        .find_map(|event| assistant_message_from_event(&event.event))
 }
 
 fn assistant_message_from_event(
@@ -963,41 +963,22 @@ fn active_activity_spinner() -> &'static str {
 
 fn active_activity_body(
     latest_assistant: Option<&str>,
-    latest_action: Option<&crate::tui::projection::ProjectionEventRecord>,
+    latest_action: Option<&LiveWorkingActivityRecord>,
 ) -> String {
     let mut lines = Vec::new();
     if let Some(text) = latest_assistant {
         lines.push(format!("Assistant {}", trim_activity_line(&text, 120)));
     }
     if let Some(action) = latest_action {
-        if let Some(text) = rendered_activity_body(action) {
-            lines.push(format!("Action    {}", trim_activity_line(&text, 120)));
-        }
+        lines.push(format!(
+            "Action    {}",
+            trim_activity_line(&action.rendered_body, 120)
+        ));
     }
     lines.join("\n")
 }
 
-fn rendered_activity_body(event: &ProjectionEventRecord) -> Option<String> {
-    presentation_activity_text(event).or_else(|| {
-        let body = action_event_body(event);
-        (!body.is_empty()).then_some(body)
-    })
-}
-
-/// Try to produce the same activity text that the level-4 timeline renders.
-fn presentation_activity_text(event: &ProjectionEventRecord) -> Option<String> {
-    let mut reducer = PresentationReducer::new();
-    let items = reducer.reduce(&[event.clone()]);
-    for timed in &items {
-        if timed.item.is_live_working_activity_item() && timed.item.is_visible_at(4) {
-            if let Some(cell) = timed.item.render(4).into_iter().next() {
-                return Some(cell.body);
-            }
-        }
-    }
-    None
-}
-
+#[cfg(test)]
 fn action_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> String {
     if event.kind == "tool_executed" || event.kind == "tool_execution_failed" {
         if is_sleep_tool_event(event) {
@@ -1080,6 +1061,7 @@ fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "<invalid json>".into())
 }
 
+#[cfg(test)]
 pub(super) fn conversation_event_body(
     event: &crate::tui::projection::ProjectionEventRecord,
 ) -> String {
@@ -1107,10 +1089,12 @@ pub(super) fn conversation_event_body(
     format!("{prefix}{}", event.summary)
 }
 
+#[cfg(test)]
 fn is_sleep_tool_event(event: &crate::tui::projection::ProjectionEventRecord) -> bool {
     event.payload.get("tool_name").and_then(Value::as_str) == Some("Sleep")
 }
 
+#[cfg(test)]
 fn progress_event_body(event: &crate::tui::projection::ProjectionEventRecord) -> String {
     if matches!(
         event.presentation.category,
@@ -1144,7 +1128,9 @@ mod tests {
         assistant_message_from_event, latest_action_event, progress_event_body,
     };
     use crate::operator_event::{present_operator_event, OperatorPresentationContext};
-    use crate::tui::projection::{ProjectionEventLane, ProjectionEventRecord};
+    use crate::tui::projection::{
+        LiveWorkingActivityRecord, ProjectionEventLane, ProjectionEventRecord,
+    };
     use crate::types::{
         AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
         AgentOwnership, AgentPostureProjection, AgentProfilePreset, AgentRegistryStatus,
@@ -1170,6 +1156,13 @@ mod tests {
             summary: presentation.summary.clone(),
             presentation,
             payload,
+        }
+    }
+
+    fn activity_record(event: &ProjectionEventRecord) -> LiveWorkingActivityRecord {
+        LiveWorkingActivityRecord {
+            event: event.clone(),
+            rendered_body: action_event_body(event),
         }
     }
 
@@ -1335,11 +1328,13 @@ mod tests {
                 "cmd_preview": "cargo test tui::chat"
             }),
         );
-        let events = vec![&empty_round, &command];
+        let empty_round_activity = activity_record(&empty_round);
+        let command_activity = activity_record(&command);
+        let events = vec![&empty_round_activity, &command_activity];
 
         assert!(assistant_message_from_event(&empty_round).is_none());
         assert_eq!(
-            latest_action_event(events.as_slice()).map(|event| event.summary.as_str()),
+            latest_action_event(events.as_slice()).map(|event| event.event.summary.as_str()),
             Some("Command started: cargo test tui::chat")
         );
     }
