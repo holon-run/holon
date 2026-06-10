@@ -766,16 +766,15 @@ impl AppStorage {
     }
 
     fn enqueue_memory_index_brief(&self, brief: &BriefRecord) -> Result<()> {
-        enqueue_memory_index_upsert(self, "brief", &brief.id, &format!("brief:{}", brief.id))
+        self.enqueue_memory_index_source("brief", &brief.id, &format!("brief:{}", brief.id))
     }
 
     fn enqueue_memory_index_task(&self, task: &TaskRecord) -> Result<()> {
-        enqueue_memory_index_upsert(self, "task", &task.id, &format!("task:{}", task.id))
+        self.enqueue_memory_index_source("task", &task.id, &format!("task:{}", task.id))
     }
 
     fn enqueue_memory_index_work_item(&self, record: &WorkItemRecord) -> Result<()> {
-        enqueue_memory_index_upsert(
-            self,
+        self.enqueue_memory_index_source(
             "work_item",
             &record.id,
             &format!("work_item:{}", record.id),
@@ -783,8 +782,7 @@ impl AppStorage {
     }
 
     fn enqueue_memory_index_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
-        enqueue_memory_index_upsert(
-            self,
+        self.enqueue_memory_index_source(
             "context_episode",
             &record.id,
             &format!("episode:{}", record.id),
@@ -792,8 +790,7 @@ impl AppStorage {
     }
 
     fn enqueue_memory_index_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
-        enqueue_memory_index_upsert(
-            self,
+        self.enqueue_memory_index_source(
             "workspace_profile",
             &entry.workspace_id,
             &format!("workspace_profile:{}", entry.workspace_id),
@@ -805,16 +802,14 @@ impl AppStorage {
             "ExecCommand" => {
                 if record.input.get("cmd").and_then(Value::as_str).is_some() {
                     let source_ref = command_receipt_source_ref(&record.id, None);
-                    enqueue_memory_index_upsert(
-                        self,
+                    self.enqueue_memory_index_source(
                         "tool_command_receipt",
                         &source_ref,
                         &source_ref,
                     )?;
                     for stream in ["stdout", "stderr", "output"] {
                         let source_ref = command_output_source_ref(&record.id, None, stream);
-                        enqueue_memory_index_upsert(
-                            self,
+                        self.enqueue_memory_index_source(
                             "tool_command_output",
                             &source_ref,
                             &source_ref,
@@ -828,8 +823,7 @@ impl AppStorage {
                         if item.get("cmd").and_then(Value::as_str).is_some() {
                             let source_ref =
                                 command_receipt_source_ref(&record.id, Some(offset + 1));
-                            enqueue_memory_index_upsert(
-                                self,
+                            self.enqueue_memory_index_source(
                                 "tool_command_receipt",
                                 &source_ref,
                                 &source_ref,
@@ -837,8 +831,7 @@ impl AppStorage {
                             for stream in ["stdout", "stderr", "output"] {
                                 let source_ref =
                                     command_output_source_ref(&record.id, Some(offset + 1), stream);
-                                enqueue_memory_index_upsert(
-                                    self,
+                                self.enqueue_memory_index_source(
                                     "tool_command_output",
                                     &source_ref,
                                     &source_ref,
@@ -851,6 +844,19 @@ impl AppStorage {
             _ => {}
         }
         Ok(())
+    }
+
+    fn enqueue_memory_index_source(
+        &self,
+        source_kind: &str,
+        source_id: &str,
+        source_ref: &str,
+    ) -> Result<()> {
+        let _guard = self
+            .append_mutex
+            .lock()
+            .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
+        enqueue_memory_index_upsert(self, source_kind, source_id, source_ref)
     }
 
     fn storage_agent_id(&self) -> Result<String> {
