@@ -627,8 +627,7 @@ impl AppStorage {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             return runtime_db.queue_entries().try_claim_queued_message(record);
         }
-        self.append_jsonl(&self.queue_entries_path, record)?;
-        Ok(true)
+        anyhow::bail!("cannot atomically claim queued message without scheduler control-plane db")
     }
 
     pub fn append_waiting_intent(&self, record: &WaitingIntentRecord) -> Result<()> {
@@ -4369,6 +4368,28 @@ mod tests {
         let restored = reopened_without_db.read_agent().unwrap().unwrap();
         assert_eq!(restored.status, AgentStatus::Stopped);
         assert_eq!(restored.turn_index, 7);
+    }
+
+    #[test]
+    fn queue_claim_fails_fast_without_scheduler_control_plane_db() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let now = Utc::now();
+        let claim = QueueEntryRecord {
+            message_id: "message-1".into(),
+            agent_id: "default".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Dequeued,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let error = storage.try_claim_queued_message(&claim).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("without scheduler control-plane db"));
+        assert!(!storage.queue_entries_path.exists());
     }
 
     #[test]
