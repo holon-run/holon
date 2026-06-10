@@ -343,6 +343,12 @@
                   "null"
                 ]
               },
+              "result_brief_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "result_summary": {
                 "type": [
                   "string",
@@ -579,6 +585,12 @@
               },
               "recheck_consumed_at": {
                 "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result_brief_id": {
                 "type": [
                   "string",
                   "null"
@@ -2854,6 +2866,12 @@
           },
           "recheck_consumed_at": {
             "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result_brief_id": {
             "type": [
               "string",
               "null"
