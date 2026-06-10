@@ -22,7 +22,6 @@ use crate::types::{
 const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
 const TASK_PAYLOAD_ARRAY_LIMIT: usize = 64;
 const EVIDENCE_PREVIEW_LIMIT: usize = 2048;
-const CONTEXT_EPISODE_SUMMARY_LIMIT: usize = 240;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeDb {
@@ -2688,12 +2687,11 @@ fn upsert_working_memory_delta_tx(tx: &Transaction<'_>, record: &WorkingMemoryDe
 fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord) -> Result<()> {
     let payload_json = serde_json::to_string(record)?;
     let boundary_reason = enum_string(&record.boundary_reason)?;
-    let summary = context_episode_anchor_summary(record);
     tx.execute(
         "INSERT INTO context_episodes (
             episode_id, agent_id, workspace_id, work_item_id, boundary_reason,
-            start_turn_index, end_turn_index, started_at, ended_at, summary, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            start_turn_index, end_turn_index, started_at, ended_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(episode_id) DO UPDATE SET
             agent_id = excluded.agent_id,
             workspace_id = excluded.workspace_id,
@@ -2703,7 +2701,6 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
             end_turn_index = excluded.end_turn_index,
             started_at = excluded.started_at,
             ended_at = excluded.ended_at,
-            summary = excluded.summary,
             payload_json = excluded.payload_json
          WHERE excluded.ended_at >= context_episodes.ended_at",
         params![
@@ -2716,23 +2713,10 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
             record.end_turn_index as i64,
             timestamp(record.created_at),
             timestamp(record.finalized_at),
-            summary,
             payload_json,
         ],
     )?;
     Ok(())
-}
-
-fn context_episode_anchor_summary(record: &ContextEpisodeRecord) -> String {
-    let mut summary = record
-        .work_summary
-        .as_deref()
-        .or(record.objective.as_deref())
-        .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| format!("episode {}", record.id));
-    truncate_string_in_place(&mut summary, CONTEXT_EPISODE_SUMMARY_LIMIT);
-    summary
 }
 
 fn timestamp_from_turn(turn_index: u64) -> String {
@@ -4295,7 +4279,6 @@ CREATE TABLE IF NOT EXISTS context_episodes (
   end_turn_index INTEGER NOT NULL,
   started_at TEXT NOT NULL,
   ended_at TEXT NOT NULL,
-  summary TEXT NOT NULL,
   payload_json TEXT NOT NULL
 );
 
@@ -5017,7 +5000,7 @@ mod tests {
         system::WorkspaceAccessMode,
         types::{
             AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentStatus,
-            AgentVisibility, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason,
+            AgentVisibility, BriefKind,
         },
     };
     use std::process::Command;
@@ -5123,40 +5106,6 @@ mod tests {
     }
 
     #[test]
-    fn context_episode_anchor_summary_normalizes_and_truncates() {
-        let now = Utc::now();
-        let record = ContextEpisodeRecord {
-            id: "episode-long-summary".into(),
-            agent_id: "default".into(),
-            workspace_id: crate::types::AGENT_HOME_WORKSPACE_ID.into(),
-            created_at: now,
-            finalized_at: now,
-            start_turn_index: 1,
-            end_turn_index: 2,
-            start_message_count: 1,
-            end_message_count: 2,
-            boundary_reason: EpisodeBoundaryReason::HardTurnCap,
-            current_work_item_id: None,
-            objective: Some("fallback objective".into()),
-            work_summary: Some(format!("first\n{} last", "summary".repeat(80))),
-            scope_hints: Vec::new(),
-            source_turn_ids: Vec::new(),
-            source_refs: Vec::new(),
-            generated_by: None,
-            working_set_files: Vec::new(),
-            decisions: Vec::new(),
-            carry_forward: Vec::new(),
-            waiting_on: Vec::new(),
-        };
-
-        let summary = context_episode_anchor_summary(&record);
-
-        assert!(summary.len() <= CONTEXT_EPISODE_SUMMARY_LIMIT);
-        assert!(!summary.contains('\n'));
-        assert!(summary.starts_with("first summarysummary"));
-    }
-
-    #[test]
     fn runtime_db_fresh_migration_creates_foundation_schema() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -5197,6 +5146,21 @@ mod tests {
             assert_eq!(count, 1, "missing table {table}");
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_db_context_episodes_schema_has_no_summary_column() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = db.connection()?;
+        let mut statement = connection.prepare("PRAGMA table_info(context_episodes)")?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        assert!(!columns.iter().any(|column| column == "summary"));
+        assert!(columns.iter().any(|column| column == "payload_json"));
         Ok(())
     }
 
