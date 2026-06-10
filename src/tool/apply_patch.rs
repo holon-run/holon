@@ -22,7 +22,7 @@ pub(crate) struct ApplyPatchOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ApplyPatchSurface {
+pub enum ApplyPatchSurface {
     CodexDslFreeform,
     UnifiedDiffJson,
 }

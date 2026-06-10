@@ -6,7 +6,7 @@
 
 pub mod tools;
 
-pub use tools::tool_sections;
+pub use tools::{tool_sections, ToolPromptContext};
 
 use std::path::{Path, PathBuf};
 
@@ -19,7 +19,7 @@ use crate::{
     context::{build_context_with_default_external_ingress, BuiltContext, ContextConfig},
     storage::AppStorage,
     system::{execution_policy_summary_lines, ExecutionSnapshot},
-    tool::ToolSpec,
+    tool::{ApplyPatchSurface, ToolSpec},
     types::{
         AgentIdentityView, AgentKind, AgentState, AgentsMdKind, AgentsMdSource,
         ContinuationResolution, ExternalTriggerRecord, LoadedAgentsMd, MessageBody,
@@ -301,6 +301,109 @@ pub fn build_effective_prompt_with_default_external_ingress(
     continuation: Option<&ContinuationResolution>,
     default_external_ingress: Option<&ExternalTriggerRecord>,
 ) -> Result<EffectivePrompt> {
+    build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
+        storage,
+        session,
+        execution,
+        current_message,
+        config,
+        workspace_root,
+        agent_home,
+        identity,
+        loaded_agents_md,
+        skills,
+        available_tools,
+        ToolPromptContext::default(),
+        continuation,
+        default_external_ingress,
+    )
+}
+
+pub fn build_effective_prompt_with_apply_patch_surface(
+    storage: &AppStorage,
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    current_message: &MessageEnvelope,
+    config: &ContextConfig,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    loaded_agents_md: LoadedAgentsMd,
+    skills: &SkillsRuntimeView,
+    available_tools: &[ToolSpec],
+    apply_patch_surface: ApplyPatchSurface,
+    continuation: Option<&ContinuationResolution>,
+) -> Result<EffectivePrompt> {
+    build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
+        storage,
+        session,
+        execution,
+        current_message,
+        config,
+        workspace_root,
+        agent_home,
+        identity,
+        loaded_agents_md,
+        skills,
+        available_tools,
+        apply_patch_surface,
+        continuation,
+        None,
+    )
+}
+
+pub fn build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
+    storage: &AppStorage,
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    current_message: &MessageEnvelope,
+    config: &ContextConfig,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    loaded_agents_md: LoadedAgentsMd,
+    skills: &SkillsRuntimeView,
+    available_tools: &[ToolSpec],
+    apply_patch_surface: ApplyPatchSurface,
+    continuation: Option<&ContinuationResolution>,
+    default_external_ingress: Option<&ExternalTriggerRecord>,
+) -> Result<EffectivePrompt> {
+    build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
+        storage,
+        session,
+        execution,
+        current_message,
+        config,
+        workspace_root,
+        agent_home,
+        identity,
+        loaded_agents_md,
+        skills,
+        available_tools,
+        ToolPromptContext {
+            apply_patch_surface: Some(apply_patch_surface),
+        },
+        continuation,
+        default_external_ingress,
+    )
+}
+
+fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
+    storage: &AppStorage,
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    current_message: &MessageEnvelope,
+    config: &ContextConfig,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    loaded_agents_md: LoadedAgentsMd,
+    skills: &SkillsRuntimeView,
+    available_tools: &[ToolSpec],
+    tool_prompt_context: ToolPromptContext,
+    continuation: Option<&ContinuationResolution>,
+    default_external_ingress: Option<&ExternalTriggerRecord>,
+) -> Result<EffectivePrompt> {
     let built_context = build_context_with_default_external_ingress(
         storage,
         session,
@@ -318,6 +421,7 @@ pub fn build_effective_prompt_with_default_external_ingress(
         &loaded_agents_md,
         skills,
         available_tools,
+        tool_prompt_context,
     );
     let context_sections = built_context.sections;
     let rendered_system_prompt = render_sections(&system_sections);
@@ -486,6 +590,7 @@ fn build_system_sections(
     loaded_agents_md: &LoadedAgentsMd,
     skills: &SkillsRuntimeView,
     available_tools: &[ToolSpec],
+    tool_prompt_context: ToolPromptContext,
 ) -> Vec<PromptSection> {
     let mut sections = vec![
         section(
@@ -599,7 +704,10 @@ fn build_system_sections(
         sections.push(section);
     }
 
-    sections.extend(tool_sections(available_tools));
+    sections.extend(tools::tool_sections_with_context(
+        available_tools,
+        tool_prompt_context,
+    ));
     sections
 }
 
@@ -1142,6 +1250,7 @@ mod tests {
             &first_loaded,
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let second_system_sections = build_system_sections(
             &sample_identity(),
@@ -1150,6 +1259,7 @@ mod tests {
             &second_loaded,
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let context_sections = Vec::new();
         let tools = Vec::new();
@@ -1260,6 +1370,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         assert!(sections
             .iter()
@@ -1288,6 +1399,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1308,6 +1420,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1338,6 +1451,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1361,6 +1475,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1390,6 +1505,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1420,6 +1536,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1475,6 +1592,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1505,6 +1623,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1529,6 +1648,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1556,6 +1676,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1606,6 +1727,7 @@ mod tests {
             },
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let names = sections
             .iter()
@@ -1632,6 +1754,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1665,6 +1788,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1689,6 +1813,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1730,6 +1855,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1762,6 +1888,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1807,6 +1934,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1831,6 +1959,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()
@@ -1896,6 +2025,7 @@ mod tests {
                 input_schema: serde_json::json!({"type": "object"}),
                 freeform_grammar: None,
             }],
+            ToolPromptContext::default(),
         );
 
         let names = sections
@@ -2106,6 +2236,7 @@ mod tests {
                 &LoadedAgentsMd::default(),
                 &SkillsRuntimeView::default(),
                 &[],
+                ToolPromptContext::default(),
             );
 
             assert!(
@@ -2140,6 +2271,7 @@ mod tests {
                 &LoadedAgentsMd::default(),
                 &SkillsRuntimeView::default(),
                 &[],
+                ToolPromptContext::default(),
             );
 
             assert!(
@@ -2180,6 +2312,7 @@ mod tests {
                 &LoadedAgentsMd::default(),
                 &SkillsRuntimeView::default(),
                 &[],
+                ToolPromptContext::default(),
             );
 
             assert!(
@@ -2204,6 +2337,7 @@ mod tests {
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
+            ToolPromptContext::default(),
         );
 
         let section = sections
@@ -2234,6 +2368,7 @@ mod tests {
                 ..SkillsRuntimeView::default()
             },
             &[],
+            ToolPromptContext::default(),
         );
         let section = sections
             .iter()

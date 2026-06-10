@@ -62,7 +62,8 @@ use crate::{
     ingress::WakeDisposition,
     memory::{refresh_episode_memory, refresh_working_memory},
     prompt::{
-        build_effective_prompt, build_effective_prompt_with_default_external_ingress,
+        build_effective_prompt_with_apply_patch_surface,
+        build_effective_prompt_with_apply_patch_surface_and_default_external_ingress,
         EffectivePrompt,
     },
     provider::{
