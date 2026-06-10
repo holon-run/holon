@@ -3227,33 +3227,21 @@ pub async fn control_debug_prompt(
         .authority_class
         .clone()
         .unwrap_or(AuthorityClass::OperatorInstruction);
-    let runtime = state
+    let boundary = state
         .host
-        .get_public_agent(&agent_id)
-        .await
+        .public_agent_boundary_metadata(&agent_id)
         .map_err(agent_access_error)?;
-    let boundary = current_boundary_metadata(&runtime)
-        .await
-        .map_err(error_response)?;
-    let dump = runtime
-        .preview_prompt(request.text.clone(), effective_trust.clone())
-        .await
-        .map_err(error_response)?
+    let dump = state
+        .host
+        .preview_public_agent_prompt(&agent_id, request.text.clone(), effective_trust.clone())
+        .map_err(agent_access_error)?
         .render_dump();
-    runtime
-        .append_audit_event(
-            "debug_prompt_requested",
-            json!({
-                "target_agent_id": agent_id,
-                "admission_context": admission_context,
-                "effective_trust": effective_trust,
-                "boundary": boundary,
-            }),
-        )
-        .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
         "agent_id": agent_id,
+        "admission_context": admission_context,
+        "effective_trust": effective_trust,
+        "boundary": boundary,
         "dump": dump,
     })))
 }

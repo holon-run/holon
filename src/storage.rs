@@ -171,6 +171,7 @@ pub struct RecoverySnapshot {
 pub struct AppStorage {
     data_dir: PathBuf,
     agent_id: Option<String>,
+    read_only: bool,
     events_path: PathBuf,
     briefs_path: PathBuf,
     messages_path: PathBuf,
@@ -209,6 +210,12 @@ struct AuditEventIndexSink {
     agent_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StorageOpenMode {
+    ReadWrite,
+    ReadOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileActivityMarker {
     pub exists: bool,
@@ -244,36 +251,62 @@ impl AppStorage {
         Self::new_with_scope(data_dir, Some(agent_id))
     }
 
+    pub fn open_read_only_for_agent(
+        data_dir: impl Into<PathBuf>,
+        agent_id: impl Into<String>,
+    ) -> Result<Self> {
+        let agent_id = agent_id.into();
+        anyhow::ensure!(
+            !agent_id.trim().is_empty(),
+            "agent-scoped storage requires a non-empty agent id"
+        );
+        Self::new_with_scope_options(data_dir, Some(agent_id), StorageOpenMode::ReadOnly)
+    }
+
     pub fn new_global(data_dir: impl Into<PathBuf>) -> Result<Self> {
         Self::new_with_scope(data_dir, None)
     }
 
     fn new_with_scope(data_dir: impl Into<PathBuf>, agent_id: Option<String>) -> Result<Self> {
+        Self::new_with_scope_options(data_dir, agent_id, StorageOpenMode::ReadWrite)
+    }
+
+    fn new_with_scope_options(
+        data_dir: impl Into<PathBuf>,
+        agent_id: Option<String>,
+        mode: StorageOpenMode,
+    ) -> Result<Self> {
         let data_dir = data_dir.into();
-        fs::create_dir_all(&data_dir)
-            .with_context(|| format!("failed to create {}", data_dir.display()))?;
         let runtime_dir = data_dir.join(RUNTIME_DIR);
         let state_dir = runtime_dir.join(RUNTIME_STATE_DIR);
         let ledger_dir = runtime_dir.join(RUNTIME_LEDGER_DIR);
-        for dir in [
-            &state_dir,
-            &ledger_dir,
-            &runtime_dir.join(RUNTIME_INDEXES_DIR),
-            &runtime_dir.join(RUNTIME_CACHE_DIR),
-        ] {
-            fs::create_dir_all(dir)
-                .with_context(|| format!("failed to create {}", dir.display()))?;
+        if mode == StorageOpenMode::ReadWrite {
+            fs::create_dir_all(&data_dir)
+                .with_context(|| format!("failed to create {}", data_dir.display()))?;
+            for dir in [
+                &state_dir,
+                &ledger_dir,
+                &runtime_dir.join(RUNTIME_INDEXES_DIR),
+                &runtime_dir.join(RUNTIME_CACHE_DIR),
+            ] {
+                fs::create_dir_all(dir)
+                    .with_context(|| format!("failed to create {}", dir.display()))?;
+            }
         }
 
         let events_path = ledger_dir.join("events.jsonl");
         let messages_path = ledger_dir.join("messages.jsonl");
         let transcript_path = ledger_dir.join("transcript.jsonl");
-        let event_seq_counter = migrate_events_ledger(&events_path)?;
+        let event_seq_counter = match mode {
+            StorageOpenMode::ReadWrite => migrate_events_ledger(&events_path)?,
+            StorageOpenMode::ReadOnly => read_tail_event_seq(&events_path)?.unwrap_or(0),
+        };
         let message_seq_counter = max_jsonl_u64_field(&messages_path, "message_seq")?;
         let transcript_seq_counter = max_jsonl_u64_field(&transcript_path, "transcript_seq")?;
 
         Ok(Self {
             agent_id,
+            read_only: mode == StorageOpenMode::ReadOnly,
             events_path,
             briefs_path: ledger_dir.join("briefs.jsonl"),
             messages_path,
@@ -308,11 +341,20 @@ impl AppStorage {
         })
     }
 
+    fn ensure_writable(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.read_only,
+            "cannot write through read-only runtime storage"
+        );
+        Ok(())
+    }
+
     pub(crate) fn enable_audit_event_index(
         &self,
         runtime_db: RuntimeDb,
         agent_id: Option<String>,
     ) -> Result<()> {
+        self.ensure_writable()?;
         let mut guard = self
             .audit_event_index
             .lock()
@@ -325,6 +367,7 @@ impl AppStorage {
     }
 
     pub(crate) fn enable_scheduler_control_plane_db(&self, runtime_db: RuntimeDb) -> Result<()> {
+        self.ensure_writable()?;
         let agent_id = self.current_agent_id()?;
         {
             let mut counter = self
@@ -440,6 +483,7 @@ impl AppStorage {
     }
 
     pub fn append_event(&self, event: &AuditEvent) -> Result<()> {
+        self.ensure_writable()?;
         let _guard = self
             .append_mutex
             .lock()
@@ -448,6 +492,7 @@ impl AppStorage {
     }
 
     fn append_event_with_append_mutex_held(&self, event: &AuditEvent) -> Result<()> {
+        self.ensure_writable()?;
         let mut event = event.clone();
         let mut counter = self
             .event_seq_counter
@@ -743,6 +788,7 @@ impl AppStorage {
     }
 
     fn append_jsonl<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
+        self.ensure_writable()?;
         let bytes = jsonl_bytes(value)?;
 
         let _guard = self
@@ -753,6 +799,7 @@ impl AppStorage {
     }
 
     pub fn mark_memory_index_dirty(&self) -> Result<()> {
+        self.ensure_writable()?;
         let agent_id = self.storage_agent_id()?;
         let dirty_path = self.shared_indexes_dir().join(format!(
             "memory.{}.dirty",
@@ -860,6 +907,7 @@ impl AppStorage {
     }
 
     pub fn write_agent(&self, agent: &AgentState) -> Result<()> {
+        self.ensure_writable()?;
         if let Some(storage_agent_id) = self.agent_id.as_deref() {
             anyhow::ensure!(
                 agent.id == storage_agent_id,
