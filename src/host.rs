@@ -815,7 +815,7 @@ impl RuntimeHost {
         text: String,
         authority_class: AuthorityClass,
     ) -> Result<EffectivePrompt> {
-        let storage = AppStorage::new_for_agent(
+        let storage = AppStorage::open_read_only_for_agent(
             self.agent_data_dir(&identity.agent_id),
             identity.agent_id.clone(),
         )?;
@@ -925,7 +925,7 @@ impl RuntimeHost {
         &self,
         identity: &AgentIdentityRecord,
     ) -> Result<Value> {
-        let storage = AppStorage::new_for_agent(
+        let storage = AppStorage::open_read_only_for_agent(
             self.agent_data_dir(&identity.agent_id),
             identity.agent_id.clone(),
         )?;
@@ -2112,6 +2112,43 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].message_id, message.id);
         assert_eq!(entries[0].status, QueueEntryStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn debug_prompt_preview_does_not_migrate_legacy_event_ledger() {
+        let (_home, host) = test_host();
+        let agent_id = host.config().default_agent_id.clone();
+        let storage = AppStorage::new_for_agent(host.agent_data_dir(&agent_id), agent_id.clone())
+            .expect("storage");
+        let events_path = storage.data_dir().join(".holon/ledger/events.jsonl");
+        fs::write(
+            &events_path,
+            r#"{"id":"evt_legacy","kind":"test","created_at":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        let before = fs::read_to_string(&events_path).unwrap();
+
+        let prompt = host
+            .preview_agent_prompt(
+                &agent_id,
+                "inspect prompt".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .unwrap();
+
+        assert!(prompt.render_dump().contains("inspect prompt"));
+        assert_eq!(fs::read_to_string(&events_path).unwrap(), before);
+        let backups = fs::read_dir(events_path.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("events.jsonl.bak.")
+            })
+            .count();
+        assert_eq!(backups, 0);
     }
 
     fn inherited_model_resolution(provider: &str, model: &str) -> SpawnAgentModelResolution {
