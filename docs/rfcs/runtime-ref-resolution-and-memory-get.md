@@ -132,6 +132,7 @@ General rules:
 | `workspace_profile:` | `workspace_profile:ws-holon` | workspace profile store | Workspace-scoped profile content. |
 | `brief:` | `brief:brief_123` | semantic brief evidence | Only semantic user-facing delivery such as result or failure. Ordinary Ack is not a brief ref target. |
 | `tool_execution:` | `tool_execution:tool_123:stdout` | tool execution evidence | Supports selected command input/output subresources. |
+| `turn:` | `turn:turn_123` | turn record store | Returns bounded turn metadata and linked evidence refs, not raw transcript replay. |
 | `task:` | `task:task_123` | task lifecycle store/evidence | Returns bounded task state and terminal result evidence when available. |
 | `work_item:` | `work_item:work_123` | WorkItem state store | Returns current/latest WorkItem state and stable plan/result refs where available. |
 | `episode:` | `episode:ep_123` | context episode store | Returns archived episode record content and source refs. |
@@ -296,7 +297,8 @@ The caller context should include at least:
 2. Extract current `MemoryGet` source-ref validation into a shared runtime ref
    parser.
 3. Add direct resolver coverage for existing prompt-visible refs:
-   `brief:`, `tool_execution:`, `task:`, `work_item:`, and `episode:`.
+   `brief:`, `tool_execution:`, `turn:`, `task:`, `work_item:`, and
+   `episode:`.
 4. Keep `MemorySearch` index-backed, but ensure search-returned refs can be
    passed directly to `MemoryGet`.
 5. Update prompt projection code to use only refs accepted by the shared parser.
@@ -313,7 +315,7 @@ Focused tests should cover:
 - `MemorySearch` returning refs that `MemoryGet` can dereference;
 - `brief:` returning semantic result/failure content and not depending on Ack;
 - tool execution stdout/stderr/output refs for command and batch executions;
-- task, WorkItem, and episode refs resolving from their source stores;
+- turn, task, WorkItem, and episode refs resolving from their source stores;
 - invalid, unsupported, missing, unauthorized, and unavailable errors;
 - prompt snapshots showing refs that are accepted by the parser.
 
@@ -322,9 +324,6 @@ Focused tests should cover:
 - Should Holon expose an `event:` or `audit_event:` namespace for selected
   lifecycle receipts such as acknowledgements, or should those remain
   operator/debug API concerns?
-- Should `turn:` become a direct `MemoryGet` namespace, or should turns remain
-  reachable only through episode, brief, task, and tool refs until turn
-  projection stabilizes?
 - How should future host-level or cross-agent retrieval be authorized without
   weakening default agent/workspace isolation?
 - Should file refs ever be handled by `MemoryGet`, or should workspace files

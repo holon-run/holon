@@ -1511,19 +1511,11 @@ pub struct ActiveEpisodeBuilder {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub working_set_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub commands: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub verification: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub decisions: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub carry_forward: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waiting_on: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_turn_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub task_results: Vec<String>,
 }
 
 impl ActiveEpisodeBuilder {
@@ -1555,13 +1547,9 @@ impl ActiveEpisodeBuilder {
             work_summary: snapshot.work_summary.clone(),
             scope_hints: Vec::new(),
             working_set_files: snapshot.working_set_files.clone(),
-            commands: Vec::new(),
-            verification: Vec::new(),
-            decisions: Vec::new(),
             carry_forward: snapshot.pending_followups.clone(),
             waiting_on: snapshot.waiting_on.clone(),
             source_turn_ids: Vec::new(),
-            task_results: Vec::new(),
         }
     }
 }
@@ -1625,22 +1613,7 @@ pub struct ContextEpisodeRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generated_by: Option<ContextEpisodeGeneratedBy>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub operator_intents: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub runtime_facts: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub task_results: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub unresolved_items: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub model_inferences: Vec<String>,
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub working_set_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub commands: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub verification: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decisions: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

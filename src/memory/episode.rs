@@ -11,9 +11,6 @@ use crate::{
 };
 
 const EPISODE_FILE_LIMIT: usize = 10;
-const EPISODE_COMMAND_LIMIT: usize = 8;
-const EPISODE_VERIFICATION_LIMIT: usize = 8;
-const EPISODE_DECISION_LIMIT: usize = 8;
 const EPISODE_CARRY_FORWARD_LIMIT: usize = 8;
 const EPISODE_TURN_HARD_CAP: u64 = 12;
 
@@ -146,21 +143,6 @@ fn merge_into_active_episode(
         EPISODE_FILE_LIMIT,
     );
     merge_unique(
-        &mut builder.commands,
-        &turn_delta.commands,
-        EPISODE_COMMAND_LIMIT,
-    );
-    merge_unique(
-        &mut builder.verification,
-        &turn_delta.verification,
-        EPISODE_VERIFICATION_LIMIT,
-    );
-    merge_unique(
-        &mut builder.decisions,
-        &turn_delta.decisions,
-        EPISODE_DECISION_LIMIT,
-    );
-    merge_unique(
         &mut builder.carry_forward,
         &turn_delta.pending_followups,
         EPISODE_CARRY_FORWARD_LIMIT,
@@ -177,12 +159,6 @@ fn merge_into_active_episode(
             EPISODE_TURN_HARD_CAP as usize,
         );
     }
-    merge_unique(
-        &mut builder.task_results,
-        &turn_delta.task_results,
-        EPISODE_CARRY_FORWARD_LIMIT,
-    );
-
     if builder.current_work_item_id.is_none() {
         builder.current_work_item_id = current_snapshot.current_work_item_id.clone();
     }
@@ -256,9 +232,7 @@ fn derive_boundary_reason(
     }
 
     if !working_snapshot_is_empty(previous_snapshot)
-        && (previous_snapshot.current_work_item_id != current_snapshot.current_work_item_id
-            || previous_snapshot.objective != current_snapshot.objective
-            || previous_snapshot.work_summary != current_snapshot.work_summary)
+        && previous_snapshot.current_work_item_id != current_snapshot.current_work_item_id
     {
         return Some(EpisodeBoundaryReason::ActiveWorkSwitched);
     }
@@ -283,10 +257,11 @@ fn should_start_next_episode(
     current_closure: &ClosureDecision,
     turn_delta: &TurnMemoryDelta,
 ) -> bool {
-    !working_snapshot_is_empty(snapshot)
+    snapshot.current_work_item_id.is_some()
         || current_closure.outcome == ClosureOutcome::Waiting
         || !turn_delta.touched_files.is_empty()
         || !turn_delta.pending_followups.is_empty()
+        || !turn_delta.waiting_on.is_empty()
 }
 
 fn finalize_episode(
@@ -295,16 +270,11 @@ fn finalize_episode(
     boundary_reason: EpisodeBoundaryReason,
 ) -> ContextEpisodeRecord {
     let finalized_at = Utc::now();
-    let summary = render_episode_summary(&builder);
     let source_turn_ids = builder.source_turn_ids.clone();
     let source_refs = source_turn_ids
         .iter()
         .map(|turn_id| format!("turn:{turn_id}"))
         .collect::<Vec<_>>();
-    let operator_intents = episode_operator_intents(&builder);
-    let runtime_facts = episode_runtime_facts(&builder);
-    let unresolved_items = episode_unresolved_items(&builder);
-    let model_inferences = episode_model_inferences(&summary);
 
     ContextEpisodeRecord {
         id: builder.id,
@@ -333,130 +303,11 @@ fn finalize_episode(
             model: None,
             prompt_ref: None,
         }),
-        operator_intents,
-        runtime_facts,
-        task_results: builder.task_results,
-        unresolved_items,
-        model_inferences,
-        summary,
         working_set_files: builder.working_set_files,
-        commands: builder.commands,
-        verification: builder.verification,
-        decisions: builder.decisions,
+        decisions: Vec::new(),
         carry_forward: builder.carry_forward,
         waiting_on: builder.waiting_on,
     }
-}
-
-fn episode_operator_intents(builder: &ActiveEpisodeBuilder) -> Vec<String> {
-    let mut intents = Vec::new();
-    if let Some(objective) = builder.objective.as_deref() {
-        intents.push(format!("objective: {objective}"));
-    }
-    if let Some(work_summary) = builder.work_summary.as_deref() {
-        if builder.objective.as_deref() != Some(work_summary) {
-            intents.push(format!("work_summary: {work_summary}"));
-        }
-    }
-    intents
-}
-
-fn episode_runtime_facts(builder: &ActiveEpisodeBuilder) -> Vec<String> {
-    let mut facts = Vec::new();
-    facts.extend(
-        builder
-            .working_set_files
-            .iter()
-            .map(|file| format!("touched_file: {file}")),
-    );
-    facts.extend(
-        builder
-            .commands
-            .iter()
-            .map(|command| format!("command: {command}")),
-    );
-    facts.extend(
-        builder
-            .verification
-            .iter()
-            .map(|verification| format!("verification: {verification}")),
-    );
-    facts.extend(
-        builder
-            .decisions
-            .iter()
-            .map(|decision| format!("decision: {decision}")),
-    );
-    facts
-}
-
-fn episode_unresolved_items(builder: &ActiveEpisodeBuilder) -> Vec<String> {
-    builder
-        .carry_forward
-        .iter()
-        .map(|item| format!("carry_forward: {item}"))
-        .chain(
-            builder
-                .waiting_on
-                .iter()
-                .map(|item| format!("waiting_on: {item}")),
-        )
-        .collect()
-}
-
-fn episode_model_inferences(summary: &str) -> Vec<String> {
-    if summary.trim().is_empty() {
-        Vec::new()
-    } else {
-        vec![format!(
-            "non_authoritative_summary: {}",
-            summary.split_whitespace().collect::<Vec<_>>().join(" ")
-        )]
-    }
-}
-
-fn render_episode_summary(builder: &ActiveEpisodeBuilder) -> String {
-    let mut lines = Vec::new();
-    if let Some(target) = builder.work_summary.as_ref().or(builder.objective.as_ref()) {
-        lines.push(format!("work: {}", truncate_line(target, 120)));
-    }
-    if !builder.scope_hints.is_empty() {
-        lines.push(format!(
-            "scope: {}",
-            builder
-                .scope_hints
-                .iter()
-                .take(2)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(" | ")
-        ));
-    }
-    if !builder.working_set_files.is_empty() {
-        lines.push(format!(
-            "files: {}",
-            builder
-                .working_set_files
-                .iter()
-                .take(3)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if !builder.verification.is_empty() {
-        lines.push(format!(
-            "verification: {}",
-            truncate_line(&builder.verification[0], 120)
-        ));
-    }
-    if !builder.carry_forward.is_empty() {
-        lines.push(format!(
-            "carry-forward: {}",
-            truncate_line(&builder.carry_forward[0], 120)
-        ));
-    }
-    lines.join("\n")
 }
 
 fn merge_unique(target: &mut Vec<String>, additions: &[String], limit: usize) {
@@ -468,16 +319,6 @@ fn merge_unique(target: &mut Vec<String>, additions: &[String], limit: usize) {
             break;
         }
         target.push(item.clone());
-    }
-}
-
-fn truncate_line(value: &str, limit: usize) -> String {
-    let mut chars = value.chars();
-    let truncated = chars.by_ref().take(limit).collect::<String>();
-    if chars.next().is_some() {
-        format!("{truncated}...")
-    } else {
-        truncated
     }
 }
 
@@ -547,6 +388,7 @@ mod tests {
         let current = snapshot("work_b", "review CI");
         let delta = TurnMemoryDelta {
             turn_index: 3,
+            turn_id: Some("turn-switch-3".into()),
             touched_files: vec!["src/export.rs".into()],
             commands: vec!["cargo test --test metrics_export".into()],
             verification: vec!["cargo test --test metrics_export passed".into()],
@@ -575,7 +417,6 @@ mod tests {
             EpisodeBoundaryReason::ActiveWorkSwitched
         );
         assert_eq!(episodes[0].current_work_item_id.as_deref(), Some("work_a"));
-        assert!(episodes[0].verification.is_empty());
         assert!(episodes[0].scope_hints.is_empty());
         assert!(episodes[0].source_turn_ids.is_empty());
         assert!(episodes[0].source_refs.is_empty());
@@ -586,23 +427,17 @@ mod tests {
                 .map(|generated| generated.component.as_str()),
             Some("runtime_episode_memory")
         );
-        assert!(episodes[0]
-            .operator_intents
-            .iter()
-            .any(|intent| intent.contains("fix exporter")));
-        assert!(episodes[0].model_inferences.iter().any(|inference| {
-            inference.starts_with("non_authoritative_summary:")
-                && inference.contains("fix exporter")
-        }));
+        assert_eq!(episodes[0].objective.as_deref(), Some("fix exporter"));
         let next_builder = agent
             .working_memory
             .active_episode_builder
             .as_ref()
             .expect("next builder should be present");
+        assert_eq!(next_builder.source_turn_ids, vec!["turn-switch-3"]);
         assert!(next_builder
-            .verification
+            .working_set_files
             .iter()
-            .any(|line| line.contains("passed")));
+            .any(|file| file == "src/export.rs"));
         assert!(next_builder.scope_hints.is_empty());
         assert_eq!(next_builder.current_work_item_id.as_deref(), Some("work_b"));
     }
@@ -657,24 +492,8 @@ mod tests {
             .waiting_on
             .iter()
             .any(|item| item.contains("wait for reviewer")));
-        assert!(episodes[0]
-            .runtime_facts
-            .iter()
-            .any(|fact| fact.contains("defer follow-up until review lands")));
-        assert!(episodes[0]
-            .unresolved_items
-            .iter()
-            .any(|item| item.contains("resume after review")));
-        assert!(episodes[0]
-            .unresolved_items
-            .iter()
-            .any(|item| item.contains("wait for reviewer")));
         assert_eq!(episodes[0].source_turn_ids, vec!["turn-stable-6"]);
         assert_eq!(episodes[0].source_refs, vec!["turn:turn-stable-6"]);
-        assert_eq!(
-            episodes[0].task_results,
-            vec!["task task_1: child completed verification"]
-        );
     }
 
     #[test]

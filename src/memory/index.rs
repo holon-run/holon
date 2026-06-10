@@ -21,7 +21,7 @@ use crate::{
     },
     types::{
         BriefKind, BriefRecord, CommandTaskStatusSnapshot, ContextEpisodeRecord, TaskRecord,
-        TaskStatus, ToolExecutionRecord, WorkItemRecord, WorkspaceEntry,
+        TaskStatus, ToolExecutionRecord, TurnRecord, WorkItemRecord, WorkspaceEntry,
     },
 };
 
@@ -958,6 +958,7 @@ fn document_for_runtime_ref(
             workspace_profile_document_by_id(storage, workspace_id)
         }
         RuntimeRef::Brief { id } => brief_document_by_id(storage, id),
+        RuntimeRef::Turn { id } => turn_document_by_id(storage, id),
         RuntimeRef::Episode { id } => context_episode_document_by_id(storage, id),
         RuntimeRef::WorkItem { id } => work_item_document_by_id(storage, id),
         RuntimeRef::Task { id } => task_document_by_id(storage, id),
@@ -1133,24 +1134,17 @@ fn context_episode_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>
     Ok(storage
         .read_recent_context_episodes(usize::MAX)?
         .into_iter()
-        .filter(|episode| !episode.summary.trim().is_empty())
         .map(episode_document)
         .collect())
 }
 
 fn episode_document(episode: ContextEpisodeRecord) -> MemoryDocument {
-    let body = [
-        episode.summary.clone(),
-        episode.work_summary.clone().unwrap_or_default(),
-        episode.commands.join("\n"),
-        episode.verification.join("\n"),
-        episode.decisions.join("\n"),
-        episode.carry_forward.join("\n"),
-    ]
-    .into_iter()
-    .filter(|part| !part.trim().is_empty())
-    .collect::<Vec<_>>()
-    .join("\n");
+    let body = episode_document_body(&episode);
+    let title = episode
+        .work_summary
+        .clone()
+        .or_else(|| episode.objective.clone())
+        .unwrap_or_else(|| format!("Episode {}", episode.id));
     MemoryDocument {
         source_ref: format!("episode:{}", episode.id),
         source_kind: "context_episode".into(),
@@ -1158,10 +1152,7 @@ fn episode_document(episode: ContextEpisodeRecord) -> MemoryDocument {
         workspace_id: Some(episode.workspace_id),
         agent_id: episode.agent_id,
         source_path: None,
-        title: episode
-            .work_summary
-            .clone()
-            .unwrap_or_else(|| "Context episode".into()),
+        title,
         sanitized_excerpt: excerpt(&body),
         body,
         metadata: json!({
@@ -1169,6 +1160,7 @@ fn episode_document(episode: ContextEpisodeRecord) -> MemoryDocument {
             "current_work_item_id": episode.current_work_item_id,
             "boundary_reason": episode.boundary_reason,
             "working_set_files": episode.working_set_files,
+            "source_refs": episode.source_refs,
             "governance_surface": "runtime_evidence",
             "provenance_class": "context_episode_record",
             "trust_class": "runtime_evidence",
@@ -1184,8 +1176,226 @@ fn context_episode_document_by_id(
     Ok(storage
         .read_recent_context_episodes(usize::MAX)?
         .into_iter()
-        .find(|episode| episode.id == episode_id && !episode.summary.trim().is_empty())
+        .find(|episode| episode.id == episode_id)
         .map(episode_document))
+}
+
+fn episode_document_body(episode: &ContextEpisodeRecord) -> String {
+    let mut lines = vec![
+        format!("episode_ref: episode:{}", episode.id),
+        format!(
+            "turns: {}-{}",
+            episode.start_turn_index, episode.end_turn_index
+        ),
+        format!("boundary: {:?}", episode.boundary_reason),
+    ];
+    if let Some(work_item_id) = episode.current_work_item_id.as_deref() {
+        lines.push(format!("work_item_ref: work_item:{work_item_id}"));
+    }
+    if let Some(objective) = episode.objective.as_deref() {
+        lines.push(format!(
+            "objective_preview: {}",
+            truncate_inline(objective, 180)
+        ));
+    }
+    if let Some(work_summary) = episode.work_summary.as_deref() {
+        lines.push(format!(
+            "work_summary_preview: {}",
+            truncate_inline(work_summary, 180)
+        ));
+    }
+    if !episode.source_refs.is_empty() {
+        lines.push(format!(
+            "retrieval_refs: {}",
+            episode
+                .source_refs
+                .iter()
+                .take(12)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !episode.source_turn_ids.is_empty() {
+        lines.push(format!(
+            "provenance_turn_ids: {}",
+            episode
+                .source_turn_ids
+                .iter()
+                .take(12)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !episode.working_set_files.is_empty() {
+        lines.push(format!(
+            "files: {}",
+            episode
+                .working_set_files
+                .iter()
+                .take(10)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !episode.carry_forward.is_empty() {
+        lines.push(format!(
+            "followups: {}",
+            episode
+                .carry_forward
+                .iter()
+                .take(8)
+                .map(|item| truncate_inline(item, 160))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
+    if !episode.waiting_on.is_empty() {
+        lines.push(format!(
+            "waiting_on: {}",
+            episode
+                .waiting_on
+                .iter()
+                .take(8)
+                .map(|item| truncate_inline(item, 160))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
+    lines.join("\n")
+}
+
+fn turn_document_by_id(storage: &AppStorage, turn_id: &str) -> Result<Option<MemoryDocument>> {
+    Ok(storage
+        .read_recent_turns(usize::MAX)?
+        .into_iter()
+        .find(|turn| turn.turn_id == turn_id)
+        .map(turn_document))
+}
+
+fn turn_document(turn: TurnRecord) -> MemoryDocument {
+    let body = turn_document_body(&turn);
+    MemoryDocument {
+        source_ref: format!("turn:{}", turn.turn_id),
+        source_kind: "turn".into(),
+        scope_kind: "workspace".into(),
+        workspace_id: None,
+        agent_id: turn.agent_id,
+        source_path: None,
+        title: format!("Turn {}", turn.turn_index),
+        sanitized_excerpt: excerpt(&body),
+        body,
+        metadata: json!({
+            "turn_id": turn.turn_id,
+            "turn_index": turn.turn_index,
+            "current_work_item_id": turn.current_work_item_id,
+            "governance_surface": "runtime_evidence",
+            "provenance_class": "turn_record",
+            "trust_class": "runtime_evidence",
+        }),
+        updated_at: turn.created_at,
+    }
+}
+
+fn turn_document_body(turn: &TurnRecord) -> String {
+    let mut lines = vec![
+        format!("turn_ref: turn:{}", turn.turn_id),
+        format!("turn_index: {}", turn.turn_index),
+    ];
+    if let Some(trigger) = turn.trigger.as_ref() {
+        lines.push(format!("trigger_kind: {:?}", trigger.kind));
+        if let Some(message_id) = trigger.message_id.as_deref() {
+            lines.push(format!("trigger_message_id: {message_id}"));
+        }
+    }
+    if let Some(work_item_id) = turn.current_work_item_id.as_deref() {
+        lines.push(format!("current_work_item_ref: work_item:{work_item_id}"));
+    }
+    append_id_list(&mut lines, "input_message_ids", &turn.input_message_ids);
+    if !turn.tool_execution_ids.is_empty() {
+        append_id_list(&mut lines, "tool_execution_ids", &turn.tool_execution_ids);
+        lines.push(format!(
+            "tool_execution_refs_when_available: {}",
+            turn.tool_execution_ids
+                .iter()
+                .take(12)
+                .flat_map(|id| {
+                    [
+                        format!("tool_execution:{id}:cmd"),
+                        format!("tool_execution:{id}:output"),
+                    ]
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !turn.produced_brief_ids.is_empty() {
+        lines.push(format!(
+            "brief_refs_when_semantic: {}",
+            turn.produced_brief_ids
+                .iter()
+                .take(12)
+                .map(|id| format!("brief:{id}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !turn.completed_work_item_ids.is_empty() {
+        lines.push(format!(
+            "completed_work_item_refs: {}",
+            turn.completed_work_item_ids
+                .iter()
+                .take(12)
+                .map(|id| format!("work_item:{id}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    append_id_list(
+        &mut lines,
+        "delivery_summary_ids",
+        &turn.delivery_summary_ids,
+    );
+    append_id_list(
+        &mut lines,
+        "waiting_condition_ids",
+        &turn.waiting_condition_ids,
+    );
+    if let Some(terminal) = turn.terminal.as_ref() {
+        lines.push(format!("terminal_kind: {:?}", terminal.kind));
+        if let Some(reason) = terminal.reason.as_deref() {
+            lines.push(format!("terminal_reason: {}", truncate_inline(reason, 180)));
+        }
+    }
+    lines.join("\n")
+}
+
+fn append_id_list(lines: &mut Vec<String>, label: &str, values: &[String]) {
+    if values.is_empty() {
+        return;
+    }
+    lines.push(format!(
+        "{label}: {}",
+        values
+            .iter()
+            .take(12)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+}
+
+fn truncate_inline(value: &str, limit: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = normalized.chars();
+    let truncated = chars.by_ref().take(limit).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 fn work_item_documents(
@@ -1862,7 +2072,8 @@ mod tests {
         agent_template::ensure_agent_home_layout,
         types::{
             AgentState, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason, TaskKind,
-            TaskRecord, TaskStatus, TodoItem, TodoItemState, WorkItemPlanStatus, WorkItemState,
+            TaskRecord, TaskStatus, TodoItem, TodoItemState, TurnRecord, WorkItemPlanStatus,
+            WorkItemState,
         },
     };
     use serde_json::json;
@@ -2181,23 +2392,21 @@ mod tests {
                 objective: Some("runtime refs".into()),
                 work_summary: Some("direct episode source".into()),
                 scope_hints: vec![],
-                source_turn_ids: vec![],
-                source_refs: vec![],
+                source_turn_ids: vec!["turn-direct-1663".into()],
+                source_refs: vec!["turn:turn-direct-1663".into()],
                 generated_by: None,
-                operator_intents: vec![],
-                runtime_facts: vec![],
-                task_results: vec![],
-                unresolved_items: vec![],
-                model_inferences: vec![],
-                summary: "direct episode evidence after stale index".into(),
                 working_set_files: vec![],
-                commands: vec![],
-                verification: vec![],
                 decisions: vec![],
                 carry_forward: vec![],
                 waiting_on: vec![],
             })
             .unwrap();
+
+        let mut turn = TurnRecord::new("default", "turn-direct-1663", 7);
+        turn.current_work_item_id = Some("work-direct-1663".into());
+        turn.tool_execution_ids = vec!["tool-direct-1663".into()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        storage.append_turn(&turn).unwrap();
 
         storage
             .append_tool_execution(&ToolExecutionRecord {
@@ -2247,8 +2456,22 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .content
-                .contains("direct episode evidence after stale index")
+                .contains("retrieval_refs: turn:turn-direct-1663")
         );
+        let turn_memory = get_memory(&storage, "turn:turn-direct-1663", None, None)
+            .unwrap()
+            .expect("turn memory source should be gettable");
+        assert_eq!(turn_memory.kind, "turn");
+        assert!(turn_memory
+            .content
+            .contains("turn_ref: turn:turn-direct-1663"));
+        assert!(turn_memory
+            .content
+            .contains("current_work_item_ref: work_item:work-direct-1663"));
+        assert!(turn_memory
+            .content
+            .contains("tool_execution:tool-direct-1663:output"));
+        assert!(turn_memory.content.contains(&format!("brief:{}", brief.id)));
         assert!(
             get_memory(&storage, "tool_execution:tool-direct-1663:cmd", None, None)
                 .unwrap()
@@ -2422,18 +2645,10 @@ mod tests {
                 objective: Some("memory search".into()),
                 work_summary: Some("index worker".into()),
                 scope_hints: vec![],
-                source_turn_ids: vec![],
-                source_refs: vec![],
+                source_turn_ids: vec!["turn-memory-index".into()],
+                source_refs: vec!["turn:turn-memory-index".into()],
                 generated_by: None,
-                operator_intents: vec![],
-                runtime_facts: vec![],
-                task_results: vec![],
-                unresolved_items: vec![],
-                model_inferences: vec![],
-                summary: "Implemented workspace-aware recall over runtime evidence".into(),
                 working_set_files: vec!["src/memory/index.rs".into()],
-                commands: vec![],
-                verification: vec!["cargo test memory".into()],
                 decisions: vec!["Use SQLite FTS5".into()],
                 carry_forward: vec![],
                 waiting_on: vec![],
@@ -2457,8 +2672,13 @@ mod tests {
             brief_result.metadata["provenance_class"].as_str(),
             Some("brief_record")
         );
-        let results = search_memory(&storage, "SQLite", 10, Some("ws-holon"), false).unwrap();
+        let results =
+            search_memory(&storage, "turn-memory-index", 10, Some("ws-holon"), false).unwrap();
         assert!(results
+            .iter()
+            .any(|result| result.kind == "context_episode"));
+        let results = search_memory(&storage, "SQLite", 10, Some("ws-holon"), false).unwrap();
+        assert!(!results
             .iter()
             .any(|result| result.kind == "context_episode"));
         let results = search_memory(&storage, "MemorySearch", 10, Some("ws-holon"), false).unwrap();
@@ -2551,15 +2771,7 @@ mod tests {
                 source_turn_ids: vec![],
                 source_refs: vec![],
                 generated_by: None,
-                operator_intents: vec![],
-                runtime_facts: vec![],
-                task_results: vec![],
-                unresolved_items: vec![],
-                model_inferences: vec![],
-                summary: "existing context episode memory".into(),
                 working_set_files: vec![],
-                commands: vec![],
-                verification: vec![],
                 decisions: vec![],
                 carry_forward: vec![],
                 waiting_on: vec![],

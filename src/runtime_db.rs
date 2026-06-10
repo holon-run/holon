@@ -2687,6 +2687,7 @@ fn upsert_working_memory_delta_tx(tx: &Transaction<'_>, record: &WorkingMemoryDe
 fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord) -> Result<()> {
     let payload_json = serde_json::to_string(record)?;
     let boundary_reason = enum_string(&record.boundary_reason)?;
+    let summary = context_episode_anchor_summary(record);
     tx.execute(
         "INSERT INTO context_episodes (
             episode_id, agent_id, workspace_id, work_item_id, boundary_reason,
@@ -2714,11 +2715,21 @@ fn upsert_context_episode_tx(tx: &Transaction<'_>, record: &ContextEpisodeRecord
             record.end_turn_index as i64,
             timestamp(record.created_at),
             timestamp(record.finalized_at),
-            record.summary,
+            summary,
             payload_json,
         ],
     )?;
     Ok(())
+}
+
+fn context_episode_anchor_summary(record: &ContextEpisodeRecord) -> String {
+    record
+        .work_summary
+        .as_deref()
+        .or(record.objective.as_deref())
+        .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("episode {}", record.id))
 }
 
 fn timestamp_from_turn(turn_index: u64) -> String {

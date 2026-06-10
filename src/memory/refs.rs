@@ -9,6 +9,9 @@ pub(crate) enum RuntimeRef {
     Brief {
         id: String,
     },
+    Turn {
+        id: String,
+    },
     Episode {
         id: String,
     },
@@ -53,6 +56,7 @@ pub(crate) const ALLOWED_SOURCE_REF_PREFIXES: &[&str] = &[
     "agent_memory:",
     "workspace_profile:",
     "brief:",
+    "turn:",
     "episode:",
     "work_item:",
     "tool_execution:",
@@ -95,6 +99,9 @@ impl RuntimeRef {
             "brief" => Ok(Self::Brief {
                 id: suffix.to_string(),
             }),
+            "turn" => Ok(Self::Turn {
+                id: suffix.to_string(),
+            }),
             "episode" => Ok(Self::Episode {
                 id: suffix.to_string(),
             }),
@@ -117,6 +124,7 @@ impl RuntimeRef {
                 format!("workspace_profile:{workspace_id}")
             }
             Self::Brief { id } => format!("brief:{id}"),
+            Self::Turn { id } => format!("turn:{id}"),
             Self::Episode { id } => format!("episode:{id}"),
             Self::WorkItem { id } => format!("work_item:{id}"),
             Self::Task { id } => format!("task:{id}"),
@@ -224,6 +232,7 @@ mod tests {
             "agent_memory:self",
             "workspace_profile:ws-123",
             "brief:abc",
+            "turn:turn_123",
             "episode:ep_123",
             "work_item:work_123",
             "task:task_123",
@@ -253,6 +262,7 @@ mod tests {
             "memory:invalid-ref-123",
             "brief:/Users/jolestar/project/README.md",
             "brief:https://example.com/memory",
+            "turn:../ledger/turn-1",
             "episode:../ledger/episode-1",
             "work_item:work_123?raw=true",
             "tool_execution:tool-123",
