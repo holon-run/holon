@@ -127,7 +127,6 @@ fn render_context_snapshot_named(
         LoadedAgentsMd::default(),
         &SkillsRuntimeView::default(),
         &[],
-        holon::tool::ApplyPatchSurface::UnifiedDiffJson,
         continuation,
     )?;
     let agent_home = storage.data_dir().display().to_string();

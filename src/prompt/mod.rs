@@ -267,7 +267,6 @@ pub fn build_effective_prompt(
     loaded_agents_md: LoadedAgentsMd,
     skills: &SkillsRuntimeView,
     available_tools: &[ToolSpec],
-    apply_patch_surface: ApplyPatchSurface,
     continuation: Option<&ContinuationResolution>,
 ) -> Result<EffectivePrompt> {
     build_effective_prompt_with_default_external_ingress(
@@ -282,7 +281,6 @@ pub fn build_effective_prompt(
         loaded_agents_md,
         skills,
         available_tools,
-        apply_patch_surface,
         continuation,
         None,
     )
@@ -300,7 +298,109 @@ pub fn build_effective_prompt_with_default_external_ingress(
     loaded_agents_md: LoadedAgentsMd,
     skills: &SkillsRuntimeView,
     available_tools: &[ToolSpec],
+    continuation: Option<&ContinuationResolution>,
+    default_external_ingress: Option<&ExternalTriggerRecord>,
+) -> Result<EffectivePrompt> {
+    build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
+        storage,
+        session,
+        execution,
+        current_message,
+        config,
+        workspace_root,
+        agent_home,
+        identity,
+        loaded_agents_md,
+        skills,
+        available_tools,
+        ToolPromptContext::default(),
+        continuation,
+        default_external_ingress,
+    )
+}
+
+pub fn build_effective_prompt_with_apply_patch_surface(
+    storage: &AppStorage,
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    current_message: &MessageEnvelope,
+    config: &ContextConfig,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    loaded_agents_md: LoadedAgentsMd,
+    skills: &SkillsRuntimeView,
+    available_tools: &[ToolSpec],
     apply_patch_surface: ApplyPatchSurface,
+    continuation: Option<&ContinuationResolution>,
+) -> Result<EffectivePrompt> {
+    build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
+        storage,
+        session,
+        execution,
+        current_message,
+        config,
+        workspace_root,
+        agent_home,
+        identity,
+        loaded_agents_md,
+        skills,
+        available_tools,
+        apply_patch_surface,
+        continuation,
+        None,
+    )
+}
+
+pub fn build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
+    storage: &AppStorage,
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    current_message: &MessageEnvelope,
+    config: &ContextConfig,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    loaded_agents_md: LoadedAgentsMd,
+    skills: &SkillsRuntimeView,
+    available_tools: &[ToolSpec],
+    apply_patch_surface: ApplyPatchSurface,
+    continuation: Option<&ContinuationResolution>,
+    default_external_ingress: Option<&ExternalTriggerRecord>,
+) -> Result<EffectivePrompt> {
+    build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
+        storage,
+        session,
+        execution,
+        current_message,
+        config,
+        workspace_root,
+        agent_home,
+        identity,
+        loaded_agents_md,
+        skills,
+        available_tools,
+        ToolPromptContext {
+            apply_patch_surface: Some(apply_patch_surface),
+        },
+        continuation,
+        default_external_ingress,
+    )
+}
+
+fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
+    storage: &AppStorage,
+    session: &AgentState,
+    execution: &ExecutionSnapshot,
+    current_message: &MessageEnvelope,
+    config: &ContextConfig,
+    workspace_root: &Path,
+    agent_home: &Path,
+    identity: &AgentIdentityView,
+    loaded_agents_md: LoadedAgentsMd,
+    skills: &SkillsRuntimeView,
+    available_tools: &[ToolSpec],
+    tool_prompt_context: ToolPromptContext,
     continuation: Option<&ContinuationResolution>,
     default_external_ingress: Option<&ExternalTriggerRecord>,
 ) -> Result<EffectivePrompt> {
@@ -321,9 +421,7 @@ pub fn build_effective_prompt_with_default_external_ingress(
         &loaded_agents_md,
         skills,
         available_tools,
-        ToolPromptContext {
-            apply_patch_surface: Some(apply_patch_surface),
-        },
+        tool_prompt_context,
     );
     let context_sections = built_context.sections;
     let rendered_system_prompt = render_sections(&system_sections);

@@ -52,7 +52,7 @@ impl RuntimeHandle {
             );
             let loaded_agents_md = self.loaded_agents_md_for_state(&state)?;
             let skills = self.skills_runtime_view_for_state(&state, &identity)?;
-            build_effective_prompt_with_default_external_ingress(
+            build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
                 &self.inner.storage,
                 &state,
                 &execution,
@@ -208,7 +208,7 @@ impl RuntimeHandle {
         let execution = self.execution_snapshot().await?;
         let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
         let skills = self.skills_runtime_view_for_state(&agent, &identity)?;
-        build_effective_prompt_with_default_external_ingress(
+        build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
             &self.inner.storage,
             &agent,
             &execution,
@@ -289,7 +289,7 @@ impl RuntimeHandle {
             )
         });
         let context_config = self.current_context_config().await;
-        build_effective_prompt(
+        build_effective_prompt_with_apply_patch_surface(
             &self.inner.storage,
             &AgentState::new(agent_id.to_string()),
             &execution.snapshot(),
