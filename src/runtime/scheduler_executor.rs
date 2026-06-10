@@ -360,6 +360,24 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
 
             scheduler::append_scheduler_decision(&self.runtime.inner.storage, &decision)?;
+            let claimed =
+                self.runtime
+                    .inner
+                    .storage
+                    .try_claim_queued_message(&QueueEntryRecord {
+                        message_id: candidate.message.id.clone(),
+                        agent_id: candidate.message.agent_id.clone(),
+                        priority: candidate.message.priority.clone(),
+                        status: QueueEntryStatus::Dequeued,
+                        created_at: candidate.message.created_at,
+                        updated_at: Utc::now(),
+                    })?;
+            if !claimed {
+                let _ = guard.queue.pop_if_next(&candidate.message.id);
+                guard.state.pending = guard.queue.len();
+                self.runtime.inner.storage.write_agent(&guard.state)?;
+                return Ok(RunLoopPoll::Idle);
+            }
             let message = guard
                 .queue
                 .pop_if_next(&candidate.message.id)
