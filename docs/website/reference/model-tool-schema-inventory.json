@@ -1222,7 +1222,7 @@
       "result_envelope": {
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
-        "model_rendering": "canonical_json_envelope",
+        "model_rendering": "custom_text_receipt",
         "success_result": "tool-specific JSON payload"
       },
       "stability": "experimental"
