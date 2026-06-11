@@ -147,6 +147,128 @@ async fn agent_home_workspace_ids_are_unique_per_agent_while_alias_remains_local
 }
 
 #[tokio::test]
+async fn runtime_startup_migrates_legacy_agent_home_attachment_alias() {
+    let dir = tempdir().unwrap();
+    let agent_id = "default";
+    let canonical_agent_home_id = crate::types::agent_home_workspace_id(agent_id);
+    let storage = crate::storage::AppStorage::new_for_agent(dir.path(), agent_id).unwrap();
+    let preserved_cwd = dir.path().join("notes");
+    std::fs::create_dir_all(&preserved_cwd).unwrap();
+    let mut state = crate::types::AgentState::new(agent_id);
+    state.attached_workspaces = vec![
+        AGENT_HOME_WORKSPACE_ID.to_string(),
+        canonical_agent_home_id.clone(),
+    ];
+    state.active_workspace_entry = Some(crate::types::ActiveWorkspaceEntry {
+        workspace_id: AGENT_HOME_WORKSPACE_ID.to_string(),
+        workspace_anchor: dir.path().to_path_buf(),
+        execution_root_id: "canonical_root:agent_home".into(),
+        execution_root: dir.path().to_path_buf(),
+        projection_kind: WorkspaceProjectionKind::CanonicalRoot,
+        access_mode: WorkspaceAccessMode::ExclusiveWrite,
+        cwd: preserved_cwd.clone(),
+        occupancy_id: None,
+        projection_metadata: None,
+    });
+    storage.write_agent(&state).unwrap();
+
+    let runtime = RuntimeHandle::new(
+        agent_id,
+        dir.path().to_path_buf(),
+        InitialWorkspaceBinding::Detached,
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        agent_id.into(),
+        context_config(),
+    )
+    .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+
+    assert_eq!(
+        state.attached_workspaces,
+        vec![canonical_agent_home_id.clone()]
+    );
+    assert_eq!(
+        state
+            .active_workspace_entry
+            .as_ref()
+            .map(|entry| entry.workspace_id.as_str()),
+        Some(canonical_agent_home_id.as_str())
+    );
+    assert_eq!(
+        state
+            .active_workspace_entry
+            .as_ref()
+            .map(|entry| &entry.cwd),
+        Some(&preserved_cwd)
+    );
+    assert!(runtime
+        .all_events()
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "agent_home_workspace_bindings_migrated"));
+}
+
+#[tokio::test]
+async fn detach_workspace_allows_only_redundant_legacy_agent_home_alias() {
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+    let agent_id = host.config().default_agent_id.as_str();
+    let canonical_agent_home_id = crate::types::agent_home_workspace_id(agent_id);
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.attached_workspaces = vec![
+            AGENT_HOME_WORKSPACE_ID.to_string(),
+            canonical_agent_home_id.clone(),
+        ];
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    runtime
+        .detach_workspace(AGENT_HOME_WORKSPACE_ID)
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+
+    assert_eq!(state.attached_workspaces, vec![canonical_agent_home_id]);
+    let err = runtime
+        .detach_workspace(AGENT_HOME_WORKSPACE_ID)
+        .await
+        .expect_err("effective AgentHome should remain protected");
+    assert!(err.to_string().contains("AgentHome cannot be detached"));
+}
+
+#[tokio::test]
+async fn detach_workspace_rejects_canonical_agent_home_when_inactive() {
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+    let agent_id = host.config().default_agent_id.as_str();
+    let canonical_agent_home_id = crate::types::agent_home_workspace_id(agent_id);
+    let project = tempdir().unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.attached_workspaces =
+            vec![canonical_agent_home_id.clone(), "ws-project".to_string()];
+        guard.state.active_workspace_entry = Some(crate::types::ActiveWorkspaceEntry {
+            workspace_id: "ws-project".into(),
+            workspace_anchor: project.path().to_path_buf(),
+            execution_root_id: "canonical_root:ws-project".into(),
+            execution_root: project.path().to_path_buf(),
+            projection_kind: WorkspaceProjectionKind::CanonicalRoot,
+            access_mode: WorkspaceAccessMode::ExclusiveWrite,
+            cwd: project.path().to_path_buf(),
+            occupancy_id: None,
+            projection_metadata: None,
+        });
+        runtime.inner.storage.write_agent(&guard.state).unwrap();
+    }
+
+    let err = runtime
+        .detach_workspace(&canonical_agent_home_id)
+        .await
+        .expect_err("canonical AgentHome should remain protected when inactive");
+    assert!(err.to_string().contains("AgentHome cannot be detached"));
+}
+
+#[tokio::test]
 async fn use_workspace_rejects_nonexistent_path() {
     let (_home, _host, runtime) = host_backed_test_runtime().await;
     let nonexistent = runtime.agent_home().join("__holon_test_nonexistent_dir__");

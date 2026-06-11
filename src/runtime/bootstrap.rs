@@ -573,6 +573,25 @@ fn prepare_runtime_storage(
         }
     }
 
+    if workspace::canonicalize_agent_home_bindings(&mut state, storage.data_dir(), &agent_id)? {
+        let workspace = workspace::agent_home_workspace_entry(storage.data_dir(), &agent_id);
+        let known = storage.latest_workspace_entries()?;
+        if !known
+            .iter()
+            .any(|entry| entry.workspace_id == workspace.workspace_id)
+        {
+            storage.append_workspace_entry(&workspace)?;
+        }
+        storage.append_event(&AuditEvent::new(
+            "agent_home_workspace_bindings_migrated",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "workspace_id": workspace.workspace_id,
+                "legacy_workspace_id": crate::types::AGENT_HOME_WORKSPACE_ID,
+            }),
+        ))?;
+    }
+
     if state
         .worktree_session
         .as_ref()
