@@ -17,6 +17,7 @@ use crate::{
     },
     model_discovery::{discovery_cache_path, load_discovery_cache_at, ModelDiscoveryCacheFile},
     provider::ProviderNativeWebSearchKind,
+    types::{ViewImageSelectedMode, ViewImageVisionCandidate, ViewImageVisionSelection},
     web::{WebProviderKind, WebSearchMode},
 };
 
@@ -942,6 +943,80 @@ impl RuntimeModelCatalog {
                 .then_with(|| left.model_ref.as_string().cmp(&right.model_ref.as_string()))
         });
         models
+    }
+
+    pub fn select_view_image_vision_model(
+        &self,
+        base_context_config: &ContextConfig,
+        model_override: Option<&ModelRef>,
+        pending_fallback_model: Option<&ModelRef>,
+    ) -> ViewImageVisionSelection {
+        let chain = self.provider_chain_for_turn(model_override, pending_fallback_model);
+        let primary = chain
+            .first()
+            .cloned()
+            .unwrap_or_else(|| self.effective_model(model_override));
+        let mut candidates = Vec::new();
+        let mut selected = None;
+
+        for model_ref in &chain {
+            let policy = self.built_in_catalog.resolve_policy(
+                model_ref,
+                &self.model_overrides,
+                &self.discovered_models,
+                self.unknown_model_fallback.as_ref(),
+                base_context_config,
+                self.configured_runtime_max_output_tokens,
+            );
+            let image_input = policy.capabilities.image_input;
+            let reason = if image_input {
+                "model_advertises_image_input"
+            } else {
+                "model_lacks_image_input"
+            };
+            candidates.push(ViewImageVisionCandidate {
+                provider: model_ref.provider.as_str().to_string(),
+                model: model_ref.model.clone(),
+                model_ref: model_ref.as_string(),
+                image_input,
+                reason: reason.to_string(),
+            });
+            if image_input && selected.is_none() {
+                selected = Some(model_ref.clone());
+            }
+        }
+
+        let Some(selected) = selected else {
+            return ViewImageVisionSelection {
+                selected_mode: ViewImageSelectedMode::Unavailable,
+                vision_provider: None,
+                vision_model: None,
+                selection_reason: "no_configured_model_supports_image_input".to_string(),
+                primary_provider: Some(primary.provider.as_str().to_string()),
+                primary_model: Some(primary.model),
+                candidates,
+            };
+        };
+
+        let primary_supports_image = selected == primary;
+        ViewImageVisionSelection {
+            selected_mode: if primary_supports_image {
+                ViewImageSelectedMode::NativeImageWithObservation
+            } else {
+                ViewImageSelectedMode::VisionAdapter
+            },
+            vision_provider: Some(selected.provider.as_str().to_string()),
+            vision_model: Some(selected.model.clone()),
+            selection_reason: if primary_supports_image {
+                "current_primary_model_supports_image_input"
+            } else {
+                "primary_model_lacks_image_input"
+            }
+            .to_string(),
+            primary_provider: Some(primary.provider.as_str().to_string()),
+            primary_model: Some(primary.model),
+            candidates,
+        }
     }
 }
 
@@ -6261,6 +6336,75 @@ mod tests {
             unknown.source,
             crate::model_catalog::ModelMetadataSource::UnknownFallback
         );
+    }
+
+    #[test]
+    fn view_image_vision_selection_uses_primary_when_image_capable() {
+        let fixture = test_app_config("openai/gpt-5.4", &["anthropic/claude-sonnet-4-6"]);
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+        let selection =
+            catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
+
+        assert_eq!(
+            selection.selected_mode,
+            crate::types::ViewImageSelectedMode::NativeImageWithObservation
+        );
+        assert_eq!(selection.vision_provider.as_deref(), Some("openai"));
+        assert_eq!(selection.vision_model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(
+            selection.selection_reason,
+            "current_primary_model_supports_image_input"
+        );
+    }
+
+    #[test]
+    fn view_image_vision_selection_uses_fallback_adapter_when_primary_lacks_image() {
+        let fixture = test_app_config("arcee/trinity-mini", &["openai/gpt-5.4-mini"]);
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+        let selection =
+            catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
+
+        assert_eq!(
+            selection.selected_mode,
+            crate::types::ViewImageSelectedMode::VisionAdapter
+        );
+        assert_eq!(selection.primary_provider.as_deref(), Some("arcee"));
+        assert_eq!(selection.primary_model.as_deref(), Some("trinity-mini"));
+        assert_eq!(selection.vision_provider.as_deref(), Some("openai"));
+        assert_eq!(selection.vision_model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(
+            selection.selection_reason,
+            "primary_model_lacks_image_input"
+        );
+        assert_eq!(selection.candidates.len(), 2);
+        assert!(!selection.candidates[0].image_input);
+        assert!(selection.candidates[1].image_input);
+    }
+
+    #[test]
+    fn view_image_vision_selection_reports_unavailable_without_image_capable_model() {
+        let fixture = test_app_config("arcee/trinity-mini", &["arcee/trinity-large-preview"]);
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+        let selection =
+            catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
+
+        assert_eq!(
+            selection.selected_mode,
+            crate::types::ViewImageSelectedMode::Unavailable
+        );
+        assert_eq!(
+            selection.selection_reason,
+            "no_configured_model_supports_image_input"
+        );
+        assert!(selection.vision_provider.is_none());
+        assert_eq!(selection.candidates.len(), 2);
+        assert!(selection
+            .candidates
+            .iter()
+            .all(|candidate| !candidate.image_input));
     }
 
     #[test]

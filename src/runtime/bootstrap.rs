@@ -321,6 +321,17 @@ impl RuntimeHandle {
         self.inner.context_config.read().await.clone()
     }
 
+    pub(crate) async fn current_view_image_vision_selection(
+        &self,
+    ) -> Result<crate::types::ViewImageVisionSelection> {
+        let state = self.agent_state().await?;
+        Ok(self.inner.model_catalog.select_view_image_vision_model(
+            &self.inner.base_context_config,
+            state.model_override.as_ref(),
+            state.pending_fallback_model.as_ref(),
+        ))
+    }
+
     async fn model_config_with_fresh_discovery_cache(&self) -> Option<AppConfig> {
         let Some(reconfig) = self.inner.provider_reconfig.as_ref() else {
             return None;
