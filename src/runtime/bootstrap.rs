@@ -354,8 +354,10 @@ impl RuntimeHandle {
             .vision_model
             .as_deref()
             .ok_or_else(|| anyhow!("vision selection did not include a model"))?;
-        if provider_name != crate::config::ProviderId::OPENAI
-            && provider_name != crate::config::ProviderId::OPENAI_CODEX
+        if !self
+            .inner
+            .model_catalog
+            .provider_supports_view_image_observation(provider_name)
         {
             return Err(anyhow!(
                 "vision model {provider_name}/{model_name} is not supported by ViewImage observation generation yet"

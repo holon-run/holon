@@ -103,7 +103,7 @@ pub(crate) async fn execute(
 fn vision_adapter_unavailable(selection: ViewImageVisionSelection) -> anyhow::Error {
     ToolError::new(
         "vision_adapter_unavailable",
-        "ViewImage requires a model with image input support, but no configured provider/model advertises image_input.",
+        "ViewImage requires an OpenAI-compatible model with image input support, but no configured provider/model can generate visual observations.",
     )
     .with_details(json!({
         "selected_mode": selection.selected_mode,
@@ -112,7 +112,7 @@ fn vision_adapter_unavailable(selection: ViewImageVisionSelection) -> anyhow::Er
         "primary_model": selection.primary_model,
         "candidates": selection.candidates,
     }))
-    .with_recovery_hint("configure a primary or fallback model whose metadata advertises image_input")
+    .with_recovery_hint("configure a primary or fallback OpenAI-compatible vision model whose metadata advertises image_input")
     .into()
 }
 

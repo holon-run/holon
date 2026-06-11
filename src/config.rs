@@ -91,6 +91,7 @@ pub struct RuntimeModelCatalog {
     pub default_model: ModelRef,
     pub fallback_models: Vec<ModelRef>,
     pub disable_provider_fallback: bool,
+    pub provider_transports: HashMap<ProviderId, ProviderTransportKind>,
     pub built_in_catalog: BuiltInModelCatalog,
     pub discovered_models: HashMap<ModelRef, BuiltInModelMetadata>,
     pub model_overrides: HashMap<ModelRef, ModelRuntimeOverride>,
@@ -799,6 +800,11 @@ impl RuntimeModelCatalog {
             default_model: config.default_model.clone(),
             fallback_models: config.fallback_models.clone(),
             disable_provider_fallback: config.provider_fallback_disabled(),
+            provider_transports: config
+                .providers
+                .iter()
+                .map(|(provider, config)| (provider.clone(), config.transport))
+                .collect(),
             built_in_catalog: BuiltInModelCatalog::default(),
             discovered_models: config
                 .model_discovery_cache
@@ -970,10 +976,16 @@ impl RuntimeModelCatalog {
                 self.configured_runtime_max_output_tokens,
             );
             let image_input = policy.capabilities.image_input;
-            let reason = if image_input {
+            let supported_transport = self
+                .provider_transports
+                .get(&model_ref.provider)
+                .is_some_and(|transport| transport.supports_view_image_observation_generation());
+            let reason = if !image_input {
+                "model_lacks_image_input"
+            } else if supported_transport {
                 "model_advertises_image_input"
             } else {
-                "model_lacks_image_input"
+                "provider_transport_unsupported_for_view_image_observation"
             };
             candidates.push(ViewImageVisionCandidate {
                 provider: model_ref.provider.as_str().to_string(),
@@ -982,7 +994,7 @@ impl RuntimeModelCatalog {
                 image_input,
                 reason: reason.to_string(),
             });
-            if image_input && selected.is_none() {
+            if image_input && supported_transport && selected.is_none() {
                 selected = Some(model_ref.clone());
             }
         }
@@ -992,13 +1004,17 @@ impl RuntimeModelCatalog {
                 selected_mode: ViewImageSelectedMode::Unavailable,
                 vision_provider: None,
                 vision_model: None,
-                selection_reason: "no_configured_model_supports_image_input".to_string(),
+                selection_reason: "no_configured_model_supports_view_image_observation".to_string(),
                 primary_provider: Some(primary.provider.as_str().to_string()),
                 primary_model: Some(primary.model),
                 candidates,
             };
         };
 
+        let primary_image_input = candidates
+            .first()
+            .map(|candidate| candidate.image_input)
+            .unwrap_or(false);
         let primary_supports_image = selected == primary;
         ViewImageVisionSelection {
             selected_mode: if primary_supports_image {
@@ -1010,6 +1026,8 @@ impl RuntimeModelCatalog {
             vision_model: Some(selected.model.clone()),
             selection_reason: if primary_supports_image {
                 "current_primary_model_supports_image_input"
+            } else if primary_image_input {
+                "primary_provider_transport_unsupported_for_view_image_observation"
             } else {
                 "primary_model_lacks_image_input"
             }
@@ -1019,6 +1037,15 @@ impl RuntimeModelCatalog {
             candidates,
         }
     }
+
+    pub fn provider_supports_view_image_observation(&self, provider: &str) -> bool {
+        self.provider_transports
+            .iter()
+            .any(|(provider_id, transport)| {
+                provider_id.as_str() == provider
+                    && transport.supports_view_image_observation_generation()
+            })
+    }
 }
 
 impl Default for RuntimeModelCatalog {
@@ -1027,6 +1054,7 @@ impl Default for RuntimeModelCatalog {
             default_model: ModelRef::parse("openai/gpt-5.4").expect("valid default model ref"),
             fallback_models: Vec::new(),
             disable_provider_fallback: false,
+            provider_transports: HashMap::new(),
             built_in_catalog: BuiltInModelCatalog::default(),
             discovered_models: HashMap::new(),
             model_overrides: HashMap::new(),
@@ -1145,6 +1173,13 @@ impl ProviderTransportKind {
             Self::AnthropicMessages => "anthropic_messages",
             Self::GeminiGenerateContent => "gemini_generate_content",
         }
+    }
+
+    pub fn supports_view_image_observation_generation(self) -> bool {
+        matches!(
+            self,
+            Self::OpenAiCodexResponses | Self::OpenAiResponses | Self::OpenAiChatCompletions
+        )
     }
 }
 
@@ -6415,6 +6450,28 @@ mod tests {
     fn view_image_vision_selection_uses_configured_custom_fallback_capabilities() {
         let mut fixture = test_app_config("arcee/trinity-mini", &["custom-openai/my-vision-model"]);
         let custom_model = ModelRef::parse("custom-openai/my-vision-model").unwrap();
+        fixture.config.providers.insert(
+            custom_model.provider.clone(),
+            ProviderRuntimeConfig {
+                id: custom_model.provider.clone(),
+                transport: ProviderTransportKind::OpenAiResponses,
+                base_url: "https://api.example.com/v1".into(),
+                auth: ProviderAuthConfig {
+                    source: CredentialSource::None,
+                    kind: CredentialKind::None,
+                    env: None,
+                    profile: None,
+                    external: None,
+                },
+                credential: None,
+                credential_store_path: None,
+                codex_home: None,
+                originator: None,
+                reasoning_effort: None,
+                context_management: Default::default(),
+                builtin_web_search: None,
+            },
+        );
         let override_config = ModelRuntimeOverride {
             capabilities: Some(ModelCapabilityOverride {
                 image_input: Some(true),
@@ -6462,6 +6519,46 @@ mod tests {
     }
 
     #[test]
+    fn view_image_vision_selection_skips_image_capable_unsupported_transports() {
+        let fixture = test_app_config(
+            "anthropic/claude-sonnet-4-6",
+            &["gemini/gemini-2.5-pro", "openai/gpt-5.4-mini"],
+        );
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+        let selection =
+            catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
+
+        assert_eq!(
+            selection.selected_mode,
+            crate::types::ViewImageSelectedMode::VisionAdapter
+        );
+        assert_eq!(selection.primary_provider.as_deref(), Some("anthropic"));
+        assert_eq!(
+            selection.primary_model.as_deref(),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(selection.vision_provider.as_deref(), Some("openai"));
+        assert_eq!(selection.vision_model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(
+            selection.selection_reason,
+            "primary_provider_transport_unsupported_for_view_image_observation"
+        );
+        assert_eq!(
+            selection.candidates[0].reason,
+            "provider_transport_unsupported_for_view_image_observation"
+        );
+        assert_eq!(
+            selection.candidates[1].reason,
+            "provider_transport_unsupported_for_view_image_observation"
+        );
+        assert_eq!(
+            selection.candidates[2].reason,
+            "model_advertises_image_input"
+        );
+    }
+
+    #[test]
     fn view_image_vision_selection_reports_unavailable_without_image_capable_model() {
         let fixture = test_app_config("arcee/trinity-mini", &["arcee/trinity-large-preview"]);
         let catalog = RuntimeModelCatalog::from_config(&fixture.config);
@@ -6475,7 +6572,7 @@ mod tests {
         );
         assert_eq!(
             selection.selection_reason,
-            "no_configured_model_supports_image_input"
+            "no_configured_model_supports_view_image_observation"
         );
         assert!(selection.vision_provider.is_none());
         assert_eq!(selection.candidates.len(), 2);
