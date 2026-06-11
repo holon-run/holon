@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    runtime::RuntimeHandle,
+    runtime::{RuntimeHandle, ViewImageObservationCacheKey},
     system::ExecutionScopeKind,
     tool::{helpers::invalid_tool_input, spec::typed_spec, ToolError, ToolResult},
     types::{
@@ -26,6 +26,8 @@ use super::{serialize_success, BuiltinToolDefinition};
 use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 
 pub(crate) const NAME: &str = "ViewImage";
+const VISUAL_OBSERVATION_SCHEMA: &str = "visual_observation.v1";
+const VIEW_IMAGE_OBSERVATION_GENERATION_POLICY: &str = "openai-compatible-image-input.v1";
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 50_000_000;
 
@@ -61,7 +63,21 @@ pub(crate) async fn execute(
     let resolved_path = execution.workspace.resolve_read_path(&path)?;
     let image = read_visual_reference(&resolved_path)?;
     let visual_reference = image.visual_reference;
+    let cache_key = observation_cache_key(&visual_reference, &prompt);
     let vision_selection = runtime.current_view_image_vision_selection().await?;
+    if let Some(observation) = runtime.cached_view_image_observation(&cache_key).await {
+        let selected_mode = vision_selection.selected_mode.clone();
+        return serialize_success(
+            NAME,
+            &ViewImageResult {
+                visual_reference,
+                observation,
+                selected_mode,
+                vision_selection,
+                summary_text: Some("ViewImage reused cached visual observation".to_string()),
+            },
+        );
+    }
     if vision_selection.selected_mode == ViewImageSelectedMode::Unavailable {
         return Err(vision_adapter_unavailable(vision_selection));
     }
@@ -76,6 +92,9 @@ pub(crate) async fn execute(
         &vision_selection,
     )
     .map_err(|error| vision_observation_failed(&vision_selection, error))?;
+    runtime
+        .cache_view_image_observation(cache_key, observation.clone())
+        .await;
     let summary_text = Some(format!(
         "ViewImage generated a visual observation with {}/{} for {}",
         vision_selection
@@ -212,6 +231,18 @@ fn vision_observation_failed(
     .into()
 }
 
+fn observation_cache_key(
+    visual_reference: &ViewImageVisualReference,
+    prompt: &str,
+) -> ViewImageObservationCacheKey {
+    ViewImageObservationCacheKey {
+        visual_reference_id: visual_reference.id.clone(),
+        prompt: prompt.to_string(),
+        observation_schema: VISUAL_OBSERVATION_SCHEMA.to_string(),
+        generation_policy: VIEW_IMAGE_OBSERVATION_GENERATION_POLICY.to_string(),
+    }
+}
+
 fn parse_visual_observation(
     raw: &str,
     visual_reference: &ViewImageVisualReference,
@@ -227,9 +258,9 @@ fn parse_visual_observation(
             "vision adapter response `type` must be visual_observation"
         ));
     }
-    if object.get("schema").and_then(Value::as_str) != Some("visual_observation.v1") {
+    if object.get("schema").and_then(Value::as_str) != Some(VISUAL_OBSERVATION_SCHEMA) {
         return Err(anyhow!(
-            "vision adapter response `schema` must be visual_observation.v1"
+            "vision adapter response `schema` must be {VISUAL_OBSERVATION_SCHEMA}"
         ));
     }
     let summary = object
@@ -241,7 +272,7 @@ fn parse_visual_observation(
         .to_string();
     Ok(ViewImageObservation {
         kind: "visual_observation".to_string(),
-        schema: "visual_observation.v1".to_string(),
+        schema: VISUAL_OBSERVATION_SCHEMA.to_string(),
         visual_reference_id: visual_reference.id.clone(),
         prompt: prompt.to_string(),
         generated_by: ViewImageGeneratedBy {
@@ -718,6 +749,18 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("`schema`"));
+    }
+
+    #[test]
+    fn observation_cache_key_includes_schema_and_generation_policy() {
+        let reference = test_visual_reference();
+
+        let key = observation_cache_key(&reference, "What is visible?");
+
+        assert_eq!(key.visual_reference_id, reference.id);
+        assert_eq!(key.prompt, "What is visible?");
+        assert_eq!(key.observation_schema, "visual_observation.v1");
+        assert_eq!(key.generation_policy, "openai-compatible-image-input.v1");
     }
 
     #[test]
