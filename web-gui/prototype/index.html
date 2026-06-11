@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Holon Web GUI Prototype</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell" data-app-view="dashboard" data-panel="closed" data-nav-collapsed="false">
+      <aside class="sidebar" aria-label="Holon navigation">
+        <div class="window-controls" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+
+        <button class="nav-collapse" type="button" data-toggle-nav aria-label="Collapse navigation" title="Collapse navigation">‹</button>
+
+        <nav class="global-nav" aria-label="Global navigation">
+          <button class="is-active" type="button" data-nav="dashboard" aria-label="Dashboard" title="Dashboard">
+            <span>◎</span>
+            <strong>Dashboard</strong>
+          </button>
+          <button type="button" data-nav="search" aria-label="Search" title="Search">
+            <span>⌕</span>
+            <strong>Search</strong>
+          </button>
+          <button type="button" data-nav="settings" aria-label="Settings" title="Settings">
+            <span>⚙</span>
+            <strong>Settings</strong>
+          </button>
+        </nav>
+
+        <section class="side-section agent-switcher" aria-label="Active agents">
+          <div class="side-heading">Active agents</div>
+          <button class="agent-row is-selected" type="button" data-open-agent="holon-pm">
+            <span class="agent-badge">PM</span>
+            <span>
+              <strong>holon-pm</strong>
+              <small>asleep · current work completed</small>
+            </span>
+          </button>
+          <button class="agent-row" type="button" data-open-agent="holon-dev">
+            <span class="agent-badge muted">DEV</span>
+            <span>
+              <strong>holon-dev</strong>
+              <small>stopped · no active workspace</small>
+            </span>
+          </button>
+        </section>
+
+        <div class="sidebar-bottom">
+          <button class="connection-status" type="button">
+            <span class="runtime-dot"></span>
+            <span>
+              <strong>local</strong>
+              <small>connected · runtime.sqlite</small>
+            </span>
+          </button>
+        </div>
+      </aside>
+
+      <main class="main-shell">
+        <header class="topbar">
+          <div class="topbar-primary">
+            <div class="top-title">
+              <button class="back-button" type="button" data-nav="dashboard" aria-label="Back to dashboard">←</button>
+              <div>
+                <strong data-page-title>Dashboard</strong>
+                <span data-page-subtitle>2 agents · 1 waiting signal</span>
+              </div>
+            </div>
+            <div class="top-actions">
+              <button type="button" data-toggle-panel aria-label="Toggle side panel" title="Toggle side panel">▭</button>
+            </div>
+          </div>
+
+          <div class="agent-top-context" aria-label="Agent conversation context" data-current-work="present">
+            <button class="work-summary" type="button" data-open-panel="workitem">
+              <span>Current work item</span>
+              <strong>Initialize Holon first-party local Web GUI design spec and clickable prototype</strong>
+              <em>completed</em>
+            </button>
+            <button class="work-summary empty-work" type="button">
+              <span>Current work item</span>
+              <strong>No current work item</strong>
+              <em>ready</em>
+            </button>
+            <div class="display-level" aria-label="Display level">
+              <button class="is-active" type="button">Info</button>
+              <button type="button">Verbose</button>
+              <button type="button">Debug</button>
+            </div>
+          </div>
+        </header>
+
+        <section class="page dashboard-page" data-page="dashboard" aria-label="Dashboard">
+          <div class="page-inner dashboard-inner">
+            <section class="dashboard-section">
+              <div class="section-head">
+                <div>
+                  <span class="eyebrow">Agents</span>
+                  <h2>Agent roster</h2>
+                </div>
+                <button type="button">Refresh</button>
+              </div>
+
+              <div class="agent-roster">
+                <article class="agent-card is-primary" tabindex="0" role="button" data-open-agent="holon-pm">
+                  <div class="agent-card-head">
+                    <span class="agent-badge">PM</span>
+                    <div>
+                      <strong>holon-pm</strong>
+                      <small>public · project manager profile</small>
+                    </div>
+                    <span class="state-chip asleep">asleep</span>
+                  </div>
+                  <p>Initialize Holon first-party local Web GUI design spec and clickable prototype.</p>
+                  <div class="agent-detail-grid">
+                    <div>
+                      <span>Current work</span>
+                      <strong>completed · web-gui prototype</strong>
+                    </div>
+                    <div>
+                      <span>Workspace</span>
+                      <strong>holon · web-gui-prototype</strong>
+                    </div>
+                    <div>
+                      <span>Attention</span>
+                      <strong>1 waiting signal</strong>
+                    </div>
+                    <div>
+                      <span>Model</span>
+                      <strong>gpt-5-high · reasoning high</strong>
+                    </div>
+                    <div>
+                      <span>Last brief</span>
+                      <strong>prototype completed and validated</strong>
+                    </div>
+                  </div>
+                  <footer>
+                    <span>asleep · ready for operator input</span>
+                    <button type="button" aria-label="Open conversation">→</button>
+                  </footer>
+                </article>
+
+                <article class="agent-card" tabindex="0" role="button" data-open-agent="holon-dev">
+                  <div class="agent-card-head">
+                    <span class="agent-badge muted">DEV</span>
+                    <div>
+                      <strong>holon-dev</strong>
+                      <small>public · implementation profile</small>
+                    </div>
+                    <span class="state-chip stopped">stopped</span>
+                  </div>
+                  <p>No active workspace is bound in this prototype fixture.</p>
+                  <div class="agent-detail-grid">
+                    <div>
+                      <span>Current work</span>
+                      <strong>none</strong>
+                    </div>
+                    <div>
+                      <span>Workspace</span>
+                      <strong>not bound</strong>
+                    </div>
+                    <div>
+                      <span>Attention</span>
+                      <strong>none</strong>
+                    </div>
+                    <div>
+                      <span>Model</span>
+                      <strong>runtime default</strong>
+                    </div>
+                    <div>
+                      <span>Last brief</span>
+                      <strong>stored state available</strong>
+                    </div>
+                  </div>
+                  <footer>
+                    <span>stopped · no active workspace</span>
+                    <button type="button" aria-label="Open conversation">→</button>
+                  </footer>
+                </article>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page agent-page" data-page="agent" aria-label="Agent conversation">
+          <div class="agent-workbench">
+            <section class="conversation-pane">
+              <div class="message-list" data-message-list></div>
+
+              <form class="composer" aria-label="Send operator input to holon-pm">
+                <textarea
+                  data-composer-input
+                  rows="2"
+                  placeholder="Send operator input to holon-pm..."
+                ></textarea>
+                <div class="composer-toolbar">
+                  <div class="composer-left">
+                    <button type="button" aria-label="Attach">＋</button>
+                  </div>
+                  <div class="composer-right">
+                    <button class="model-button" type="button" data-open-panel="model">gpt-5-high⌄</button>
+                    <button class="send-button" type="submit" aria-label="Send">↑</button>
+                  </div>
+                </div>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section class="page placeholder-page" data-page="placeholder" aria-label="Placeholder">
+          <div class="page-inner">
+            <section class="summary-panel empty-state">
+              <span class="eyebrow" data-placeholder-label>Global surface</span>
+              <h1 data-placeholder-title>Search</h1>
+              <p data-placeholder-copy>
+                This global surface is reserved for cross-agent lookup and inspection. Agent-scoped work stays inside the selected agent conversation.
+              </p>
+            </section>
+          </div>
+        </section>
+      </main>
+
+      <aside class="side-panel" aria-label="Object side panel">
+        <div class="panel-header">
+          <div>
+            <span class="eyebrow">Inspector</span>
+            <strong data-panel-title>WorkItem detail</strong>
+          </div>
+          <button type="button" data-close-panel aria-label="Close side panel">×</button>
+        </div>
+
+        <div class="panel-tabs" aria-label="Panel examples">
+          <button class="is-active" type="button" data-panel-kind="workitem">WorkItem</button>
+          <button type="button" data-panel-kind="model">Model</button>
+          <button type="button" data-panel-kind="diff">Diff</button>
+          <button type="button" data-panel-kind="file">File</button>
+          <button type="button" data-panel-kind="web">Web</button>
+        </div>
+
+        <div class="panel-body">
+          <section class="panel-section" data-panel-section="workitem">
+            <div class="context-card current-work">
+              <div class="context-head">
+                <span class="eyebrow">Current work item</span>
+                <span class="state-chip completed">completed</span>
+              </div>
+              <h2>Initialize Holon first-party local Web GUI design spec and clickable prototype</h2>
+              <code>work_ad345d7d32bc92d</code>
+              <div class="spine-steps">
+                <span class="done">created</span>
+                <span class="done">picked</span>
+                <span class="done">workspace</span>
+                <span class="done">patched</span>
+                <span class="done">verified</span>
+                <span class="done">completed</span>
+              </div>
+            </div>
+
+            <div class="context-card">
+              <div class="context-head">
+                <span class="eyebrow">Work queue</span>
+              </div>
+              <div class="queue-grid">
+                <div><strong>7</strong><span>queued</span></div>
+                <div><strong>1</strong><span>waiting</span></div>
+                <div><strong>0</strong><span>blocked</span></div>
+                <div><strong>1</strong><span>recent completed</span></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel-section" data-panel-section="diff" hidden>
+            <div class="context-card">
+              <div class="context-head">
+                <span class="eyebrow">Diff preview</span>
+                <span class="state-chip completed">ready</span>
+              </div>
+              <div class="file-list compact">
+                <div><span>web-gui/prototype/index.html</span><small>layout changed</small></div>
+                <div><span>web-gui/prototype/styles.css</span><small>three-column shell</small></div>
+                <div><span>web-gui/prototype/prototype.js</span><small>panel interactions</small></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel-section" data-panel-section="model" hidden>
+            <div class="context-card">
+              <div class="context-head">
+                <span class="eyebrow">Next turn model</span>
+                <span class="state-chip completed">effective</span>
+              </div>
+              <div class="model-summary">
+                <div>
+                  <span>Model</span>
+                  <strong>gpt-5-high</strong>
+                </div>
+                <div>
+                  <span>Source</span>
+                  <strong>agent override</strong>
+                </div>
+                <div>
+                  <span>Reasoning</span>
+                  <strong>high</strong>
+                </div>
+                <div>
+                  <span>Fallback</span>
+                  <strong>enabled</strong>
+                </div>
+              </div>
+            </div>
+            <div class="context-card">
+              <div class="context-head">
+                <span class="eyebrow">Available models</span>
+              </div>
+              <div class="model-list">
+                <button class="is-selected" type="button">gpt-5-high <span>current</span></button>
+                <button type="button">gpt-5 <span>runtime default</span></button>
+                <button type="button">claude-code-sonnet <span>fallback</span></button>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel-section" data-panel-section="file" hidden>
+            <div class="context-card">
+              <div class="context-head">
+                <span class="eyebrow">File preview</span>
+              </div>
+              <p class="muted-copy">A file, image, or generated artifact opens here without replacing the conversation.</p>
+            </div>
+          </section>
+
+          <section class="panel-section" data-panel-section="web" hidden>
+            <div class="context-card">
+              <div class="context-head">
+                <span class="eyebrow">Web preview</span>
+              </div>
+              <p class="muted-copy">External pages and local previews can attach to the same side panel surface.</p>
+            </div>
+          </section>
+
+          <section class="context-card">
+            <div class="context-head">
+              <span class="eyebrow">Runtime activity evidence</span>
+            </div>
+            <div class="tool-list" data-tool-list></div>
+          </section>
+        </div>
+      </aside>
+    </div>
+
+    <script src="./prototype.js"></script>
+  </body>
+</html>
