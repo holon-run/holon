@@ -121,7 +121,9 @@ fn tool_success_result_contract(name: &str) -> &'static str {
 
 fn tool_model_rendering_contract(name: &str) -> &'static str {
     match name {
-        "ApplyPatch" | "ExecCommand" | "ExecCommandBatch" | "TaskOutput" => "custom_text_receipt",
+        "ApplyPatch" | "ExecCommand" | "ExecCommandBatch" | "TaskOutput" | "ViewImage" => {
+            "custom_text_receipt"
+        }
         _ => "canonical_json_envelope",
     }
 }

@@ -201,6 +201,7 @@ pub(crate) fn render_tool_result_for_model(result: &ToolResult) -> Result<String
         exec_command::NAME => exec_command::render_for_model(result),
         exec_command_batch::NAME => exec_command_batch::render_for_model(result),
         task_output::NAME => task_output::render_for_model(result),
+        view_image::NAME => view_image::render_for_model(result),
         _ => canonical_json_render(result),
     }
 }
