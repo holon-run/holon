@@ -1198,6 +1198,36 @@
       "stability": "stable"
     },
     {
+      "description": "Validate and record durable metadata for a local image file.\n\n`ViewImage` accepts a workspace-relative or absolute image path plus a required\nprompt describing what to inspect. It records provider-neutral evidence such as\nmedia type, byte count, SHA-256, and dimensions when they can be read from the\nfile header.\n\nThis skeleton does not yet call a vision model. Until visual observation\ngeneration is implemented, successful results return `status: \"unavailable\"`\nwith a structured explanation.\n",
+      "family": "local_environment",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "name": "ViewImage",
+      "related_surfaces": [],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "tool-specific JSON payload"
+      },
+      "stability": "experimental"
+    },
+    {
       "description": "Fetch a specific http or https URL through Holon's web policy, extract readable text, wrap it as untrusted external content, and return provenance including final URL, status, content type, truncation, and hash.\n",
       "family": "web",
       "freeform_grammar": null,
