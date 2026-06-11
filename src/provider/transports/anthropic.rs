@@ -765,7 +765,7 @@ fn conversation_message_to_api(
             content: Value::Array(vec![maybe_mark_cache_control(
                 json!({
                     "type": "text",
-                    "text": format!("{prompt}\n\n[image input omitted: this provider transport does not support ViewImage image lowering yet]"),
+                    "text": format!("{prompt}\n\n[image input omitted: this provider transport does not support image lowering yet]"),
                 }),
                 rolling_cache_block_index == Some(0),
             )]),

@@ -145,19 +145,15 @@ fn parse_visual_observation(
     let object = value
         .as_object()
         .ok_or_else(|| anyhow!("vision adapter response must be a JSON object"))?;
-    if let Some(kind) = object.get("type") {
-        if kind.as_str() != Some("visual_observation") {
-            return Err(anyhow!(
-                "vision adapter response `type` must be visual_observation"
-            ));
-        }
+    if object.get("type").and_then(Value::as_str) != Some("visual_observation") {
+        return Err(anyhow!(
+            "vision adapter response `type` must be visual_observation"
+        ));
     }
-    if let Some(schema) = object.get("schema") {
-        if schema.as_str() != Some("visual_observation.v1") {
-            return Err(anyhow!(
-                "vision adapter response `schema` must be visual_observation.v1"
-            ));
-        }
+    if object.get("schema").and_then(Value::as_str) != Some("visual_observation.v1") {
+        return Err(anyhow!(
+            "vision adapter response `schema` must be visual_observation.v1"
+        ));
     }
     let summary = object
         .get("summary")
@@ -588,7 +584,7 @@ mod tests {
     #[test]
     fn parses_visual_observation_json_from_markdown_fence() {
         let observation = parse_visual_observation(
-            "```json\n{\"summary\":\"A chart is visible.\"}\n```",
+            "```json\n{\"type\":\"visual_observation\",\"schema\":\"visual_observation.v1\",\"summary\":\"A chart is visible.\"}\n```",
             &test_visual_reference(),
             "Describe the image.",
             &test_vision_selection(),
@@ -622,6 +618,29 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("visual_observation.v1"));
+    }
+
+    #[test]
+    fn rejects_missing_visual_observation_type_or_schema() {
+        let error = parse_visual_observation(
+            r#"{"schema":"visual_observation.v1","summary":"x"}"#,
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("`type`"));
+
+        let error = parse_visual_observation(
+            r#"{"type":"visual_observation","summary":"x"}"#,
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("`schema`"));
     }
 
     #[test]

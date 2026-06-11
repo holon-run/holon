@@ -304,7 +304,7 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                 role: "user".to_string(),
                 parts: vec![GeminiPart {
                     text: Some(format!(
-                        "{prompt}\n\n[image input omitted: this provider transport does not support ViewImage image lowering yet]"
+                        "{prompt}\n\n[image input omitted: this provider transport does not support image lowering yet]"
                     )),
                     function_call: None,
                     function_response: None,
