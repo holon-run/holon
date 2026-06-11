@@ -66,6 +66,7 @@ pub fn load_skills_runtime_view(
         });
     }
 
+    discoverable_skills = retain_highest_precedence_skills(discoverable_skills);
     discoverable_skills.sort_by(|left, right| left.skill_id.cmp(&right.skill_id));
     let attached_skills = discoverable_skills.clone();
     let active_skill_ids = discoverable_skills
@@ -192,6 +193,39 @@ fn load_catalog_for_scope(scope: SkillScope, root: &Path) -> Result<Vec<SkillCat
         });
     }
     Ok(entries)
+}
+
+fn retain_highest_precedence_skills(skills: Vec<SkillCatalogEntry>) -> Vec<SkillCatalogEntry> {
+    let mut selected_by_name: std::collections::BTreeMap<String, SkillCatalogEntry> =
+        std::collections::BTreeMap::new();
+    for skill in skills {
+        match selected_by_name.get(&skill.name) {
+            Some(existing) if !skill_wins_catalog_selection(&skill, existing) => {}
+            _ => {
+                selected_by_name.insert(skill.name.clone(), skill);
+            }
+        }
+    }
+    selected_by_name.into_values().collect()
+}
+
+fn skill_wins_catalog_selection(
+    candidate: &SkillCatalogEntry,
+    existing: &SkillCatalogEntry,
+) -> bool {
+    let candidate_precedence = skill_precedence(candidate.scope);
+    let existing_precedence = skill_precedence(existing.scope);
+    candidate_precedence > existing_precedence
+        || (candidate_precedence == existing_precedence
+            && (&candidate.skill_id, &candidate.path) < (&existing.skill_id, &existing.path))
+}
+
+fn skill_precedence(scope: SkillScope) -> u8 {
+    match scope {
+        SkillScope::Agent => 3,
+        SkillScope::Workspace => 2,
+        SkillScope::User => 1,
+    }
 }
 
 #[derive(Default)]
@@ -1053,6 +1087,113 @@ mod tests {
             .discoverable_skills
             .iter()
             .all(|entry| entry.scope != SkillScope::User));
+    }
+
+    #[test]
+    fn same_name_skills_keep_highest_precedence_catalog_and_active_record() {
+        let dir = tempdir().unwrap();
+        let user_home = dir.path().join("user");
+        let agent_home = dir.path().join("agent");
+        let workspace = dir.path().join("workspace");
+        let user_skill = user_home.join(".agents/skills/ghx");
+        let agent_skill = agent_home.join("skills/ghx");
+        let workspace_skill = workspace.join(".agents/skills/ghx");
+        for (skill_dir, description) in [
+            (&user_skill, "user skill"),
+            (&agent_skill, "agent skill"),
+            (&workspace_skill, "workspace skill"),
+        ] {
+            fs::create_dir_all(skill_dir).unwrap();
+            fs::write(
+                skill_dir.join(SKILL_ENTRYPOINT),
+                format!("---\nname: ghx\ndescription: {description}\n---\nbody"),
+            )
+            .unwrap();
+        }
+
+        let view = load_skills_runtime_view(
+            SkillVisibility::DefaultAgent,
+            Some(&user_home),
+            &agent_home,
+            Some(&workspace),
+            &[
+                ActiveSkillRecord {
+                    skill_id: "workspace:ghx".into(),
+                    name: "ghx".into(),
+                    path: workspace_skill.join(SKILL_ENTRYPOINT),
+                    scope: SkillScope::Workspace,
+                    agent_id: "default".into(),
+                    activation_source: SkillActivationSource::ImplicitFromCatalog,
+                    activation_state: SkillActivationState::SessionActive,
+                    activated_at_turn: 1,
+                },
+                ActiveSkillRecord {
+                    skill_id: "agent:ghx".into(),
+                    name: "ghx".into(),
+                    path: agent_skill.join(SKILL_ENTRYPOINT),
+                    scope: SkillScope::Agent,
+                    agent_id: "default".into(),
+                    activation_source: SkillActivationSource::ImplicitFromCatalog,
+                    activation_state: SkillActivationState::SessionActive,
+                    activated_at_turn: 2,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(view.discoverable_skills.len(), 1);
+        assert_eq!(view.discoverable_skills[0].skill_id, "agent:ghx");
+        assert_eq!(view.discoverable_skills[0].description, "agent skill");
+        assert_eq!(view.active_skills.len(), 1);
+        assert_eq!(view.active_skills[0].skill_id, "agent:ghx");
+    }
+
+    #[test]
+    fn same_name_same_scope_skills_use_stable_tie_breaker() {
+        let dir = tempdir().unwrap();
+        let later_id_path = dir.path().join("z-skill").join(SKILL_ENTRYPOINT);
+        let earlier_id_path = dir.path().join("a-skill").join(SKILL_ENTRYPOINT);
+        let same_id_later_path = dir.path().join("z-root/skill").join(SKILL_ENTRYPOINT);
+        let same_id_earlier_path = dir.path().join("a-root/skill").join(SKILL_ENTRYPOINT);
+
+        let selected = retain_highest_precedence_skills(vec![
+            SkillCatalogEntry {
+                skill_id: "agent:z-skill".into(),
+                name: "shared".into(),
+                description: "later id".into(),
+                path: later_id_path,
+                scope: SkillScope::Agent,
+            },
+            SkillCatalogEntry {
+                skill_id: "agent:a-skill".into(),
+                name: "shared".into(),
+                description: "earlier id".into(),
+                path: earlier_id_path,
+                scope: SkillScope::Agent,
+            },
+            SkillCatalogEntry {
+                skill_id: "workspace:skill".into(),
+                name: "same-id".into(),
+                description: "later path".into(),
+                path: same_id_later_path,
+                scope: SkillScope::Workspace,
+            },
+            SkillCatalogEntry {
+                skill_id: "workspace:skill".into(),
+                name: "same-id".into(),
+                description: "earlier path".into(),
+                path: same_id_earlier_path,
+                scope: SkillScope::Workspace,
+            },
+        ]);
+
+        let by_name = selected
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.description.as_str()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(by_name.get("shared"), Some(&"earlier id"));
+        assert_eq!(by_name.get("same-id"), Some(&"earlier path"));
     }
 
     #[test]
