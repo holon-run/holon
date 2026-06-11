@@ -726,7 +726,7 @@ impl RuntimeHandle {
         let detached_agent_id = {
             let mut guard = self.inner.agent.lock().await;
             let canonical_agent_home_id = crate::types::agent_home_workspace_id(&guard.state.id);
-            if workspace_id == AGENT_HOME_WORKSPACE_ID {
+            if workspace_id == AGENT_HOME_WORKSPACE_ID || workspace_id == canonical_agent_home_id {
                 let redundant_legacy_agent_home = guard
                     .state
                     .attached_workspaces
@@ -742,7 +742,7 @@ impl RuntimeHandle {
                         .active_workspace_entry
                         .as_ref()
                         .is_some_and(|entry| entry.workspace_id == AGENT_HOME_WORKSPACE_ID);
-                if !redundant_legacy_agent_home {
+                if workspace_id != AGENT_HOME_WORKSPACE_ID || !redundant_legacy_agent_home {
                     return Err(anyhow!("AgentHome cannot be detached"));
                 }
             }

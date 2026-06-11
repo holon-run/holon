@@ -58,12 +58,17 @@ pub(crate) fn canonicalize_agent_home_bindings(
         .as_ref()
         .is_some_and(|entry| entry.workspace_id == AGENT_HOME_WORKSPACE_ID)
     {
-        let access_mode = state
-            .active_workspace_entry
-            .as_ref()
+        let previous_entry = state.active_workspace_entry.as_ref();
+        let access_mode = previous_entry
             .map(|entry| entry.access_mode)
             .unwrap_or(WorkspaceAccessMode::ExclusiveWrite);
-        let entry = canonical_agent_home_active_entry(data_dir, agent_id, access_mode)?;
+        let mut entry = canonical_agent_home_active_entry(data_dir, agent_id, access_mode)?;
+        if let Some(previous_cwd) = previous_entry
+            .map(|entry| entry.cwd.as_path())
+            .filter(|cwd| cwd.starts_with(&entry.execution_root))
+        {
+            entry.cwd = previous_cwd.to_path_buf();
+        }
         state.active_workspace_entry = Some(entry);
         state.worktree_session = None;
         changed = true;
