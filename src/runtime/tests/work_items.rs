@@ -1667,6 +1667,53 @@ async fn update_work_item_can_refine_objective_and_todo_list_together() {
 }
 
 #[tokio::test]
+async fn pick_work_item_clear_blocker_requires_reason() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let work_item = runtime
+        .create_work_item("resume blocked work".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+
+    let error = registry
+        .execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "bad-pick-clear-blocker".into(),
+                name: "PickWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": work_item.id,
+                    "clear_blocker": true
+                }),
+            },
+        )
+        .await
+        .unwrap_err();
+    let tool_error = crate::tool::ToolError::from_anyhow(&error);
+    assert_eq!(tool_error.kind, "invalid_tool_input");
+    assert!(tool_error.message.contains("clear_blocker"));
+    assert!(tool_error.message.contains("reason"));
+    assert!(tool_error
+        .recovery_hint
+        .as_deref()
+        .unwrap_or_default()
+        .contains("inspection focus"));
+}
+
+#[tokio::test]
 async fn update_work_item_rejects_empty_objective() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -4680,6 +4727,7 @@ async fn pick_blocked_work_item_reports_inspection_focus() {
         WorkItemReadiness::Blocked
     );
     assert_eq!(picked.transition.current_focus_mode, "inspection");
+    assert!(!picked.transition.blocker_cleared);
     assert!(picked.transition.warnings.is_empty());
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(
@@ -4706,6 +4754,113 @@ async fn pick_blocked_work_item_reports_inspection_focus() {
         state.current_work_item_id.as_deref(),
         Some(work.id.as_str())
     );
+}
+
+#[tokio::test]
+async fn pick_blocked_work_item_with_clear_blocker_resumes_runnable_focus() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let work = runtime
+        .create_work_item("resume cleared blocker".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    let wait = runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#1684".into()),
+            "blocked on old external wait".into(),
+            Some(60_000),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        wait.work_item.as_ref().unwrap().readiness(),
+        WorkItemReadiness::Blocked
+    );
+
+    let waiting_intent_id = "legacy-wait-clear-on-pick".to_string();
+    runtime
+        .storage()
+        .append_waiting_intent(&WaitingIntentRecord {
+            id: waiting_intent_id.clone(),
+            agent_id: "default".into(),
+            scope: WaitingIntentScope::WorkItem,
+            work_item_id: Some(work.id.clone()),
+            description: "legacy external wait".into(),
+            source: "github".into(),
+            resource: Some("holon-run/holon#1684".into()),
+            condition: Some("old wait".into()),
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            status: WaitingIntentStatus::Active,
+            external_trigger_id: "legacy-trigger-clear-on-pick".into(),
+            created_at: Utc::now(),
+            cancelled_at: None,
+            last_triggered_at: None,
+            trigger_count: 0,
+            correlation_id: None,
+            causation_id: None,
+        })
+        .unwrap();
+
+    let picked = runtime
+        .pick_work_item_with_reason_and_clear_blocker(
+            work.id.clone(),
+            Some("external wait has been inspected and is resolved".into()),
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        picked.current_work_item.readiness(),
+        WorkItemReadiness::Runnable
+    );
+    assert!(picked.current_work_item.blocked_by.is_none());
+    assert!(picked.current_work_item.recheck_at.is_none());
+    assert!(picked.current_work_item.recheck_consumed_at.is_none());
+    assert_eq!(
+        picked.transition.current_readiness,
+        WorkItemReadiness::Runnable
+    );
+    assert_eq!(picked.transition.current_focus_mode, "runnable");
+    assert!(picked.transition.blocker_cleared);
+    assert!(picked
+        .transition
+        .cancelled_wait_condition_ids
+        .contains(&wait.condition.id));
+    assert!(picked
+        .transition
+        .cancelled_wait_condition_ids
+        .contains(&format!("waiting_intent:{waiting_intent_id}")));
+    assert_eq!(
+        picked.transition.cancelled_waiting_intent_ids,
+        vec![waiting_intent_id]
+    );
+    assert!(runtime
+        .storage()
+        .latest_active_wait_conditions_for_work_item("default", &work.id)
+        .unwrap()
+        .is_empty());
+    assert!(runtime
+        .latest_waiting_intents()
+        .await
+        .unwrap()
+        .into_iter()
+        .all(|record| record.status != WaitingIntentStatus::Active));
 }
 
 #[tokio::test]

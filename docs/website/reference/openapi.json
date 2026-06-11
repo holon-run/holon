@@ -226,6 +226,10 @@
               "null"
             ]
           },
+          "clear_blocker": {
+            "default": false,
+            "type": "boolean"
+          },
           "reason": {
             "type": [
               "string",
@@ -734,6 +738,21 @@
           },
           "transition": {
             "properties": {
+              "blocker_cleared": {
+                "type": "boolean"
+              },
+              "cancelled_wait_condition_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cancelled_waiting_intent_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "current_focus_mode": {
                 "type": "string"
               },
@@ -802,7 +821,8 @@
               "current_work_item_id",
               "current_readiness",
               "switch_kind",
-              "current_focus_mode"
+              "current_focus_mode",
+              "blocker_cleared"
             ],
             "type": "object"
           }

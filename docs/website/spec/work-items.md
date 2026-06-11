@@ -123,6 +123,8 @@ An agent has at most one **current WorkItem** (`current_work_item_id`). The
 current WorkItem is the focus for the current turn:
 
 - `PickWorkItem` sets the current focus from an existing open WorkItem.
+- `PickWorkItem(clear_blocker=true, reason=...)` may also clear a resolved
+  blocker and WorkItem-scoped wait state while picking the item.
 - The scheduler may auto-pick a runnable WorkItem when the agent wakes.
 - Current focus persists across turns until explicitly changed or completed.
 - Only runnable WorkItems are eligible for scheduler auto-resume.
@@ -133,7 +135,7 @@ current WorkItem is the focus for the current turn:
 |------|---------|
 | `CreateWorkItem` | Create a new open WorkItem with objective, optional plan seed, and todo_list |
 | `UpdateWorkItem` | Mutate objective, plan_status, todo_list |
-| `PickWorkItem` | Set current focus to an existing open WorkItem |
+| `PickWorkItem` | Set current focus to an existing open WorkItem; optionally clear a resolved blocker |
 | `GetWorkItem` | Read a single WorkItem with plan preview |
 | `ListWorkItems` | Query with filters: all, open, completed, current, queued, blocked, waiting_for_operator, runnable |
 | `CompleteWorkItem` | Mark complete; same-round assistant text is promoted as the completion report |
@@ -149,6 +151,10 @@ current WorkItem is the focus for the current turn:
 - `WaitFor` replaces direct blocker mutation for new waits. It attaches to the
   current open WorkItem; pick another WorkItem first if that is the one that
   should wait.
+- Blocked WorkItems can be picked for inspection without becoming runnable. Use
+  `PickWorkItem(clear_blocker=true, reason=...)` only after confirming the
+  blocker is resolved; this clears `blocked_by`, fallback recheck fields, and
+  active WorkItem-scoped waits.
 - `CompleteWorkItem` promotion: the operator-facing completion report must be
   written as assistant text **in the same round**. After the tool succeeds,
   the runtime promotes that text as the canonical completion report and

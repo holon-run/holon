@@ -1,4 +1,5 @@
 use super::message_dispatch::message_text;
+use super::waiting::WorkItemBlockerClearance;
 use super::{task_state_reducer, *};
 use crate::config::{ModelRef, ProviderId};
 use crate::tool::helpers::truncate_output_to_char_budget;
@@ -42,6 +43,11 @@ pub struct WorkItemFocusTransition {
     pub current_readiness: WorkItemReadiness,
     pub switch_kind: String,
     pub current_focus_mode: String,
+    pub blocker_cleared: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cancelled_wait_condition_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cancelled_waiting_intent_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<WorkItemFocusTransitionWarning>,
 }
@@ -2171,6 +2177,16 @@ impl RuntimeHandle {
         work_item_id: String,
         reason: Option<String>,
     ) -> Result<PickedWorkItem> {
+        self.pick_work_item_with_reason_and_clear_blocker(work_item_id, reason, false)
+            .await
+    }
+
+    pub async fn pick_work_item_with_reason_and_clear_blocker(
+        &self,
+        work_item_id: String,
+        reason: Option<String>,
+        clear_blocker: bool,
+    ) -> Result<PickedWorkItem> {
         let agent_id = self.agent_id().await?;
         let state = self.agent_state().await?;
         let current_id = state.current_work_item_id.clone();
@@ -2178,15 +2194,33 @@ impl RuntimeHandle {
             Some(id) => self.inner.runtime_db.work_items().latest(id)?,
             None => None,
         };
-        let record = self.validate_owned_work_item(&agent_id, &work_item_id)?;
+        let mut record = self.validate_owned_work_item(&agent_id, &work_item_id)?;
         if record.state == WorkItemState::Completed {
             return Err(anyhow!("cannot pick completed work item {}", work_item_id));
         }
-        let switching = current_id.as_deref().is_some_and(|id| id != record.id);
         let normalized_reason = reason.and_then(|value| {
             let trimmed = value.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         });
+        if clear_blocker && normalized_reason.is_none() {
+            return Err(anyhow!(
+                "PickWorkItem clear_blocker requires a non-empty reason"
+            ));
+        }
+        let blocker_clearance = if clear_blocker {
+            self.clear_work_item_blocker_for_pick(
+                &agent_id,
+                record,
+                normalized_reason
+                    .as_deref()
+                    .expect("clear_blocker reason validated"),
+            )
+            .await?
+        } else {
+            WorkItemBlockerClearance::unchanged(record)
+        };
+        record = blocker_clearance.work_item;
+        let switching = current_id.as_deref().is_some_and(|id| id != record.id);
         let work_queue = self.inner.storage.work_queue_prompt_projection()?;
         let previous_readiness = previous.as_ref().map(|record| {
             work_queue
@@ -2328,6 +2362,9 @@ impl RuntimeHandle {
             current_readiness,
             switch_kind,
             current_focus_mode,
+            blocker_cleared: blocker_clearance.blocker_cleared,
+            cancelled_wait_condition_ids: blocker_clearance.cancelled_wait_condition_ids,
+            cancelled_waiting_intent_ids: blocker_clearance.cancelled_waiting_intent_ids,
             warnings,
         };
         self.inner.storage.append_event(&AuditEvent::new(
@@ -2341,6 +2378,9 @@ impl RuntimeHandle {
                 "current_readiness": transition.current_readiness,
                 "switch_kind": transition.switch_kind.clone(),
                 "current_focus_mode": transition.current_focus_mode.clone(),
+                "blocker_cleared": transition.blocker_cleared,
+                "cancelled_wait_condition_ids": transition.cancelled_wait_condition_ids.clone(),
+                "cancelled_waiting_intent_ids": transition.cancelled_waiting_intent_ids.clone(),
                 "warnings": transition.warnings.clone(),
                 "continuation_created": continuation_created.clone(),
                 "continuation_resolved": continuation_resolved.clone(),

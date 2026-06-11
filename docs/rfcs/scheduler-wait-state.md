@@ -23,7 +23,9 @@ The current agent-facing contract is intentionally small: `WaitFor` records one
 explicit wait condition and yields the turn. It supports three wake classes:
 operator input, task result, and external state. `blocked_by` remains as
 display text on WorkItems; `UpdateWorkItem` no longer exposes blocker mutation
-or fallback recheck fields to agents.
+or fallback recheck fields to agents. After inspecting evidence and confirming
+a blocker is resolved, agents use `PickWorkItem(clear_blocker=true, reason=...)`
+to restore the WorkItem as runnable while making the recovery explicit.
 
 `WaitFor` is not generic WaitCondition CRUD. It is the narrow public path for
 the common scheduler waits that the runtime can reason about.
@@ -290,7 +292,10 @@ agent set or refreshed `blocked_by`. That public entry point is removed:
 `UpdateWorkItem` updates WorkItem content and plan state only, while `WaitFor`
 is the authoritative entry point for wait state and fallback rechecks.
 Historical `recheck_at` and `recheck_consumed_at` fields remain in storage and
-read models for older records and for `WaitFor`-managed fallback rechecks.
+read models for older records and for `WaitFor`-managed fallback rechecks. A
+resolved blocker is cleared by explicitly picking the WorkItem with
+`clear_blocker=true` and a reason, not by setting `blocked_by` through
+`UpdateWorkItem`.
 
 Rules:
 
@@ -331,6 +336,10 @@ The recheck reminder only asks the agent to reconcile state. It must not:
 - clear `blocked_by`;
 - resolve a wait;
 - choose provider-specific policy based on blocker text.
+
+After the agent inspects the reminder evidence, `PickWorkItem(clear_blocker=true,
+reason=...)` is the explicit recovery action that clears `blocked_by`, fallback
+recheck fields, and active WorkItem-scoped waits.
 
 ## Deferred WaitCondition direction
 

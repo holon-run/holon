@@ -720,6 +720,8 @@ pub struct CreateWorkItemRequest {
 #[serde(deny_unknown_fields)]
 pub struct PickWorkItemRequest {
     pub reason: Option<String>,
+    #[serde(default)]
+    pub clear_blocker: bool,
     pub authority_class: Option<AuthorityClass>,
 }
 
@@ -2334,8 +2336,14 @@ pub async fn pick_work_item(
     let boundary = current_boundary_metadata(&runtime)
         .await
         .map_err(error_response)?;
+    let reason = normalize_optional_non_empty(request.reason);
+    if request.clear_blocker && reason.is_none() {
+        return Err(bad_request(
+            "clear_blocker requires a non-empty reason explaining why the blocker is resolved",
+        ));
+    }
     let picked = runtime
-        .pick_work_item_with_reason(work_item_id, normalize_optional_non_empty(request.reason))
+        .pick_work_item_with_reason_and_clear_blocker(work_item_id, reason, request.clear_blocker)
         .await
         .map_err(work_item_lifecycle_error)?;
     runtime

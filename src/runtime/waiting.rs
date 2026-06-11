@@ -37,6 +37,25 @@ pub(crate) struct WaitForRegistration {
     pub(crate) cancelled_wait_condition_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct WorkItemBlockerClearance {
+    pub(super) work_item: WorkItemRecord,
+    pub(super) blocker_cleared: bool,
+    pub(super) cancelled_wait_condition_ids: Vec<String>,
+    pub(super) cancelled_waiting_intent_ids: Vec<String>,
+}
+
+impl WorkItemBlockerClearance {
+    pub(super) fn unchanged(work_item: WorkItemRecord) -> Self {
+        Self {
+            work_item,
+            blocker_cleared: false,
+            cancelled_wait_condition_ids: Vec::new(),
+            cancelled_waiting_intent_ids: Vec::new(),
+        }
+    }
+}
+
 impl RuntimeHandle {
     pub(crate) async fn register_wait_for(
         &self,
@@ -331,6 +350,93 @@ impl RuntimeHandle {
             }),
         ))?;
         Ok(())
+    }
+
+    pub(super) async fn clear_work_item_blocker_for_pick(
+        &self,
+        agent_id: &str,
+        existing: WorkItemRecord,
+        reason: &str,
+    ) -> Result<WorkItemBlockerClearance> {
+        let cancelled_wait_condition_ids = self
+            .cancel_active_wait_conditions_for_work_item(
+                agent_id,
+                &existing.id,
+                "pick_work_item_clear_blocker",
+            )
+            .await?;
+        let active_waiting_intent_ids = self
+            .latest_waiting_intents()
+            .await?
+            .into_iter()
+            .filter(|record| record.status == WaitingIntentStatus::Active)
+            .filter(|record| record.scope == WaitingIntentScope::WorkItem)
+            .filter(|record| record.work_item_id.as_deref() == Some(existing.id.as_str()))
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        let cancelled_waiting_intent_ids = self
+            .cancel_waiting_intents(active_waiting_intent_ids)
+            .await?;
+
+        let needs_record_write = existing.blocked_by.is_some()
+            || existing.recheck_at.is_some()
+            || existing.recheck_consumed_at.is_some();
+        if !needs_record_write {
+            return Ok(WorkItemBlockerClearance {
+                work_item: existing,
+                blocker_cleared: !cancelled_wait_condition_ids.is_empty()
+                    || !cancelled_waiting_intent_ids.is_empty(),
+                cancelled_wait_condition_ids,
+                cancelled_waiting_intent_ids,
+            });
+        }
+
+        let mut record = WorkItemRecord {
+            revision: existing.revision + 1,
+            blocked_by: None,
+            recheck_at: None,
+            recheck_consumed_at: None,
+            updated_at: Utc::now(),
+            ..existing
+        };
+        let plan_artifact_changed = crate::work_item_plan::refresh_plan_artifact_metadata(
+            self.agent_home().as_path(),
+            &mut record,
+        )?;
+        let current_focus =
+            self.agent_state().await?.current_work_item_id.as_deref() == Some(record.id.as_str());
+        self.inner
+            .runtime_db
+            .work_items()
+            .upsert(&record, current_focus)?;
+        self.inner.storage.append_work_item(&record)?;
+        if plan_artifact_changed {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_plan_artifact_refreshed",
+                serde_json::json!({
+                    "work_item_id": record.id.clone(),
+                    "revision": record.revision,
+                    "plan_artifact": record.plan_artifact.clone(),
+                }),
+            ))?;
+        }
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_written",
+            serde_json::json!({
+                "action": "pick_blocker_cleared",
+                "record": record.clone(),
+                "reason": reason,
+                "cancelled_wait_condition_ids": cancelled_wait_condition_ids.clone(),
+                "cancelled_waiting_intent_ids": cancelled_waiting_intent_ids.clone(),
+            }),
+        ))?;
+        self.inner.notify.notify_one();
+        Ok(WorkItemBlockerClearance {
+            work_item: record,
+            blocker_cleared: true,
+            cancelled_wait_condition_ids,
+            cancelled_waiting_intent_ids,
+        })
     }
 
     pub async fn submit_wake_hint(&self, hint: WakeHint) -> Result<WakeDisposition> {
