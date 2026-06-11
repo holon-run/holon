@@ -669,6 +669,57 @@ fn summarize_spawn_agent_result(result: &Value) -> Option<String> {
     })
 }
 
+fn summarize_view_image_result(result: &Value) -> Option<String> {
+    let reference = result.get("visual_reference")?;
+    let observation = result.get("observation")?;
+    let reference_id = reference
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let mime = reference
+        .get("mime")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let schema = observation
+        .get("schema")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let prompt = observation
+        .get("prompt")
+        .and_then(Value::as_str)
+        .map(|prompt| truncate_preview(prompt, RECAP_TEXT_PREVIEW_LIMIT));
+    let summary = observation
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(|summary| truncate_preview(summary, RECAP_TEXT_PREVIEW_LIMIT));
+    let ocr = observation
+        .get("ocr")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.get("text").and_then(Value::as_str))
+                .take(3)
+                .map(|text| truncate_preview(text, 80))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut parts = vec![format!(
+        "visual_observation schema={schema} ref={reference_id} mime={mime}"
+    )];
+    if let Some(prompt) = prompt {
+        parts.push(format!("prompt=\"{prompt}\""));
+    }
+    if let Some(summary) = summary {
+        parts.push(format!("summary=\"{summary}\""));
+    }
+    if !ocr.is_empty() {
+        parts.push(format!("ocr=[{}]", ocr.join(" | ")));
+    }
+    Some(parts.join(" "))
+}
+
 fn summarize_tool_result_envelope(envelope: &ToolResultEnvelope) -> String {
     match envelope.status {
         ToolResultStatus::Error => {
@@ -691,6 +742,7 @@ fn summarize_tool_result_envelope(envelope: &ToolResultEnvelope) -> String {
                     "ExecCommand" => Some(summarize_exec_command_result(result)),
                     "TaskOutput" => Some(summarize_task_output_result(result)),
                     "SpawnAgent" => summarize_spawn_agent_result(result),
+                    "ViewImage" => summarize_view_image_result(result),
                     _ => None,
                 })
                 .or_else(|| envelope.summary_text.clone())
@@ -3570,6 +3622,49 @@ mod tests {
         assert!(recap.contains("item=2 cmd_digest="));
         assert!(!recap.contains("cmd_preview="));
         assert!(!recap.contains("turn_batch_hidden_1246"));
+    }
+
+    #[test]
+    fn compacted_round_recap_preserves_view_image_observation_evidence() {
+        let mut round = fixture_round_with_tool(
+            5,
+            "inspect screenshot",
+            "ViewImage",
+            serde_json::json!({
+                "path": "screenshot.png",
+                "prompt": "Read the warning banner."
+            }),
+        );
+        round.tool_result_envelopes = vec![ToolResultEnvelope {
+            tool_name: "ViewImage".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: Some("generated observation".to_string()),
+            result: Some(serde_json::json!({
+                "visual_reference": {
+                    "id": "vis_warning",
+                    "mime": "image/png"
+                },
+                "observation": {
+                    "schema": "visual_observation.v1",
+                    "prompt": "Read the warning banner.",
+                    "summary": "A red warning banner is visible.",
+                    "ocr": [
+                        {"text": "DEPLOY BLOCKED"},
+                        {"text": "Fix failing checks"}
+                    ]
+                }
+            })),
+            error: None,
+        }];
+
+        let recap = build_compacted_round_recap(&[round], 1_000);
+
+        assert!(recap.contains("ViewImage visual_observation"));
+        assert!(recap.contains("schema=visual_observation.v1"));
+        assert!(recap.contains("ref=vis_warning"));
+        assert!(recap.contains("summary=\"A red warning banner is visible.\""));
+        assert!(recap.contains("ocr=[DEPLOY BLOCKED | Fix failing checks]"));
+        assert!(!recap.contains("generated observation"));
     }
 
     fn fixture_round(round: usize, text: &str) -> TurnRoundRecord {

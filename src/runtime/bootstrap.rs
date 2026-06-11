@@ -221,6 +221,7 @@ impl RuntimeHandle {
                 max_tool_output_tokens,
                 web_config,
                 builtin_web_search_probe_cache: Mutex::new(HashMap::new()),
+                view_image_observation_cache: Mutex::new(HashMap::new()),
                 callback_base_url,
                 tools: ToolRegistry::new(PathBuf::new()),
                 system: Arc::new(LocalSystem::new()),
@@ -334,6 +335,30 @@ impl RuntimeHandle {
             state.model_override.as_ref(),
             state.pending_fallback_model.as_ref(),
         ))
+    }
+
+    pub(crate) async fn cached_view_image_observation(
+        &self,
+        key: &crate::runtime::ViewImageObservationCacheKey,
+    ) -> Option<crate::types::ViewImageObservation> {
+        self.inner
+            .view_image_observation_cache
+            .lock()
+            .await
+            .get(key)
+            .cloned()
+    }
+
+    pub(crate) async fn cache_view_image_observation(
+        &self,
+        key: crate::runtime::ViewImageObservationCacheKey,
+        observation: crate::types::ViewImageObservation,
+    ) {
+        self.inner
+            .view_image_observation_cache
+            .lock()
+            .await
+            .insert(key, observation);
     }
 
     pub(crate) async fn generate_view_image_observation(

@@ -95,8 +95,9 @@ use crate::{
         RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture, SkillActivationSource,
         SkillActivationState, SkillCatalogEntry, SkillLoadReason, SkillsRuntimeView, TaskKind,
         TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord,
-        TranscriptEntry, TranscriptEntryKind, WaitingIntentRecord, WaitingIntentStatus,
-        WaitingIntentSummary, WaitingReason, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
+        TranscriptEntry, TranscriptEntryKind, ViewImageObservation, WaitingIntentRecord,
+        WaitingIntentStatus, WaitingIntentSummary, WaitingReason, WorkspaceEntry,
+        AGENT_HOME_WORKSPACE_ID,
     },
     web::{WebConfig, WebProviderKind},
 };
@@ -241,6 +242,8 @@ struct RuntimeInner {
     web_config: WebConfig,
     builtin_web_search_probe_cache:
         Mutex<HashMap<BuiltinWebSearchProbeKey, BuiltinWebSearchProbeCacheEntry>>,
+    view_image_observation_cache:
+        Mutex<HashMap<ViewImageObservationCacheKey, ViewImageObservation>>,
     callback_base_url: String,
     tools: ToolRegistry,
     system: Arc<LocalSystem>,
@@ -251,6 +254,14 @@ struct RuntimeInner {
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ViewImageObservationCacheKey {
+    pub(crate) visual_reference_id: String,
+    pub(crate) prompt: String,
+    pub(crate) observation_schema: String,
+    pub(crate) generation_policy: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
