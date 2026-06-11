@@ -722,12 +722,31 @@ impl RuntimeHandle {
         if workspace_id.is_empty() {
             return Err(anyhow!("workspace_id is required"));
         }
-        if workspace_id == AGENT_HOME_WORKSPACE_ID {
-            return Err(anyhow!("AgentHome cannot be detached"));
-        }
 
         let detached_agent_id = {
             let mut guard = self.inner.agent.lock().await;
+            let canonical_agent_home_id = crate::types::agent_home_workspace_id(&guard.state.id);
+            if workspace_id == AGENT_HOME_WORKSPACE_ID {
+                let redundant_legacy_agent_home = guard
+                    .state
+                    .attached_workspaces
+                    .iter()
+                    .any(|id| id == AGENT_HOME_WORKSPACE_ID)
+                    && guard
+                        .state
+                        .attached_workspaces
+                        .iter()
+                        .any(|id| id == &canonical_agent_home_id)
+                    && !guard
+                        .state
+                        .active_workspace_entry
+                        .as_ref()
+                        .is_some_and(|entry| entry.workspace_id == AGENT_HOME_WORKSPACE_ID);
+                if !redundant_legacy_agent_home {
+                    return Err(anyhow!("AgentHome cannot be detached"));
+                }
+            }
+
             if guard
                 .state
                 .active_workspace_entry
@@ -879,6 +898,11 @@ impl RuntimeHandle {
         };
         {
             let mut guard = self.inner.agent.lock().await;
+            workspace::canonicalize_agent_home_bindings(
+                &mut guard.state,
+                self.inner.storage.data_dir(),
+                &state.id,
+            )?;
             if !guard
                 .state
                 .attached_workspaces

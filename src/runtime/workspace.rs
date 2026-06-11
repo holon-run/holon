@@ -11,7 +11,10 @@ use crate::{
         EffectiveExecution, ExecutionProfile, ExecutionScopeKind, ExecutionSnapshot,
         WorkspaceAccessMode, WorkspaceProjectionKind, WorkspaceView,
     },
-    types::{agent_home_workspace_id, AgentState, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID},
+    types::{
+        agent_home_workspace_id, ActiveWorkspaceEntry, AgentState, WorkspaceEntry,
+        AGENT_HOME_WORKSPACE_ID,
+    },
 };
 
 pub(crate) fn build_execution_root_id(
@@ -40,6 +43,87 @@ pub(crate) fn agent_home_workspace_entry(data_dir: &Path, agent_id: &str) -> Wor
     entry.workspace_kind = Some("agent_home".into());
     entry.owner_agent_id = Some(agent_id.to_string());
     entry
+}
+
+pub(crate) fn canonicalize_agent_home_bindings(
+    state: &mut AgentState,
+    data_dir: &Path,
+    agent_id: &str,
+) -> Result<bool> {
+    let canonical_id = agent_home_workspace_id(agent_id);
+    let mut changed = false;
+
+    if state
+        .active_workspace_entry
+        .as_ref()
+        .is_some_and(|entry| entry.workspace_id == AGENT_HOME_WORKSPACE_ID)
+    {
+        let access_mode = state
+            .active_workspace_entry
+            .as_ref()
+            .map(|entry| entry.access_mode)
+            .unwrap_or(WorkspaceAccessMode::ExclusiveWrite);
+        let entry = canonical_agent_home_active_entry(data_dir, agent_id, access_mode)?;
+        state.active_workspace_entry = Some(entry);
+        state.worktree_session = None;
+        changed = true;
+    }
+
+    let mut next = Vec::with_capacity(state.attached_workspaces.len().max(1));
+    for workspace_id in &state.attached_workspaces {
+        let next_id = if workspace_id == AGENT_HOME_WORKSPACE_ID {
+            changed = true;
+            canonical_id.as_str()
+        } else {
+            workspace_id.as_str()
+        };
+        if !next.iter().any(|id| id == next_id) {
+            next.push(next_id.to_string());
+        } else {
+            changed = true;
+        }
+    }
+
+    if state
+        .active_workspace_entry
+        .as_ref()
+        .is_some_and(|entry| entry.workspace_id == canonical_id)
+        && !next.iter().any(|id| id == &canonical_id)
+    {
+        next.push(canonical_id);
+        changed = true;
+    }
+
+    if changed {
+        state.attached_workspaces = next;
+    }
+
+    Ok(changed)
+}
+
+pub(crate) fn canonical_agent_home_active_entry(
+    data_dir: &Path,
+    agent_id: &str,
+    access_mode: WorkspaceAccessMode,
+) -> Result<ActiveWorkspaceEntry> {
+    let workspace = agent_home_workspace_entry(data_dir, agent_id);
+    let execution_root = crate::system::workspace::normalize_path(&workspace.workspace_anchor)?;
+    let execution_root_id = build_execution_root_id(
+        &workspace.workspace_id,
+        WorkspaceProjectionKind::CanonicalRoot,
+        &execution_root,
+    )?;
+    Ok(ActiveWorkspaceEntry {
+        workspace_id: workspace.workspace_id,
+        workspace_anchor: workspace.workspace_anchor,
+        execution_root_id,
+        execution_root: execution_root.clone(),
+        projection_kind: WorkspaceProjectionKind::CanonicalRoot,
+        access_mode,
+        cwd: execution_root,
+        occupancy_id: None,
+        projection_metadata: None,
+    })
 }
 
 pub(crate) fn detached_execution_root(storage: &AppStorage) -> PathBuf {
