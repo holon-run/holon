@@ -727,6 +727,7 @@ fn conversation_message_has_content(message: &ConversationMessage) -> bool {
     match message {
         ConversationMessage::UserText(text) => !text.trim().is_empty(),
         ConversationMessage::UserBlocks(blocks) => !blocks.is_empty(),
+        ConversationMessage::UserImage { prompt, .. } => !prompt.trim().is_empty(),
         ConversationMessage::AssistantBlocks(blocks) => !blocks.is_empty(),
         ConversationMessage::UserToolResults(results) => !results.is_empty(),
     }
@@ -758,6 +759,16 @@ fn conversation_message_to_api(
                     })
                     .collect(),
             ),
+        },
+        ConversationMessage::UserImage { prompt, .. } => ApiMessage {
+            role: "user",
+            content: Value::Array(vec![maybe_mark_cache_control(
+                json!({
+                    "type": "text",
+                    "text": format!("{prompt}\n\n[image input omitted: this provider transport does not support ViewImage image lowering yet]"),
+                }),
+                rolling_cache_block_index == Some(0),
+            )]),
         },
         ConversationMessage::AssistantBlocks(blocks) => ApiMessage {
             role: "assistant",
@@ -852,6 +863,7 @@ fn last_cacheable_content_index(
     match message {
         ConversationMessage::UserText(_) => Some(0),
         ConversationMessage::UserBlocks(blocks) => (!blocks.is_empty()).then_some(blocks.len() - 1),
+        ConversationMessage::UserImage { prompt, .. } => (!prompt.trim().is_empty()).then_some(0),
         ConversationMessage::AssistantBlocks(blocks) => match cache_strategy {
             AnthropicCacheStrategy::MessagesNative => {
                 (!blocks.is_empty()).then_some(blocks.len() - 1)
@@ -1217,6 +1229,24 @@ fn collect_cache_breakpoints(
                         stability: "conversation_tail".to_string(),
                         estimated_prefix_tokens: token_offset + block_tokens,
                         content_hash: hash_secret_safe_string(text),
+                        canonical_prefix_fingerprint: canonical_prefix_fingerprint(
+                            request_payload,
+                            CacheBreakpointPath::MessageContent(msg_idx, 0),
+                        ),
+                    });
+                }
+                token_offset += block_tokens;
+            }
+            ConversationMessage::UserImage { prompt, .. } => {
+                let block_tokens = estimate_tokens_from_chars(prompt.len());
+                if rolling_cache_marker == Some((msg_idx, 0)) {
+                    breakpoints.push(CacheBreakpointInfo {
+                        location: format!("messages[{}].content[0]", msg_idx),
+                        provider_payload_path: format!("messages[{}].content[0]", msg_idx),
+                        block_kind: "user_text".to_string(),
+                        stability: "conversation_tail".to_string(),
+                        estimated_prefix_tokens: token_offset + block_tokens,
+                        content_hash: hash_secret_safe_string(prompt),
                         canonical_prefix_fingerprint: canonical_prefix_fingerprint(
                             request_payload,
                             CacheBreakpointPath::MessageContent(msg_idx, 0),

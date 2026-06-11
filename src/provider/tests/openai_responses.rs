@@ -125,6 +125,60 @@ fn provider_large_window_request_with_prompt_frame() -> ProviderTurnRequest {
     request
 }
 
+#[tokio::test]
+async fn openai_responses_lowers_user_image_to_input_image() {
+    let response_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let response_bodies_for_server = response_bodies.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move |Json(body): Json<Value>| {
+            let captured = response_bodies_for_server.clone();
+            async move {
+                captured.lock().unwrap().push(body);
+                Json(openai_text_response("resp_1", "a red square"))
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config("openai/gpt-5.4", &[], Some("openai-key"), None, true);
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+
+    provider
+        .complete_turn(ProviderTurnRequest::plain(
+            "Describe the image.",
+            vec![ConversationMessage::UserImage {
+                prompt: "What is visible?".to_string(),
+                media_type: "image/png".to_string(),
+                data_base64: "iVBORw0KGgo=".to_string(),
+            }],
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+
+    let response_bodies = response_bodies.lock().unwrap();
+    let input = response_bodies[0]["input"].as_array().unwrap();
+    assert_eq!(input.len(), 1);
+    assert_eq!(input[0]["type"], json!("message"));
+    assert_eq!(input[0]["role"], json!("user"));
+    assert_eq!(
+        input[0]["content"],
+        json!([
+            { "type": "input_text", "text": "What is visible?" },
+            {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,iVBORw0KGgo="
+            }
+        ])
+    );
+}
+
 fn provider_nearly_large_window_request_with_prompt_frame() -> ProviderTurnRequest {
     let mut request = provider_turn_request_with_prompt_frame();
     request.conversation = (0..7)

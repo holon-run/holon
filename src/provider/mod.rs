@@ -321,6 +321,11 @@ pub enum ProviderPromptCapability {
 pub enum ConversationMessage {
     UserText(String),
     UserBlocks(Vec<PromptContentBlock>),
+    UserImage {
+        prompt: String,
+        media_type: String,
+        data_base64: String,
+    },
     AssistantBlocks(Vec<ModelBlock>),
     UserToolResults(Vec<ToolResultBlock>),
 }

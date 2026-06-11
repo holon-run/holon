@@ -1431,6 +1431,24 @@ pub(crate) fn build_chat_completion_messages(
                     "content": content,
                 }));
             }
+            ConversationMessage::UserImage {
+                prompt,
+                media_type,
+                data_base64,
+            } => {
+                messages.push(json!({
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": prompt },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": format!("data:{media_type};base64,{data_base64}"),
+                            },
+                        },
+                    ],
+                }));
+            }
             ConversationMessage::AssistantBlocks(blocks) => {
                 // Extract text content and tool calls
                 let mut text_parts = Vec::new();
@@ -3141,6 +3159,21 @@ pub(crate) fn build_openai_input(conversation: &[ConversationMessage]) -> Result
                     "type": "input_text",
                     "text": block.text,
                 })).collect::<Vec<_>>(),
+            })),
+            ConversationMessage::UserImage {
+                prompt,
+                media_type,
+                data_base64,
+            } => items.push(json!({
+                "type": "message",
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": prompt },
+                    {
+                        "type": "input_image",
+                        "image_url": format!("data:{media_type};base64,{data_base64}"),
+                    },
+                ],
             })),
             ConversationMessage::AssistantBlocks(blocks) => {
                 let mut pending_text = Vec::new();

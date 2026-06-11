@@ -498,6 +498,11 @@ fn estimate_projection_tokens(
         total = total.saturating_add(match message {
             ConversationMessage::UserText(text) => estimate_text_tokens(text),
             ConversationMessage::UserBlocks(blocks) => estimate_prompt_blocks_tokens(blocks),
+            ConversationMessage::UserImage {
+                prompt,
+                data_base64,
+                ..
+            } => estimate_text_tokens(prompt).saturating_add(data_base64.len() / 4),
             ConversationMessage::AssistantBlocks(blocks) => blocks
                 .iter()
                 .map(estimate_model_block_tokens)
@@ -1366,7 +1371,9 @@ fn estimate_context_management_eligible_tool_results(
                     ));
                 }
             }
-            ConversationMessage::UserText(_) | ConversationMessage::UserBlocks(_) => {}
+            ConversationMessage::UserText(_)
+            | ConversationMessage::UserBlocks(_)
+            | ConversationMessage::UserImage { .. } => {}
         }
     }
 
