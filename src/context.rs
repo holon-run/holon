@@ -1533,12 +1533,89 @@ fn render_recent_turn_input_line(
             )
         }
     } else {
-        format!(
-            "  - input: {} message_ref={}",
-            sanitize_inline(&body_preview(&message.body)),
-            message_ref
-        )
+        render_recent_turn_runtime_input_line(message, &message_ref).unwrap_or_else(|| {
+            format!(
+                "  - input: {} message_ref={}",
+                sanitize_inline(&body_preview(&message.body)),
+                message_ref
+            )
+        })
     }
+}
+
+fn render_recent_turn_runtime_input_line(
+    message: &MessageEnvelope,
+    message_ref: &str,
+) -> Option<String> {
+    if message.kind != MessageKind::SystemTick {
+        return None;
+    }
+
+    let metadata = message.metadata.as_ref();
+    if let Some(wake_hint) = metadata.and_then(|metadata| metadata.get("wake_hint")) {
+        let reason = wake_hint
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let source = wake_hint
+            .get("source")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let resource = wake_hint
+            .get("resource")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("none");
+        let work_item = wake_hint
+            .get("work_item_id")
+            .and_then(serde_json::Value::as_str)
+            .map(|id| format!(" work_item={}", bounded_inline(id, 80)))
+            .unwrap_or_default();
+        return Some(format!(
+            "  - input summary: wake hint source={} reason={} resource={}{} message_ref={}",
+            bounded_inline(source, 80),
+            bounded_inline(reason, 120),
+            bounded_inline(resource, 160),
+            work_item,
+            message_ref
+        ));
+    }
+
+    if let Some(work_queue) = metadata.and_then(|metadata| metadata.get("work_queue")) {
+        let reason = work_queue
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let work_item_id = work_queue
+            .get("work_item_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let objective = work_queue
+            .get("objective")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        return Some(format!(
+            "  - input summary: work queue tick reason={} work_item={} objective={} message_ref={}",
+            bounded_inline(reason, 120),
+            bounded_inline(work_item_id, 80),
+            bounded_inline(objective, 160),
+            message_ref
+        ));
+    }
+
+    let subsystem = match &message.origin {
+        MessageOrigin::System { subsystem } => bounded_inline(subsystem, 80),
+        _ => "unknown".to_string(),
+    };
+    Some(format!(
+        "  - input summary: {} subsystem={} message_ref={}",
+        runtime_continuation_label(message),
+        subsystem,
+        message_ref
+    ))
+}
+
+fn bounded_inline(value: &str, max_chars: usize) -> String {
+    truncate_text(&sanitize_inline(value), max_chars)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6187,6 +6264,95 @@ mod tests {
     }
 
     #[test]
+    fn recent_turns_summarizes_wake_hint_without_inlining_payload() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let long_reason = format!("github inbox updated {}", "r".repeat(180));
+        let long_source = format!("agentinbox{}", "s".repeat(120));
+        let long_resource = format!("github:holon-run/holon#1683?{}", "q".repeat(240));
+        let long_work_item = format!("work_1683{}", "w".repeat(120));
+
+        let mut system_tick = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "wake_hint".to_string(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: r#"wake hint: {"payload_secret":"do not inline"}"#.to_string(),
+            },
+        );
+        system_tick.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
+        system_tick.metadata = Some(json!({
+            "wake_hint": {
+                "reason": long_reason,
+                "source": long_source,
+                "resource": long_resource,
+                "work_item_id": long_work_item,
+                "content_type": "application/json",
+                "body": {
+                    "type": "json",
+                    "value": {
+                        "payload_secret": "do not inline",
+                        "notification_type": "ci_status"
+                    }
+                }
+            }
+        }));
+        storage.append_message(&system_tick).unwrap();
+        append_turn_for_message(&storage, &system_tick, "turn-wake-summary", 1);
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue".to_string(),
+            },
+        );
+        let session = AgentState::new("default");
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 10,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 4,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let recent_turns = built
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section should be present");
+        assert!(recent_turns.content.contains("input summary: wake hint"));
+        assert!(recent_turns.content.contains("agentinbox"));
+        assert!(recent_turns.content.contains("github:holon-run/holon#1683"));
+        assert!(!recent_turns.content.contains(&"r".repeat(120)));
+        assert!(!recent_turns.content.contains(&"s".repeat(100)));
+        assert!(!recent_turns.content.contains(&"q".repeat(180)));
+        assert!(!recent_turns.content.contains(&"w".repeat(100)));
+        assert!(recent_turns
+            .content
+            .contains(&format!("message_ref=message:{}", system_tick.id)));
+        assert!(!recent_turns.content.contains("payload_secret"));
+        assert!(!recent_turns.content.contains("do not inline"));
+        assert!(!recent_turns.content.contains("notification_type"));
+    }
+
+    #[test]
     fn build_context_includes_continuation_context_for_work_queue_system_tick() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
@@ -6246,6 +6412,147 @@ mod tests {
         assert!(activation.content.contains("continue_active"));
         assert!(activation.content.contains("work_123"));
         assert!(activation.content.contains("fix stale pid handling"));
+    }
+
+    #[test]
+    fn recent_turns_summarizes_work_queue_tick_without_inlining_body() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let long_reason = format!("queued_available_{}", "r".repeat(180));
+        let long_work_item = format!("work_1683{}", "w".repeat(120));
+
+        let mut system_tick = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".to_string(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Queued work item is available: raw queue body".to_string(),
+            },
+        );
+        system_tick.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
+        system_tick.metadata = Some(json!({
+            "work_queue": {
+                "reason": long_reason,
+                "work_item_id": long_work_item,
+                "objective": "summarize wake turns",
+                "runtime_switched_current_item": false
+            }
+        }));
+        storage.append_message(&system_tick).unwrap();
+        append_turn_for_message(&storage, &system_tick, "turn-queue-summary", 1);
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue".to_string(),
+            },
+        );
+        let session = AgentState::new("default");
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 10,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 4,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let recent_turns = built
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section should be present");
+        assert!(recent_turns
+            .content
+            .contains("input summary: work queue tick"));
+        assert!(recent_turns.content.contains("queued_available"));
+        assert!(recent_turns.content.contains("work_1683"));
+        assert!(!recent_turns.content.contains(&"r".repeat(140)));
+        assert!(!recent_turns.content.contains(&"w".repeat(100)));
+        assert!(recent_turns.content.contains("summarize wake turns"));
+        assert!(recent_turns
+            .content
+            .contains(&format!("message_ref=message:{}", system_tick.id)));
+        assert!(!recent_turns.content.contains("raw queue body"));
+    }
+
+    #[test]
+    fn recent_turns_generic_system_tick_summary_includes_subsystem() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        let mut system_tick = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "recovery".to_string(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "runtime recovery after provider fallback".to_string(),
+            },
+        );
+        system_tick.trigger_kind = Some(ContinuationTriggerKind::SystemTick);
+        storage.append_message(&system_tick).unwrap();
+        append_turn_for_message(&storage, &system_tick, "turn-generic-system-summary", 1);
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue".to_string(),
+            },
+        );
+        let session = AgentState::new("default");
+        let built = build_context(
+            &storage,
+            &session,
+            &execution_snapshot_for(&session),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 10,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 4,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let recent_turns = built
+            .sections
+            .iter()
+            .find(|section| section.name == "recent_turns")
+            .expect("recent_turns section should be present");
+        assert!(recent_turns
+            .content
+            .contains("input summary: a runtime system-tick continuation subsystem=recovery"));
+        assert!(recent_turns
+            .content
+            .contains(&format!("message_ref=message:{}", system_tick.id)));
+        assert!(!recent_turns.content.contains("provider fallback"));
     }
 
     #[test]
