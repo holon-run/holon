@@ -5,6 +5,7 @@ import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { DisplayLevel, RouteKey } from "../runtime/types";
 
@@ -26,6 +27,11 @@ export function App() {
     () => bootstrap.agents.find((agent) => agent.id === selectedAgentId) ?? bootstrap.agents[0],
     [bootstrap.agents, selectedAgentId],
   );
+  const {
+    detail: selectedAgentDetail,
+    loading: agentDetailLoading,
+    refresh: refreshAgentDetail,
+  } = useAgentDetail(selectedAgent?.id);
 
   function openAgent(agentId: string) {
     setSelectedAgentId(agentId);
@@ -172,7 +178,16 @@ export function App() {
           />
         ) : null}
         {route === "agent" && selectedAgent ? (
-          <AgentPage agent={selectedAgent} displayLevel={displayLevel} onOpenInspector={() => setInspectorOpen(true)} />
+          <AgentPage
+            agent={selectedAgent}
+            detail={selectedAgentDetail}
+            displayLevel={displayLevel}
+            loading={agentDetailLoading}
+            onRefresh={() => {
+              void refreshAgentDetail();
+            }}
+            onOpenInspector={() => setInspectorOpen(true)}
+          />
         ) : null}
         {route === "search" ? <SearchPage /> : null}
         {route === "settings" ? <SettingsPage connection={bootstrap.connection} /> : null}

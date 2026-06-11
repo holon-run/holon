@@ -1,9 +1,105 @@
-import { runtimeFixture } from "./fixtures";
-import type { AgentSummary, DashboardMetric, RuntimeBootstrap, RuntimeConnection, WorkItemSummary } from "./types";
+import { agentDetailFixtures, runtimeFixture } from "./fixtures";
+import type {
+  AgentDetail,
+  AgentSummary,
+  AgentTimelineItem,
+  AgentTimelineItemKind,
+  DashboardMetric,
+  RuntimeBootstrap,
+  RuntimeConnection,
+  WorkItemSummary,
+} from "./types";
 
 export interface RuntimeClientOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
+}
+
+function fixtureAgentDetail(agentId: string): AgentDetail {
+  return agentDetailFixtures[agentId] ?? agentDetailFixtures[Object.keys(agentDetailFixtures)[0]];
+}
+
+async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentId: string): Promise<AgentDetail> {
+  const encodedAgentId = encodeURIComponent(agentId);
+  const [entry, state, briefs, transcript, events] = await Promise.all([
+    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list").then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId)),
+    getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`),
+    getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/briefs?limit=5`),
+    getJson<TranscriptEntryDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/transcript?limit=40`),
+    getJson<EventPageResponseDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/events?limit=20&order=desc&max_level=verbose`),
+  ]);
+  const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
+  const agent = projectAgent(fallbackEntry, state, briefs[0]);
+  const timeline = projectTimeline(transcript, briefs, events);
+
+  return {
+    agent,
+    source: "http",
+    timeline,
+  };
+}
+
+function projectTimeline(
+  transcript: TranscriptEntryDto[],
+  briefs: BriefRecordDto[],
+  events: EventPageResponseDto,
+): AgentTimelineItem[] {
+  const transcriptItems = transcript.map(projectTranscriptEntry);
+  const briefItems = briefs.map(projectBriefRecord);
+  const eventItems = (events.events ?? []).slice(0, 8).map(projectEventEnvelope);
+  const items = [...transcriptItems, ...briefItems, ...eventItems]
+    .filter((item): item is AgentTimelineItem => Boolean(item))
+    .sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
+
+  return items.length > 0 ? items : [];
+}
+
+function projectTranscriptEntry(entry: TranscriptEntryDto): AgentTimelineItem | undefined {
+  if (!entry.id) return undefined;
+  const body = textFromUnknown(entry.data) || entry.kind || "Transcript entry";
+  const kind = transcriptKind(entry.kind);
+  const timestamp = entry.created_at ?? "";
+  return {
+    id: entry.id,
+    kind,
+    label: labelForTranscriptKind(entry.kind),
+    body,
+    timestamp,
+    meta: compactJoin([
+      entry.kind,
+      entry.round == null ? undefined : `round ${entry.round}`,
+      entry.stop_reason ?? undefined,
+      entry.input_tokens == null ? undefined : `${entry.input_tokens} in`,
+      entry.output_tokens == null ? undefined : `${entry.output_tokens} out`,
+    ]),
+    debug: JSON.stringify(entry, null, 2),
+  };
+}
+
+function projectBriefRecord(brief: BriefRecordDto): AgentTimelineItem | undefined {
+  if (!brief.id && !brief.text) return undefined;
+  return {
+    id: brief.id ?? `brief-${brief.created_at ?? brief.text}`,
+    kind: "assistant",
+    label: brief.kind ?? "Brief",
+    body: brief.text ?? "Brief text unavailable.",
+    timestamp: brief.created_at ?? "",
+    meta: "brief",
+    debug: JSON.stringify(brief, null, 2),
+  };
+}
+
+function projectEventEnvelope(event: NonNullable<EventPageResponseDto["events"]>[number]): AgentTimelineItem | undefined {
+  if (!event.id && event.event_seq == null) return undefined;
+  return {
+    id: event.id ?? `event-${event.event_seq}`,
+    kind: "event",
+    label: event.type ?? "runtime event",
+    body: summarizeEventPayload(event.payload),
+    timestamp: event.ts ?? "",
+    meta: event.event_seq == null ? "event" : `event #${event.event_seq}`,
+    debug: JSON.stringify(event, null, 2),
+  };
 }
 
 interface AgentListEntryDto {
@@ -66,8 +162,31 @@ interface AgentStateDto {
 }
 
 interface BriefRecordDto {
+  id?: string;
   created_at?: string;
   text?: string;
+  kind?: string;
+}
+
+interface TranscriptEntryDto {
+  id?: string;
+  created_at?: string;
+  kind?: string;
+  round?: number | null;
+  stop_reason?: string | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  data?: unknown;
+}
+
+interface EventPageResponseDto {
+  events?: Array<{
+    id?: string;
+    event_seq?: number;
+    ts?: string;
+    type?: string;
+    payload?: unknown;
+  }>;
 }
 
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
@@ -85,6 +204,21 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return withFixtureFallback(baseUrl, message);
+      }
+    },
+    async getAgentDetail(agentId: string): Promise<AgentDetail> {
+      if (!baseUrl) {
+        return fixtureAgentDetail(agentId);
+      }
+
+      try {
+        return await fetchAgentDetail(baseUrl, fetchImpl, agentId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          ...fixtureAgentDetail(agentId),
+          error: message,
+        };
       }
     },
   };
@@ -250,4 +384,45 @@ function formatTime(value: string | null | undefined): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function sortableTime(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function transcriptKind(kind: string | undefined): AgentTimelineItemKind {
+  if (kind === "incoming_message" || kind === "continuation_prompt" || kind === "subagent_prompt") return "operator";
+  if (kind === "tool_results") return "tool";
+  return "assistant";
+}
+
+function labelForTranscriptKind(kind: string | undefined): string {
+  if (kind === "incoming_message") return "Operator input";
+  if (kind === "assistant_round") return "Assistant round";
+  if (kind === "tool_results") return "Tool results";
+  if (kind === "runtime_failure") return "Runtime failure";
+  return kind ?? "Transcript";
+}
+
+function textFromUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["text", "content", "summary", "brief", "message"]) {
+      const candidate = record[key];
+      if (typeof candidate === "string" && candidate.trim()) return candidate;
+    }
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function summarizeEventPayload(value: unknown): string {
+  const text = textFromUnknown(value);
+  return text.length > 420 ? `${text.slice(0, 420)}…` : text;
 }

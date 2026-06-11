@@ -44,6 +44,25 @@ export interface AgentSummary {
   currentWork?: WorkItemSummary;
 }
 
+export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event";
+
+export interface AgentTimelineItem {
+  id: string;
+  kind: AgentTimelineItemKind;
+  label: string;
+  body: string;
+  timestamp: string;
+  meta: string;
+  debug?: string;
+}
+
+export interface AgentDetail {
+  agent: AgentSummary;
+  timeline: AgentTimelineItem[];
+  source: "http" | "fixture";
+  error?: string;
+}
+
 export interface RuntimeBootstrap {
   attentionCount: number;
   connection: RuntimeConnection;

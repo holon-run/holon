@@ -525,8 +525,53 @@ code {
 
 .conversation-pane {
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: auto 1fr auto;
   min-height: inherit;
+}
+
+.conversation-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 28px 10px;
+}
+
+.conversation-head h1 {
+  margin: 3px 0 6px;
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+
+.conversation-head p {
+  max-width: 760px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.conversation-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.source-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--warning) 34%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 8%, var(--surface));
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.source-chip.live {
+  border-color: color-mix(in srgb, var(--success) 34%, var(--line));
+  background: color-mix(in srgb, var(--success) 8%, var(--surface));
 }
 
 .message-list {
@@ -544,14 +589,67 @@ code {
   justify-self: start;
 }
 
+.message.operator {
+  justify-self: end;
+}
+
+.message.tool,
+.message.event {
+  justify-self: center;
+  width: min(900px, 100%);
+}
+
 .bubble {
   padding: 14px 16px;
   border-radius: 16px;
   background: var(--bubble);
 }
 
+.operator .bubble {
+  border-top-right-radius: 5px;
+  background: #172033;
+  color: #fff;
+}
+
+.assistant .bubble {
+  border-top-left-radius: 5px;
+}
+
+.tool .bubble,
+.event .bubble {
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+
 .bubble p {
   margin: 0;
+  white-space: pre-wrap;
+}
+
+.message-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.operator .message-label {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.bubble pre {
+  overflow: auto;
+  max-height: 280px;
+  margin: 12px 0 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f172a;
+  color: #dbeafe;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .message-meta {

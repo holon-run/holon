@@ -1,4 +1,4 @@
-import type { RuntimeBootstrap } from "./types";
+import type { AgentDetail, RuntimeBootstrap } from "./types";
 
 export const runtimeFixture: RuntimeBootstrap = {
   attentionCount: 1,
@@ -60,3 +60,33 @@ export const runtimeFixture: RuntimeBootstrap = {
     },
   ],
 };
+
+export const agentDetailFixtures: Record<string, AgentDetail> = Object.fromEntries(
+  runtimeFixture.agents.map((agent) => [
+    agent.id,
+    {
+      agent,
+      source: "fixture",
+      timeline: [
+        {
+          id: `${agent.id}-brief`,
+          kind: "assistant",
+          label: "Latest brief",
+          body: agent.lastBrief,
+          timestamp: agent.lastTurnTime,
+          meta: "brief · fixture",
+          debug: JSON.stringify({ agent_id: agent.id, posture: agent.posture }, null, 2),
+        },
+        {
+          id: `${agent.id}-posture`,
+          kind: "event",
+          label: "Scheduling posture",
+          body: agent.postureReason,
+          timestamp: "—",
+          meta: `${agent.posture} · ${agent.attention}`,
+          debug: JSON.stringify(agent, null, 2),
+        },
+      ],
+    },
+  ]),
+);
