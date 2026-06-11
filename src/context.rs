@@ -341,7 +341,9 @@ pub fn build_context_with_default_external_ingress(
             &mut remaining_budget,
             section(
                 "skills_catalog",
-                format!("Discovered skills catalog:\n{rendered}"),
+                format!(
+                    "Discovered skills catalog (same-name precedence: agent > workspace > user; lower-precedence duplicates are omitted):\n{rendered}"
+                ),
             ),
         );
     }
@@ -365,7 +367,10 @@ pub fn build_context_with_default_external_ingress(
         push_budgeted_section(
             &mut sections,
             &mut remaining_budget,
-            section("active_skills", format!("Active skills:\n{rendered}")),
+            section(
+                "active_skills",
+                format!("Active skills (same-name precedence follows skills_catalog):\n{rendered}"),
+            ),
         );
     }
 
@@ -5086,19 +5091,28 @@ mod tests {
         let skills = SkillsRuntimeView {
             agent_templates_catalog: Vec::new(),
             discovered_roots: Vec::new(),
-            discoverable_skills: vec![crate::types::SkillCatalogEntry {
-                skill_id: "workspace:demo".into(),
-                name: "demo".into(),
-                description: "demo skill summary".into(),
-                path: PathBuf::from("/tmp/workspace/.agents/skills/demo/SKILL.md"),
-                scope: crate::types::SkillScope::Workspace,
-            }],
+            discoverable_skills: vec![
+                crate::types::SkillCatalogEntry {
+                    skill_id: "agent:demo".into(),
+                    name: "demo".into(),
+                    description: "agent demo skill summary".into(),
+                    path: PathBuf::from("/tmp/agent/skills/demo/SKILL.md"),
+                    scope: crate::types::SkillScope::Agent,
+                },
+                crate::types::SkillCatalogEntry {
+                    skill_id: "workspace:other".into(),
+                    name: "other".into(),
+                    description: "other skill summary".into(),
+                    path: PathBuf::from("/tmp/workspace/.agents/skills/other/SKILL.md"),
+                    scope: crate::types::SkillScope::Workspace,
+                },
+            ],
             attached_skills: Vec::new(),
             active_skills: vec![crate::types::ActiveSkillRecord {
-                skill_id: "workspace:demo".into(),
+                skill_id: "agent:demo".into(),
                 name: "demo".into(),
-                path: PathBuf::from("/tmp/workspace/.agents/skills/demo/SKILL.md"),
-                scope: crate::types::SkillScope::Workspace,
+                path: PathBuf::from("/tmp/agent/skills/demo/SKILL.md"),
+                scope: crate::types::SkillScope::Agent,
                 agent_id: "default".into(),
                 activation_source: crate::types::SkillActivationSource::ImplicitFromCatalog,
                 activation_state: crate::types::SkillActivationState::SessionActive,
@@ -5128,10 +5142,12 @@ mod tests {
             .iter()
             .find(|section| section.name == "skills_catalog")
             .expect("skills_catalog section should be present");
-        assert!(catalog.content.contains("demo skill summary"));
         assert!(catalog
             .content
-            .contains("/tmp/workspace/.agents/skills/demo/SKILL.md"));
+            .contains("same-name precedence: agent > workspace > user"));
+        assert!(catalog.content.contains("agent demo skill summary"));
+        assert!(catalog.content.contains("/tmp/agent/skills/demo/SKILL.md"));
+        assert!(catalog.content.contains("other skill summary"));
         assert!(!catalog.content.contains("Follow the demo workflow."));
 
         let active = built
@@ -5139,7 +5155,10 @@ mod tests {
             .iter()
             .find(|section| section.name == "active_skills")
             .expect("active_skills section should be present");
-        assert!(active.content.contains("workspace:demo"));
+        assert!(active
+            .content
+            .contains("same-name precedence follows skills_catalog"));
+        assert!(active.content.contains("agent:demo"));
         assert!(active.content.contains("session_active"));
     }
 

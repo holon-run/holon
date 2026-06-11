@@ -66,6 +66,7 @@ pub fn load_skills_runtime_view(
         });
     }
 
+    discoverable_skills = retain_highest_precedence_skills(discoverable_skills);
     discoverable_skills.sort_by(|left, right| left.skill_id.cmp(&right.skill_id));
     let attached_skills = discoverable_skills.clone();
     let active_skill_ids = discoverable_skills
@@ -192,6 +193,29 @@ fn load_catalog_for_scope(scope: SkillScope, root: &Path) -> Result<Vec<SkillCat
         });
     }
     Ok(entries)
+}
+
+fn retain_highest_precedence_skills(skills: Vec<SkillCatalogEntry>) -> Vec<SkillCatalogEntry> {
+    let mut selected_by_name: std::collections::BTreeMap<String, SkillCatalogEntry> =
+        std::collections::BTreeMap::new();
+    for skill in skills {
+        match selected_by_name.get(&skill.name) {
+            Some(existing) if skill_precedence(skill.scope) <= skill_precedence(existing.scope) => {
+            }
+            _ => {
+                selected_by_name.insert(skill.name.clone(), skill);
+            }
+        }
+    }
+    selected_by_name.into_values().collect()
+}
+
+fn skill_precedence(scope: SkillScope) -> u8 {
+    match scope {
+        SkillScope::Agent => 3,
+        SkillScope::Workspace => 2,
+        SkillScope::User => 1,
+    }
 }
 
 #[derive(Default)]
@@ -1053,6 +1077,65 @@ mod tests {
             .discoverable_skills
             .iter()
             .all(|entry| entry.scope != SkillScope::User));
+    }
+
+    #[test]
+    fn same_name_skills_keep_highest_precedence_catalog_and_active_record() {
+        let dir = tempdir().unwrap();
+        let user_home = dir.path().join("user");
+        let agent_home = dir.path().join("agent");
+        let workspace = dir.path().join("workspace");
+        let user_skill = user_home.join(".agents/skills/ghx");
+        let agent_skill = agent_home.join("skills/ghx");
+        let workspace_skill = workspace.join(".agents/skills/ghx");
+        for (skill_dir, description) in [
+            (&user_skill, "user skill"),
+            (&agent_skill, "agent skill"),
+            (&workspace_skill, "workspace skill"),
+        ] {
+            fs::create_dir_all(skill_dir).unwrap();
+            fs::write(
+                skill_dir.join(SKILL_ENTRYPOINT),
+                format!("---\nname: ghx\ndescription: {description}\n---\nbody"),
+            )
+            .unwrap();
+        }
+
+        let view = load_skills_runtime_view(
+            SkillVisibility::DefaultAgent,
+            Some(&user_home),
+            &agent_home,
+            Some(&workspace),
+            &[
+                ActiveSkillRecord {
+                    skill_id: "workspace:ghx".into(),
+                    name: "ghx".into(),
+                    path: workspace_skill.join(SKILL_ENTRYPOINT),
+                    scope: SkillScope::Workspace,
+                    agent_id: "default".into(),
+                    activation_source: SkillActivationSource::ImplicitFromCatalog,
+                    activation_state: SkillActivationState::SessionActive,
+                    activated_at_turn: 1,
+                },
+                ActiveSkillRecord {
+                    skill_id: "agent:ghx".into(),
+                    name: "ghx".into(),
+                    path: agent_skill.join(SKILL_ENTRYPOINT),
+                    scope: SkillScope::Agent,
+                    agent_id: "default".into(),
+                    activation_source: SkillActivationSource::ImplicitFromCatalog,
+                    activation_state: SkillActivationState::SessionActive,
+                    activated_at_turn: 2,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(view.discoverable_skills.len(), 1);
+        assert_eq!(view.discoverable_skills[0].skill_id, "agent:ghx");
+        assert_eq!(view.discoverable_skills[0].description, "agent skill");
+        assert_eq!(view.active_skills.len(), 1);
+        assert_eq!(view.active_skills[0].skill_id, "agent:ghx");
     }
 
     #[test]
