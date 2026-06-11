@@ -328,15 +328,15 @@ impl BuiltInModelCatalog {
         let mut capabilities = built_in
             .map(|entry| entry.capabilities.clone())
             .unwrap_or_default();
-        if let Some(override_capabilities) =
-            override_config.and_then(|value| value.capabilities.as_ref())
-        {
-            override_capabilities.apply_to(&mut capabilities);
-        }
         if let Some(fallback_capabilities) =
             fallback_override.and_then(|value| value.capabilities.as_ref())
         {
             fallback_capabilities.apply_to(&mut capabilities);
+        }
+        if let Some(override_capabilities) =
+            override_config.and_then(|value| value.capabilities.as_ref())
+        {
+            override_capabilities.apply_to(&mut capabilities);
         }
 
         ResolvedRuntimeModelPolicy {
@@ -2126,6 +2126,41 @@ mod tests {
         assert_eq!(policy.prompt_budget_estimated_tokens, 64_000);
         assert_eq!(policy.compaction_trigger_estimated_tokens, 48_000);
         assert_eq!(policy.compaction_keep_recent_estimated_tokens, 24_000);
+        assert_eq!(policy.source, ModelMetadataSource::UnknownFallback);
+    }
+
+    #[test]
+    fn model_override_capabilities_take_precedence_over_unknown_fallback() {
+        let catalog = BuiltInModelCatalog::new();
+        let model_ref = ModelRef::new(ProviderId::openai(), "custom-model");
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            model_ref.clone(),
+            ModelRuntimeOverride {
+                capabilities: Some(ModelCapabilityOverride {
+                    image_input: Some(true),
+                    ..ModelCapabilityOverride::default()
+                }),
+                ..ModelRuntimeOverride::default()
+            },
+        );
+
+        let policy = catalog.resolve_policy(
+            &model_ref,
+            &overrides,
+            &HashMap::new(),
+            Some(&ModelRuntimeOverride {
+                capabilities: Some(ModelCapabilityOverride {
+                    image_input: Some(false),
+                    ..ModelCapabilityOverride::default()
+                }),
+                ..ModelRuntimeOverride::default()
+            }),
+            &base_context(),
+            8192,
+        );
+
+        assert!(policy.capabilities.image_input);
         assert_eq!(policy.source, ModelMetadataSource::UnknownFallback);
     }
 

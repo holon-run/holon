@@ -6432,6 +6432,15 @@ mod tests {
             .models
             .catalog
             .insert(custom_model.as_string(), override_config);
+        let unknown_fallback = ModelRuntimeOverride {
+            capabilities: Some(ModelCapabilityOverride {
+                image_input: Some(false),
+                ..ModelCapabilityOverride::default()
+            }),
+            ..ModelRuntimeOverride::default()
+        };
+        fixture.config.stored_config.model.unknown_fallback = Some(unknown_fallback.clone());
+        fixture.config.validated_unknown_model_fallback = Some(unknown_fallback);
         let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
         let selection =
