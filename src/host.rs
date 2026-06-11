@@ -29,7 +29,7 @@ use crate::{
     context::ContextConfig,
     host_registry::RuntimeRegistry,
     ids,
-    prompt::{build_effective_prompt, EffectivePrompt},
+    prompt::{build_effective_prompt_with_apply_patch_surface, EffectivePrompt},
     provider::{build_provider_from_config, AgentProvider},
     runtime::{InitialWorkspaceBinding, RuntimeHandle},
     runtime_db::RuntimeDb,
@@ -905,7 +905,7 @@ impl RuntimeHost {
             .map(|(_, tool)| tool)
             .collect::<Vec<_>>();
         let prompt_tools = provider.prompt_tool_specs(&available_tools);
-        build_effective_prompt(
+        build_effective_prompt_with_apply_patch_surface(
             &storage,
             &state,
             &execution,
@@ -917,6 +917,7 @@ impl RuntimeHost {
             loaded_agents_md,
             &skills,
             &prompt_tools,
+            apply_patch_surface,
             None,
         )
     }
@@ -2149,6 +2150,33 @@ mod tests {
             })
             .count();
         assert_eq!(backups, 0);
+    }
+
+    #[tokio::test]
+    async fn debug_prompt_preview_uses_model_apply_patch_surface_even_when_tools_are_lowered() {
+        let home = tempdir().unwrap();
+        fs::write(
+            home.path().join("config.json"),
+            r#"{"model":{"default":"openai-codex/gpt-5.3-codex-spark"}}"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let agent_id = host.config().default_agent_id.clone();
+
+        let prompt = host
+            .preview_agent_prompt(
+                &agent_id,
+                "inspect prompt".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .unwrap();
+        let rendered = prompt.render_dump();
+
+        assert!(rendered.contains("Current ApplyPatch surface is Codex DSL freeform"));
+        assert!(rendered.contains("send raw `*** Begin Patch` / `*** End Patch` text directly"));
+        assert!(!rendered.contains("Current ApplyPatch surface is a JSON/function tool"));
     }
 
     fn inherited_model_resolution(provider: &str, model: &str) -> SpawnAgentModelResolution {
