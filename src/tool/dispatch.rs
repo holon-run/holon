@@ -355,6 +355,7 @@ mod tests {
             "MemoryGet",
             "ApplyPatch",
             "ExecCommand",
+            "ViewImage",
             "WebFetch",
             "WebSearch",
         ] {
@@ -625,6 +626,7 @@ mod tests {
         assert!(names.iter().all(|name| name != "CancelExternalTrigger"));
         assert!(names.iter().all(|name| name != "TaskList"));
         assert!(names.iter().any(|name| name == "ApplyPatch"));
+        assert!(names.iter().any(|name| name == "ViewImage"));
         assert!(names.iter().any(|name| name == "WebFetch"));
         assert!(names.iter().any(|name| name == "WebSearch"));
         assert!(names.iter().all(|name| name != "CreateTask"));
@@ -672,6 +674,10 @@ mod tests {
         );
         assert_eq!(
             family_for("UseWorkspace"),
+            ToolCapabilityFamily::LocalEnvironment
+        );
+        assert_eq!(
+            family_for("ViewImage"),
             ToolCapabilityFamily::LocalEnvironment
         );
         assert_eq!(family_for("WebFetch"), ToolCapabilityFamily::Web);

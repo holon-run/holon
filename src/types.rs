@@ -3032,6 +3032,35 @@ pub struct ApplyPatchResult {
     pub summary_text: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewImageStatus {
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ViewImageMetadata {
+    pub media_type: String,
+    pub byte_count: u64,
+    pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ViewImageResult {
+    pub status: ViewImageStatus,
+    pub path: String,
+    pub resolved_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    pub metadata: ViewImageMetadata,
+    pub observation: String,
+    pub summary_text: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UseWorkspaceResult {
     pub workspace_id: String,
