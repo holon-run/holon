@@ -603,12 +603,16 @@
       "stability": "stable"
     },
     {
-      "description": "Make an existing open work item the current work-item focus for this agent. When switching from a different runnable current work item, the runtime yields that current item to the picked item and resumes it when the picked item completes. Blocked work items may be picked for inspection but remain non-runnable.\n",
+      "description": "Make an existing open work item the current work-item focus for this agent. When switching from a different runnable current work item, the runtime yields that current item to the picked item and resumes it when the picked item completes. Blocked work items may be picked for inspection but remain non-runnable by default. Set clear_blocker=true only after inspecting the blocker and confirming it is resolved; include a non-empty reason. This clears the WorkItem blocker/recheck state and active WorkItem-scoped waits so the picked item can resume as runnable. Use WaitFor, not PickWorkItem, to create or replace waits.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "clear_blocker": {
+            "default": false,
+            "type": "boolean"
+          },
           "reason": {
             "default": null,
             "type": [
