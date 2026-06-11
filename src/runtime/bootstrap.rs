@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::{
@@ -13,7 +14,10 @@ use crate::{
     host::RuntimeHostBridge,
     model_catalog::BuiltInModelMetadata,
     model_discovery::{discovery_cache_path, load_discovery_cache_at},
-    provider::{build_provider_from_model_chain, resolved_model_availability, AgentProvider},
+    provider::{
+        build_provider_from_model_chain, resolved_model_availability, AgentProvider,
+        ConversationMessage, ModelBlock, ProviderTurnRequest,
+    },
     queue::RuntimeQueue,
     runtime_db::RuntimeDb,
     storage::AppStorage,
@@ -330,6 +334,69 @@ impl RuntimeHandle {
             state.model_override.as_ref(),
             state.pending_fallback_model.as_ref(),
         ))
+    }
+
+    pub(crate) async fn generate_view_image_observation(
+        &self,
+        prompt: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> Result<String> {
+        let selection = self.current_view_image_vision_selection().await?;
+        if selection.selected_mode == crate::types::ViewImageSelectedMode::Unavailable {
+            return Err(anyhow!("no configured model supports image_input"));
+        }
+        let provider_name = selection
+            .vision_provider
+            .as_deref()
+            .ok_or_else(|| anyhow!("vision selection did not include a provider"))?;
+        let model_name = selection
+            .vision_model
+            .as_deref()
+            .ok_or_else(|| anyhow!("vision selection did not include a model"))?;
+        if !self
+            .inner
+            .model_catalog
+            .provider_supports_view_image_observation(provider_name)
+        {
+            return Err(anyhow!(
+                "vision model {provider_name}/{model_name} is not supported by ViewImage observation generation yet"
+            ));
+        }
+        let reconfig = self.inner.provider_reconfig.as_ref().ok_or_else(|| {
+            anyhow!("ViewImage observation generation requires host-managed provider configuration")
+        })?;
+        let provider = build_provider_from_model_chain(
+            &reconfig.config,
+            &[ModelRef::parse(&format!("{provider_name}/{model_name}"))?],
+        )?;
+        let response = provider
+            .complete_turn(ProviderTurnRequest::plain(
+                "You are a vision adapter for a headless agent. Inspect only the provided image and task prompt. Return one JSON object matching visual_observation.v1; do not include markdown, prose, or implementation advice. Required fields: type=\"visual_observation\", schema=\"visual_observation.v1\", summary. Optional fields: ocr, elements, relations, issues, uncertainties, external_sources. Use arrays for optional sections; include visible text in ocr or summary; include bounding boxes when location matters; describe only visible evidence; say when uncertain.",
+                vec![ConversationMessage::UserImage {
+                    prompt: prompt.to_string(),
+                    media_type: media_type.to_string(),
+                    data_base64: BASE64_STANDARD.encode(bytes),
+                }],
+                Vec::new(),
+            ))
+            .await?;
+        let text = response
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                ModelBlock::Text { text } => Some(text.trim()),
+                _ => None,
+            })
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if text.is_empty() {
+            return Err(anyhow!(
+                "ViewImage observation provider returned no text content"
+            ));
+        }
+        Ok(text)
     }
 
     async fn model_config_with_fresh_discovery_cache(&self) -> Option<AppConfig> {

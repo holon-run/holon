@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -59,37 +59,25 @@ pub(crate) async fn execute(
         .effective_execution(ExecutionScopeKind::AgentTurn)
         .await?;
     let resolved_path = execution.workspace.resolve_read_path(&path)?;
-    let visual_reference = read_visual_reference(&resolved_path)?;
+    let image = read_visual_reference(&resolved_path)?;
+    let visual_reference = image.visual_reference;
     let vision_selection = runtime.current_view_image_vision_selection().await?;
     if vision_selection.selected_mode == ViewImageSelectedMode::Unavailable {
         return Err(vision_adapter_unavailable(vision_selection));
     }
-    let observation = ViewImageObservation {
-        kind: "visual_observation".to_string(),
-        schema: "visual_observation.v1".to_string(),
-        visual_reference_id: visual_reference.id.clone(),
-        prompt,
-        generated_by: ViewImageGeneratedBy {
-            mode: vision_selection.selected_mode.clone(),
-            provider: vision_selection.vision_provider.clone(),
-            model: vision_selection.vision_model.clone(),
-            selection_reason: Some(vision_selection.selection_reason.clone()),
-        },
-        summary:
-            "visual observation unavailable: provider-native image observation is not implemented yet"
-                .to_string(),
-        ocr: Vec::new(),
-        elements: Vec::new(),
-        relations: Vec::new(),
-        issues: Vec::new(),
-        uncertainties: vec![
-            "ViewImage currently records image metadata only; visual observation generation is not implemented yet."
-                .to_string(),
-        ],
-        external_sources: Vec::new(),
-    };
+    let raw_observation = runtime
+        .generate_view_image_observation(&prompt, &visual_reference.mime, &image.bytes)
+        .await
+        .map_err(|error| vision_observation_failed(&vision_selection, error))?;
+    let observation = parse_visual_observation(
+        &raw_observation,
+        &visual_reference,
+        &prompt,
+        &vision_selection,
+    )
+    .map_err(|error| vision_observation_failed(&vision_selection, error))?;
     let summary_text = Some(format!(
-        "ViewImage selected {}/{} for {}; visual observation generation is not implemented yet",
+        "ViewImage generated a visual observation with {}/{} for {}",
         vision_selection
             .vision_provider
             .as_deref()
@@ -115,7 +103,7 @@ pub(crate) async fn execute(
 fn vision_adapter_unavailable(selection: ViewImageVisionSelection) -> anyhow::Error {
     ToolError::new(
         "vision_adapter_unavailable",
-        "ViewImage requires a model with image input support, but no configured provider/model advertises image_input.",
+        "ViewImage requires an OpenAI-compatible model with image input support, but no configured provider/model can generate visual observations.",
     )
     .with_details(json!({
         "selected_mode": selection.selected_mode,
@@ -124,11 +112,141 @@ fn vision_adapter_unavailable(selection: ViewImageVisionSelection) -> anyhow::Er
         "primary_model": selection.primary_model,
         "candidates": selection.candidates,
     }))
-    .with_recovery_hint("configure a primary or fallback model whose metadata advertises image_input")
+    .with_recovery_hint("configure a primary or fallback OpenAI-compatible vision model whose metadata advertises image_input")
     .into()
 }
 
-fn read_visual_reference(path: &Path) -> Result<ViewImageVisualReference> {
+fn vision_observation_failed(
+    selection: &ViewImageVisionSelection,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    ToolError::new(
+        "vision_observation_failed",
+        format!("ViewImage could not generate a visual observation: {error}"),
+    )
+    .with_details(json!({
+        "selected_mode": selection.selected_mode,
+        "selection_reason": selection.selection_reason,
+        "vision_provider": selection.vision_provider,
+        "vision_model": selection.vision_model,
+        "error": error.to_string(),
+    }))
+    .with_recovery_hint("configure an OpenAI-compatible vision model with valid credentials, or retry after provider failures are resolved")
+    .into()
+}
+
+fn parse_visual_observation(
+    raw: &str,
+    visual_reference: &ViewImageVisualReference,
+    prompt: &str,
+    selection: &ViewImageVisionSelection,
+) -> Result<ViewImageObservation> {
+    let value = parse_observation_json(raw)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("vision adapter response must be a JSON object"))?;
+    if object.get("type").and_then(Value::as_str) != Some("visual_observation") {
+        return Err(anyhow!(
+            "vision adapter response `type` must be visual_observation"
+        ));
+    }
+    if object.get("schema").and_then(Value::as_str) != Some("visual_observation.v1") {
+        return Err(anyhow!(
+            "vision adapter response `schema` must be visual_observation.v1"
+        ));
+    }
+    let summary = object
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+        .ok_or_else(|| anyhow!("vision adapter response must include a non-empty `summary`"))?
+        .to_string();
+    Ok(ViewImageObservation {
+        kind: "visual_observation".to_string(),
+        schema: "visual_observation.v1".to_string(),
+        visual_reference_id: visual_reference.id.clone(),
+        prompt: prompt.to_string(),
+        generated_by: ViewImageGeneratedBy {
+            mode: selection.selected_mode.clone(),
+            provider: selection.vision_provider.clone(),
+            model: selection.vision_model.clone(),
+            selection_reason: Some(selection.selection_reason.clone()),
+        },
+        summary,
+        ocr: optional_value_array(object.get("ocr"), "ocr")?,
+        elements: optional_value_array(object.get("elements"), "elements")?,
+        relations: optional_value_array(object.get("relations"), "relations")?,
+        issues: optional_value_array(object.get("issues"), "issues")?,
+        uncertainties: optional_string_array(object.get("uncertainties"), "uncertainties")?,
+        external_sources: optional_value_array(object.get("external_sources"), "external_sources")?,
+    })
+}
+
+fn parse_observation_json(raw: &str) -> Result<Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("vision adapter response was empty"));
+    }
+    if let Ok(value) = serde_json::from_str(trimmed) {
+        return Ok(value);
+    }
+    let unfenced = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|body| body.strip_suffix("```"))
+        .map(str::trim);
+    if let Some(unfenced) = unfenced {
+        if let Ok(value) = serde_json::from_str(unfenced) {
+            return Ok(value);
+        }
+    }
+    let Some(start) = trimmed.find('{') else {
+        return Err(anyhow!("vision adapter response did not contain JSON"));
+    };
+    let Some(end) = trimmed.rfind('}') else {
+        return Err(anyhow!(
+            "vision adapter response did not contain a complete JSON object"
+        ));
+    };
+    serde_json::from_str(&trimmed[start..=end])
+        .map_err(|error| anyhow!("vision adapter returned invalid observation JSON: {error}"))
+}
+
+fn optional_value_array(value: Option<&Value>, field: &str) -> Result<Vec<Value>> {
+    match value {
+        Some(Value::Array(values)) => Ok(values.clone()),
+        Some(_) => Err(anyhow!(
+            "vision adapter response field `{field}` must be an array when present"
+        )),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn optional_string_array(value: Option<&Value>, field: &str) -> Result<Vec<String>> {
+    match value {
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value.as_str().map(ToString::to_string).ok_or_else(|| {
+                    anyhow!("vision adapter response field `{field}` must contain only strings")
+                })
+            })
+            .collect(),
+        Some(_) => Err(anyhow!(
+            "vision adapter response field `{field}` must be an array when present"
+        )),
+        None => Ok(Vec::new()),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ReadImage {
+    visual_reference: ViewImageVisualReference,
+    bytes: Vec<u8>,
+}
+
+fn read_visual_reference(path: &Path) -> Result<ReadImage> {
     let file_metadata = fs::metadata(path).map_err(|error| {
         invalid_tool_input(
             NAME,
@@ -238,7 +356,7 @@ fn read_visual_reference(path: &Path) -> Result<ViewImageVisualReference> {
         }
     }
     let sha256 = format!("{:x}", Sha256::digest(&bytes));
-    Ok(ViewImageVisualReference {
+    let visual_reference = ViewImageVisualReference {
         kind: "visual_reference".to_string(),
         id: format!("vis_{}", &sha256[..16]),
         path: path.to_path_buf(),
@@ -250,6 +368,10 @@ fn read_visual_reference(path: &Path) -> Result<ViewImageVisualReference> {
             height: header.height,
         },
         created_at: Utc::now(),
+    };
+    Ok(ReadImage {
+        visual_reference,
+        bytes,
     })
 }
 
@@ -411,7 +533,8 @@ mod tests {
         let bytes = png_header_bytes(320, 240);
         fs::write(&path, &bytes).unwrap();
 
-        let reference = read_visual_reference(&path).unwrap();
+        let image = read_visual_reference(&path).unwrap();
+        let reference = image.visual_reference;
 
         assert_eq!(reference.kind, "visual_reference");
         assert_eq!(reference.mime, "image/png");
@@ -420,6 +543,104 @@ mod tests {
         assert_eq!(reference.size.height, Some(240));
         assert_eq!(reference.sha256, format!("{:x}", Sha256::digest(&bytes)));
         assert!(reference.id.starts_with("vis_"));
+        assert_eq!(image.bytes, bytes);
+    }
+
+    #[test]
+    fn parses_visual_observation_json_with_trusted_metadata() {
+        let reference = test_visual_reference();
+        let selection = test_vision_selection();
+
+        let observation = parse_visual_observation(
+            r#"{
+                "type": "visual_observation",
+                "schema": "visual_observation.v1",
+                "visual_reference_id": "provider_supplied",
+                "prompt": "provider supplied",
+                "summary": "A red square is visible.",
+                "ocr": [{"text": "OK"}],
+                "uncertainties": ["small text is unclear"]
+            }"#,
+            &reference,
+            "Inspect visible content.",
+            &selection,
+        )
+        .unwrap();
+
+        assert_eq!(observation.kind, "visual_observation");
+        assert_eq!(observation.schema, "visual_observation.v1");
+        assert_eq!(observation.visual_reference_id, reference.id);
+        assert_eq!(observation.prompt, "Inspect visible content.");
+        assert_eq!(observation.generated_by.provider.as_deref(), Some("openai"));
+        assert_eq!(observation.summary, "A red square is visible.");
+        assert_eq!(observation.ocr.len(), 1);
+        assert_eq!(
+            observation.uncertainties,
+            vec!["small text is unclear".to_string()]
+        );
+        assert!(observation.elements.is_empty());
+    }
+
+    #[test]
+    fn parses_visual_observation_json_from_markdown_fence() {
+        let observation = parse_visual_observation(
+            "```json\n{\"type\":\"visual_observation\",\"schema\":\"visual_observation.v1\",\"summary\":\"A chart is visible.\"}\n```",
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap();
+
+        assert_eq!(observation.summary, "A chart is visible.");
+    }
+
+    #[test]
+    fn rejects_malformed_visual_observation_json() {
+        let error = parse_visual_observation(
+            "not json",
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("did not contain JSON"));
+    }
+
+    #[test]
+    fn rejects_schema_incompatible_visual_observation() {
+        let error = parse_visual_observation(
+            r#"{"type":"visual_observation","schema":"visual_observation.v2","summary":"x"}"#,
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("visual_observation.v1"));
+    }
+
+    #[test]
+    fn rejects_missing_visual_observation_type_or_schema() {
+        let error = parse_visual_observation(
+            r#"{"schema":"visual_observation.v1","summary":"x"}"#,
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("`type`"));
+
+        let error = parse_visual_observation(
+            r#"{"type":"visual_observation","summary":"x"}"#,
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("`schema`"));
     }
 
     #[test]
@@ -491,5 +712,33 @@ mod tests {
         bytes.extend_from_slice(&height.to_be_bytes());
         bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
         bytes
+    }
+
+    fn test_visual_reference() -> ViewImageVisualReference {
+        ViewImageVisualReference {
+            kind: "visual_reference".to_string(),
+            id: "vis_test".to_string(),
+            path: Path::new("image.png").to_path_buf(),
+            sha256: "sha256".to_string(),
+            mime: "image/png".to_string(),
+            byte_count: 10,
+            size: ViewImageReferenceSize {
+                width: Some(1),
+                height: Some(1),
+            },
+            created_at: Utc::now(),
+        }
+    }
+
+    fn test_vision_selection() -> ViewImageVisionSelection {
+        ViewImageVisionSelection {
+            selected_mode: ViewImageSelectedMode::VisionAdapter,
+            vision_provider: Some("openai".to_string()),
+            vision_model: Some("gpt-5.4".to_string()),
+            selection_reason: "test".to_string(),
+            primary_provider: Some("openai".to_string()),
+            primary_model: Some("gpt-5.4".to_string()),
+            candidates: Vec::new(),
+        }
     }
 }

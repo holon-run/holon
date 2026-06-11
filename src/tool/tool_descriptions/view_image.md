@@ -10,7 +10,8 @@ file header.
 result. If no configured model supports image input, the tool returns a
 `vision_adapter_unavailable` error with the evaluated candidates.
 
-This skeleton does not yet call the selected vision model. Until provider-native
-visual observation generation is implemented, successful results return the
-image metadata, selected mode/provider/model, and an observation placeholder
-explaining that visual observation generation is not implemented yet.
+When the selected vision model is OpenAI-compatible, `ViewImage` sends the image
+and prompt to that model and returns a generated `visual_observation` alongside
+the durable image metadata and selection diagnostics. If the selected model or
+provider cannot be used for image observation, the tool returns
+`vision_adapter_unavailable` with structured diagnostics.
