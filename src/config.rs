@@ -931,9 +931,10 @@ impl RuntimeModelCatalog {
                     .or_else(|| {
                         base.and_then(|model| model.tool_output_truncation_estimated_tokens)
                     }),
-                capabilities: base
-                    .map(|model| model.capabilities.clone())
-                    .unwrap_or_default(),
+                capabilities: merged_model_capabilities(
+                    base.map(|model| &model.capabilities),
+                    override_config.capabilities.as_ref(),
+                ),
                 source: crate::model_catalog::ModelMetadataSource::ConfigOverride,
             });
         }
@@ -1033,6 +1034,28 @@ impl Default for RuntimeModelCatalog {
             configured_runtime_max_output_tokens: 8192,
         }
     }
+}
+
+fn merged_model_capabilities(
+    base: Option<&crate::model_catalog::ModelCapabilityFlags>,
+    override_config: Option<&crate::model_catalog::ModelCapabilityOverride>,
+) -> crate::model_catalog::ModelCapabilityFlags {
+    let mut capabilities = base.cloned().unwrap_or_default();
+    if let Some(override_config) = override_config {
+        if let Some(value) = override_config.parallel_tool_calls {
+            capabilities.parallel_tool_calls = value;
+        }
+        if let Some(value) = override_config.reasoning_summaries {
+            capabilities.reasoning_summaries = value;
+        }
+        if let Some(value) = override_config.image_input {
+            capabilities.image_input = value;
+        }
+        if let Some(value) = override_config.interactive_exec {
+            capabilities.interactive_exec = value;
+        }
+    }
+    capabilities
 }
 
 impl ControlAuthMode {
@@ -4253,7 +4276,9 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::context::ContextConfig;
-    use crate::model_catalog::{BuiltInModelMetadata, ModelMetadataSource, ModelRuntimeOverride};
+    use crate::model_catalog::{
+        BuiltInModelMetadata, ModelCapabilityOverride, ModelMetadataSource, ModelRuntimeOverride,
+    };
     use crate::model_discovery::{ModelDiscoveryCacheFile, ProviderModelDiscoveryCache};
     use crate::provider::ProviderNativeWebSearchKind;
 
@@ -4997,13 +5022,16 @@ mod tests {
         set_config_key(
             &mut config,
             "models.catalog",
-            r#"{"anthropic/claude-sonnet-4-6":{"prompt_budget_estimated_tokens":32000}}"#,
+            r#"{"anthropic/claude-sonnet-4-6":{"prompt_budget_estimated_tokens":32000,"capabilities":{"image_input":true}}}"#,
         )
         .unwrap();
         assert_eq!(
             get_config_key(&config, "models.catalog").unwrap(),
             json!({
                 "anthropic/claude-sonnet-4-6": {
+                    "capabilities": {
+                        "image_input": true
+                    },
                     "prompt_budget_estimated_tokens": 32_000
                 }
             })
@@ -6374,6 +6402,47 @@ mod tests {
         assert_eq!(selection.primary_model.as_deref(), Some("trinity-mini"));
         assert_eq!(selection.vision_provider.as_deref(), Some("openai"));
         assert_eq!(selection.vision_model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(
+            selection.selection_reason,
+            "primary_model_lacks_image_input"
+        );
+        assert_eq!(selection.candidates.len(), 2);
+        assert!(!selection.candidates[0].image_input);
+        assert!(selection.candidates[1].image_input);
+    }
+
+    #[test]
+    fn view_image_vision_selection_uses_configured_custom_fallback_capabilities() {
+        let mut fixture = test_app_config("arcee/trinity-mini", &["custom-openai/my-vision-model"]);
+        let custom_model = ModelRef::parse("custom-openai/my-vision-model").unwrap();
+        let override_config = ModelRuntimeOverride {
+            capabilities: Some(ModelCapabilityOverride {
+                image_input: Some(true),
+                ..ModelCapabilityOverride::default()
+            }),
+            ..ModelRuntimeOverride::default()
+        };
+        fixture
+            .config
+            .validated_model_overrides
+            .insert(custom_model.clone(), override_config.clone());
+        fixture
+            .config
+            .stored_config
+            .models
+            .catalog
+            .insert(custom_model.as_string(), override_config);
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+        let selection =
+            catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
+
+        assert_eq!(
+            selection.selected_mode,
+            crate::types::ViewImageSelectedMode::VisionAdapter
+        );
+        assert_eq!(selection.vision_provider.as_deref(), Some("custom-openai"));
+        assert_eq!(selection.vision_model.as_deref(), Some("my-vision-model"));
         assert_eq!(
             selection.selection_reason,
             "primary_model_lacks_image_input"

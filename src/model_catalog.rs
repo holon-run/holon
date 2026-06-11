@@ -38,6 +38,42 @@ pub struct ModelCapabilityFlags {
     pub interactive_exec: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ModelCapabilityOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_summaries: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_input: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interactive_exec: Option<bool>,
+}
+
+impl ModelCapabilityOverride {
+    pub fn is_empty(&self) -> bool {
+        self.parallel_tool_calls.is_none()
+            && self.reasoning_summaries.is_none()
+            && self.image_input.is_none()
+            && self.interactive_exec.is_none()
+    }
+
+    fn apply_to(&self, base: &mut ModelCapabilityFlags) {
+        if let Some(value) = self.parallel_tool_calls {
+            base.parallel_tool_calls = value;
+        }
+        if let Some(value) = self.reasoning_summaries {
+            base.reasoning_summaries = value;
+        }
+        if let Some(value) = self.image_input {
+            base.image_input = value;
+        }
+        if let Some(value) = self.interactive_exec {
+            base.interactive_exec = value;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BuiltInModelMetadata {
     pub model_ref: ModelRef,
@@ -82,6 +118,8 @@ pub struct ModelRuntimeOverride {
     pub runtime_max_output_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_output_truncation_estimated_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ModelCapabilityOverride>,
 }
 
 impl ModelRuntimeOverride {
@@ -96,6 +134,11 @@ impl ModelRuntimeOverride {
             && self.compaction_keep_recent_estimated_tokens.is_none()
             && self.runtime_max_output_tokens.is_none()
             && self.tool_output_truncation_estimated_tokens.is_none()
+            && self
+                .capabilities
+                .as_ref()
+                .map(ModelCapabilityOverride::is_empty)
+                .unwrap_or(true)
     }
 }
 
@@ -282,9 +325,19 @@ impl BuiltInModelCatalog {
             .unwrap_or(DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS);
         let max_output_tokens_upper_limit =
             built_in.and_then(|entry| entry.max_output_tokens_upper_limit);
-        let capabilities = built_in
+        let mut capabilities = built_in
             .map(|entry| entry.capabilities.clone())
             .unwrap_or_default();
+        if let Some(override_capabilities) =
+            override_config.and_then(|value| value.capabilities.as_ref())
+        {
+            override_capabilities.apply_to(&mut capabilities);
+        }
+        if let Some(fallback_capabilities) =
+            fallback_override.and_then(|value| value.capabilities.as_ref())
+        {
+            fallback_capabilities.apply_to(&mut capabilities);
+        }
 
         ResolvedRuntimeModelPolicy {
             model_ref: model_ref.clone(),
