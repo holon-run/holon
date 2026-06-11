@@ -1,6 +1,11 @@
-use std::{fs, path::Path};
+use std::{
+    fs::{self, File},
+    io::Read,
+    path::Path,
+};
 
 use anyhow::Result;
+use chrono::Utc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -11,7 +16,8 @@ use crate::{
     system::ExecutionScopeKind,
     tool::{helpers::invalid_tool_input, spec::typed_spec, ToolError},
     types::{
-        AuthorityClass, ToolCapabilityFamily, ViewImageMetadata, ViewImageResult, ViewImageStatus,
+        AuthorityClass, ToolCapabilityFamily, ViewImageGeneratedBy, ViewImageObservation,
+        ViewImageReferenceSize, ViewImageResult, ViewImageSelectedMode, ViewImageVisualReference,
     },
 };
 
@@ -52,39 +58,57 @@ pub(crate) async fn execute(
         .effective_execution(ExecutionScopeKind::AgentTurn)
         .await?;
     let resolved_path = execution.workspace.resolve_read_path(&path)?;
-    let metadata = read_image_metadata(&resolved_path)?;
-    let observation =
-        "visual observation unavailable: provider-native image observation is not implemented yet"
-            .to_string();
+    let visual_reference = read_visual_reference(&resolved_path)?;
+    let observation = ViewImageObservation {
+        kind: "visual_observation".to_string(),
+        schema: "visual_observation.v1".to_string(),
+        visual_reference_id: visual_reference.id.clone(),
+        prompt,
+        generated_by: ViewImageGeneratedBy {
+            mode: ViewImageSelectedMode::Unavailable,
+            provider: None,
+            model: None,
+        },
+        summary:
+            "visual observation unavailable: provider-native image observation is not implemented yet"
+                .to_string(),
+        ocr: Vec::new(),
+        elements: Vec::new(),
+        relations: Vec::new(),
+        issues: Vec::new(),
+        uncertainties: vec![
+            "ViewImage currently records image metadata only; visual observation generation is not implemented yet."
+                .to_string(),
+        ],
+        external_sources: Vec::new(),
+    };
     let summary_text = Some(format!(
         "ViewImage recorded {} ({} bytes); visual observation unavailable",
-        metadata.media_type, metadata.byte_count
+        visual_reference.mime, visual_reference.byte_count
     ));
     serialize_success(
         NAME,
         &ViewImageResult {
-            status: ViewImageStatus::Unavailable,
-            path,
-            resolved_path,
-            prompt: Some(prompt),
-            metadata,
+            visual_reference,
             observation,
+            selected_mode: ViewImageSelectedMode::Unavailable,
             summary_text,
         },
     )
 }
 
-fn read_image_metadata(path: &Path) -> Result<ViewImageMetadata> {
+fn read_visual_reference(path: &Path) -> Result<ViewImageVisualReference> {
     let file_metadata = fs::metadata(path).map_err(|error| {
-        ToolError::new(
-            "image_read_failed",
-            format!("failed to inspect image file: {error}"),
+        invalid_tool_input(
+            NAME,
+            "ViewImage `path` must refer to a readable local image file",
+            json!({
+                "field": "path",
+                "path": path,
+                "io_error": error.to_string(),
+            }),
+            "provide a readable PNG, JPEG, GIF, or WebP image file path",
         )
-        .with_details(json!({
-            "path": path,
-            "io_error": error.to_string(),
-        }))
-        .with_recovery_hint("provide a readable local image file path")
     })?;
     if !file_metadata.is_file() {
         return Err(invalid_tool_input(
@@ -112,7 +136,7 @@ fn read_image_metadata(path: &Path) -> Result<ViewImageMetadata> {
             "provide a smaller local image file",
         ));
     }
-    let bytes = fs::read(path).map_err(|error| {
+    let mut file = File::open(path).map_err(|error| {
         ToolError::new(
             "image_read_failed",
             format!("failed to read image file: {error}"),
@@ -123,6 +147,34 @@ fn read_image_metadata(path: &Path) -> Result<ViewImageMetadata> {
         }))
         .with_recovery_hint("provide a readable local image file path")
     })?;
+    let mut bytes = Vec::with_capacity(byte_count as usize);
+    file.by_ref()
+        .take(MAX_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            ToolError::new(
+                "image_read_failed",
+                format!("failed to read image file: {error}"),
+            )
+            .with_details(json!({
+                "path": path,
+                "io_error": error.to_string(),
+            }))
+            .with_recovery_hint("provide a readable local image file path")
+        })?;
+    if bytes.len() as u64 > MAX_IMAGE_BYTES {
+        return Err(invalid_tool_input(
+            NAME,
+            "ViewImage `path` exceeds the maximum supported image file size",
+            json!({
+                "field": "path",
+                "path": path,
+                "byte_count": bytes.len(),
+                "max_byte_count": MAX_IMAGE_BYTES,
+            }),
+            "provide a smaller local image file",
+        ));
+    }
     let Some(header) = ImageHeader::parse(&bytes) else {
         return Err(invalid_tool_input(
             NAME,
@@ -154,12 +206,19 @@ fn read_image_metadata(path: &Path) -> Result<ViewImageMetadata> {
             ));
         }
     }
-    Ok(ViewImageMetadata {
-        media_type: header.media_type.to_string(),
-        byte_count,
-        sha256: format!("{:x}", Sha256::digest(&bytes)),
-        width: header.width,
-        height: header.height,
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    Ok(ViewImageVisualReference {
+        kind: "visual_reference".to_string(),
+        id: format!("vis_{}", &sha256[..16]),
+        path: path.to_path_buf(),
+        sha256,
+        mime: header.media_type.to_string(),
+        byte_count: bytes.len() as u64,
+        size: ViewImageReferenceSize {
+            width: header.width,
+            height: header.height,
+        },
+        created_at: Utc::now(),
     })
 }
 
@@ -228,11 +287,7 @@ fn parse_webp(bytes: &[u8]) -> Option<ImageHeader> {
             width: Some(read_u24_le(&bytes[24..27]) + 1),
             height: Some(read_u24_le(&bytes[27..30]) + 1),
         }),
-        _ => Some(ImageHeader {
-            media_type: "image/webp",
-            width: None,
-            height: None,
-        }),
+        _ => None,
     }
 }
 
@@ -277,11 +332,7 @@ fn parse_jpeg(bytes: &[u8]) -> Option<ImageHeader> {
         }
         offset += segment_len;
     }
-    Some(ImageHeader {
-        media_type: "image/jpeg",
-        width: None,
-        height: None,
-    })
+    None
 }
 
 fn is_jpeg_sof_marker(marker: u8) -> bool {
@@ -323,19 +374,32 @@ mod tests {
     }
 
     #[test]
-    fn reads_image_metadata() {
+    fn reads_visual_reference() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("image.png");
         let bytes = png_header_bytes(320, 240);
         fs::write(&path, &bytes).unwrap();
 
-        let metadata = read_image_metadata(&path).unwrap();
+        let reference = read_visual_reference(&path).unwrap();
 
-        assert_eq!(metadata.media_type, "image/png");
-        assert_eq!(metadata.byte_count, bytes.len() as u64);
-        assert_eq!(metadata.width, Some(320));
-        assert_eq!(metadata.height, Some(240));
-        assert_eq!(metadata.sha256, format!("{:x}", Sha256::digest(&bytes)));
+        assert_eq!(reference.kind, "visual_reference");
+        assert_eq!(reference.mime, "image/png");
+        assert_eq!(reference.byte_count, bytes.len() as u64);
+        assert_eq!(reference.size.width, Some(320));
+        assert_eq!(reference.size.height, Some(240));
+        assert_eq!(reference.sha256, format!("{:x}", Sha256::digest(&bytes)));
+        assert!(reference.id.starts_with("vis_"));
+    }
+
+    #[test]
+    fn rejects_missing_file_as_invalid_tool_input() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("missing.png");
+
+        let error = ToolError::from_anyhow(&read_visual_reference(&path).unwrap_err());
+
+        assert_eq!(error.kind, "invalid_tool_input");
+        assert!(error.message.contains("readable local image file"));
     }
 
     #[test]
@@ -344,7 +408,7 @@ mod tests {
         let path = dir.path().join("not-image.txt");
         fs::write(&path, b"hello").unwrap();
 
-        let error = ToolError::from_anyhow(&read_image_metadata(&path).unwrap_err());
+        let error = ToolError::from_anyhow(&read_visual_reference(&path).unwrap_err());
 
         assert_eq!(error.kind, "invalid_tool_input");
         assert!(error.message.contains("supported image file"));
@@ -357,7 +421,7 @@ mod tests {
         let file = File::create(&path).unwrap();
         file.set_len(MAX_IMAGE_BYTES + 1).unwrap();
 
-        let error = ToolError::from_anyhow(&read_image_metadata(&path).unwrap_err());
+        let error = ToolError::from_anyhow(&read_visual_reference(&path).unwrap_err());
 
         assert_eq!(error.kind, "invalid_tool_input");
         assert!(error.message.contains("file size"));
@@ -369,10 +433,25 @@ mod tests {
         let path = dir.path().join("huge.png");
         fs::write(&path, png_header_bytes(100_000, 100_000)).unwrap();
 
-        let error = ToolError::from_anyhow(&read_image_metadata(&path).unwrap_err());
+        let error = ToolError::from_anyhow(&read_visual_reference(&path).unwrap_err());
 
         assert_eq!(error.kind, "invalid_tool_input");
         assert!(error.message.contains("pixel count"));
+    }
+
+    #[test]
+    fn rejects_jpeg_without_sof_dimensions() {
+        let bytes = [0xff, 0xd8, 0xff, 0xd9];
+
+        assert!(ImageHeader::parse(&bytes).is_none());
+    }
+
+    #[test]
+    fn rejects_webp_without_recognized_dimensions() {
+        let mut bytes = b"RIFF\x1e\0\0\0WEBPUNKN".to_vec();
+        bytes.resize(30, 0);
+
+        assert!(ImageHeader::parse(&bytes).is_none());
     }
 
     fn png_header_bytes(width: u32, height: u32) -> Vec<u8> {

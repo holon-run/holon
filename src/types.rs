@@ -3034,15 +3034,14 @@ pub struct ApplyPatchResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ViewImageStatus {
+pub enum ViewImageSelectedMode {
     Unavailable,
+    NativeImageWithObservation,
+    VisionAdapter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ViewImageMetadata {
-    pub media_type: String,
-    pub byte_count: u64,
-    pub sha256: String,
+pub struct ViewImageReferenceSize {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3050,14 +3049,55 @@ pub struct ViewImageMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ViewImageResult {
-    pub status: ViewImageStatus,
-    pub path: String,
-    pub resolved_path: PathBuf,
+pub struct ViewImageVisualReference {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: String,
+    pub path: PathBuf,
+    pub sha256: String,
+    pub mime: String,
+    pub byte_count: u64,
+    pub size: ViewImageReferenceSize,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ViewImageGeneratedBy {
+    pub mode: ViewImageSelectedMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
-    pub metadata: ViewImageMetadata,
-    pub observation: String,
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ViewImageObservation {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub schema: String,
+    pub visual_reference_id: String,
+    pub prompt: String,
+    pub generated_by: ViewImageGeneratedBy,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ocr: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub elements: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<Value>,
+    pub uncertainties: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_sources: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ViewImageResult {
+    pub visual_reference: ViewImageVisualReference,
+    pub observation: ViewImageObservation,
+    pub selected_mode: ViewImageSelectedMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
 }
 

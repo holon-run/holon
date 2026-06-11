@@ -37,11 +37,25 @@ pub(crate) use crate::{
 use super::super::*;
 
 pub(crate) fn context_config() -> ContextConfig {
+    let available_tools =
+        crate::tool::ToolRegistry::new(PathBuf::from("/tmp/holon-test-workspace"))
+            .tool_specs_with_families()
+            .unwrap()
+            .into_iter()
+            .filter(|(family, _)| {
+                AgentProfilePreset::PublicNamed.allows_tool_capability_family(*family)
+            })
+            .map(|(_, tool)| tool)
+            .collect::<Vec<_>>();
+    let prompt_budget_estimated_tokens =
+        super::super::turn::estimate_tool_specs_tokens(&available_tools) + 4096;
     ContextConfig {
         recent_messages: 8,
         recent_briefs: 8,
         compaction_trigger_messages: 10,
         compaction_keep_recent_messages: 4,
+        prompt_budget_estimated_tokens,
+        turn_projection_min_budget: prompt_budget_estimated_tokens,
         ..ContextConfig::default()
     }
 }
