@@ -5,9 +5,11 @@ This directory contains the first local Web GUI design assets for Holon:
 - `DESIGN.md` — the visual and interaction contract, written in a
   design.md-style format with machine-readable tokens and human-readable rules.
 - `prototype/` — a static, clickable prototype for the first GUI shape.
+- `app/` — the standalone production Web app once initialized.
 
-The prototype is intentionally dependency-free. It is a review artifact and an
-implementation seed, not the production Web app yet.
+The prototype is intentionally dependency-free. It remains a review artifact
+and implementation seed. Production UI work should happen in `app/` and keep
+the prototype available as the visual/information-architecture baseline.
 
 ## Preview locally
 
@@ -26,6 +28,26 @@ http://127.0.0.1:4173/
 You can also open `web-gui/prototype/index.html` directly in a browser, but the
 local server path better matches how the UI will eventually be served by
 `holon serve`.
+
+## Current implementation plan
+
+The next Web GUI slice is intentionally standalone:
+
+1. finalize this design/prototype contract;
+2. initialize `web-gui/app` as a frontend project;
+3. implement Dashboard first;
+4. implement the Agent conversation page second;
+5. document missing backend data needs instead of adding new Holon API routes.
+
+Constraints for the current worktree:
+
+- one logical work item per commit;
+- reuse existing Holon interfaces only;
+- do not embed into `holon serve` yet;
+- keep Search and Settings lightweight until Dashboard and Agent conversation
+  are useful;
+- refer to the TUI when exposing display levels, runtime activity, and
+  provenance.
 
 ## Current prototype scope
 
@@ -49,7 +71,6 @@ The current fixture was extracted from the local RuntimeDb at
 
 ## Not in scope yet
 
-- production API calls
 - authentication/token handling
 - bundling into the `holon` binary
 - Tauri desktop shell
@@ -57,3 +78,7 @@ The current fixture was extracted from the local RuntimeDb at
 
 Those should be added after the layout and information architecture are
 reviewed.
+
+Production API calls are in scope for the standalone app only when they can use
+existing local Holon interfaces. New backend routes should be tracked as
+follow-up API-gap issues rather than implemented in this prototype branch.

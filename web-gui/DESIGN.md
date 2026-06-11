@@ -1,7 +1,7 @@
 ---
 design_system: holon-local-web-gui
-version: 0.1.0
-status: prototype
+version: 0.2.0
+status: standalone-app-contract
 audience:
   - local operators
   - power users
@@ -98,6 +98,15 @@ This file defines the initial visual and interaction contract for Holon's
 first-party local Web GUI. It is intentionally small enough for coding agents
 to read before implementing pages, while still preserving the product shape
 that should not be lost across sessions.
+
+The current implementation path is **standalone app first**:
+
+- keep `web-gui/prototype/` as the reviewable static prototype;
+- build production UI under `web-gui/app/`;
+- call existing local Holon interfaces during development;
+- do not add backend API routes in the Web GUI work unless a later task
+  explicitly authorizes it;
+- do not embed the app into `holon serve` yet.
 
 The Web GUI is a local control room for a headless, event-driven runtime. It
 should not look like a generic chat app, a metrics-only SaaS dashboard, or a
@@ -336,6 +345,43 @@ The initial prototype should demonstrate:
 - A bottom local/remote runtime strip showing local-first connection posture.
 - Static sample data that reflects Holon's actual runtime concepts.
 - No external network dependencies.
+
+## Standalone app implementation contract
+
+The first production Web GUI is a standalone local web project, not an embedded
+server asset. It may run from a normal frontend dev server and connect to a
+locally running Holon runtime.
+
+Implementation priorities:
+
+1. **Dashboard.** Show the agent roster, lifecycle/readiness state, active
+   workspace context, current WorkItem summary, recent briefs, waits, and
+   operator-attention signals.
+2. **Agent conversation.** Show one durable conversation per agent with a
+   composer, current WorkItem context, display level controls, activity
+   evidence, and object inspector entry points.
+3. **Runtime adapter.** Use a small client layer that can read existing Holon
+   control-plane surfaces when available and fall back to local fixtures during
+   UI development.
+4. **Search and Settings.** Keep as lightweight shells until Dashboard and
+   Agent conversation behavior are stable.
+
+Backend constraints:
+
+- Reuse existing Holon HTTP/control-plane interfaces.
+- If the UI needs data that existing interfaces cannot provide, document the
+  gap and propose a GitHub issue instead of adding the route in this slice.
+- Do not introduce GUI-only runtime semantics that the TUI/runtime model does
+  not already support.
+- Refer to the TUI when deciding how to expose display level, activity
+  evidence, and runtime provenance.
+
+Commit discipline:
+
+- Keep one logical work item per commit.
+- The prototype contract, standalone app scaffold, dashboard implementation,
+  agent conversation implementation, and API-gap documentation should remain
+  separate review slices.
 
 ## Implementation notes for future agents
 
