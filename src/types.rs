@@ -3068,6 +3068,8 @@ pub struct ViewImageGeneratedBy {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -3097,8 +3099,34 @@ pub struct ViewImageResult {
     pub visual_reference: ViewImageVisualReference,
     pub observation: ViewImageObservation,
     pub selected_mode: ViewImageSelectedMode,
+    pub vision_selection: ViewImageVisionSelection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ViewImageVisionCandidate {
+    pub provider: String,
+    pub model: String,
+    pub model_ref: String,
+    pub image_input: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ViewImageVisionSelection {
+    pub selected_mode: ViewImageSelectedMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_model: Option<String>,
+    pub selection_reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<ViewImageVisionCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -17,7 +17,8 @@ use crate::{
     tool::{helpers::invalid_tool_input, spec::typed_spec, ToolError},
     types::{
         AuthorityClass, ToolCapabilityFamily, ViewImageGeneratedBy, ViewImageObservation,
-        ViewImageReferenceSize, ViewImageResult, ViewImageSelectedMode, ViewImageVisualReference,
+        ViewImageReferenceSize, ViewImageResult, ViewImageSelectedMode, ViewImageVisionSelection,
+        ViewImageVisualReference,
     },
 };
 
@@ -59,15 +60,20 @@ pub(crate) async fn execute(
         .await?;
     let resolved_path = execution.workspace.resolve_read_path(&path)?;
     let visual_reference = read_visual_reference(&resolved_path)?;
+    let vision_selection = runtime.current_view_image_vision_selection().await?;
+    if vision_selection.selected_mode == ViewImageSelectedMode::Unavailable {
+        return Err(vision_adapter_unavailable(vision_selection));
+    }
     let observation = ViewImageObservation {
         kind: "visual_observation".to_string(),
         schema: "visual_observation.v1".to_string(),
         visual_reference_id: visual_reference.id.clone(),
         prompt,
         generated_by: ViewImageGeneratedBy {
-            mode: ViewImageSelectedMode::Unavailable,
-            provider: None,
-            model: None,
+            mode: vision_selection.selected_mode.clone(),
+            provider: vision_selection.vision_provider.clone(),
+            model: vision_selection.vision_model.clone(),
+            selection_reason: Some(vision_selection.selection_reason.clone()),
         },
         summary:
             "visual observation unavailable: provider-native image observation is not implemented yet"
@@ -83,18 +89,43 @@ pub(crate) async fn execute(
         external_sources: Vec::new(),
     };
     let summary_text = Some(format!(
-        "ViewImage recorded {} ({} bytes); visual observation unavailable",
-        visual_reference.mime, visual_reference.byte_count
+        "ViewImage selected {}/{} for {}; visual observation generation is not implemented yet",
+        vision_selection
+            .vision_provider
+            .as_deref()
+            .unwrap_or("unknown-provider"),
+        vision_selection
+            .vision_model
+            .as_deref()
+            .unwrap_or("unknown-model"),
+        visual_reference.mime
     ));
     serialize_success(
         NAME,
         &ViewImageResult {
             visual_reference,
             observation,
-            selected_mode: ViewImageSelectedMode::Unavailable,
+            selected_mode: vision_selection.selected_mode.clone(),
+            vision_selection,
             summary_text,
         },
     )
+}
+
+fn vision_adapter_unavailable(selection: ViewImageVisionSelection) -> anyhow::Error {
+    ToolError::new(
+        "vision_adapter_unavailable",
+        "ViewImage requires a model with image input support, but no configured provider/model advertises image_input.",
+    )
+    .with_details(json!({
+        "selected_mode": selection.selected_mode,
+        "selection_reason": selection.selection_reason,
+        "primary_provider": selection.primary_provider,
+        "primary_model": selection.primary_model,
+        "candidates": selection.candidates,
+    }))
+    .with_recovery_hint("configure a primary or fallback model whose metadata advertises image_input")
+    .into()
 }
 
 fn read_visual_reference(path: &Path) -> Result<ViewImageVisualReference> {

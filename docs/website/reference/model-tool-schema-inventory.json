@@ -1198,7 +1198,7 @@
       "stability": "stable"
     },
     {
-      "description": "Validate and record durable metadata for a local image file.\n\n`ViewImage` accepts a workspace-relative or absolute image path plus a required\nprompt describing what to inspect. It records provider-neutral evidence such as\nmedia type, byte count, SHA-256, and dimensions when they can be read from the\nfile header.\n\nThis skeleton does not yet call a vision model. Until visual observation\ngeneration is implemented, successful results return `status: \"unavailable\"`\nwith a structured explanation.\n",
+      "description": "Validate and record durable metadata for a local image file.\n\n`ViewImage` accepts a workspace-relative or absolute image path plus a required\nprompt describing what to inspect. It records provider-neutral evidence such as\nmedia type, byte count, SHA-256, and dimensions when they can be read from the\nfile header.\n\n`ViewImage` selects a configured primary or fallback model that advertises\n`image_input` support and includes structured selection diagnostics in the\nresult. If no configured model supports image input, the tool returns a\n`vision_adapter_unavailable` error with the evaluated candidates.\n\nThis skeleton does not yet call the selected vision model. Until provider-native\nvisual observation generation is implemented, successful results return the\nimage metadata, selected mode/provider/model, and an observation placeholder\nexplaining that visual observation generation is not implemented yet.\n",
       "family": "local_environment",
       "freeform_grammar": null,
       "input_schema": {
