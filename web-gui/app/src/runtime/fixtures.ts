@@ -4,8 +4,15 @@ export const runtimeFixture: RuntimeBootstrap = {
   attentionCount: 1,
   connection: {
     mode: "local",
-    summary: "connected · fixture bootstrap",
+    summary: "fixture bootstrap · set VITE_HOLON_API_BASE to use live data",
+    source: "fixture",
   },
+  metrics: [
+    { label: "Agents", value: "2" },
+    { label: "Needs attention", value: "1", tone: "attention" },
+    { label: "Active tasks", value: "0", tone: "muted" },
+    { label: "Open work", value: "1" },
+  ],
   agents: [
     {
       id: "holon-pm",
@@ -20,6 +27,11 @@ export const runtimeFixture: RuntimeBootstrap = {
       subtitle: "asleep · workspace holon · web-gui-prototype",
       lastBrief: "Standalone Web GUI work is split into contract, scaffold, Dashboard, Agent page, and API-gap slices.",
       lastTurnTime: "16:39",
+      pending: 0,
+      activeTaskCount: 0,
+      waitingCount: 1,
+      posture: "waiting_for_operator",
+      postureReason: "current work item is waiting for the next operator decision",
       currentWork: {
         id: "work_57ad2568ea1307f",
         objective: "Web GUI standalone implementation plan in current worktree",
@@ -40,6 +52,11 @@ export const runtimeFixture: RuntimeBootstrap = {
       subtitle: "stopped · no active workspace",
       lastBrief: "Stored state is available when this agent becomes active.",
       lastTurnTime: "—",
+      pending: 0,
+      activeTaskCount: 0,
+      waitingCount: 0,
+      posture: "idle",
+      postureReason: "agent is stopped",
     },
   ],
 };

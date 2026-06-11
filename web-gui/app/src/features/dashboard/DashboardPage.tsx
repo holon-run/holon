@@ -1,21 +1,54 @@
-import type { AgentSummary } from "../../runtime/types";
+import type { AgentSummary, DashboardMetric, RuntimeConnection } from "../../runtime/types";
 
 interface DashboardPageProps {
   agents: AgentSummary[];
+  metrics: DashboardMetric[];
+  connection: RuntimeConnection;
+  loading: boolean;
+  onRefresh: () => void;
   onOpenAgent: (agentId: string) => void;
 }
 
-export function DashboardPage({ agents, onOpenAgent }: DashboardPageProps) {
+export function DashboardPage({ agents, metrics, connection, loading, onRefresh, onOpenAgent }: DashboardPageProps) {
   return (
     <section className="page dashboard-page" aria-label="Dashboard">
       <div className="page-inner dashboard-inner">
+        <section className="runtime-overview" aria-label="Runtime overview">
+          <div className="overview-copy">
+            <span className="eyebrow">Runtime dashboard</span>
+            <h1>Local Holon workbench</h1>
+            <p>
+              Reads existing Holon routes: <code>/handshake</code>, <code>/agents/list</code>,{" "}
+              <code>/agents/:id/state</code>, and <code>/agents/:id/briefs</code>. No GUI-specific
+              backend API is required for this slice.
+            </p>
+          </div>
+          <div className="metric-grid">
+            {metrics.map((metric) => (
+              <div className={`metric-card ${metric.tone ?? "default"}`} key={metric.label}>
+                <span>{metric.label}</span>
+                <strong>{metric.value}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {connection.source === "fixture" ? (
+          <aside className="dashboard-notice" role="status">
+            <strong>Fixture fallback</strong>
+            <span>{connection.error ?? connection.summary}</span>
+          </aside>
+        ) : null}
+
         <section className="dashboard-section">
           <div className="section-head">
             <div>
               <span className="eyebrow">Agents</span>
               <h2>Agent roster</h2>
             </div>
-            <button type="button">Refresh</button>
+            <button type="button" disabled={loading} onClick={onRefresh}>
+              {loading ? "Refreshing…" : "Refresh"}
+            </button>
           </div>
 
           <div className="agent-roster">
@@ -46,6 +79,14 @@ export function DashboardPage({ agents, onOpenAgent }: DashboardPageProps) {
                   <div>
                     <span>Model</span>
                     <strong>{agent.model}</strong>
+                  </div>
+                  <div>
+                    <span>Posture</span>
+                    <strong>{agent.posture}</strong>
+                  </div>
+                  <div>
+                    <span>Tasks</span>
+                    <strong>{agent.activeTaskCount}</strong>
                   </div>
                 </div>
                 <footer>

@@ -5,7 +5,7 @@ import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
-import { runtimeFixture } from "../runtime/fixtures";
+import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { DisplayLevel, RouteKey } from "../runtime/types";
 
 const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
@@ -15,15 +15,16 @@ const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
 ];
 
 export function App() {
+  const { bootstrap, loading, refresh } = useRuntimeDashboard();
   const [route, setRoute] = useState<RouteKey>("dashboard");
-  const [selectedAgentId, setSelectedAgentId] = useState(runtimeFixture.agents[0]?.id ?? "");
+  const [selectedAgentId, setSelectedAgentId] = useState("");
   const [displayLevel, setDisplayLevel] = useState<DisplayLevel>("info");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [navCollapsed, setNavCollapsed] = useState(false);
 
   const selectedAgent = useMemo(
-    () => runtimeFixture.agents.find((agent) => agent.id === selectedAgentId) ?? runtimeFixture.agents[0],
-    [selectedAgentId],
+    () => bootstrap.agents.find((agent) => agent.id === selectedAgentId) ?? bootstrap.agents[0],
+    [bootstrap.agents, selectedAgentId],
   );
 
   function openAgent(agentId: string) {
@@ -71,7 +72,7 @@ export function App() {
 
         <section className="side-section agent-switcher" aria-label="Active agents">
           <div className="side-heading">Active agents</div>
-          {runtimeFixture.agents.map((agent) => (
+          {bootstrap.agents.map((agent) => (
             <button
               className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""}`}
               key={agent.id}
@@ -93,8 +94,8 @@ export function App() {
           <button className="connection-status" type="button">
             <span className="runtime-dot" />
             <span>
-              <strong>{runtimeFixture.connection.mode}</strong>
-              <small>{runtimeFixture.connection.summary}</small>
+              <strong>{bootstrap.connection.mode}</strong>
+              <small>{bootstrap.connection.summary}</small>
             </span>
           </button>
         </div>
@@ -115,8 +116,12 @@ export function App() {
                 </button>
               ) : null}
               <div>
-                <strong>{route === "agent" ? selectedAgent.id : pageTitle(route)}</strong>
-                <span>{route === "agent" ? selectedAgent.subtitle : pageSubtitle(route)}</span>
+                <strong>{route === "agent" ? selectedAgent?.id ?? "Agent" : pageTitle(route)}</strong>
+                <span>
+                  {route === "agent"
+                    ? selectedAgent?.subtitle ?? "loading agent"
+                    : pageSubtitle(route, bootstrap.attentionCount, bootstrap.agents.length)}
+                </span>
               </div>
             </div>
             <div className="top-actions">
@@ -135,8 +140,8 @@ export function App() {
             <div className="agent-top-context" aria-label="Agent conversation context">
               <button className="work-summary" type="button" onClick={() => setInspectorOpen(true)}>
                 <span>Current work item</span>
-                <strong>{selectedAgent.currentWork?.objective ?? "No current work item"}</strong>
-                <em>{selectedAgent.currentWork?.state ?? selectedAgent.lifecycle}</em>
+                <strong>{selectedAgent?.currentWork?.objective ?? "No current work item"}</strong>
+                <em>{selectedAgent?.currentWork?.state ?? selectedAgent?.lifecycle ?? "unknown"}</em>
               </button>
               <div className="display-level" aria-label="Display level">
                 {(["info", "verbose", "debug"] as const).map((level) => (
@@ -155,16 +160,25 @@ export function App() {
         </header>
 
         {route === "dashboard" ? (
-          <DashboardPage agents={runtimeFixture.agents} onOpenAgent={openAgent} />
+          <DashboardPage
+            agents={bootstrap.agents}
+            metrics={bootstrap.metrics}
+            connection={bootstrap.connection}
+            loading={loading}
+            onRefresh={() => {
+              void refresh();
+            }}
+            onOpenAgent={openAgent}
+          />
         ) : null}
-        {route === "agent" ? (
+        {route === "agent" && selectedAgent ? (
           <AgentPage agent={selectedAgent} displayLevel={displayLevel} onOpenInspector={() => setInspectorOpen(true)} />
         ) : null}
         {route === "search" ? <SearchPage /> : null}
-        {route === "settings" ? <SettingsPage connection={runtimeFixture.connection} /> : null}
+        {route === "settings" ? <SettingsPage connection={bootstrap.connection} /> : null}
       </main>
 
-      <InspectorPanel agent={selectedAgent} open={inspectorOpen} onClose={() => setInspectorOpen(false)} />
+      {selectedAgent ? <InspectorPanel agent={selectedAgent} open={inspectorOpen} onClose={() => setInspectorOpen(false)} /> : null}
     </div>
   );
 }
@@ -175,10 +189,10 @@ function pageTitle(route: RouteKey): string {
   return "Dashboard";
 }
 
-function pageSubtitle(route: RouteKey): string {
+function pageSubtitle(route: RouteKey, attentionCount: number, agentCount: number): string {
   if (route === "search") return "cross-agent lookup · messages · briefs · work evidence";
   if (route === "settings") return "local connection · providers · model defaults";
-  return `${runtimeFixture.agents.length} agents · ${runtimeFixture.attentionCount} waiting signal`;
+  return `${agentCount} agents · ${attentionCount} waiting signal`;
 }
 
 function levelLabel(level: DisplayLevel): string {
