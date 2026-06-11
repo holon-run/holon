@@ -46,6 +46,32 @@ pub(crate) fn context_config() -> ContextConfig {
     }
 }
 
+pub(crate) fn continuation_ready_context_config(
+    workspace: &TempDir,
+    continuation_effective_budget: usize,
+) -> ContextConfig {
+    let available_tools = crate::tool::ToolRegistry::new(workspace.path().to_path_buf())
+        .tool_specs_with_families()
+        .unwrap()
+        .into_iter()
+        .filter(|(family, _)| {
+            AgentProfilePreset::PublicNamed.allows_tool_capability_family(*family)
+        })
+        .map(|(_, tool)| tool)
+        .collect::<Vec<_>>();
+    let prompt_budget_estimated_tokens =
+        super::super::turn::estimate_tool_specs_tokens(&available_tools)
+            + super::super::turn::CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+            + continuation_effective_budget;
+    ContextConfig {
+        prompt_budget_estimated_tokens,
+        turn_projection_budget_ratio: 1.0,
+        turn_projection_min_budget: 0,
+        turn_projection_max_budget: prompt_budget_estimated_tokens,
+        ..context_config()
+    }
+}
+
 pub(crate) async fn host_backed_test_runtime() -> (TempDir, RuntimeHost, RuntimeHandle) {
     let home = tempdir().unwrap();
     std::fs::write(

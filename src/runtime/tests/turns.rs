@@ -235,7 +235,7 @@ async fn disallowed_tool_call_is_auditable_and_continuation_stays_valid() {
         "http://127.0.0.1:7878".into(),
         provider.clone(),
         "default".into(),
-        context_config(),
+        continuation_ready_context_config(&workspace, 1_000),
     )
     .unwrap();
 

@@ -2444,7 +2444,7 @@ async fn runtime_does_not_force_completion_after_post_verification_stagnation() 
             calls: Mutex::new(0),
         }),
         "default".into(),
-        context_config(),
+        continuation_ready_context_config(&workspace, 1_000),
     )
     .unwrap();
 

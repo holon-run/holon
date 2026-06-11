@@ -365,18 +365,15 @@ impl RuntimeHandle {
                 "pick_work_item_clear_blocker",
             )
             .await?;
-        let active_waiting_intent_ids = self
+        let active_waiting_intents = self
             .latest_waiting_intents()
             .await?
             .into_iter()
             .filter(|record| record.status == WaitingIntentStatus::Active)
             .filter(|record| record.scope == WaitingIntentScope::WorkItem)
             .filter(|record| record.work_item_id.as_deref() == Some(existing.id.as_str()))
-            .map(|record| record.id)
             .collect::<Vec<_>>();
-        let cancelled_waiting_intent_ids = self
-            .cancel_waiting_intents(active_waiting_intent_ids)
-            .await?;
+        let cancelled_waiting_intent_ids = self.cancel_waiting_records(active_waiting_intents)?;
 
         let needs_record_write = existing.blocked_by.is_some()
             || existing.recheck_at.is_some()
@@ -997,6 +994,29 @@ impl RuntimeHandle {
         for waiting_intent_id in waiting_intent_ids {
             self.cancel_waiting(&waiting_intent_id).await?;
             cancelled.push(waiting_intent_id);
+        }
+        Ok(cancelled)
+    }
+
+    fn cancel_waiting_records(&self, waiting: Vec<WaitingIntentRecord>) -> Result<Vec<String>> {
+        let now = Utc::now();
+        let mut cancelled = Vec::new();
+        for record in waiting {
+            if record.status == WaitingIntentStatus::Cancelled {
+                continue;
+            }
+            let mut updated = record;
+            updated.status = WaitingIntentStatus::Cancelled;
+            updated.cancelled_at = Some(now);
+            self.inner.storage.append_waiting_intent(&updated)?;
+            self.inner.storage.append_event(&AuditEvent::new(
+                "waiting_intent_cancelled",
+                serde_json::json!({
+                    "waiting_intent_id": updated.id.clone(),
+                    "external_trigger_id": updated.external_trigger_id.clone(),
+                }),
+            ))?;
+            cancelled.push(updated.id);
         }
         Ok(cancelled)
     }
