@@ -1262,6 +1262,51 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "qwen",
+            "qwen3.7-plus",
+            "qwen3.7-plus",
+            1_000_000,
+            65_536,
+            true,
+            true,
+        ),
+        catalog_model(
+            "qwen",
+            "qwen3.7-plus-2026-05-26",
+            "qwen3.7-plus-2026-05-26",
+            1_000_000,
+            65_536,
+            true,
+            true,
+        ),
+        catalog_model(
+            "qwen",
+            "qwen3.7-max",
+            "qwen3.7-max",
+            1_000_000,
+            65_536,
+            true,
+            false,
+        ),
+        catalog_model(
+            "qwen",
+            "qwen3.7-max-2026-06-08",
+            "qwen3.7-max-2026-06-08",
+            1_000_000,
+            65_536,
+            true,
+            false,
+        ),
+        catalog_model(
+            "qwen",
+            "qwen3.7-max-2026-05-20",
+            "qwen3.7-max-2026-05-20",
+            1_000_000,
+            65_536,
+            true,
+            false,
+        ),
+        catalog_model(
+            "qwen",
             "qwen3.5-plus",
             "qwen3.5-plus",
             1_000_000,
@@ -1276,6 +1321,24 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             1_000_000,
             65_536,
             false,
+            true,
+        ),
+        catalog_model(
+            "qwen",
+            "qwen3.6-flash",
+            "qwen3.6-flash",
+            1_000_000,
+            65_536,
+            true,
+            true,
+        ),
+        catalog_model(
+            "qwen",
+            "qwen3.5-flash",
+            "qwen3.5-flash",
+            1_000_000,
+            65_536,
+            true,
             true,
         ),
         catalog_model(
@@ -1307,23 +1370,12 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "qwen",
-            "MiniMax-M2.5",
-            "MiniMax-M2.5",
+            "qwen3-coder-flash",
+            "qwen3-coder-flash",
             1_000_000,
             65_536,
             true,
             false,
-        ),
-        catalog_model("qwen", "glm-5", "glm-5", 202_752, 16_384, false, false),
-        catalog_model("qwen", "glm-4.7", "glm-4.7", 202_752, 16_384, false, false),
-        catalog_model(
-            "qwen",
-            "kimi-k2.5",
-            "kimi-k2.5",
-            262_144,
-            32_768,
-            false,
-            true,
         ),
         catalog_model(
             "stepfun",
@@ -1933,6 +1985,167 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             "bigmodel-openai",
         ],
     );
+    extend_catalog_model_aliases_from_source(
+        &mut entries,
+        "qwen",
+        &["dashscope", "dashscope-openai"],
+    );
+    entries.extend([
+        catalog_model(
+            "dashscope",
+            "deepseek-v4-pro",
+            "DeepSeek V4 Pro",
+            1_000_000,
+            384_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-openai",
+            "deepseek-v4-pro",
+            "DeepSeek V4 Pro",
+            1_000_000,
+            384_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
+            "deepseek-v4-flash",
+            "DeepSeek V4 Flash",
+            1_000_000,
+            384_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-openai",
+            "deepseek-v4-flash",
+            "DeepSeek V4 Flash",
+            1_000_000,
+            384_000,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
+            "glm-5.1",
+            "glm-5.1",
+            202_752,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-openai",
+            "glm-5.1",
+            "glm-5.1",
+            202_752,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
+            "kimi-k2.6",
+            "kimi-k2.6",
+            262_144,
+            98_304,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-openai",
+            "kimi-k2.6",
+            "kimi-k2.6",
+            262_144,
+            98_304,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5",
+            196_608,
+            32_768,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-openai",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5",
+            196_608,
+            32_768,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
+            "mimo-v2.5-pro",
+            "MiMo V2.5 Pro",
+            1_000_000,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "dashscope-openai",
+            "mimo-v2.5-pro",
+            "MiMo V2.5 Pro",
+            1_000_000,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model("dashscope", "glm-5", "glm-5", 202_752, 16_384, false, false),
+        catalog_model(
+            "dashscope-openai",
+            "glm-5",
+            "glm-5",
+            202_752,
+            16_384,
+            false,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
+            "glm-4.7",
+            "glm-4.7",
+            202_752,
+            16_384,
+            false,
+            false,
+        ),
+        catalog_model(
+            "dashscope-openai",
+            "glm-4.7",
+            "glm-4.7",
+            202_752,
+            16_384,
+            false,
+            false,
+        ),
+        catalog_model(
+            "dashscope",
+            "kimi-k2.5",
+            "kimi-k2.5",
+            262_144,
+            32_768,
+            false,
+            true,
+        ),
+        catalog_model(
+            "dashscope-openai",
+            "kimi-k2.5",
+            "kimi-k2.5",
+            262_144,
+            32_768,
+            false,
+            true,
+        ),
+    ]);
     entries
 }
 
@@ -2105,6 +2318,61 @@ mod tests {
         );
         assert_eq!(bigmodel.display_name, "GLM-4.7");
         assert_eq!(bigmodel.source, ModelMetadataSource::BuiltInCatalog);
+    }
+
+    #[test]
+    fn qwen_catalog_is_limited_to_qwen_models_and_dashscope_covers_platform_models() {
+        let catalog = BuiltInModelCatalog::new();
+
+        assert_eq!(
+            catalog
+                .preferred_model_for_provider(&ProviderId::parse("qwen").unwrap())
+                .unwrap()
+                .as_string(),
+            "qwen/qwen3.7-plus"
+        );
+        assert_eq!(
+            catalog
+                .preferred_model_for_provider(&ProviderId::parse("dashscope").unwrap())
+                .unwrap()
+                .as_string(),
+            "dashscope/qwen3.7-plus"
+        );
+
+        assert!(catalog
+            .get(&ModelRef::parse("qwen/qwen3.7-plus").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("qwen/qwen3.7-max").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("qwen/MiniMax-M2.5").unwrap())
+            .is_none());
+        assert!(catalog
+            .get(&ModelRef::parse("qwen/glm-5").unwrap())
+            .is_none());
+        assert!(catalog
+            .get(&ModelRef::parse("qwen/kimi-k2.5").unwrap())
+            .is_none());
+
+        assert!(catalog
+            .get(&ModelRef::parse("dashscope/qwen3.7-plus").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("dashscope/MiniMax-M2.5").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("dashscope/glm-5.1").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("dashscope/kimi-k2.6").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("dashscope-openai/qwen3.7-plus").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("dashscope-openai/MiniMax-M2.5").unwrap())
+            .is_some());
     }
 
     #[test]

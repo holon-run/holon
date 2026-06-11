@@ -6,7 +6,7 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **47 providers** and **245 models**.
+Holon includes built-in configuration for **49 providers** and **293 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -26,6 +26,8 @@ running Holon.
 | `byteplus` | OpenAI Chat Completions | `https://ark.ap-southeast.bytepluses.com/api/v3` | `BYTEPLUS_API_KEY` |
 | `byteplus-coding` | OpenAI Chat Completions | `https://ark.ap-southeast.bytepluses.com/api/coding/v3` | `BYTEPLUS_CODING_API_KEY or BYTEPLUS_API_KEY` |
 | `chutes` | OpenAI Chat Completions | `https://llm.chutes.ai/v1` | `CHUTES_API_KEY` |
+| `dashscope` | Anthropic Messages | `https://dashscope.aliyuncs.com/apps/anthropic` | `DASHSCOPE_API_KEY or QWEN_API_KEY` |
+| `dashscope-openai` | OpenAI Chat Completions | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY or QWEN_API_KEY` |
 | `deepseek` | Anthropic Messages | `https://api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` |
 | `deepseek-anthropic` | Anthropic Messages | `https://api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` |
 | `deepseek-openai` | OpenAI Chat Completions | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
@@ -129,6 +131,50 @@ and capabilities.
 | `chutes` | `moonshotai/Kimi-K2.5-TEE` | `chutes/moonshotai/Kimi-K2.5-TEE` | 262144 | 65535 | ✅ | ✅ |
 | `chutes` | `openai/gpt-oss-120b-TEE` | `chutes/openai/gpt-oss-120b-TEE` | 131072 | 65536 | ✅ | — |
 | `chutes` | `zai-org/GLM-4.7-TEE` | `chutes/zai-org/GLM-4.7-TEE` | 202752 | 65535 | ✅ | — |
+| `dashscope` | `MiniMax-M2.5` | `dashscope/MiniMax-M2.5` | 196608 | 32768 | ✅ | — |
+| `dashscope` | `deepseek-v4-flash` | `dashscope/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
+| `dashscope` | `deepseek-v4-pro` | `dashscope/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
+| `dashscope` | `glm-4.7` | `dashscope/glm-4.7` | 202752 | 16384 | — | — |
+| `dashscope` | `glm-5` | `dashscope/glm-5` | 202752 | 16384 | — | — |
+| `dashscope` | `glm-5.1` | `dashscope/glm-5.1` | 202752 | 131072 | ✅ | — |
+| `dashscope` | `kimi-k2.5` | `dashscope/kimi-k2.5` | 262144 | 32768 | — | ✅ |
+| `dashscope` | `kimi-k2.6` | `dashscope/kimi-k2.6` | 262144 | 98304 | ✅ | — |
+| `dashscope` | `mimo-v2.5-pro` | `dashscope/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
+| `dashscope` | `qwen3-coder-flash` | `dashscope/qwen3-coder-flash` | 1000000 | 65536 | ✅ | — |
+| `dashscope` | `qwen3-coder-next` | `dashscope/qwen3-coder-next` | 262144 | 65536 | — | — |
+| `dashscope` | `qwen3-coder-plus` | `dashscope/qwen3-coder-plus` | 1000000 | 65536 | — | — |
+| `dashscope` | `qwen3-max-2026-01-23` | `dashscope/qwen3-max-2026-01-23` | 262144 | 65536 | — | — |
+| `dashscope` | `qwen3.5-flash` | `dashscope/qwen3.5-flash` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope` | `qwen3.5-plus` | `dashscope/qwen3.5-plus` | 1000000 | 65536 | — | ✅ |
+| `dashscope` | `qwen3.6-flash` | `dashscope/qwen3.6-flash` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope` | `qwen3.6-plus` | `dashscope/qwen3.6-plus` | 1000000 | 65536 | — | ✅ |
+| `dashscope` | `qwen3.7-max` | `dashscope/qwen3.7-max` | 1000000 | 65536 | ✅ | — |
+| `dashscope` | `qwen3.7-max-2026-05-20` | `dashscope/qwen3.7-max-2026-05-20` | 1000000 | 65536 | ✅ | — |
+| `dashscope` | `qwen3.7-max-2026-06-08` | `dashscope/qwen3.7-max-2026-06-08` | 1000000 | 65536 | ✅ | — |
+| `dashscope` | `qwen3.7-plus` | `dashscope/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope` | `qwen3.7-plus-2026-05-26` | `dashscope/qwen3.7-plus-2026-05-26` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope-openai` | `MiniMax-M2.5` | `dashscope-openai/MiniMax-M2.5` | 196608 | 32768 | ✅ | — |
+| `dashscope-openai` | `deepseek-v4-flash` | `dashscope-openai/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
+| `dashscope-openai` | `deepseek-v4-pro` | `dashscope-openai/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
+| `dashscope-openai` | `glm-4.7` | `dashscope-openai/glm-4.7` | 202752 | 16384 | — | — |
+| `dashscope-openai` | `glm-5` | `dashscope-openai/glm-5` | 202752 | 16384 | — | — |
+| `dashscope-openai` | `glm-5.1` | `dashscope-openai/glm-5.1` | 202752 | 131072 | ✅ | — |
+| `dashscope-openai` | `kimi-k2.5` | `dashscope-openai/kimi-k2.5` | 262144 | 32768 | — | ✅ |
+| `dashscope-openai` | `kimi-k2.6` | `dashscope-openai/kimi-k2.6` | 262144 | 98304 | ✅ | — |
+| `dashscope-openai` | `mimo-v2.5-pro` | `dashscope-openai/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
+| `dashscope-openai` | `qwen3-coder-flash` | `dashscope-openai/qwen3-coder-flash` | 1000000 | 65536 | ✅ | — |
+| `dashscope-openai` | `qwen3-coder-next` | `dashscope-openai/qwen3-coder-next` | 262144 | 65536 | — | — |
+| `dashscope-openai` | `qwen3-coder-plus` | `dashscope-openai/qwen3-coder-plus` | 1000000 | 65536 | — | — |
+| `dashscope-openai` | `qwen3-max-2026-01-23` | `dashscope-openai/qwen3-max-2026-01-23` | 262144 | 65536 | — | — |
+| `dashscope-openai` | `qwen3.5-flash` | `dashscope-openai/qwen3.5-flash` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope-openai` | `qwen3.5-plus` | `dashscope-openai/qwen3.5-plus` | 1000000 | 65536 | — | ✅ |
+| `dashscope-openai` | `qwen3.6-flash` | `dashscope-openai/qwen3.6-flash` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope-openai` | `qwen3.6-plus` | `dashscope-openai/qwen3.6-plus` | 1000000 | 65536 | — | ✅ |
+| `dashscope-openai` | `qwen3.7-max` | `dashscope-openai/qwen3.7-max` | 1000000 | 65536 | ✅ | — |
+| `dashscope-openai` | `qwen3.7-max-2026-05-20` | `dashscope-openai/qwen3.7-max-2026-05-20` | 1000000 | 65536 | ✅ | — |
+| `dashscope-openai` | `qwen3.7-max-2026-06-08` | `dashscope-openai/qwen3.7-max-2026-06-08` | 1000000 | 65536 | ✅ | — |
+| `dashscope-openai` | `qwen3.7-plus` | `dashscope-openai/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `dashscope-openai` | `qwen3.7-plus-2026-05-26` | `dashscope-openai/qwen3.7-plus-2026-05-26` | 1000000 | 65536 | ✅ | ✅ |
 | `deepseek` | `deepseek-chat` | `deepseek/deepseek-chat` | 131072 | 8192 | — | — |
 | `deepseek` | `deepseek-reasoner` | `deepseek/deepseek-reasoner` | 131072 | 65536 | ✅ | — |
 | `deepseek` | `deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
@@ -198,15 +244,19 @@ and capabilities.
 | `openrouter` | `openrouter/hunter-alpha` | `openrouter/openrouter/hunter-alpha` | 1048576 | 65536 | ✅ | — |
 | `qianfan` | `deepseek-v3.2` | `qianfan/deepseek-v3.2` | 98304 | 32768 | ✅ | — |
 | `qianfan` | `ernie-5.0-thinking-preview` | `qianfan/ernie-5.0-thinking-preview` | 119000 | 64000 | ✅ | ✅ |
-| `qwen` | `MiniMax-M2.5` | `qwen/MiniMax-M2.5` | 1000000 | 65536 | ✅ | — |
-| `qwen` | `glm-4.7` | `qwen/glm-4.7` | 202752 | 16384 | — | — |
-| `qwen` | `glm-5` | `qwen/glm-5` | 202752 | 16384 | — | — |
-| `qwen` | `kimi-k2.5` | `qwen/kimi-k2.5` | 262144 | 32768 | — | ✅ |
+| `qwen` | `qwen3-coder-flash` | `qwen/qwen3-coder-flash` | 1000000 | 65536 | ✅ | — |
 | `qwen` | `qwen3-coder-next` | `qwen/qwen3-coder-next` | 262144 | 65536 | — | — |
 | `qwen` | `qwen3-coder-plus` | `qwen/qwen3-coder-plus` | 1000000 | 65536 | — | — |
 | `qwen` | `qwen3-max-2026-01-23` | `qwen/qwen3-max-2026-01-23` | 262144 | 65536 | — | — |
+| `qwen` | `qwen3.5-flash` | `qwen/qwen3.5-flash` | 1000000 | 65536 | ✅ | ✅ |
 | `qwen` | `qwen3.5-plus` | `qwen/qwen3.5-plus` | 1000000 | 65536 | — | ✅ |
+| `qwen` | `qwen3.6-flash` | `qwen/qwen3.6-flash` | 1000000 | 65536 | ✅ | ✅ |
 | `qwen` | `qwen3.6-plus` | `qwen/qwen3.6-plus` | 1000000 | 65536 | — | ✅ |
+| `qwen` | `qwen3.7-max` | `qwen/qwen3.7-max` | 1000000 | 65536 | ✅ | — |
+| `qwen` | `qwen3.7-max-2026-05-20` | `qwen/qwen3.7-max-2026-05-20` | 1000000 | 65536 | ✅ | — |
+| `qwen` | `qwen3.7-max-2026-06-08` | `qwen/qwen3.7-max-2026-06-08` | 1000000 | 65536 | ✅ | — |
+| `qwen` | `qwen3.7-plus` | `qwen/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
+| `qwen` | `qwen3.7-plus-2026-05-26` | `qwen/qwen3.7-plus-2026-05-26` | 1000000 | 65536 | ✅ | ✅ |
 | `stepfun` | `step-3.5-flash` | `stepfun/step-3.5-flash` | 262144 | 65536 | ✅ | — |
 | `stepfun-plan` | `step-3.5-flash` | `stepfun-plan/step-3.5-flash` | 262144 | 65536 | ✅ | — |
 | `stepfun-plan` | `step-3.5-flash-2603` | `stepfun-plan/step-3.5-flash-2603` | 262144 | 65536 | ✅ | — |

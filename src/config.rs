@@ -2721,6 +2721,20 @@ fn built_in_provider_registry_with_settings(
     )?;
     insert_anthropic_compatible_provider(
         &mut registry,
+        "dashscope",
+        "https://dashscope.aliyuncs.com/apps/anthropic",
+        &["DASHSCOPE_API_KEY", "QWEN_API_KEY"],
+        settings_env,
+    )?;
+    insert_openai_compatible_provider(
+        &mut registry,
+        "dashscope-openai",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        &["DASHSCOPE_API_KEY", "QWEN_API_KEY"],
+        settings_env,
+    )?;
+    insert_anthropic_compatible_provider(
+        &mut registry,
         "deepseek",
         "https://api.deepseek.com/anthropic",
         &["DEEPSEEK_API_KEY"],
@@ -5463,6 +5477,44 @@ mod tests {
         let qwen = providers.get(&ProviderId::parse("qwen").unwrap()).unwrap();
         assert_eq!(qwen.auth.env.as_deref(), Some("DASHSCOPE_API_KEY"));
         assert_eq!(qwen.credential.as_deref(), Some("dashscope-key"));
+
+        let dashscope = providers
+            .get(&ProviderId::parse("dashscope").unwrap())
+            .unwrap();
+        assert_eq!(
+            dashscope.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        assert_eq!(
+            dashscope.base_url,
+            "https://dashscope.aliyuncs.com/apps/anthropic"
+        );
+        assert_eq!(dashscope.auth.env.as_deref(), Some("DASHSCOPE_API_KEY"));
+        assert_eq!(dashscope.credential.as_deref(), Some("dashscope-key"));
+        assert_eq!(
+            dashscope.context_management.cache_strategy,
+            AnthropicCacheStrategy::ClaudeCodePromptCache
+        );
+
+        let dashscope_openai = providers
+            .get(&ProviderId::parse("dashscope-openai").unwrap())
+            .unwrap();
+        assert_eq!(
+            dashscope_openai.transport,
+            ProviderTransportKind::OpenAiChatCompletions
+        );
+        assert_eq!(
+            dashscope_openai.base_url,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        );
+        assert_eq!(
+            dashscope_openai.auth.env.as_deref(),
+            Some("DASHSCOPE_API_KEY")
+        );
+        assert_eq!(
+            dashscope_openai.credential.as_deref(),
+            Some("dashscope-key")
+        );
 
         let nearai = providers
             .get(&ProviderId::parse("nearai").unwrap())
