@@ -1865,6 +1865,7 @@ impl AppStorage {
         let waiting_for_operator = readiness
             .iter()
             .filter(|item| item.candidate_class == WorkItemCandidateClass::WaitingForOperator)
+            .take(3)
             .cloned()
             .collect::<Vec<_>>();
         let blocked = readiness
@@ -6333,6 +6334,39 @@ mod tests {
                 .map(|item| item.work_item.objective.as_str())
                 .collect::<Vec<_>>(),
             vec!["recently completed"]
+        );
+    }
+
+    #[test]
+    fn storage_work_queue_prompt_projection_limits_waiting_for_operator() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let now = Utc::now();
+
+        for index in 0..5 {
+            let mut waiting = WorkItemRecord::new(
+                "default",
+                format!("operator decision {index}"),
+                WorkItemState::Open,
+            );
+            waiting.plan_status = WorkItemPlanStatus::NeedsInput;
+            waiting.updated_at = now + chrono::Duration::minutes(index);
+            storage.append_work_item(&waiting).unwrap();
+        }
+
+        let projection = storage.work_queue_prompt_projection().unwrap();
+
+        assert_eq!(
+            projection
+                .waiting_for_operator
+                .iter()
+                .map(|item| item.work_item.objective.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "operator decision 4",
+                "operator decision 3",
+                "operator decision 2"
+            ]
         );
     }
 
