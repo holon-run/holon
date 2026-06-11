@@ -5,13 +5,14 @@ This directory contains the first local Web GUI design assets for Holon:
 - `DESIGN.md` — the visual and interaction contract, written in a
   design.md-style format with machine-readable tokens and human-readable rules.
 - `prototype/` — a static, clickable prototype for the first GUI shape.
-- `app/` — the standalone production Web app once initialized.
+- `app/` — a standalone Vite/React/TypeScript Web app that can call local
+  Holon HTTP interfaces.
 
 The prototype is intentionally dependency-free. It remains a review artifact
 and implementation seed. Production UI work should happen in `app/` and keep
 the prototype available as the visual/information-architecture baseline.
 
-## Preview locally
+## Preview the static prototype locally
 
 From the repository root:
 
@@ -26,18 +27,69 @@ http://127.0.0.1:4173/
 ```
 
 You can also open `web-gui/prototype/index.html` directly in a browser, but the
-local server path better matches how the UI will eventually be served by
+local server path better matches how the UI may eventually be served by
 `holon serve`.
 
-## Current implementation plan
+## Run the standalone app
 
-The next Web GUI slice is intentionally standalone:
+Install dependencies and run the Vite dev server:
 
-1. finalize this design/prototype contract;
-2. initialize `web-gui/app` as a frontend project;
-3. implement Dashboard first;
-4. implement the Agent conversation page second;
-5. document missing backend data needs instead of adding new Holon API routes.
+```bash
+cd web-gui/app
+npm install
+npm run dev
+```
+
+By default the app uses fixture fallback data so it can be reviewed without a
+running Holon server.
+
+To point it at a local Holon HTTP server, set `VITE_HOLON_API_BASE`:
+
+```bash
+cd web-gui/app
+VITE_HOLON_API_BASE=http://127.0.0.1:<holon-port> npm run dev
+```
+
+Build/check commands:
+
+```bash
+cd web-gui/app
+npm run typecheck
+npm run build
+```
+
+## Current standalone app scope
+
+The standalone app currently implements:
+
+- a Dashboard runtime overview and agent roster;
+- an Agent conversation page with Info/Verbose/Debug display levels;
+- fixture fallback when no local Holon endpoint is configured or reachable;
+- direct reuse of existing Holon routes only.
+
+The app intentionally remains independent from `holon serve`; it is not bundled
+into the Rust binary yet.
+
+## Existing Holon interfaces used
+
+Dashboard uses:
+
+- `GET /handshake`
+- `GET /agents/list`
+- `GET /agents/:id/state`
+- `GET /agents/:id/briefs?limit=1`
+
+Agent conversation uses:
+
+- `GET /agents/list`
+- `GET /agents/:id/state`
+- `GET /agents/:id/briefs?limit=5`
+- `GET /agents/:id/transcript?limit=40`
+- `GET /agents/:id/events?limit=20&order=desc&max_level=verbose`
+
+No GUI-specific backend routes are introduced in this branch.
+
+## Current implementation constraints
 
 Constraints for the current worktree:
 
@@ -48,6 +100,26 @@ Constraints for the current worktree:
   are useful;
 - refer to the TUI when exposing display levels, runtime activity, and
   provenance.
+
+## Known API gaps / follow-up candidates
+
+The current app can function with existing routes, but these gaps may deserve
+follow-up issues before a production Web GUI:
+
+1. **CORS / local auth policy for standalone browser clients.** The Vite app
+   calls the Holon HTTP server from a different origin during development. If
+   the current server is not browser-accessible in a given mode, document or add
+   an explicit local development policy rather than special-casing the GUI.
+2. **Conversation-oriented projection.** The frontend currently merges briefs,
+   transcript entries, and runtime events. A future contract may expose a
+   projection that preserves provenance while reducing client-side heuristics.
+3. **Send-message control path.** The composer is visual only for now. Wiring it
+   to `POST /control/agents/:id/prompt` should happen after local auth and
+   operator-authority UX are explicit.
+4. **Inspector object details.** The current inspector shows WorkItem context
+   from agent state. Rich task output, source refs, file previews, and event
+   payload drill-downs can continue to use existing endpoints where available,
+   but may need separate product decisions.
 
 ## Current prototype scope
 
