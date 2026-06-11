@@ -33,6 +33,7 @@ pub(crate) mod task_status;
 pub(crate) mod task_stop;
 pub(crate) mod update_work_item;
 pub(crate) mod use_workspace;
+pub(crate) mod view_image;
 pub(crate) mod wait_for;
 pub(crate) mod web_fetch;
 pub(crate) mod web_search;
@@ -71,6 +72,7 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         exec_command::definition()?,
         exec_command_batch::definition()?,
         use_workspace::definition()?,
+        view_image::definition()?,
         web_fetch::definition()?,
         web_search::definition()?,
     ])
@@ -173,6 +175,9 @@ pub(crate) async fn execute_builtin_tool(
         use_workspace::NAME => {
             use_workspace::execute(runtime, agent_id, authority_class, &call.input).await
         }
+        view_image::NAME => {
+            view_image::execute(runtime, agent_id, authority_class, &call.input).await
+        }
         web_fetch::NAME => {
             web_fetch::execute(runtime, agent_id, authority_class, &call.input).await
         }
@@ -255,6 +260,7 @@ mod tests {
             "TaskStop" => "src/tool/tool_descriptions/task_stop.md",
             "UpdateWorkItem" => "src/tool/tool_descriptions/update_work_item.md",
             "UseWorkspace" => "src/tool/tool_descriptions/use_workspace.md",
+            "ViewImage" => "src/tool/tool_descriptions/view_image.md",
             "WaitFor" => "src/tool/tool_descriptions/wait_for.md",
             "WebFetch" => "src/tool/tool_descriptions/web_fetch.md",
             "WebSearch" => "src/tool/tool_descriptions/web_search.md",
