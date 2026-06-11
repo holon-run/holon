@@ -43,12 +43,26 @@ npm run dev
 By default the app uses fixture fallback data so it can be reviewed without a
 running Holon server.
 
-To point it at a local Holon HTTP server, set `VITE_HOLON_API_BASE`:
+To point it at the default local Holon HTTP server through the Vite dev proxy,
+set `VITE_HOLON_API_BASE` to the same-origin proxy prefix:
 
 ```bash
 cd web-gui/app
-VITE_HOLON_API_BASE=http://127.0.0.1:<holon-port> npm run dev
+VITE_HOLON_API_BASE=/holon-api npm run dev
 ```
+
+The dev proxy forwards `/holon-api/*` to `http://127.0.0.1:7878/*` by default.
+If Holon is listening on a different local endpoint, override the proxy target:
+
+```bash
+cd web-gui/app
+HOLON_API_PROXY_TARGET=http://127.0.0.1:<holon-port> VITE_HOLON_API_BASE=/holon-api npm run dev
+```
+
+Direct absolute API URLs such as
+`VITE_HOLON_API_BASE=http://127.0.0.1:<holon-port>` are still supported by the
+client, but local browser debugging may be blocked unless the Holon HTTP server
+also sends matching CORS headers.
 
 Build/check commands:
 
