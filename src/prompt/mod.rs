@@ -639,7 +639,7 @@ fn build_system_sections(
         section(
             "reporting_contract",
             PromptStability::Stable,
-            "Prefer durable action over narration. Use progress text only to orient the operator when the next action would otherwise be opaque, especially before file mutation, long-running commands, or strategy changes. Before tool calls, use at most 1-2 short sentences that state the immediate action and why it is useful now; do not include full reasoning, historical recap, hypothesis trees, or broad status reports. After reads, searches, or tool failures, summarize only when material state changed or the next action would otherwise be unclear, and keep it to confirmed facts plus the next bounded action. Do not restate known context, prior reports, or details already expressed by code, diffs, tool output, logs, WorkItems, plans, or tests. Holon's operator-facing delivery is brief-centric: intermediate assistant progress may be hidden, compressed, or treated as transient. Put information the operator must know in the final delivery text, and when completing a WorkItem, in the same-round assistant completion report that is promoted as the WorkItem result brief. Do not leave decisions, caveats, verification status, blockers, or required operator action only in intermediate progress text. When the task is satisfied and relevant verification is known, deliver the result instead of continuing low-value exploration. Final delivery should be concise and user-facing: lead with the outcome, mention changed behavior or relevant files, root cause or rationale when useful, and verification status including skipped or failed checks. Match structure to task complexity; avoid fixed templates, boilerplate, complete process replay, and weak endings such as only saying done.".to_string(),
+            "Prefer durable action over narration. Use progress text only to orient the operator when the next action would otherwise be opaque, especially before file mutation, long-running commands, or strategy changes. Before tool calls, use at most 1-2 short sentences that state the immediate action and why it is useful now; do not include full reasoning, historical recap, hypothesis trees, or broad status reports. After reads, searches, or tool failures, summarize only when material state changed or the next action would otherwise be unclear, and keep it to confirmed facts plus the next bounded action. Do not restate known context, prior reports, or details already expressed by code, diffs, tool output, logs, WorkItems, plans, or tests. Holon's operator-facing delivery is brief-centric: intermediate assistant progress may be hidden, compressed, or treated as transient. Put information the operator must know in the final delivery text, and when completing a WorkItem, in the same-round assistant completion report that is promoted as the WorkItem result brief. Do not leave decisions, caveats, verification status, blockers, or required operator action only in intermediate progress text. When the task is satisfied and relevant verification is known, deliver the result instead of continuing low-value exploration. Final delivery should be concise and user-facing. Lead with the most important conclusion, outcome, or summary. Put required operator action, blockers, failed checks, and verification status near the top when they affect the next decision. Put explanations, evidence, implementation details, and process context after the main result. Structure final responses so that tail truncation preserves the key result. For simple answers, use 1-3 sentences. For small code or config changes, use 2-5 sentences or up to 3 bullets. For medium changes, use up to 6 bullets. Prefer no more than 10 lines by default, and exceed these limits only when the operator asks for detail or complexity, safety, or accuracy requires it. Mention changed behavior or relevant files only when useful. Do not include full diffs, large code blocks, before/after dumps, long command logs, or complete process replay; avoid fixed templates, boilerplate, and weak endings such as only saying done.".to_string(),
         ),
         section(
             "exploration_discipline",
@@ -1761,16 +1761,14 @@ mod tests {
             .find(|section| section.name == "reporting_contract")
             .expect("reporting contract section");
 
-        assert!(section.content.contains("lead with the outcome"));
         assert!(section
             .content
-            .contains("verification status including skipped or failed checks"));
+            .contains("Lead with the most important conclusion"));
+        assert!(section.content.contains("verification status near the top"));
         assert!(section
             .content
-            .contains("Match structure to task complexity"));
-        assert!(section
-            .content
-            .contains("avoid fixed templates, boilerplate, complete process replay"));
+            .contains("tail truncation preserves the key result"));
+        assert!(section.content.contains("fixed templates, boilerplate"));
         assert!(!section
             .content
             .contains("what changed / why / verification"));

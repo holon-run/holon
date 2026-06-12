@@ -86,6 +86,7 @@ pub(crate) fn build_candidate(
                 config.runtime_max_output_tokens,
                 &config.home_dir,
                 openai_compaction_policy,
+                resolved_policy.verbosity,
             )?,
         ),
         ProviderTransportKind::OpenAiResponses => {

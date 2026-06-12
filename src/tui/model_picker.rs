@@ -249,6 +249,7 @@ mod tests {
             compaction_trigger_estimated_tokens: 180_000,
             compaction_keep_recent_estimated_tokens: 68_400,
             runtime_max_output_tokens: 32_000,
+            verbosity: None,
             tool_output_truncation_estimated_tokens: 2_500,
             max_output_tokens_upper_limit: Some(128_000),
             capabilities: ModelCapabilityFlags {

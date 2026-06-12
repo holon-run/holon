@@ -22,7 +22,7 @@ use crate::{
         ProviderId, ProviderRuntimeConfig,
     },
     context::ContextConfig,
-    model_catalog::BuiltInModelCatalog,
+    model_catalog::{BuiltInModelCatalog, ModelVerbosity},
     provider::{
         builtin_web_search_probe_turn_request, emitted_tool_json_schema,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
@@ -73,6 +73,7 @@ pub struct OpenAiCodexProvider {
     model: String,
     max_output_tokens: u32,
     reasoning_effort: Option<String>,
+    verbosity: Option<ModelVerbosity>,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
     compaction_policy: OpenAiCompactionPolicy,
     trace_home_dir: PathBuf,
@@ -317,6 +318,7 @@ impl OpenAiCodexProvider {
             config.runtime_max_output_tokens,
             &config.home_dir,
             openai_compaction_policy_from_config(config, ProviderId::openai_codex(), model),
+            openai_verbosity_from_config(config, ProviderId::openai_codex(), model),
         )
     }
 
@@ -336,6 +338,7 @@ impl OpenAiCodexProvider {
                 model,
                 max_output_tokens,
             ),
+            openai_verbosity_for_model(ProviderId::openai_codex(), model, max_output_tokens),
         )
     }
 
@@ -345,6 +348,7 @@ impl OpenAiCodexProvider {
         max_output_tokens: u32,
         trace_home_dir: &Path,
         compaction_policy: OpenAiCompactionPolicy,
+        verbosity: Option<ModelVerbosity>,
     ) -> Result<Self> {
         let client = build_http_client()?;
         let codex_home = provider_config
@@ -368,6 +372,7 @@ impl OpenAiCodexProvider {
             model: model.to_string(),
             max_output_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
+            verbosity,
             builtin_web_search: provider_config.builtin_web_search.clone(),
             compaction_policy,
             trace_home_dir: trace_home_dir.to_path_buf(),
@@ -657,6 +662,25 @@ fn openai_compaction_policy_from_config(
     provider: ProviderId,
     model: &str,
 ) -> OpenAiCompactionPolicy {
+    let policy = openai_model_policy_from_config(config, provider, model);
+    OpenAiCompactionPolicy {
+        trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
+    }
+}
+
+fn openai_verbosity_from_config(
+    config: &AppConfig,
+    provider: ProviderId,
+    model: &str,
+) -> Option<ModelVerbosity> {
+    openai_model_policy_from_config(config, provider, model).verbosity
+}
+
+fn openai_model_policy_from_config(
+    config: &AppConfig,
+    provider: ProviderId,
+    model: &str,
+) -> crate::model_catalog::ResolvedRuntimeModelPolicy {
     let base_context_config = ContextConfig {
         recent_messages: config.context_window_messages,
         recent_briefs: config.context_window_briefs,
@@ -669,17 +693,14 @@ fn openai_compaction_policy_from_config(
         max_relevant_episodes: config.max_relevant_episodes,
         ..ContextConfig::default()
     };
-    let policy = BuiltInModelCatalog::default().resolve_policy(
+    BuiltInModelCatalog::default().resolve_policy(
         &ModelRef::new(provider, model),
         &config.validated_model_overrides,
         &config.model_discovery_cache.models(),
         config.validated_unknown_model_fallback.as_ref(),
         &base_context_config,
         config.runtime_max_output_tokens,
-    );
-    OpenAiCompactionPolicy {
-        trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
-    }
+    )
 }
 
 fn openai_compaction_policy_for_model(
@@ -698,6 +719,23 @@ fn openai_compaction_policy_for_model(
     OpenAiCompactionPolicy {
         trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
     }
+}
+
+fn openai_verbosity_for_model(
+    provider: ProviderId,
+    model: &str,
+    max_output_tokens: u32,
+) -> Option<ModelVerbosity> {
+    BuiltInModelCatalog::default()
+        .resolve_policy(
+            &ModelRef::new(provider, model),
+            &Default::default(),
+            &Default::default(),
+            None,
+            &ContextConfig::default(),
+            max_output_tokens,
+        )
+        .verbosity
 }
 
 impl OpenAiChatCompletionsProvider {
@@ -761,6 +799,7 @@ impl AgentProvider for OpenAiProvider {
             &request,
             OpenAiResponsesTransportContract::StandardJson,
             ToolSchemaContract::Relaxed,
+            None,
             None,
         )?;
         let mut plan = plan_openai_responses_request(body, &request, &self.continuation, true)?;
@@ -871,6 +910,7 @@ impl AgentProvider for OpenAiProvider {
             OpenAiResponsesTransportContract::StandardJson,
             ToolSchemaContract::Relaxed,
             None,
+            None,
         )?;
         let headers = self
             .api_key
@@ -931,6 +971,7 @@ impl AgentProvider for OpenAiCodexProvider {
             OpenAiResponsesTransportContract::CodexStreaming,
             ToolSchemaContract::Relaxed,
             self.reasoning_effort.as_deref(),
+            self.verbosity,
         )?;
         let mut plan = plan_openai_responses_request(body, &request, &self.continuation, false)?;
         let mut sent_diagnostics = plan.diagnostics.clone();
@@ -1081,6 +1122,7 @@ impl AgentProvider for OpenAiCodexProvider {
             OpenAiResponsesTransportContract::CodexStreaming,
             ToolSchemaContract::Relaxed,
             self.reasoning_effort.as_deref(),
+            self.verbosity,
         )?;
         let headers = openai_codex_headers(&credential, &self.originator);
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
@@ -1522,6 +1564,7 @@ pub(crate) fn build_openai_responses_request(
     contract: OpenAiResponsesTransportContract,
     tool_schema_contract: ToolSchemaContract,
     reasoning_effort: Option<&str>,
+    verbosity: Option<ModelVerbosity>,
 ) -> Result<Value> {
     let mut tools = request
         .tools
@@ -1574,6 +1617,9 @@ pub(crate) fn build_openai_responses_request(
         }
         OpenAiResponsesTransportContract::CodexStreaming => {
             body["stream"] = Value::Bool(true);
+            if let Some(verbosity) = verbosity {
+                body["text"] = json!({ "verbosity": verbosity.as_str() });
+            }
             if let Some(reasoning_effort) = reasoning_effort {
                 body["reasoning"] = json!({ "effort": reasoning_effort });
                 body["include"] = json!(["reasoning.encrypted_content"]);
@@ -1611,6 +1657,11 @@ fn openai_request_controls_diagnostics(body: &Value) -> ProviderOpenAiRequestCon
         .and_then(|reasoning| reasoning.get("effort"))
         .and_then(Value::as_str)
         .map(ToString::to_string);
+    let verbosity = body
+        .get("text")
+        .and_then(|text| text.get("verbosity"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
     let include_reasoning_encrypted_content = body
         .get("include")
         .and_then(Value::as_array)
@@ -1624,6 +1675,7 @@ fn openai_request_controls_diagnostics(body: &Value) -> ProviderOpenAiRequestCon
     ProviderOpenAiRequestControlsDiagnostics {
         reasoning_sent: reasoning_effort.is_some(),
         reasoning_effort,
+        verbosity,
         include_reasoning_encrypted_content,
         max_output_tokens_sent,
         max_output_tokens_unsupported: codex_streaming,
@@ -5219,6 +5271,7 @@ mod tests {
             OpenAiResponsesTransportContract::StandardJson,
             ToolSchemaContract::Strict,
             None,
+            None,
         )
         .expect("openai responses request should build");
 
@@ -5258,6 +5311,7 @@ mod tests {
             OpenAiResponsesTransportContract::StandardJson,
             ToolSchemaContract::Strict,
             None,
+            None,
         )
         .expect("openai responses request should build");
 
@@ -5294,6 +5348,7 @@ mod tests {
             OpenAiResponsesTransportContract::CodexStreaming,
             ToolSchemaContract::Relaxed,
             Some("low"),
+            None,
         )
         .expect("openai codex responses request should build");
 
@@ -5328,6 +5383,7 @@ mod tests {
             OpenAiResponsesTransportContract::CodexStreaming,
             ToolSchemaContract::Relaxed,
             Some("low"),
+            None,
         )
         .expect("openai codex responses request should build");
         let plan = plan_openai_responses_request(

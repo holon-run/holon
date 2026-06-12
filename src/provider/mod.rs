@@ -286,6 +286,8 @@ pub struct ProviderIncrementalContinuationDiagnostics {
 pub struct ProviderOpenAiRequestControlsDiagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<String>,
     pub reasoning_sent: bool,
     pub include_reasoning_encrypted_content: bool,
     pub max_output_tokens_sent: bool,

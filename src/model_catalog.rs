@@ -90,6 +90,8 @@ pub struct BuiltInModelMetadata {
     #[serde(default)]
     pub max_output_tokens_upper_limit: Option<u32>,
     #[serde(default)]
+    pub default_verbosity: Option<ModelVerbosity>,
+    #[serde(default)]
     pub tool_output_truncation_estimated_tokens: Option<usize>,
     #[serde(default)]
     pub capabilities: ModelCapabilityFlags,
@@ -117,6 +119,8 @@ pub struct ModelRuntimeOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_max_output_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<ModelVerbosity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_output_truncation_estimated_tokens: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<ModelCapabilityOverride>,
@@ -133,12 +137,31 @@ impl ModelRuntimeOverride {
             && self.compaction_trigger_estimated_tokens.is_none()
             && self.compaction_keep_recent_estimated_tokens.is_none()
             && self.runtime_max_output_tokens.is_none()
+            && self.verbosity.is_none()
             && self.tool_output_truncation_estimated_tokens.is_none()
             && self
                 .capabilities
                 .as_ref()
                 .map(ModelCapabilityOverride::is_empty)
                 .unwrap_or(true)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelVerbosity {
+    Low,
+    Medium,
+    High,
+}
+
+impl ModelVerbosity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
     }
 }
 
@@ -154,6 +177,8 @@ pub struct ResolvedRuntimeModelPolicy {
     pub compaction_trigger_estimated_tokens: usize,
     pub compaction_keep_recent_estimated_tokens: usize,
     pub runtime_max_output_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<ModelVerbosity>,
     pub tool_output_truncation_estimated_tokens: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens_upper_limit: Option<u32>,
@@ -174,6 +199,7 @@ impl Default for ResolvedRuntimeModelPolicy {
             compaction_trigger_estimated_tokens: 2048,
             compaction_keep_recent_estimated_tokens: 768,
             runtime_max_output_tokens: 8192,
+            verbosity: None,
             tool_output_truncation_estimated_tokens:
                 DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
             max_output_tokens_upper_limit: None,
@@ -316,6 +342,11 @@ impl BuiltInModelCatalog {
             .or_else(|| built_in.and_then(|entry| entry.default_max_output_tokens))
             .or_else(|| fallback_override.and_then(|value| value.runtime_max_output_tokens))
             .unwrap_or(configured_runtime_max_output_tokens);
+        let verbosity = override_config
+            .and_then(|value| value.verbosity)
+            .or_else(|| built_in.and_then(|entry| entry.default_verbosity))
+            .or_else(|| fallback_override.and_then(|value| value.verbosity))
+            .or_else(|| default_verbosity_for_model(model_ref));
         let tool_output_truncation_estimated_tokens = override_config
             .and_then(|value| value.tool_output_truncation_estimated_tokens)
             .or_else(|| built_in.and_then(|entry| entry.tool_output_truncation_estimated_tokens))
@@ -349,6 +380,7 @@ impl BuiltInModelCatalog {
             compaction_trigger_estimated_tokens,
             compaction_keep_recent_estimated_tokens,
             runtime_max_output_tokens,
+            verbosity,
             tool_output_truncation_estimated_tokens,
             max_output_tokens_upper_limit,
             capabilities,
@@ -422,8 +454,10 @@ fn catalog_model(
     reasoning_summaries: bool,
     image_input: bool,
 ) -> BuiltInModelMetadata {
+    let model_ref = ModelRef::new(provider_id(provider), model);
     BuiltInModelMetadata {
-        model_ref: ModelRef::new(provider_id(provider), model),
+        default_verbosity: default_verbosity_for_model(&model_ref),
+        model_ref,
         display_name: display_name.into(),
         description: format!(
             "Holon built-in runtime metadata for the {provider}/{model} compatible provider model."
@@ -483,6 +517,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             auto_compact_token_limit: Some(180_000),
             default_max_output_tokens: Some(32_000),
             max_output_tokens_upper_limit: Some(128_000),
+            default_verbosity: None,
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
@@ -499,6 +534,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             auto_compact_token_limit: Some(180_000),
             default_max_output_tokens: Some(32_000),
             max_output_tokens_upper_limit: Some(64_000),
+            default_verbosity: None,
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
@@ -515,6 +551,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
             max_output_tokens_upper_limit: None,
+            default_verbosity: Some(ModelVerbosity::Low),
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
@@ -533,6 +570,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
             max_output_tokens_upper_limit: None,
+            default_verbosity: Some(ModelVerbosity::Low),
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
@@ -551,6 +589,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
             max_output_tokens_upper_limit: None,
+            default_verbosity: Some(ModelVerbosity::Low),
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
@@ -569,6 +608,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
             max_output_tokens_upper_limit: None,
+            default_verbosity: None,
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
@@ -586,6 +626,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
             max_output_tokens_upper_limit: None,
+            default_verbosity: None,
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
@@ -603,6 +644,7 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
             max_output_tokens_upper_limit: None,
+            default_verbosity: None,
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
                 image_input: true,
@@ -614,6 +656,10 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
     ];
     entries.extend(compatible_provider_model_entries());
     entries
+}
+
+fn default_verbosity_for_model(model_ref: &ModelRef) -> Option<ModelVerbosity> {
+    (model_ref.provider == ProviderId::openai_codex()).then_some(ModelVerbosity::Low)
 }
 
 fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {

@@ -951,6 +951,9 @@ impl RuntimeModelCatalog {
                     .or_else(|| base.and_then(|model| model.default_max_output_tokens)),
                 max_output_tokens_upper_limit: base
                     .and_then(|model| model.max_output_tokens_upper_limit),
+                default_verbosity: override_config
+                    .verbosity
+                    .or_else(|| base.and_then(|model| model.default_verbosity)),
                 tool_output_truncation_estimated_tokens: override_config
                     .tool_output_truncation_estimated_tokens
                     .or_else(|| {
@@ -6816,6 +6819,7 @@ mod tests {
                     auto_compact_token_limit: None,
                     default_max_output_tokens: Some(7_777),
                     max_output_tokens_upper_limit: Some(7_777),
+                    default_verbosity: None,
                     tool_output_truncation_estimated_tokens: None,
                     capabilities: Default::default(),
                     source: ModelMetadataSource::RemoteDiscovered,

@@ -2,6 +2,7 @@
 
 use super::support::*;
 use super::*;
+use crate::model_catalog::ModelVerbosity;
 use crate::provider::retry::{ProviderFailureKind, RetryDisposition};
 use crate::provider::transports::OpenAiResponsesTransportContract;
 use crate::tool::{apply_patch::ApplyPatchSurface, tools::apply_patch_tool, ToolSpec};
@@ -235,6 +236,7 @@ fn openai_responses_request_sets_store_false() {
         OpenAiResponsesTransportContract::StandardJson,
         ToolSchemaContract::Relaxed,
         None,
+        None,
     )
     .unwrap();
     assert_eq!(body["store"], Value::Bool(false));
@@ -250,6 +252,7 @@ fn openai_responses_request_lowers_prompt_frame_to_full_request_with_cache_key()
         &request,
         OpenAiResponsesTransportContract::StandardJson,
         ToolSchemaContract::Relaxed,
+        None,
         None,
     )
     .unwrap();
@@ -272,6 +275,7 @@ fn build_openai_standard_request_includes_max_output_tokens() {
         OpenAiResponsesTransportContract::StandardJson,
         ToolSchemaContract::Relaxed,
         None,
+        None,
     )
     .unwrap();
 
@@ -289,6 +293,7 @@ fn build_openai_codex_streaming_request_omits_max_output_tokens() {
         OpenAiResponsesTransportContract::CodexStreaming,
         ToolSchemaContract::Relaxed,
         None,
+        None,
     )
     .unwrap();
 
@@ -297,6 +302,24 @@ fn build_openai_codex_streaming_request_omits_max_output_tokens() {
     assert!(body.get("reasoning").is_some());
     assert_eq!(body["reasoning"], Value::Null);
     assert_eq!(body["include"], json!([]));
+}
+
+#[test]
+fn build_openai_codex_streaming_request_sends_verbosity() {
+    let request = provider_turn_request();
+    let body = build_openai_responses_request(
+        "gpt-5.4",
+        256,
+        &request,
+        OpenAiResponsesTransportContract::CodexStreaming,
+        ToolSchemaContract::Relaxed,
+        None,
+        Some(ModelVerbosity::Low),
+    )
+    .unwrap();
+
+    assert_eq!(body["stream"], Value::Bool(true));
+    assert_eq!(body["text"], json!({ "verbosity": "low" }));
 }
 
 #[test]
@@ -309,6 +332,7 @@ fn build_openai_codex_streaming_request_sends_supported_reasoning_effort() {
         OpenAiResponsesTransportContract::CodexStreaming,
         ToolSchemaContract::Relaxed,
         Some("low"),
+        None,
     )
     .unwrap();
 
@@ -328,6 +352,7 @@ fn openai_request_uses_function_tool_shape_for_generic_apply_patch() {
         &request,
         OpenAiResponsesTransportContract::StandardJson,
         ToolSchemaContract::Relaxed,
+        None,
         None,
     )
     .unwrap();
@@ -353,6 +378,7 @@ fn openai_codex_request_uses_custom_codex_dsl_tool_shape_for_apply_patch() {
         &request,
         OpenAiResponsesTransportContract::CodexStreaming,
         ToolSchemaContract::Relaxed,
+        None,
         None,
     )
     .unwrap();
@@ -386,6 +412,7 @@ fn openai_request_payload_validates_full_tool_matrix_in_strict_mode() {
         &request,
         OpenAiResponsesTransportContract::StandardJson,
         ToolSchemaContract::Strict,
+        None,
         None,
     )
     .unwrap();
@@ -458,6 +485,7 @@ fn openai_codex_request_payload_validates_full_tool_matrix_in_strict_mode() {
         OpenAiResponsesTransportContract::CodexStreaming,
         ToolSchemaContract::Strict,
         Some("low"),
+        None,
     )
     .unwrap();
 
