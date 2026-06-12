@@ -252,8 +252,11 @@ Rules:
 WorkItem-scoped `WaitFor` replaces active waits on that WorkItem, writes
 `blocked_by=reason` for display, writes `recheck_at` only when
 `recheck_after_ms` is present, clears `recheck_at` otherwise, clears
-`recheck_consumed_at`, and releases the current focus so scheduler projection no
-longer treats the item as runnable.
+`recheck_consumed_at`, and releases only the current turn binding. The durable
+`current_work_item_id` remains the focused WorkItem so the agent can resume or
+inspect the same long-lived objective after the wait wakes. Scheduler readiness
+comes from the active wait condition and WorkItem blocker, not from clearing the
+agent's current focus.
 
 Agent-scoped `WaitFor` has no WorkItem record to mutate. When
 `recheck_after_ms` is present, the wait condition continuation records both the

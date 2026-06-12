@@ -117,14 +117,15 @@ impl SchedulerProjection {
             .find(|item| item.is_current)
             .map(|item| item.scheduling_state);
         let waiting_work_item_projection = work_queue.readiness.iter().find(|item| {
-            matches!(
-                item.scheduling_state,
-                WorkItemSchedulingState::WaitingOperator
-                    | WorkItemSchedulingState::WaitingTask
-                    | WorkItemSchedulingState::WaitingExternal
-                    | WorkItemSchedulingState::WaitingTimer
-                    | WorkItemSchedulingState::WaitingSystem
-            )
+            (item.is_current || item.has_active_waits || item.has_active_task_waits)
+                && matches!(
+                    item.scheduling_state,
+                    WorkItemSchedulingState::WaitingOperator
+                        | WorkItemSchedulingState::WaitingTask
+                        | WorkItemSchedulingState::WaitingExternal
+                        | WorkItemSchedulingState::WaitingTimer
+                        | WorkItemSchedulingState::WaitingSystem
+                )
         });
         let waiting_work_item = waiting_work_item_projection.map(|item| item.work_item.clone());
         let waiting_work_item_scheduling_state =
