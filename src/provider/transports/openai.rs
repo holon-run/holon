@@ -1566,7 +1566,7 @@ pub(crate) fn build_openai_responses_request(
         body["prompt_cache_key"] = Value::String(cache.prompt_cache_key.clone());
     }
     if let Some(response_format) = openai_response_format(request) {
-        body["response_format"] = response_format;
+        body["text"]["format"] = response_format;
     }
     match contract {
         OpenAiResponsesTransportContract::StandardJson => {
@@ -1590,11 +1590,9 @@ fn openai_response_format(request: &ProviderTurnRequest) -> Option<Value> {
     match request.response_format.as_ref()? {
         ProviderResponseFormatRequest::JsonSchema(format) => Some(json!({
             "type": "json_schema",
-            "json_schema": {
-                "name": format.name,
-                "schema": format.schema,
-                "strict": format.strict,
-            }
+            "name": format.name,
+            "schema": format.schema,
+            "strict": format.strict,
         })),
     }
 }
@@ -5263,17 +5261,12 @@ mod tests {
         )
         .expect("openai responses request should build");
 
-        assert_eq!(body["response_format"]["type"], json!("json_schema"));
+        assert!(body.get("response_format").is_none());
+        assert_eq!(body["text"]["format"]["type"], json!("json_schema"));
+        assert_eq!(body["text"]["format"]["name"], json!("answer_v1"));
+        assert_eq!(body["text"]["format"]["strict"], json!(true));
         assert_eq!(
-            body["response_format"]["json_schema"]["name"],
-            json!("answer_v1")
-        );
-        assert_eq!(
-            body["response_format"]["json_schema"]["strict"],
-            json!(true)
-        );
-        assert_eq!(
-            body["response_format"]["json_schema"]["schema"]["properties"]["answer"]["type"],
+            body["text"]["format"]["schema"]["properties"]["answer"]["type"],
             json!("string")
         );
     }
