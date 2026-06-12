@@ -211,7 +211,7 @@ impl RuntimeHandle {
                 })),
             });
             guard.state.worktree_session = Some(worktree_session.clone());
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
         }
 
         let boundary = crate::system::HostLocalBoundary::from_parts(
@@ -330,7 +330,7 @@ impl RuntimeHandle {
                     projection_metadata: None,
                 });
             }
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
             (session, occupancy_id)
         };
         if let Some(occupancy_id) = occupancy_id.as_deref() {

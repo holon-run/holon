@@ -2348,7 +2348,7 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             guard.state.current_work_item_id = Some(record.id.clone());
             guard.state.current_turn_work_item_id = Some(record.id.clone());
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
         }
         self.inner
             .runtime_db
@@ -2833,7 +2833,7 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             guard.state.current_work_item_id = Some(suspended.id.clone());
             guard.state.current_turn_work_item_id = Some(suspended.id.clone());
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
         }
         self.inner
             .runtime_db
@@ -2904,7 +2904,7 @@ impl RuntimeHandle {
             if release_turn {
                 guard.state.current_turn_work_item_id = None;
             }
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
             release_current || release_turn
         };
         if released {

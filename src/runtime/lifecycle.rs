@@ -59,7 +59,7 @@ impl RuntimeHandle {
                 return Ok(None);
             }
             let work_item_id = guard.state.current_turn_work_item_id.take();
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
             (turn_index, work_item_id)
         };
 
@@ -229,7 +229,7 @@ impl RuntimeHandle {
                     == Some(occupancy_id);
                 if should_clear {
                     guard.state.active_workspace_entry = None;
-                    self.inner.storage.write_agent(&guard.state)?;
+                    guard.persist_state(&self.inner.storage)?;
                 }
             }
         }
@@ -642,7 +642,7 @@ impl RuntimeHandle {
             guard.state.model_override = Some(model_override);
             guard.state.model_override_reasoning_effort = reasoning_effort;
             guard.state.pending_fallback_model = None;
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
         }
         self.append_audit_event(
             if turn_in_progress {
@@ -675,7 +675,7 @@ impl RuntimeHandle {
             guard.state.model_override = None;
             guard.state.model_override_reasoning_effort = None;
             guard.state.pending_fallback_model = None;
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
         }
         self.append_audit_event(
             if turn_in_progress {
@@ -706,7 +706,7 @@ impl RuntimeHandle {
                 .push(workspace.workspace_id.clone());
         }
         self.inner.storage.append_workspace_entry(workspace)?;
-        self.inner.storage.write_agent(&guard.state)?;
+        guard.persist_state(&self.inner.storage)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "workspace_attached",
             serde_json::json!({
@@ -769,7 +769,7 @@ impl RuntimeHandle {
                     guard.state.id
                 ));
             }
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
             guard.state.id.clone()
         };
 
@@ -923,7 +923,7 @@ impl RuntimeHandle {
             }
             guard.state.active_workspace_entry = Some(entry);
             guard.state.worktree_session = None;
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
             self.inner.storage.mark_memory_index_dirty()?;
         }
         if let Some(occupancy_id) = previous_occupancy_id.as_deref() {
@@ -1052,7 +1052,7 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             guard.state.active_workspace_entry = Some(entry.clone());
             guard.state.worktree_session = worktree_session;
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
             self.inner.storage.mark_memory_index_dirty()?;
             Ok(())
         }
@@ -1184,7 +1184,7 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             guard.state.active_workspace_entry = Some(entry.clone());
             guard.state.worktree_session = None;
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
             self.inner.storage.mark_memory_index_dirty()?;
             Ok(())
         }

@@ -463,19 +463,19 @@ impl RuntimeHandle {
                 AgentStatus::Stopped => WakeDisposition::Ignored,
                 AgentStatus::AwakeRunning | AgentStatus::AwaitingTask => {
                     guard.state.pending_wake_hint = Some(pending.clone());
-                    self.inner.storage.write_agent(&guard.state)?;
+                    guard.persist_state(&self.inner.storage)?;
                     WakeDisposition::Coalesced
                 }
                 AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep => {
                     if guard.queue.is_empty() {
                         if guard.state.pending_wake_hint.take().is_some() {
-                            self.inner.storage.write_agent(&guard.state)?;
+                            guard.persist_state(&self.inner.storage)?;
                         }
                         trigger_now = true;
                         WakeDisposition::Triggered
                     } else {
                         guard.state.pending_wake_hint = Some(pending.clone());
-                        self.inner.storage.write_agent(&guard.state)?;
+                        guard.persist_state(&self.inner.storage)?;
                         WakeDisposition::Coalesced
                     }
                 }
@@ -514,7 +514,7 @@ impl RuntimeHandle {
                 let mut guard = self.inner.agent.lock().await;
                 if guard.state.pending_wake_hint.is_none() {
                     guard.state.pending_wake_hint = Some(pending);
-                    self.inner.storage.write_agent(&guard.state)?;
+                    guard.persist_state(&self.inner.storage)?;
                 }
                 return Err(err);
             }
@@ -534,7 +534,7 @@ impl RuntimeHandle {
             let mut guard = self.inner.agent.lock().await;
             if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                 guard.state.pending_wake_hint = None;
-                self.inner.storage.write_agent(&guard.state)?;
+                guard.persist_state(&self.inner.storage)?;
             }
         }
         Ok(())

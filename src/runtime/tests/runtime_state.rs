@@ -110,6 +110,41 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
 }
 
 #[tokio::test]
+async fn update_agent_state_rolls_back_memory_when_persist_fails() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let original = runtime.agent_state().await.unwrap();
+    assert_eq!(original.status, AgentStatus::AwakeIdle);
+
+    let error = runtime
+        .update_agent_state(|state| {
+            state.id = "other-agent".into();
+            state.status = AgentStatus::Stopped;
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("cannot write agent state for `other-agent`"));
+
+    let restored = runtime.agent_state().await.unwrap();
+    assert_eq!(restored.id, "default");
+    assert_eq!(restored.status, AgentStatus::AwakeIdle);
+}
+
+#[tokio::test]
 async fn non_model_reentry_external_events_do_not_run_interactive_turn() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

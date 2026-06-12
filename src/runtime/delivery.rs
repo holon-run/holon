@@ -91,7 +91,7 @@ impl RuntimeHandle {
         ))?;
         let mut guard = self.inner.agent.lock().await;
         guard.state.last_brief_at = Some(bound_brief.created_at);
-        self.inner.storage.write_agent(&guard.state)?;
+        guard.persist_state(&self.inner.storage)?;
         Ok(())
     }
 }

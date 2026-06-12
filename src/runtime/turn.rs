@@ -1529,7 +1529,7 @@ impl RuntimeHandle {
                 duration_ms,
             };
             guard.state.last_turn_terminal = Some(record.clone());
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
             record
         };
         self.inner.storage.append_event(&AuditEvent::new(
@@ -1657,7 +1657,7 @@ impl RuntimeHandle {
         {
             let mut guard = self.inner.agent.lock().await;
             guard.state.pending_fallback_model = Some(fallback_model.clone());
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
         }
         let error_text = error.to_string();
         let provider_failure_text = provider_lineage_failure_text(&error_text);
@@ -1782,7 +1782,7 @@ impl RuntimeHandle {
                 duration_ms,
             };
             guard.state.last_turn_terminal = Some(record.clone());
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
             record
         };
         self.persist_turn_record(&record).await?;
@@ -1882,7 +1882,7 @@ impl RuntimeHandle {
                 messages.push(message);
             }
             if !messages.is_empty() {
-                if let Err(err) = self.inner.storage.write_agent(&guard.state) {
+                if let Err(err) = guard.persist_state(&self.inner.storage) {
                     for message in messages.iter().rev().cloned() {
                         guard.queue.push_front(message);
                     }
@@ -1931,7 +1931,7 @@ impl RuntimeHandle {
                         guard.queue.push_front(message);
                     }
                     guard.state.pending = guard.queue.len();
-                    let _ = self.inner.storage.write_agent(&guard.state);
+                    let _ = guard.persist_state(&self.inner.storage);
                     return Err(err);
                 }
             }
@@ -2198,7 +2198,7 @@ impl TurnExecution<'_> {
                             let mut guard = runtime.inner.agent.lock().await;
                             if guard.state.pending_fallback_model.is_some() {
                                 guard.state.pending_fallback_model = None;
-                                runtime.inner.storage.write_agent(&guard.state)?;
+                                guard.persist_state(&runtime.inner.storage)?;
                             }
                         }
                         runtime
@@ -2456,7 +2456,7 @@ impl TurnExecution<'_> {
                             let mut guard = runtime.inner.agent.lock().await;
                             if guard.state.pending_fallback_model.is_some() {
                                 guard.state.pending_fallback_model = None;
-                                runtime.inner.storage.write_agent(&guard.state)?;
+                                guard.persist_state(&runtime.inner.storage)?;
                             }
                         }
                         runtime
@@ -2488,7 +2488,7 @@ impl TurnExecution<'_> {
                 guard.state.last_requested_model = model_attempt_state.requested_model.clone();
                 guard.state.last_active_model = model_attempt_state.active_model.clone();
                 guard.state.pending_fallback_model = None;
-                runtime.inner.storage.write_agent(&guard.state)?;
+                guard.persist_state(&runtime.inner.storage)?;
                 (
                     guard.state.turn_index,
                     guard.state.current_run_id.clone(),

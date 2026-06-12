@@ -205,6 +205,7 @@ impl RuntimeHandle {
         Ok(Self {
             inner: Arc::new(RuntimeInner {
                 agent: Mutex::new(RuntimeAgent {
+                    last_persisted_state: state.clone(),
                     state,
                     queue,
                     current_run_abort: None,
@@ -550,7 +551,7 @@ fn prepare_runtime_storage(
         }
     }
 
-    let recovered_agent_for_import = storage.read_agent()?;
+    let recovered_agent_for_import = storage.read_legacy_agent_for_import()?;
     if !storage_domain_complete(&runtime_db, "agent_states")? {
         runtime_db
             .agent_states()
