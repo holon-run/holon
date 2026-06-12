@@ -1161,11 +1161,13 @@ code {
 }
 
 .source-chip.live-status.connecting,
-.source-chip.live-status.reconnecting {
+.source-chip.live-status.reconnecting,
+.source-chip.live-status.recovering {
   border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
   color: var(--accent);
 }
 
+.source-chip.live-status.stale,
 .source-chip.live-status.error {
   border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
   color: var(--danger);

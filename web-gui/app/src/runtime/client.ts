@@ -169,7 +169,9 @@ export interface AgentEventStreamOptions {
   afterSeq?: number;
   limit?: number;
   onOpen?: () => void;
+  onActivity?: () => void;
   onEvent: (event: StreamEventEnvelopeDto) => void;
+  onClose?: () => void;
   onError?: (error: Error) => void;
 }
 
@@ -357,13 +359,18 @@ async function readEventStream(
     while (!signal.aborted) {
       const { done, value } = await reader.read();
       if (done) break;
+      options.onActivity?.();
       buffer += decoder.decode(value, { stream: true });
       const frames = takeSseFrames(buffer);
       buffer = frames.remaining;
       for (const frame of frames.frames) {
+        options.onActivity?.();
         const event = parseSseEventFrame(frame);
         if (event) options.onEvent(event);
       }
+    }
+    if (!signal.aborted) {
+      options.onClose?.();
     }
   } catch (error) {
     if (!signal.aborted) {

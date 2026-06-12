@@ -4,7 +4,7 @@ import { createRuntimeClient, type AgentEventStreamSubscription, type StreamEven
 import { compactAgentTimelineItems, mergeAgentTimelineItems, reduceAgentSessionTimeline } from "./session-reducer";
 import type { AgentDetail, AgentSummary, AgentTimelineItem, DisplayLevel, RouteKey, RuntimeBootstrap, RuntimeModelCatalog } from "./types";
 
-export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "error";
+export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
 
 export interface AgentSessionState {
   loading: boolean;
@@ -17,6 +17,8 @@ export interface AgentSessionState {
   newestSeq?: number;
   oldestSeq?: number;
   hasOlder?: boolean;
+  lastStreamActivityAt?: string;
+  reconnectAttempt?: number;
   error?: string;
   historyError?: string;
   promptError?: string;
@@ -79,6 +81,10 @@ export interface RuntimeStoreState {
 const runtimeClient = createRuntimeClient();
 const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
 const reconnectTimers = new Map<string, number>();
+const staleTimers = new Map<string, number>();
+const STREAM_STALE_TIMEOUT_MS = 45_000;
+const STREAM_RECONNECT_BASE_MS = 1_000;
+const STREAM_RECONNECT_MAX_MS = 15_000;
 
 const emptyBootstrap: RuntimeBootstrap = {
   attentionCount: 0,
@@ -355,31 +361,37 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
     if (session.detail?.error) return;
 
-    setAgentLiveStatus(set, agentId, "connecting");
+    const reconnectAttempt = session.reconnectAttempt ?? 0;
+    setStreamState(set, agentId, reconnectAttempt > 0 ? "reconnecting" : "connecting", {
+      reconnectAttempt,
+      error: undefined,
+    });
     const subscription = runtimeClient.streamAgentEvents(agentId, {
       afterSeq: session.newestSeq,
       limit: 100,
-      onOpen: () => setAgentLiveStatus(set, agentId, "streaming"),
-      onEvent: (event) => applyStreamEvent(set, agentId, event),
-      onError: (error) => {
-        activeEventStreams.delete(agentId);
-        set((state) => ({
-          sessionsByAgentId: {
-            ...state.sessionsByAgentId,
-            [agentId]: {
-              ...emptyAgentSession(),
-              ...state.sessionsByAgentId[agentId],
-              liveStatus: "reconnecting",
-              error: error.message,
-            },
-          },
-        }));
-        const timer = window.setTimeout(() => {
-          reconnectTimers.delete(agentId);
-          get().startAgentEventStream(agentId, displayLevel);
-        }, 1500);
-        reconnectTimers.set(agentId, timer);
+      onOpen: () => {
+        markStreamActivity(set, agentId);
+        setStreamState(set, agentId, reconnectAttempt > 0 ? "recovering" : "streaming", {
+          reconnectAttempt: 0,
+          error: undefined,
+        });
+        scheduleStaleWatchdog(get, set, agentId, displayLevel);
+        if (reconnectAttempt > 0) {
+          void get().refreshAgentDetail(agentId, displayLevel).finally(() => {
+            if (activeEventStreams.has(agentId)) setAgentLiveStatus(set, agentId, "streaming");
+          });
+        }
       },
+      onActivity: () => {
+        markStreamActivity(set, agentId);
+        scheduleStaleWatchdog(get, set, agentId, displayLevel);
+      },
+      onEvent: (event) => {
+        markStreamActivity(set, agentId);
+        applyStreamEvent(set, agentId, event);
+      },
+      onClose: () => scheduleStreamReconnect(get, set, agentId, displayLevel, "event stream closed"),
+      onError: (error) => scheduleStreamReconnect(get, set, agentId, displayLevel, error.message),
     });
     if (!subscription) {
       setAgentLiveStatus(set, agentId, "idle");
@@ -422,9 +434,23 @@ function stopAgentEventStream(agentId: string): void {
     window.clearTimeout(timer);
     reconnectTimers.delete(agentId);
   }
+  const staleTimer = staleTimers.get(agentId);
+  if (staleTimer != null) {
+    window.clearTimeout(staleTimer);
+    staleTimers.delete(agentId);
+  }
 }
 
 function setAgentLiveStatus(set: StoreSet, agentId: string, liveStatus: AgentLiveStatus): void {
+  setStreamState(set, agentId, liveStatus);
+}
+
+function setStreamState(
+  set: StoreSet,
+  agentId: string,
+  liveStatus: AgentLiveStatus,
+  updates: Partial<AgentSessionState> = {},
+): void {
   set((state) => ({
     sessionsByAgentId: {
       ...state.sessionsByAgentId,
@@ -432,9 +458,77 @@ function setAgentLiveStatus(set: StoreSet, agentId: string, liveStatus: AgentLiv
         ...emptyAgentSession(),
         ...state.sessionsByAgentId[agentId],
         liveStatus,
+        ...updates,
       },
     },
   }));
+}
+
+function markStreamActivity(set: StoreSet, agentId: string): void {
+  set((state) => ({
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...emptyAgentSession(),
+        ...state.sessionsByAgentId[agentId],
+        lastStreamActivityAt: new Date().toISOString(),
+      },
+    },
+  }));
+}
+
+function scheduleStaleWatchdog(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  displayLevel: DisplayLevel,
+): void {
+  const existing = staleTimers.get(agentId);
+  if (existing != null) window.clearTimeout(existing);
+  const timer = window.setTimeout(() => {
+    if (!activeEventStreams.has(agentId)) return;
+    setStreamState(set, agentId, "stale", { error: "event stream is stale; reconnecting" });
+    activeEventStreams.get(agentId)?.close();
+    activeEventStreams.delete(agentId);
+    scheduleStreamReconnect(get, set, agentId, displayLevel, "event stream idle timeout");
+  }, STREAM_STALE_TIMEOUT_MS);
+  staleTimers.set(agentId, timer);
+}
+
+function scheduleStreamReconnect(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  displayLevel: DisplayLevel,
+  reason: string,
+): void {
+  activeEventStreams.get(agentId)?.close();
+  activeEventStreams.delete(agentId);
+  const staleTimer = staleTimers.get(agentId);
+  if (staleTimer != null) {
+    window.clearTimeout(staleTimer);
+    staleTimers.delete(agentId);
+  }
+  if (reconnectTimers.has(agentId)) return;
+
+  const attempt = (get().sessionsByAgentId[agentId]?.reconnectAttempt ?? 0) + 1;
+  const delay = reconnectDelayMs(attempt);
+  setStreamState(set, agentId, "reconnecting", {
+    reconnectAttempt: attempt,
+    error: reason,
+  });
+  void get().refreshAgentDetail(agentId, displayLevel).catch(() => undefined);
+  const timer = window.setTimeout(() => {
+    reconnectTimers.delete(agentId);
+    get().startAgentEventStream(agentId, displayLevel);
+  }, delay);
+  reconnectTimers.set(agentId, timer);
+}
+
+function reconnectDelayMs(attempt: number): number {
+  const exponential = Math.min(STREAM_RECONNECT_MAX_MS, STREAM_RECONNECT_BASE_MS * 2 ** Math.max(0, attempt - 1));
+  const jitter = Math.floor(Math.random() * 500);
+  return exponential + jitter;
 }
 
 function setSessionModelError(set: StoreSet, agentId: string, error: string | undefined): void {

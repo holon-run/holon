@@ -49,6 +49,7 @@ export function App() {
     refresh: refreshAgentDetail,
   } = useAgentDetail(selectedAgent?.id, displayLevel);
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
+  const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
   const selectedAgentCurrentWork = selectedAgent?.currentWork;
   const selectedAgentContext =
     route === "agent" && selectedAgent
@@ -239,7 +240,7 @@ export function App() {
               <div className="agent-top-controls">
                 <div className="agent-stream-controls" aria-label="Agent stream status">
                   <span className={`source-chip ${selectedAgentSourceStatus}`}>{selectedAgentSourceStatus}</span>
-                  <span className={`source-chip live-status ${selectedAgentLiveStatus}`}>
+                  <span className={`source-chip live-status ${selectedAgentLiveStatus}`} title={selectedAgentLiveTitle}>
                     {liveStatusLabel(selectedAgentLiveStatus)}
                   </span>
                   <button type="button" disabled={agentDetailLoading} onClick={() => void refreshAgentDetail()}>
@@ -373,6 +374,25 @@ function liveStatusLabel(status: string): string {
   if (status === "connecting") return "connecting";
   if (status === "streaming") return "streaming";
   if (status === "reconnecting") return "reconnecting";
+  if (status === "recovering") return "recovering";
+  if (status === "stale") return "stale";
   if (status === "error") return "stream error";
   return "idle";
+}
+
+function liveStatusTitle(status: string, lastActivityAt?: string, error?: string): string {
+  const parts = [liveStatusLabel(status)];
+  if (lastActivityAt) parts.push(`last activity ${formatRelativeTime(lastActivityAt)}`);
+  if (error) parts.push(error);
+  return parts.join(" · ");
+}
+
+function formatRelativeTime(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return new Date(timestamp).toLocaleString();
 }
