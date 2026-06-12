@@ -995,7 +995,14 @@ impl RuntimeModelCatalog {
             );
         }
 
-        let mut candidates = self.vision_candidate_models.clone();
+        let mut candidates = vec![];
+        // Primary model gets first priority for auto-discovery
+        if !self.vision_candidate_models.iter().any(|m| m == &primary) {
+            candidates.push(primary.clone());
+        }
+        // Then add explicitly configured vision candidates
+        candidates.extend(self.vision_candidate_models.clone());
+        // Then add the rest of the chain (excluding duplicates)
         for model_ref in chain {
             if !candidates.iter().any(|existing| existing == &model_ref) {
                 candidates.push(model_ref);

@@ -543,8 +543,8 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             source: ModelMetadataSource::BuiltInCatalog,
         },
         BuiltInModelMetadata {
-            model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.4"),
-            display_name: "GPT-5.4 (Codex)".into(),
+            model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.5"),
+            display_name: "GPT-5.5 (Codex)".into(),
             description: "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.".into(),
             context_window_tokens: Some(272_000),
             effective_context_window_percent: 95,
@@ -2218,7 +2218,7 @@ mod tests {
     fn resolves_built_in_policy_from_known_model() {
         let catalog = BuiltInModelCatalog::new();
         let policy = catalog.resolve_policy(
-            &ModelRef::new(ProviderId::openai_codex(), "gpt-5.4"),
+            &ModelRef::new(ProviderId::openai_codex(), "gpt-5.5"),
             &HashMap::new(),
             &HashMap::new(),
             None,
