@@ -66,6 +66,7 @@ pub fn build_provider_turn_request(
         conversation: vec![ConversationMessage::UserBlocks(context_blocks)],
         tools: available_tools,
         native_web_search,
+        response_format: None,
     }
 }
 
@@ -84,6 +85,7 @@ pub fn build_continuation_request(
         conversation,
         tools: available_tools,
         native_web_search,
+        response_format: None,
     }
 }
 

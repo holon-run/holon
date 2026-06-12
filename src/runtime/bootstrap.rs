@@ -16,7 +16,8 @@ use crate::{
     model_discovery::{discovery_cache_path, load_discovery_cache_at},
     provider::{
         build_provider_from_model_chain, resolved_model_availability, AgentProvider,
-        ConversationMessage, ModelBlock, ProviderTurnRequest,
+        ConversationMessage, ModelBlock, ProviderJsonSchemaResponseFormat,
+        ProviderResponseFormatRequest, ProviderTurnRequest,
     },
     queue::RuntimeQueue,
     runtime_db::RuntimeDb,
@@ -395,17 +396,17 @@ impl RuntimeHandle {
             &reconfig.config,
             &[ModelRef::parse(&format!("{provider_name}/{model_name}"))?],
         )?;
-        let response = provider
-            .complete_turn(ProviderTurnRequest::plain(
-                "You are a vision adapter for a headless agent. Inspect only the provided image and task prompt. Return exactly one JSON object and no markdown, prose, or implementation advice. The JSON object must match this shape: {\"type\":\"visual_observation\",\"schema\":\"visual_observation.v1\",\"summary\":\"string\",\"ocr\":[],\"elements\":[],\"relations\":[],\"issues\":[],\"uncertainties\":[],\"external_sources\":[]}. Required fields: type=\"visual_observation\", schema=\"visual_observation.v1\", summary, uncertainties. The uncertainties field must be an array of strings; use [] when there are no caveats. The ocr, elements, relations, issues, and external_sources fields must be arrays of objects; omit them or use [] when empty. Include visible text in ocr or summary; include bounding boxes when location matters; describe only visible evidence; say when uncertain.",
-                vec![ConversationMessage::UserImage {
-                    prompt: prompt.to_string(),
-                    media_type: media_type.to_string(),
-                    data_base64: BASE64_STANDARD.encode(bytes),
-                }],
-                Vec::new(),
-            ))
-            .await?;
+        let mut request = ProviderTurnRequest::plain(
+            "You are a vision adapter for a headless agent. Inspect only the provided image and task prompt. Return exactly one JSON object and no markdown, prose, or implementation advice. The JSON object must match this shape: {\"type\":\"visual_observation\",\"schema\":\"visual_observation.v1\",\"summary\":\"string\",\"ocr\":[],\"elements\":[],\"relations\":[],\"issues\":[],\"uncertainties\":[],\"external_sources\":[]}. Required fields: type=\"visual_observation\", schema=\"visual_observation.v1\", summary, uncertainties. The uncertainties field must be an array of strings; use [] when there are no caveats. The ocr, elements, relations, issues, and external_sources fields must be arrays of objects; omit them or use [] when empty. Include visible text in ocr or summary; include bounding boxes when location matters; describe only visible evidence; say when uncertain.",
+            vec![ConversationMessage::UserImage {
+                prompt: prompt.to_string(),
+                media_type: media_type.to_string(),
+                data_base64: BASE64_STANDARD.encode(bytes),
+            }],
+            Vec::new(),
+        );
+        request.response_format = Some(visual_observation_response_format());
+        let response = provider.complete_turn(request).await?;
         let text = response
             .blocks
             .iter()
@@ -802,4 +803,37 @@ fn storage_domain_complete(runtime_db: &RuntimeDb, domain: &str) -> Result<bool>
         .find(|expected| expected.domain == domain)
         .ok_or_else(|| anyhow!("unknown runtime storage domain {domain}"))?;
     runtime_db.storage_domain_is_complete(expected.domain, expected.canonical_source)
+}
+
+fn visual_observation_response_format() -> ProviderResponseFormatRequest {
+    ProviderResponseFormatRequest::JsonSchema(ProviderJsonSchemaResponseFormat {
+        name: "visual_observation_v1".into(),
+        strict: true,
+        schema: serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "type",
+                "schema",
+                "summary",
+                "ocr",
+                "elements",
+                "relations",
+                "issues",
+                "uncertainties",
+                "external_sources"
+            ],
+            "properties": {
+                "type": { "type": "string", "const": "visual_observation" },
+                "schema": { "type": "string", "const": "visual_observation.v1" },
+                "summary": { "type": "string" },
+                "ocr": { "type": "array", "items": { "type": "object" } },
+                "elements": { "type": "array", "items": { "type": "object" } },
+                "relations": { "type": "array", "items": { "type": "object" } },
+                "issues": { "type": "array", "items": { "type": "object" } },
+                "uncertainties": { "type": "array", "items": { "type": "string" } },
+                "external_sources": { "type": "array", "items": { "type": "object" } }
+            }
+        }),
+    })
 }

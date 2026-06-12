@@ -346,6 +346,7 @@ mod tests {
             conversation: Vec::new(),
             tools: Vec::new(),
             native_web_search: None,
+            response_format: None,
         };
 
         provider

@@ -111,6 +111,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
             ],
             tools: vec![tool.clone()],
             native_web_search: None,
+            response_format: None,
         })
         .await?;
     let tool_use_id = first_output
@@ -143,6 +144,7 @@ async fn provider_accepts_context_management(provider_id: &str, model: &str) -> 
             ],
             tools: vec![tool],
             native_web_search: None,
+            response_format: None,
         })
         .await?;
 
@@ -225,6 +227,7 @@ async fn provider_builtin_web_search_reports_backend(
                 backend_kind: capability.backend_kind,
                 max_results: Some(3),
             }),
+            response_format: None,
         })
         .await?;
     let diagnostics = output

@@ -37,6 +37,7 @@ pub struct ProviderTurnRequest {
     pub conversation: Vec<ConversationMessage>,
     pub tools: Vec<ToolSpec>,
     pub native_web_search: Option<ProviderNativeWebSearchRequest>,
+    pub response_format: Option<ProviderResponseFormatRequest>,
 }
 
 impl ProviderTurnRequest {
@@ -50,6 +51,7 @@ impl ProviderTurnRequest {
             conversation,
             tools,
             native_web_search: None,
+            response_format: None,
         }
     }
 }
@@ -140,6 +142,8 @@ pub struct ProviderRequestDiagnostics {
     pub openai_remote_compaction: Option<ProviderOpenAiRemoteCompactionDiagnostics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_web_search: Option<ProviderNativeWebSearchDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ProviderResponseFormatDiagnostics>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -169,6 +173,30 @@ pub struct ProviderNativeWebSearchDiagnostics {
     pub advertised_tool_type: String,
     pub backend_kind: String,
     pub lowered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProviderResponseFormatRequest {
+    JsonSchema(ProviderJsonSchemaResponseFormat),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderJsonSchemaResponseFormat {
+    pub name: String,
+    pub schema: Value,
+    pub strict: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderResponseFormatDiagnostics {
+    pub requested: bool,
+    pub lowered: bool,
+    pub format_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<String>,
 }
@@ -436,6 +464,7 @@ pub(crate) fn builtin_web_search_probe_turn_request(
         )],
         tools: Vec::new(),
         native_web_search: Some(native_web_search),
+        response_format: None,
     }
 }
 

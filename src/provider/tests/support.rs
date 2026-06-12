@@ -174,6 +174,7 @@ pub fn provider_turn_request_with_prompt_frame() -> ProviderTurnRequest {
         }])],
         tools: Vec::new(),
         native_web_search: None,
+        response_format: None,
     }
 }
 

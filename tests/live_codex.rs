@@ -130,6 +130,7 @@ async fn live_openai_codex_builtin_web_search_reports_backend() -> Result<()> {
             )],
             tools: vec![],
             native_web_search: Some(native_web_search),
+            response_format: None,
         })
         .await?;
     let diagnostics = output
@@ -158,6 +159,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
             )],
             tools: vec![],
             native_web_search: None,
+            response_format: None,
         })
         .await?;
     let first_text = response_text(&first.blocks);
@@ -176,6 +178,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
             ],
             tools: vec![],
             native_web_search: None,
+            response_format: None,
         })
         .await?;
 

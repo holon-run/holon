@@ -70,6 +70,7 @@ async fn live_openai_codex_remote_compact_route_probe() -> Result<()> {
                 .collect(),
             tools: vec![],
             native_web_search: None,
+            response_format: None,
         })
         .await?;
 
