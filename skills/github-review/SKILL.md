@@ -38,6 +38,7 @@ Preferred input when already available:
 
 Optional inputs:
 - Any context artifact listed as `status=present` in `manifest.json`.
+- Runtime-provided repository or path-specific review instructions.
 
 If no manifest is provided, collect PR context directly with `gh`:
 
@@ -65,6 +66,10 @@ gh api graphql -f query='
 
 This skill must not assume fixed context filenames.
 Use `manifest.artifacts[]` (`id`, `path`, `status`, `description`) to determine available context.
+When the runtime provides repository or path-specific review instructions,
+treat them as authoritative project context for this review. Do not discover,
+parse, or match path-specific instruction files inside this skill; that context
+assembly belongs to the caller/runtime.
 
 ## Workflow
 
@@ -72,6 +77,9 @@ Use `manifest.artifacts[]` (`id`, `path`, `status`, `description`) to determine 
 
 - If `${GITHUB_CONTEXT_DIR}/manifest.json` exists, use it.
 - Otherwise, collect PR metadata, files, diff, comments, and review-thread context directly with `gh`.
+- Record which runtime-provided repository/path instructions are available.
+  If the runtime exposes instruction names, paths, or match metadata, preserve
+  that metadata in the execution summary.
 
 ### 2. Perform review
 
@@ -107,6 +115,39 @@ Review focus order:
 
 - Prioritize newly introduced changes (new commits and new diff hunks).
 - Expand scope only when needed to validate correctness or safety.
+
+### Runtime-provided project context
+
+- Apply any runtime-provided repository or path-specific review instructions to
+  matching files as binding project context.
+- If runtime-provided instructions conflict with generic review heuristics,
+  follow the repository/path instruction unless it would hide a correctness,
+  security, or safety issue.
+- If instruction metadata is unavailable, do not infer that no project-specific
+  instructions exist; state the coverage limitation in `summary.md`.
+
+### Line-level risk scan
+
+Review each changed file and materially changed hunk before deciding there are
+no findings. For every relevant hunk, explicitly consider:
+- control-flow and lifecycle regressions, including missed wake/sleep,
+  retry, cancellation, cleanup, or state-transition paths
+- trust-boundary or provenance mistakes, including implicit trust elevation,
+  mixed operator/external input, missing authorization checks, or secret leaks
+- error handling gaps, including swallowed errors, ambiguous retries,
+  unchecked fallbacks, panics, `unwrap`/`expect`, or misleading success states
+- data-shape and compatibility changes, including schema drift, missing
+  migration behavior, broken serialization, or public contract changes
+- concurrency and ordering risks, including races, stale reads, duplicate
+  side effects, non-idempotent publishes, or hidden background work
+- resource and performance risks, including unbounded loops, large context
+  expansion, unnecessary network calls, or avoidable memory growth
+- test and observability gaps that would let a high-impact regression pass
+  silently
+
+Use this scan to find concrete issues, not to produce checklist noise. Only
+publish findings that are supported by the diff or directly relevant surrounding
+code.
 
 ### Historical deduplication
 
@@ -155,12 +196,17 @@ Severity semantics:
 Short execution summary:
 - reviewed ref/head
 - context coverage summary from manifest
+- repository/path instruction coverage, including instruction metadata when
+  provided by the runtime
 - number of findings and publish outcome
 - explicit degradation/failure reason when context is insufficient
 
 ## Degradation Rules
 
 - If core review artifacts are missing (for example `pr_metadata`, `diff` and `files` both unavailable), do not fabricate certainty.
+- If runtime-provided instruction metadata is expected but unavailable, continue
+  the review using the available PR context, but record that limitation in
+  `summary.md`.
 - Either:
   - produce summary-only review with explicit limitations and no inline comments, or
   - fail with clear reason in `summary.md`.
