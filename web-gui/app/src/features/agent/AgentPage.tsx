@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import type { AgentDetail, AgentSummary, AgentTimelineItem, DisplayLevel } from "../../runtime/types";
@@ -19,6 +19,10 @@ interface AgentPageProps {
   onOpenInspector: () => void;
 }
 
+const DEFAULT_INFO_TIMELINE_ITEM_LIMIT = 12;
+const HISTORY_PAGE_VISIBLE_INCREMENT = 80;
+const TOP_SCROLL_THRESHOLD = 16;
+
 export function AgentPage({
   agent,
   detail,
@@ -35,15 +39,22 @@ export function AgentPage({
   onOpenInspector,
 }: AgentPageProps) {
   const [prompt, setPrompt] = useState("");
+  const [visibleInfoItemLimit, setVisibleInfoItemLimit] = useState(DEFAULT_INFO_TIMELINE_ITEM_LIMIT);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
   const activeAgent = detail?.agent ?? agent;
-  const timeline = filterTimelineByDisplayLevel(detail?.timeline ?? fallbackTimeline(activeAgent), displayLevel);
+  const timeline = filterTimelineByDisplayLevel(detail?.timeline ?? fallbackTimeline(activeAgent), displayLevel, {
+    infoItemLimit: visibleInfoItemLimit,
+  });
   const trimmedPrompt = prompt.trim();
   const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
   const newestTimelineItem = timeline[timeline.length - 1];
   const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
+
+  useEffect(() => {
+    setVisibleInfoItemLimit(DEFAULT_INFO_TIMELINE_ITEM_LIMIT);
+  }, [activeAgent.id, displayLevel]);
 
   useLayoutEffect(() => {
     const list = messageListRef.current;
@@ -81,12 +92,19 @@ export function AgentPage({
   async function handleLoadOlderEvents() {
     const list = messageListRef.current;
     if (list) {
-      preserveScrollRef.current = { height: list.scrollHeight, top: list.scrollTop };
+      preserveScrollRef.current =
+        list.scrollTop > TOP_SCROLL_THRESHOLD ? { height: list.scrollHeight, top: list.scrollTop } : null;
       stickToBottomRef.current = false;
+    }
+    if (displayLevel === "info") {
+      setVisibleInfoItemLimit((limit) => limit + HISTORY_PAGE_VISIBLE_INCREMENT);
     }
     try {
       await onLoadOlderEvents();
     } catch {
+      if (displayLevel === "info") {
+        setVisibleInfoItemLimit((limit) => Math.max(DEFAULT_INFO_TIMELINE_ITEM_LIMIT, limit - HISTORY_PAGE_VISIBLE_INCREMENT));
+      }
       preserveScrollRef.current = null;
     }
   }

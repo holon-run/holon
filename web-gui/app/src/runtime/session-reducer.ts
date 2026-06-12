@@ -85,10 +85,13 @@ export function mergeAgentTimelineItems(
 export function filterTimelineByDisplayLevel(
   items: AgentTimelineItem[],
   displayLevel: DisplayLevel,
+  options: { infoItemLimit?: number } = {},
 ): AgentTimelineItem[] {
   const rank = displayLevelRank[displayLevel];
   const filtered = items.filter((item) => displayLevelRank[item.minDisplayLevel] <= rank);
-  return displayLevel === "info" ? filtered.slice(-12) : filtered;
+  if (displayLevel !== "info") return filtered;
+  const limit = options.infoItemLimit ?? 12;
+  return filtered.slice(-limit);
 }
 
 function projectTranscriptEntry(entry: SessionTranscriptEntry): AgentTimelineItem | undefined {
