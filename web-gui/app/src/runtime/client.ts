@@ -6,6 +6,8 @@ import type {
   DashboardMetric,
   RuntimeBootstrap,
   RuntimeConnection,
+  RuntimeModelCatalog,
+  RuntimeModelOption,
   WorkItemSummary,
   DisplayLevel,
 } from "./types";
@@ -73,6 +75,7 @@ interface AgentListEntryDto {
   pending?: number;
   waiting_reason?: unknown;
   model?: {
+    source?: "runtime_default" | "agent_override";
     effective_model?: string;
     active_model?: string | null;
   };
@@ -178,6 +181,32 @@ export interface AgentEventPageOptions {
   displayLevel?: DisplayLevel;
 }
 
+interface RuntimeModelsDto {
+  available_models?: string[];
+  model_availability?: ModelAvailabilityDto[];
+}
+
+interface ModelAvailabilityDto {
+  model?: string;
+  provider?: string;
+  display_name?: string;
+  available?: boolean;
+  unavailable_reason?: string;
+  policy?: {
+    supported_parameters?: string[];
+  };
+}
+
+interface AgentModelStateDto {
+  source?: "runtime_default" | "agent_override";
+  effective_model?: string;
+  active_model?: string | null;
+}
+
+interface AgentModelResponseDto {
+  model?: AgentModelStateDto;
+}
+
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const defaultBaseUrl = import.meta.env.DEV ? DEFAULT_DEV_API_BASE : undefined;
   const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
@@ -217,6 +246,16 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       return fetchAgentEvents(baseUrl, fetchImpl, agentId, options);
     },
+    async getModels(): Promise<RuntimeModelCatalog> {
+      if (!baseUrl) {
+        return { source: "fixture", options: [] };
+      }
+      const response = await getJson<RuntimeModelsDto>(fetchImpl, baseUrl, "/models");
+      return {
+        source: "http",
+        options: projectModelOptions(response),
+      };
+    },
     streamAgentEvents(agentId: string, options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
       if (!baseUrl) return undefined;
       return streamAgentEvents(baseUrl, fetchImpl, agentId, options);
@@ -226,6 +265,30 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         throw new Error("Holon API base URL is not configured.");
       }
       await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, { text });
+    },
+    async setAgentModel(agentId: string, model: string, reasoningEffort?: string): Promise<AgentModelStateDto | undefined> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await postJson<AgentModelResponseDto>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/model`,
+        { model, reasoning_effort: reasoningEffort, authority_class: "operator_instruction" },
+      );
+      return response.model;
+    },
+    async clearAgentModel(agentId: string): Promise<AgentModelStateDto | undefined> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await postJson<AgentModelResponseDto>(
+        fetchImpl,
+        baseUrl,
+        `/control/agents/${encodeURIComponent(agentId)}/model/clear`,
+        { authority_class: "operator_instruction" },
+      );
+      return response.model;
     },
   };
 }
@@ -431,6 +494,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const posture = state?.agent?.scheduling_posture?.posture ?? entry.scheduling_posture?.posture ?? "unknown";
   const postureReason = state?.agent?.scheduling_posture?.reason ?? entry.scheduling_posture?.reason ?? "posture unavailable";
   const model = state?.agent?.model?.active_model ?? state?.agent?.model?.effective_model ?? entry.model?.active_model ?? entry.model?.effective_model ?? "runtime default";
+  const modelSource = state?.agent?.model?.source ?? entry.model?.source;
   const lifecycle = stringifyLifecycle(state?.agent?.lifecycle ?? entry.lifecycle ?? status);
 
   return {
@@ -442,6 +506,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     workspace,
     attention: attentionLabel(pending, waitingCount),
     model,
+    modelSource,
     footer: `${lifecycle} · ${posture}`,
     subtitle: `${status} · ${workspace}`,
     lastBrief: brief?.text ?? "No recent brief returned by /agents/:id/briefs.",
@@ -453,6 +518,39 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     postureReason,
     currentWork,
   };
+}
+
+function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOption[] {
+  if (response.model_availability?.length) {
+    return response.model_availability
+      .filter((entry): entry is ModelAvailabilityDto & { model: string } => Boolean(entry.model))
+      .map((entry) => ({
+        model: entry.model,
+        provider: entry.provider ?? entry.model.split("/")[0] ?? "unknown",
+        displayName: entry.display_name ?? entry.model,
+        available: entry.available ?? false,
+        unavailableReason: entry.unavailable_reason,
+        supportsReasoningEffort: entry.policy?.supported_parameters?.includes("reasoning_effort") ?? false,
+      }))
+      .sort(compareModelOptions);
+  }
+
+  return (response.available_models ?? [])
+    .map((model) => ({
+      model,
+      provider: model.split("/")[0] ?? "unknown",
+      displayName: model,
+      available: true,
+      supportsReasoningEffort: false,
+    }))
+    .sort(compareModelOptions);
+}
+
+function compareModelOptions(left: RuntimeModelOption, right: RuntimeModelOption): number {
+  if (left.available !== right.available) return left.available ? -1 : 1;
+  const provider = left.provider.localeCompare(right.provider);
+  if (provider !== 0) return provider;
+  return left.displayName.localeCompare(right.displayName);
 }
 
 function selectCurrentWork(

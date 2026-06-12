@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 import { createRuntimeClient, type AgentEventStreamSubscription, type StreamEventEnvelopeDto } from "./client";
 import { compactAgentTimelineItems, mergeAgentTimelineItems, reduceAgentSessionTimeline } from "./session-reducer";
-import type { AgentDetail, AgentTimelineItem, DisplayLevel, RouteKey, RuntimeBootstrap } from "./types";
+import type { AgentDetail, AgentSummary, AgentTimelineItem, DisplayLevel, RouteKey, RuntimeBootstrap, RuntimeModelCatalog } from "./types";
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "error";
 
@@ -20,6 +20,7 @@ export interface AgentSessionState {
   error?: string;
   historyError?: string;
   promptError?: string;
+  modelError?: string;
 }
 
 function appendOptimisticOperatorPrompt(detail: AgentDetail | null, prompt: string): AgentDetail | null {
@@ -53,6 +54,9 @@ export interface RuntimeStoreState {
   bootstrap: RuntimeBootstrap;
   bootstrapLoading: boolean;
   bootstrapError?: string;
+  modelCatalog: RuntimeModelCatalog;
+  modelCatalogLoading: boolean;
+  modelCatalogError?: string;
   sessionsByAgentId: Record<string, AgentSessionState>;
 
   setRoute: (route: RouteKey) => void;
@@ -62,9 +66,12 @@ export interface RuntimeStoreState {
   toggleInspector: () => void;
   toggleNavCollapsed: () => void;
   refreshBootstrap: () => Promise<void>;
+  refreshModelCatalog: () => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
+  setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
+  clearAgentModel: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   startAgentEventStream: (agentId: string | undefined, displayLevel: DisplayLevel) => void;
   stopAgentEventStream: (agentId: string | undefined) => void;
 }
@@ -84,6 +91,11 @@ const emptyBootstrap: RuntimeBootstrap = {
   agents: [],
 };
 
+const emptyModelCatalog: RuntimeModelCatalog = {
+  source: "fixture",
+  options: [],
+};
+
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   route: "dashboard",
   selectedAgentId: "",
@@ -93,6 +105,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
   bootstrap: emptyBootstrap,
   bootstrapLoading: true,
+  modelCatalog: emptyModelCatalog,
+  modelCatalogLoading: false,
   sessionsByAgentId: {},
 
   setRoute: (route) => set({ route }),
@@ -125,6 +139,21 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         bootstrapLoading: false,
         bootstrapError: error instanceof Error ? error.message : String(error),
       });
+    }
+  },
+
+  refreshModelCatalog: async () => {
+    set({ modelCatalogLoading: true, modelCatalogError: undefined });
+    try {
+      const modelCatalog = await runtimeClient.getModels();
+      set({ modelCatalog, modelCatalogLoading: false, modelCatalogError: modelCatalog.error });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        modelCatalog: { ...state.modelCatalog, error: message },
+        modelCatalogLoading: false,
+        modelCatalogError: message,
+      }));
     }
   },
 
@@ -274,6 +303,52 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
+  setAgentModel: async (agentId, model, displayLevel, reasoningEffort) => {
+    if (!agentId || !model) return;
+    const previousAgent = get().sessionsByAgentId[agentId]?.detail?.agent;
+    setSessionModelError(set, agentId, undefined);
+    try {
+      const modelState = await runtimeClient.setAgentModel(agentId, model, reasoningEffort);
+      set((state) =>
+        updateAgentModelInState(state, agentId, {
+          model: modelState?.active_model ?? modelState?.effective_model ?? model,
+          modelSource: modelState?.source ?? "agent_override",
+        }),
+      );
+      await get().refreshAgentDetail(agentId, displayLevel);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSessionModelError(set, agentId, message);
+      if (previousAgent) {
+        set((state) => updateAgentModelInState(state, agentId, previousAgent));
+      }
+      throw error;
+    }
+  },
+
+  clearAgentModel: async (agentId, displayLevel) => {
+    if (!agentId) return;
+    const previousAgent = get().sessionsByAgentId[agentId]?.detail?.agent;
+    setSessionModelError(set, agentId, undefined);
+    try {
+      const modelState = await runtimeClient.clearAgentModel(agentId);
+      set((state) =>
+        updateAgentModelInState(state, agentId, {
+          model: modelState?.active_model ?? modelState?.effective_model ?? "runtime default",
+          modelSource: modelState?.source ?? "runtime_default",
+        }),
+      );
+      await get().refreshAgentDetail(agentId, displayLevel);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSessionModelError(set, agentId, message);
+      if (previousAgent) {
+        set((state) => updateAgentModelInState(state, agentId, previousAgent));
+      }
+      throw error;
+    }
+  },
+
   startAgentEventStream: (agentId, displayLevel) => {
     if (!agentId) return;
     stopAgentEventStream(agentId);
@@ -360,6 +435,51 @@ function setAgentLiveStatus(set: StoreSet, agentId: string, liveStatus: AgentLiv
       },
     },
   }));
+}
+
+function setSessionModelError(set: StoreSet, agentId: string, error: string | undefined): void {
+  set((state) => ({
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...emptyAgentSession(),
+        ...state.sessionsByAgentId[agentId],
+        modelError: error,
+      },
+    },
+  }));
+}
+
+function updateAgentModelInState(
+  state: RuntimeStoreState,
+  agentId: string,
+  modelPatch: Pick<AgentSummary, "model"> & Partial<Pick<AgentSummary, "modelSource">>,
+): Partial<RuntimeStoreState> {
+  const session = state.sessionsByAgentId[agentId];
+  const detail = session?.detail
+    ? {
+        ...session.detail,
+        agent: {
+          ...session.detail.agent,
+          ...modelPatch,
+        },
+      }
+    : session?.detail;
+
+  return {
+    bootstrap: {
+      ...state.bootstrap,
+      agents: state.bootstrap.agents.map((agent) => (agent.id === agentId ? { ...agent, ...modelPatch } : agent)),
+    },
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...emptyAgentSession(),
+        ...session,
+        detail,
+      },
+    },
+  };
 }
 
 function applyStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnvelopeDto): void {

@@ -1,4 +1,4 @@
-import { useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 
 import { AgentPage } from "../features/agent/AgentPage";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
@@ -35,7 +35,13 @@ export function App() {
   const selectedAgentSession = useRuntimeStore((state) =>
     selectedAgent?.id ? state.sessionsByAgentId[selectedAgent.id] : undefined,
   );
+  const modelCatalog = useRuntimeStore((state) => state.modelCatalog);
+  const modelCatalogLoading = useRuntimeStore((state) => state.modelCatalogLoading);
+  const modelCatalogError = useRuntimeStore((state) => state.modelCatalogError);
+  const refreshModelCatalog = useRuntimeStore((state) => state.refreshModelCatalog);
   const sendOperatorPrompt = useRuntimeStore((state) => state.sendOperatorPrompt);
+  const setAgentModel = useRuntimeStore((state) => state.setAgentModel);
+  const clearAgentModel = useRuntimeStore((state) => state.clearAgentModel);
   const loadOlderAgentEvents = useRuntimeStore((state) => state.loadOlderAgentEvents);
   const {
     detail: selectedAgentDetail,
@@ -69,6 +75,11 @@ export function App() {
     window.addEventListener("popstate", applyBrowserRoute);
     return () => window.removeEventListener("popstate", applyBrowserRoute);
   }, [openAgent, setRoute]);
+
+  useEffect(() => {
+    if (route !== "agent" || modelCatalogLoading || modelCatalog.options.length > 0) return;
+    void refreshModelCatalog();
+  }, [modelCatalog.options.length, modelCatalogLoading, refreshModelCatalog, route]);
 
   function navigateRoute(nextRoute: RouteKey) {
     setRoute(nextRoute);
@@ -271,9 +282,15 @@ export function App() {
             displayLevel={displayLevel}
             sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
             promptError={selectedAgentSession?.promptError}
+            modelCatalog={modelCatalog}
+            modelCatalogLoading={modelCatalogLoading}
+            modelCatalogError={selectedAgentSession?.modelError ?? modelCatalogError}
             hasOlderEvents={selectedAgentSession?.hasOlder ?? selectedAgentDetail?.hasOlderEvents ?? false}
             loadingOlderEvents={selectedAgentSession?.loadingOlder ?? false}
             historyError={selectedAgentSession?.historyError}
+            onRefreshModels={refreshModelCatalog}
+            onSetModel={(model, reasoningEffort) => setAgentModel(selectedAgent.id, model, displayLevel, reasoningEffort)}
+            onClearModel={() => clearAgentModel(selectedAgent.id, displayLevel)}
             onLoadOlderEvents={() => loadOlderAgentEvents(selectedAgent.id, displayLevel)}
             onSendPrompt={(text) => sendOperatorPrompt(selectedAgent.id, text, displayLevel)}
             onOpenInspector={() => setInspectorOpen(true)}

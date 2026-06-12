@@ -1449,7 +1449,117 @@ code {
 .composer-left,
 .composer-right {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.model-picker {
+  position: relative;
+}
+
+.model-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+}
+
+.model-button span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-button small {
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.model-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  width: min(440px, calc(100vw - 56px));
+  max-height: 480px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.model-menu-header,
+.model-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-menu-header {
+  padding: 4px 4px 10px;
+}
+
+.model-menu-header span,
+.model-option small,
+.model-picker-empty,
+.model-picker-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.model-menu-header strong,
+.model-option strong {
+  display: block;
+  color: var(--text);
+}
+
+.model-options {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.model-option {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent));
+  text-align: left;
+}
+
+.model-option.is-active {
+  border-color: var(--accent);
+}
+
+.model-option:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.model-option-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.model-option em {
+  color: var(--accent);
+  font-style: normal;
+  font-size: 12px;
+}
+
+.model-picker-status {
+  padding: 0 4px 8px;
+  color: var(--danger);
+}
+
+.model-picker-empty {
+  padding: 12px 4px 4px;
 }
 
 .send-button {

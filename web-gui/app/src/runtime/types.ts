@@ -32,6 +32,7 @@ export interface AgentSummary {
   workspace: string;
   attention: string;
   model: string;
+  modelSource?: "runtime_default" | "agent_override";
   footer: string;
   subtitle: string;
   lastBrief: string;
@@ -42,6 +43,21 @@ export interface AgentSummary {
   posture: string;
   postureReason: string;
   currentWork?: WorkItemSummary;
+}
+
+export interface RuntimeModelOption {
+  model: string;
+  provider: string;
+  displayName: string;
+  available: boolean;
+  unavailableReason?: string;
+  supportsReasoningEffort: boolean;
+}
+
+export interface RuntimeModelCatalog {
+  source: "http" | "fixture";
+  options: RuntimeModelOption[];
+  error?: string;
 }
 
 export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event" | "system";

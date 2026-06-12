@@ -1,7 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
-import type { AgentDetail, AgentSummary, AgentTimelineActivity, AgentTimelineItem, DisplayLevel } from "../../runtime/types";
+import type {
+  AgentDetail,
+  AgentSummary,
+  AgentTimelineActivity,
+  AgentTimelineItem,
+  DisplayLevel,
+  RuntimeModelCatalog,
+  RuntimeModelOption,
+} from "../../runtime/types";
 
 interface AgentPageProps {
   agent: AgentSummary;
@@ -11,7 +19,13 @@ interface AgentPageProps {
   hasOlderEvents: boolean;
   loadingOlderEvents: boolean;
   promptError?: string;
+  modelCatalog: RuntimeModelCatalog;
+  modelCatalogLoading: boolean;
+  modelCatalogError?: string;
   historyError?: string;
+  onRefreshModels: () => Promise<void>;
+  onSetModel: (model: string, reasoningEffort?: string) => Promise<void>;
+  onClearModel: () => Promise<void>;
   onLoadOlderEvents: () => Promise<void>;
   onSendPrompt: (text: string) => Promise<void>;
   onOpenInspector: () => void;
@@ -29,12 +43,20 @@ export function AgentPage({
   hasOlderEvents,
   loadingOlderEvents,
   promptError,
+  modelCatalog,
+  modelCatalogLoading,
+  modelCatalogError,
   historyError,
+  onRefreshModels,
+  onSetModel,
+  onClearModel,
   onLoadOlderEvents,
   onSendPrompt,
   onOpenInspector,
 }: AgentPageProps) {
   const [prompt, setPrompt] = useState("");
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [changingModel, setChangingModel] = useState<string | null>(null);
   const [visibleInfoItemLimit, setVisibleInfoItemLimit] = useState(DEFAULT_INFO_TIMELINE_ITEM_LIMIT);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
@@ -50,6 +72,7 @@ export function AgentPage({
 
   useEffect(() => {
     setVisibleInfoItemLimit(DEFAULT_INFO_TIMELINE_ITEM_LIMIT);
+    setModelPickerOpen(false);
   }, [activeAgent.id, displayLevel]);
 
   useLayoutEffect(() => {
@@ -112,6 +135,40 @@ export function AgentPage({
         setVisibleInfoItemLimit((limit) => Math.max(DEFAULT_INFO_TIMELINE_ITEM_LIMIT, limit - HISTORY_PAGE_VISIBLE_INCREMENT));
       }
       preserveScrollRef.current = null;
+    }
+  }
+
+  function toggleModelPicker() {
+    const opening = !modelPickerOpen;
+    setModelPickerOpen(opening);
+    if (opening && !modelCatalogLoading && modelCatalog.options.length === 0) {
+      void onRefreshModels();
+    }
+  }
+
+  async function handleSelectModel(option: RuntimeModelOption) {
+    if (!option.available || changingModel) return;
+    setChangingModel(option.model);
+    try {
+      await onSetModel(option.model);
+      setModelPickerOpen(false);
+    } catch {
+      // Store exposes the user-facing error.
+    } finally {
+      setChangingModel(null);
+    }
+  }
+
+  async function handleClearModel() {
+    if (changingModel) return;
+    setChangingModel("runtime-default");
+    try {
+      await onClearModel();
+      setModelPickerOpen(false);
+    } catch {
+      // Store exposes the user-facing error.
+    } finally {
+      setChangingModel(null);
     }
   }
 
@@ -203,9 +260,68 @@ export function AgentPage({
                 </button>
               </div>
               <div className="composer-right">
-                <button className="model-button" type="button" onClick={onOpenInspector}>
-                  {activeAgent.model}⌄
-                </button>
+                <div className="model-picker">
+                  <button className="model-button" type="button" aria-expanded={modelPickerOpen} onClick={toggleModelPicker}>
+                    <span>{shortModelLabel(activeAgent.model)}</span>
+                    {activeAgent.modelSource === "agent_override" ? <small>override</small> : null}
+                    <span aria-hidden="true">⌄</span>
+                  </button>
+                  {modelPickerOpen ? (
+                    <div className="model-menu" role="dialog" aria-label="Switch agent model">
+                      <div className="model-menu-header">
+                        <div>
+                          <strong>Switch model</strong>
+                          <span>Applies immediately when idle; otherwise on the next run.</span>
+                        </div>
+                        <button type="button" disabled={modelCatalogLoading} onClick={() => void onRefreshModels()}>
+                          {modelCatalogLoading ? "Loading…" : "Refresh"}
+                        </button>
+                      </div>
+                      {modelCatalogError ? (
+                        <div className="model-picker-status" role="alert">
+                          {modelCatalogError}
+                        </div>
+                      ) : null}
+                      <button
+                        className={`model-option ${activeAgent.modelSource !== "agent_override" ? "is-active" : ""}`}
+                        type="button"
+                        disabled={changingModel !== null || activeAgent.modelSource !== "agent_override"}
+                        onClick={handleClearModel}
+                      >
+                        <span>
+                          <strong>Runtime default</strong>
+                          <small>Clear agent override</small>
+                        </span>
+                        {changingModel === "runtime-default" ? <em>Saving…</em> : null}
+                      </button>
+                      <div className="model-options" role="listbox" aria-label="Available models">
+                        {modelCatalog.options.map((option) => (
+                          <button
+                            className={`model-option ${option.model === activeAgent.model ? "is-active" : ""}`}
+                            key={option.model}
+                            type="button"
+                            disabled={!option.available || changingModel !== null}
+                            title={option.unavailableReason ?? option.model}
+                            onClick={() => void handleSelectModel(option)}
+                          >
+                            <span>
+                              <strong>{option.displayName}</strong>
+                              <small>{option.model}</small>
+                            </span>
+                            <span className="model-option-meta">
+                              {option.supportsReasoningEffort ? <small>reasoning</small> : null}
+                              {!option.available ? <small>unavailable</small> : null}
+                              {changingModel === option.model ? <em>Saving…</em> : null}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                      {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
+                        <div className="model-picker-empty">No models returned by the runtime.</div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
                 <button className="send-button" type="submit" aria-label="Send" disabled={!canSendPrompt}>
                   {sendingPrompt ? "…" : "↑"}
                 </button>
@@ -216,6 +332,11 @@ export function AgentPage({
       </div>
     </section>
   );
+}
+
+function shortModelLabel(model: string): string {
+  const parts = model.split("/");
+  return parts[parts.length - 1] || model;
 }
 
 function ActivityTrail({
