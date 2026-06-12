@@ -3020,10 +3020,10 @@ fn built_in_provider_registry_with_settings(
         ],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_openai_compatible_provider(
         &mut registry,
         "xiaomi",
-        "https://api.xiaomimimo.com/anthropic",
+        "https://api.xiaomimimo.com/v1",
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
@@ -3041,10 +3041,10 @@ fn built_in_provider_registry_with_settings(
         &["XIAOMI_API_KEY"],
         settings_env,
     )?;
-    insert_anthropic_compatible_provider(
+    insert_openai_compatible_provider(
         &mut registry,
         "xiaomi-token-plan",
-        "https://token-plan-cn.xiaomimimo.com/anthropic",
+        "https://token-plan-cn.xiaomimimo.com/v1",
         &["XIAOMI_TOKEN_PLAN_API_KEY"],
         settings_env,
     )?;
@@ -5702,13 +5702,12 @@ mod tests {
         let xiaomi = providers
             .get(&ProviderId::parse("xiaomi").unwrap())
             .unwrap();
-        assert_eq!(xiaomi.transport, ProviderTransportKind::AnthropicMessages);
-        assert_eq!(xiaomi.base_url, "https://api.xiaomimimo.com/anthropic");
-        assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
         assert_eq!(
-            xiaomi.context_management.cache_strategy,
-            AnthropicCacheStrategy::ClaudeCodePromptCache
+            xiaomi.transport,
+            ProviderTransportKind::OpenAiChatCompletions
         );
+        assert_eq!(xiaomi.base_url, "https://api.xiaomimimo.com/v1");
+        assert_eq!(xiaomi.credential.as_deref(), Some("xiaomi-key"));
 
         let xiaomi_anthropic = providers
             .get(&ProviderId::parse("xiaomi-anthropic").unwrap())
@@ -5738,19 +5737,15 @@ mod tests {
             .unwrap();
         assert_eq!(
             xiaomi_token_plan.transport,
-            ProviderTransportKind::AnthropicMessages
+            ProviderTransportKind::OpenAiChatCompletions
         );
         assert_eq!(
             xiaomi_token_plan.base_url,
-            "https://token-plan-cn.xiaomimimo.com/anthropic"
+            "https://token-plan-cn.xiaomimimo.com/v1"
         );
         assert_eq!(
             xiaomi_token_plan.credential.as_deref(),
             Some("xiaomi-token-plan-key")
-        );
-        assert_eq!(
-            xiaomi_token_plan.context_management.cache_strategy,
-            AnthropicCacheStrategy::ClaudeCodePromptCache
         );
 
         let xiaomi_token_plan_anthropic = providers
@@ -5879,9 +5874,7 @@ mod tests {
         for provider in [
             "deepseek",
             "deepseek-anthropic",
-            "xiaomi",
             "xiaomi-anthropic",
-            "xiaomi-token-plan",
             "xiaomi-token-plan-anthropic",
             "zai",
             "zai-anthropic",

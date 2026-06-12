@@ -6,7 +6,7 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **49 providers** and **293 models**.
+Holon includes built-in configuration for **49 providers** and **302 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -58,10 +58,10 @@ running Holon.
 | `volcengine` | OpenAI Chat Completions | `https://ark.cn-beijing.volces.com/api/v3` | `VOLCENGINE_API_KEY or ARK_API_KEY` |
 | `volcengine-coding` | OpenAI Chat Completions | `https://ark.cn-beijing.volces.com/api/coding/v3` | `VOLCENGINE_CODING_API_KEY or VOLCENGINE_API_KEY or ARK_API_KEY` |
 | `xai` | OpenAI Chat Completions | `https://api.x.ai/v1` | `XAI_API_KEY` |
-| `xiaomi` | Anthropic Messages | `https://api.xiaomimimo.com/anthropic` | `XIAOMI_API_KEY` |
+| `xiaomi` | OpenAI Chat Completions | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
 | `xiaomi-anthropic` | Anthropic Messages | `https://api.xiaomimimo.com/anthropic` | `XIAOMI_API_KEY` |
 | `xiaomi-openai` | OpenAI Chat Completions | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
-| `xiaomi-token-plan` | Anthropic Messages | `https://token-plan-cn.xiaomimimo.com/anthropic` | `XIAOMI_TOKEN_PLAN_API_KEY` |
+| `xiaomi-token-plan` | OpenAI Chat Completions | `https://token-plan-cn.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_API_KEY` |
 | `xiaomi-token-plan-anthropic` | Anthropic Messages | `https://token-plan-cn.xiaomimimo.com/anthropic` | `XIAOMI_TOKEN_PLAN_API_KEY` |
 | `xiaomi-token-plan-openai` | OpenAI Chat Completions | `https://token-plan-cn.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_API_KEY` |
 | `zai` | Anthropic Messages | `https://api.z.ai/api/anthropic` | `ZAI_API_KEY` |
@@ -314,21 +314,30 @@ and capabilities.
 | `xiaomi` | `mimo-v2-flash` | `xiaomi/mimo-v2-flash` | 262144 | 8192 | — | — |
 | `xiaomi` | `mimo-v2-omni` | `xiaomi/mimo-v2-omni` | 262144 | 32000 | ✅ | ✅ |
 | `xiaomi` | `mimo-v2-pro` | `xiaomi/mimo-v2-pro` | 1048576 | 32000 | ✅ | — |
+| `xiaomi` | `mimo-v2.5-pro` | `xiaomi/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
+| `xiaomi` | `mimo-v2.5-pro-ultraspeed` | `xiaomi/mimo-v2.5-pro-ultraspeed` | 1000000 | 131072 | ✅ | — |
 | `xiaomi-anthropic` | `mimo-v2-flash` | `xiaomi-anthropic/mimo-v2-flash` | 262144 | 8192 | — | — |
 | `xiaomi-anthropic` | `mimo-v2-omni` | `xiaomi-anthropic/mimo-v2-omni` | 262144 | 32000 | ✅ | ✅ |
 | `xiaomi-anthropic` | `mimo-v2-pro` | `xiaomi-anthropic/mimo-v2-pro` | 1048576 | 32000 | ✅ | — |
+| `xiaomi-anthropic` | `mimo-v2.5-pro` | `xiaomi-anthropic/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
+| `xiaomi-anthropic` | `mimo-v2.5-pro-ultraspeed` | `xiaomi-anthropic/mimo-v2.5-pro-ultraspeed` | 1000000 | 131072 | ✅ | — |
 | `xiaomi-openai` | `mimo-v2-flash` | `xiaomi-openai/mimo-v2-flash` | 262144 | 8192 | — | — |
 | `xiaomi-openai` | `mimo-v2-omni` | `xiaomi-openai/mimo-v2-omni` | 262144 | 32000 | ✅ | ✅ |
 | `xiaomi-openai` | `mimo-v2-pro` | `xiaomi-openai/mimo-v2-pro` | 1048576 | 32000 | ✅ | — |
-| `xiaomi-token-plan` | `mimo-v2-flash` | `xiaomi-token-plan/mimo-v2-flash` | 262144 | 8192 | — | — |
+| `xiaomi-openai` | `mimo-v2.5-pro` | `xiaomi-openai/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
+| `xiaomi-openai` | `mimo-v2.5-pro-ultraspeed` | `xiaomi-openai/mimo-v2.5-pro-ultraspeed` | 1000000 | 131072 | ✅ | — |
 | `xiaomi-token-plan` | `mimo-v2-omni` | `xiaomi-token-plan/mimo-v2-omni` | 262144 | 32000 | ✅ | ✅ |
 | `xiaomi-token-plan` | `mimo-v2-pro` | `xiaomi-token-plan/mimo-v2-pro` | 1048576 | 32000 | ✅ | — |
-| `xiaomi-token-plan-anthropic` | `mimo-v2-flash` | `xiaomi-token-plan-anthropic/mimo-v2-flash` | 262144 | 8192 | — | — |
+| `xiaomi-token-plan` | `mimo-v2.5-pro` | `xiaomi-token-plan/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
+| `xiaomi-token-plan` | `mimo-v2.5-pro-ultraspeed` | `xiaomi-token-plan/mimo-v2.5-pro-ultraspeed` | 1000000 | 131072 | ✅ | — |
 | `xiaomi-token-plan-anthropic` | `mimo-v2-omni` | `xiaomi-token-plan-anthropic/mimo-v2-omni` | 262144 | 32000 | ✅ | ✅ |
 | `xiaomi-token-plan-anthropic` | `mimo-v2-pro` | `xiaomi-token-plan-anthropic/mimo-v2-pro` | 1048576 | 32000 | ✅ | — |
-| `xiaomi-token-plan-openai` | `mimo-v2-flash` | `xiaomi-token-plan-openai/mimo-v2-flash` | 262144 | 8192 | — | — |
+| `xiaomi-token-plan-anthropic` | `mimo-v2.5-pro` | `xiaomi-token-plan-anthropic/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
+| `xiaomi-token-plan-anthropic` | `mimo-v2.5-pro-ultraspeed` | `xiaomi-token-plan-anthropic/mimo-v2.5-pro-ultraspeed` | 1000000 | 131072 | ✅ | — |
 | `xiaomi-token-plan-openai` | `mimo-v2-omni` | `xiaomi-token-plan-openai/mimo-v2-omni` | 262144 | 32000 | ✅ | ✅ |
 | `xiaomi-token-plan-openai` | `mimo-v2-pro` | `xiaomi-token-plan-openai/mimo-v2-pro` | 1048576 | 32000 | ✅ | — |
+| `xiaomi-token-plan-openai` | `mimo-v2.5-pro` | `xiaomi-token-plan-openai/mimo-v2.5-pro` | 1000000 | 131072 | ✅ | — |
+| `xiaomi-token-plan-openai` | `mimo-v2.5-pro-ultraspeed` | `xiaomi-token-plan-openai/mimo-v2.5-pro-ultraspeed` | 1000000 | 131072 | ✅ | — |
 | `zai` | `glm-4.5` | `zai/glm-4.5` | 131072 | 98304 | ✅ | — |
 | `zai` | `glm-4.5-air` | `zai/glm-4.5-air` | 131072 | 98304 | ✅ | — |
 | `zai` | `glm-4.5-flash` | `zai/glm-4.5-flash` | 131072 | 98304 | ✅ | — |
