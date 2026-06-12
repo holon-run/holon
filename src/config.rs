@@ -995,7 +995,13 @@ impl RuntimeModelCatalog {
             );
         }
 
-        let mut candidates = self.vision_candidate_models.clone();
+        let mut candidates = Vec::new();
+        candidates.push(primary.clone());
+        for model_ref in &self.vision_candidate_models {
+            if !candidates.iter().any(|existing| existing == model_ref) {
+                candidates.push(model_ref.clone());
+            }
+        }
         for model_ref in chain {
             if !candidates.iter().any(|existing| existing == &model_ref) {
                 candidates.push(model_ref);
@@ -6614,8 +6620,8 @@ mod tests {
             "auto_discovered_vision_model_supports_image_input"
         );
         assert_eq!(selection.candidates.len(), 2);
-        assert!(selection.candidates[0].image_input);
-        assert!(!selection.candidates[1].image_input);
+        assert!(!selection.candidates[0].image_input);
+        assert!(selection.candidates[1].image_input);
     }
 
     #[test]
@@ -6687,8 +6693,8 @@ mod tests {
             "auto_discovered_vision_model_supports_image_input"
         );
         assert_eq!(selection.candidates.len(), 2);
-        assert!(selection.candidates[0].image_input);
-        assert!(!selection.candidates[1].image_input);
+        assert!(!selection.candidates[0].image_input);
+        assert!(selection.candidates[1].image_input);
     }
 
     #[test]
@@ -6747,11 +6753,11 @@ mod tests {
         assert_eq!(selection.candidates.len(), 2);
         assert_eq!(
             selection.candidates[0].reason,
-            "model_advertises_image_input"
+            "provider_transport_unsupported_for_view_image_observation"
         );
         assert_eq!(
             selection.candidates[1].reason,
-            "provider_transport_unsupported_for_view_image_observation"
+            "model_advertises_image_input"
         );
     }
 
@@ -6797,6 +6803,36 @@ mod tests {
             .candidates
             .iter()
             .all(|candidate| !candidate.image_input));
+    }
+
+    #[test]
+    fn view_image_vision_selection_prefers_primary_over_other_candidates() {
+        // Primary (openai/gpt-5.4) supports image_input. vision_candidate_models contains
+        // a different image-capable model (anthropic/claude-sonnet-4-6). The primary should
+        // be selected first because it is tried before other candidates.
+        let mut fixture = test_app_config("openai/gpt-5.4", &["anthropic/claude-sonnet-4-6"]);
+        fixture.config.vision_candidate_models = vec![
+            ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
+            ModelRef::parse("openai/gpt-5.4").unwrap(),
+        ];
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+        let selection =
+            catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
+
+        assert_eq!(
+            selection.selected_mode,
+            crate::types::ViewImageSelectedMode::NativeImageWithObservation
+        );
+        assert_eq!(selection.vision_provider.as_deref(), Some("openai"));
+        assert_eq!(selection.vision_model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(
+            selection.selection_reason,
+            "current_primary_model_supports_image_input"
+        );
+        // Primary appears first in candidates
+        assert_eq!(selection.candidates[0].provider, "openai");
+        assert_eq!(selection.candidates[0].model, "gpt-5.4");
     }
 
     #[test]
