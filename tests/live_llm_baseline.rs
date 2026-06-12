@@ -223,6 +223,7 @@ async fn live_llm_baseline_anthropic_prompt_cache_hit() -> Result<()> {
             )],
             tools: vec![],
             native_web_search: None,
+            response_format: None,
         })
         .await
         .context("first Anthropic live cache baseline request failed")?;
@@ -234,6 +235,7 @@ async fn live_llm_baseline_anthropic_prompt_cache_hit() -> Result<()> {
             )],
             tools: vec![],
             native_web_search: None,
+            response_format: None,
         })
         .await
         .context("second Anthropic live cache baseline request failed")?;

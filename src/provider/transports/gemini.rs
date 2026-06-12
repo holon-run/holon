@@ -405,6 +405,7 @@ fn gemini_response_to_provider_turn_response(
             incremental_continuation: None,
             openai_remote_compaction: None,
             native_web_search: None,
+            response_format: None,
         }),
     })
 }

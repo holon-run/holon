@@ -22,7 +22,8 @@ use crate::{
         PromptContentBlock, ProviderBuiltinWebSearchCapability, ProviderCacheUsage,
         ProviderContextManagementPolicy, ProviderNativeWebSearchDiagnostics,
         ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderPromptCapability,
-        ProviderTurnRequest, ProviderTurnResponse,
+        ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest, ProviderTurnRequest,
+        ProviderTurnResponse,
     },
 };
 
@@ -383,6 +384,7 @@ impl AgentProvider for AnthropicProvider {
                 incremental_continuation: None,
                 openai_remote_compaction: None,
                 native_web_search: native_web_search_diagnostics(&request),
+                response_format: response_format_diagnostics(&request),
             }),
         })
     }
@@ -677,6 +679,24 @@ fn native_web_search_diagnostics(
         fallback_reason: (!lowered)
             .then(|| "anthropic transport only supports Anthropic-native web search".into()),
     })
+}
+
+fn response_format_diagnostics(
+    request: &ProviderTurnRequest,
+) -> Option<ProviderResponseFormatDiagnostics> {
+    match request.response_format.as_ref()? {
+        ProviderResponseFormatRequest::JsonSchema(format) => {
+            Some(ProviderResponseFormatDiagnostics {
+                requested: true,
+                lowered: false,
+                format_type: "json_schema".into(),
+                schema_name: Some(format.name.clone()),
+                fallback_reason: Some(
+                    "anthropic transport does not support JSON Schema response format".into(),
+                ),
+            })
+        }
+    }
 }
 
 fn build_context_management_request(
@@ -1853,6 +1873,7 @@ mod tests {
             conversation: vec![ConversationMessage::UserText("Hello".to_string())],
             tools: vec![],
             native_web_search: None,
+            response_format: None,
         };
 
         let request_payload = anthropic_request_payload_for_test(&request);
@@ -1901,6 +1922,7 @@ mod tests {
             )],
             tools: vec![],
             native_web_search: None,
+            response_format: None,
         };
 
         let request_payload = anthropic_request_payload_for_test(&request);
@@ -1984,6 +2006,7 @@ mod tests {
             ],
             tools: vec![],
             native_web_search: None,
+            response_format: None,
         };
 
         let request_payload = anthropic_request_payload_for_test(&request);
@@ -2255,6 +2278,7 @@ mod tests {
             conversation: vec![ConversationMessage::UserText("User message".to_string())],
             tools: vec![],
             native_web_search: None,
+            response_format: None,
         };
 
         let request_payload = anthropic_request_payload_for_test(&request);
@@ -2300,6 +2324,7 @@ mod tests {
             conversation: vec![],
             tools: vec![],
             native_web_search: None,
+            response_format: None,
         };
 
         let request_payload = anthropic_request_payload_for_test(&request);
@@ -2316,5 +2341,40 @@ mod tests {
             breakpoints.len() <= 10,
             "cache_breakpoints should be bounded to 10 items"
         );
+    }
+
+    #[test]
+    fn response_format_diagnostics_reports_unsupported_json_schema() {
+        let mut request = ProviderTurnRequest::plain(
+            "system",
+            vec![ConversationMessage::UserText("return json".into())],
+            vec![],
+        );
+        request.response_format = Some(ProviderResponseFormatRequest::JsonSchema(
+            crate::provider::ProviderJsonSchemaResponseFormat {
+                name: "answer_v1".into(),
+                strict: true,
+                schema: json!({
+                    "type": "object",
+                    "required": ["answer"],
+                    "properties": {
+                        "answer": { "type": "string" }
+                    }
+                }),
+            },
+        ));
+
+        let diagnostics = response_format_diagnostics(&request)
+            .expect("response format diagnostics should be recorded");
+
+        assert!(diagnostics.requested);
+        assert!(!diagnostics.lowered);
+        assert_eq!(diagnostics.format_type, "json_schema");
+        assert_eq!(diagnostics.schema_name.as_deref(), Some("answer_v1"));
+        assert!(diagnostics
+            .fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("does not support JSON Schema response format"));
     }
 }

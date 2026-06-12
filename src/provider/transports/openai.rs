@@ -31,6 +31,7 @@ use crate::{
         ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
         ProviderNativeWebSearchRequest, ProviderOpenAiRemoteCompactionDiagnostics,
         ProviderOpenAiRequestControlsDiagnostics, ProviderPromptFrame, ProviderRequestDiagnostics,
+        ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest,
         ProviderTransportDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
         ToolSchemaContract,
     },
@@ -1290,6 +1291,7 @@ fn plan_chat_completion_request(
                     None,
                     None,
                     None,
+                    response_format_diagnostics(false, request),
                 ),
             },
         ));
@@ -1318,6 +1320,7 @@ fn plan_chat_completion_request(
                     None,
                     None,
                     None,
+                    response_format_diagnostics(false, request),
                 ),
             },
         ));
@@ -1346,6 +1349,7 @@ fn plan_chat_completion_request(
                     }),
                     None,
                     None,
+                    response_format_diagnostics(false, request),
                 ),
             },
         ));
@@ -1376,6 +1380,7 @@ fn plan_chat_completion_request(
                 }),
                 None,
                 None,
+                response_format_diagnostics(false, request),
             ),
         },
     ));
@@ -1560,6 +1565,9 @@ pub(crate) fn build_openai_responses_request(
     if let Some(cache) = request.prompt_frame.cache.as_ref() {
         body["prompt_cache_key"] = Value::String(cache.prompt_cache_key.clone());
     }
+    if let Some(response_format) = openai_response_format(request) {
+        body["response_format"] = response_format;
+    }
     match contract {
         OpenAiResponsesTransportContract::StandardJson => {
             body["max_output_tokens"] = Value::from(max_output_tokens);
@@ -1576,6 +1584,19 @@ pub(crate) fn build_openai_responses_request(
         }
     }
     Ok(body)
+}
+
+fn openai_response_format(request: &ProviderTurnRequest) -> Option<Value> {
+    match request.response_format.as_ref()? {
+        ProviderResponseFormatRequest::JsonSchema(format) => Some(json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": format.name,
+                "schema": format.schema,
+                "strict": format.strict,
+            }
+        })),
+    }
 }
 
 fn openai_native_web_search_tool(request: &ProviderTurnRequest) -> Option<Value> {
@@ -1647,6 +1668,7 @@ fn plan_openai_responses_request(
                 None,
                 request_controls,
                 native_web_search_diagnostics(request),
+                response_format_diagnostics(true, request),
             ),
         });
     };
@@ -1669,6 +1691,7 @@ fn plan_openai_responses_request(
                 None,
                 request_controls,
                 native_web_search_diagnostics(request),
+                response_format_diagnostics(true, request),
             ),
         });
     };
@@ -1692,6 +1715,7 @@ fn plan_openai_responses_request(
                 }),
                 request_controls,
                 native_web_search_diagnostics(request),
+                response_format_diagnostics(true, request),
             ),
         });
     }
@@ -1720,6 +1744,7 @@ fn plan_openai_responses_request(
                 Some(mismatch),
                 request_controls,
                 native_web_search_diagnostics(request),
+                response_format_diagnostics(true, request),
             ),
         });
     }
@@ -1774,6 +1799,7 @@ fn plan_openai_responses_request(
                 mismatch_kind: None,
             }),
             native_web_search: native_web_search_diagnostics(request),
+            response_format: response_format_diagnostics(true, request),
         },
     })
 }
@@ -2031,6 +2057,7 @@ fn incremental_diagnostics(
     mismatch: Option<OpenAiContinuationMismatchDiagnostics>,
     openai_request_controls: Option<ProviderOpenAiRequestControlsDiagnostics>,
     native_web_search: Option<ProviderNativeWebSearchDiagnostics>,
+    response_format: Option<ProviderResponseFormatDiagnostics>,
 ) -> ProviderRequestDiagnostics {
     let mismatch = mismatch.unwrap_or_default();
     ProviderRequestDiagnostics {
@@ -2057,6 +2084,25 @@ fn incremental_diagnostics(
             mismatch_kind: mismatch.mismatch_kind,
         }),
         native_web_search,
+        response_format,
+    }
+}
+
+fn response_format_diagnostics(
+    lowered: bool,
+    request: &ProviderTurnRequest,
+) -> Option<ProviderResponseFormatDiagnostics> {
+    match request.response_format.as_ref()? {
+        ProviderResponseFormatRequest::JsonSchema(format) => {
+            Some(ProviderResponseFormatDiagnostics {
+                requested: true,
+                lowered,
+                format_type: "json_schema".into(),
+                schema_name: Some(format.name.clone()),
+                fallback_reason: (!lowered)
+                    .then(|| "transport does not support JSON Schema response format".into()),
+            })
+        }
     }
 }
 
@@ -4767,8 +4813,8 @@ mod tests {
         ProviderRuntimeConfig, ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
     };
     use crate::provider::{
-        ConversationMessage, ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
-        ProviderTurnRequest,
+        ConversationMessage, ProviderJsonSchemaResponseFormat, ProviderNativeWebSearchKind,
+        ProviderNativeWebSearchRequest, ProviderResponseFormatRequest, ProviderTurnRequest,
     };
     use base64::Engine;
     use chrono::Utc;
@@ -5186,6 +5232,53 @@ mod tests {
     }
 
     #[test]
+    fn openai_responses_request_lowers_json_schema_response_format() {
+        let mut request = ProviderTurnRequest::plain(
+            "system",
+            vec![ConversationMessage::UserText("return json".into())],
+            vec![],
+        );
+        request.response_format = Some(ProviderResponseFormatRequest::JsonSchema(
+            ProviderJsonSchemaResponseFormat {
+                name: "answer_v1".into(),
+                strict: true,
+                schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["answer"],
+                    "properties": {
+                        "answer": { "type": "string" }
+                    }
+                }),
+            },
+        ));
+
+        let body = build_openai_responses_request(
+            "gpt-test",
+            1024,
+            &request,
+            OpenAiResponsesTransportContract::StandardJson,
+            ToolSchemaContract::Strict,
+            None,
+        )
+        .expect("openai responses request should build");
+
+        assert_eq!(body["response_format"]["type"], json!("json_schema"));
+        assert_eq!(
+            body["response_format"]["json_schema"]["name"],
+            json!("answer_v1")
+        );
+        assert_eq!(
+            body["response_format"]["json_schema"]["strict"],
+            json!(true)
+        );
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"]["properties"]["answer"]["type"],
+            json!("string")
+        );
+    }
+
+    #[test]
     fn openai_codex_responses_request_lowers_native_web_search_tool() {
         let mut request = ProviderTurnRequest::plain(
             "system",
@@ -5380,6 +5473,7 @@ mod tests {
                 "test",
                 None,
                 0,
+                None,
                 None,
                 None,
                 None,

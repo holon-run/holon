@@ -101,6 +101,7 @@ async fn live_anthropic_builtin_web_search_reports_backend() -> Result<()> {
                 backend_kind: capability.backend_kind,
                 max_results: Some(3),
             }),
+            response_format: None,
         })
         .await?;
     let diagnostics = output
@@ -162,6 +163,7 @@ async fn live_provider_accepts_tool_result_continuation_with_runtime_tools() -> 
             ],
             tools,
             native_web_search: None,
+            response_format: None,
         })
         .await?;
     assert!(!output.blocks.is_empty());
