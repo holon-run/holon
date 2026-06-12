@@ -9,7 +9,6 @@ use holon::{
         AgentProvider, ModelBlock, ProviderTurnRequest, ProviderTurnResponse, StubProvider,
     },
     run_once::{run_once_with_host, RunFinalStatus, RunOnceRequest},
-    storage::AppStorage,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{AuthorityClass, ControlAction, FailureArtifactCategory, TaskStatus, TokenUsage},
 };
@@ -1290,7 +1289,7 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
     )?;
 
     let first = run_once_with_host(
-        first_host,
+        first_host.clone(),
         RunOnceRequest {
             agent_id: Some("bench-15".into()),
             create_agent: true,
@@ -1300,9 +1299,11 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
     .await?;
     assert_eq!(first.agent_id, "bench-15");
 
-    let first_state = AppStorage::new(home_dir.join("agents").join("bench-15"))?
-        .read_agent()?
-        .expect("expected persistent agent state after first run");
+    let first_state = first_host
+        .get_public_agent("bench-15")
+        .await?
+        .agent_state()
+        .await?;
     assert!(first_state.total_message_count > 0);
 
     let second_host =
@@ -1316,7 +1317,7 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
     assert!(listed_agents.iter().any(|id| id == "bench-15"));
 
     let second = run_once_with_host(
-        second_host,
+        second_host.clone(),
         RunOnceRequest {
             agent_id: Some("bench-15".into()),
             ..run_request("second turn")
@@ -1325,9 +1326,11 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
     .await?;
     assert_eq!(second.agent_id, "bench-15");
 
-    let second_state = AppStorage::new(home_dir.join("agents").join("bench-15"))?
-        .read_agent()?
-        .expect("expected persistent agent state after second run");
+    let second_state = second_host
+        .get_public_agent("bench-15")
+        .await?
+        .agent_state()
+        .await?;
     assert!(second_state.total_message_count > first_state.total_message_count);
     assert!(home_dir.join("agents").join("bench-15").exists());
     Ok(())
@@ -1390,7 +1393,7 @@ async fn run_once_preserves_existing_workspace_binding_for_persistent_agents() -
         .expect("expected active workspace entry");
 
     let response = run_once_with_host(
-        host,
+        host.clone(),
         RunOnceRequest {
             agent_id: Some("bench-15".into()),
             ..run_request("continue inside existing workspace")
@@ -1399,9 +1402,11 @@ async fn run_once_preserves_existing_workspace_binding_for_persistent_agents() -
     .await?;
     assert_eq!(response.agent_id, "bench-15");
 
-    let resumed_state = AppStorage::new(home_dir.join("agents").join("bench-15"))?
-        .read_agent()?
-        .expect("expected resumed persistent agent state");
+    let resumed_state = host
+        .get_public_agent("bench-15")
+        .await?
+        .agent_state()
+        .await?;
     let resumed_entry = resumed_state
         .active_workspace_entry
         .clone()
