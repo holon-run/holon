@@ -2628,7 +2628,7 @@ mod tests {
             .expect("unloaded release-bot should still be listed");
         assert_eq!(
             stored_release_bot.scheduling_posture.posture,
-            AgentSchedulingPosture::Unknown
+            AgentSchedulingPosture::Idle
         );
     }
 
@@ -2650,7 +2650,7 @@ mod tests {
         assert!(agent_home.join("notes").is_dir());
         assert!(agent_home.join("work").is_dir());
         assert!(agent_home.join("skills").is_dir());
-        assert!(agent_home.join(".holon/state/agent.json").is_file());
+        assert!(!agent_home.join(".holon/state/agent.json").exists());
         assert!(agent_home.join(".holon/ledger").is_dir());
         assert!(!agent_home.join("agent.json").exists());
         let provenance: crate::agent_template::TemplateProvenanceRecord = serde_json::from_slice(
@@ -3329,7 +3329,7 @@ mod tests {
         );
         host.append_agent_identity(&child).unwrap();
 
-        let child_storage = AppStorage::new(host.agent_data_dir("child_test")).unwrap();
+        let child_storage = host.agent_storage("child_test").unwrap();
         let mut child_state = AgentState::new("child_test");
         child_state.status = AgentStatus::AwakeRunning;
         child_state.pending = 1;
@@ -3388,7 +3388,7 @@ mod tests {
         let (_home, host) = test_host();
         let config = host.config().clone();
         let parent_agent_id = config.default_agent_id.clone();
-        let parent_storage = AppStorage::new(host.agent_data_dir(&parent_agent_id)).unwrap();
+        let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
         parent_storage
             .append_task(&TaskRecord {
                 id: "task-1".into(),
@@ -3419,7 +3419,7 @@ mod tests {
         );
         host.append_agent_identity(&child).unwrap();
 
-        let child_storage = AppStorage::new(host.agent_data_dir("child_test")).unwrap();
+        let child_storage = host.agent_storage("child_test").unwrap();
         let mut child_state = AgentState::new("child_test");
         child_state.status = AgentStatus::AwaitingTask;
         child_storage.write_agent(&child_state).unwrap();
@@ -3464,7 +3464,7 @@ mod tests {
         let (_home, host) = test_host();
         let config = host.config().clone();
         let parent_agent_id = config.default_agent_id.clone();
-        let parent_storage = AppStorage::new(host.agent_data_dir(&parent_agent_id)).unwrap();
+        let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
         parent_storage
             .append_task(&TaskRecord {
                 id: "task-recover-child".into(),
@@ -3502,7 +3502,7 @@ mod tests {
         .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
         host.append_agent_identity(&child).unwrap();
 
-        let child_storage = AppStorage::new(host.agent_data_dir("child_recover")).unwrap();
+        let child_storage = host.agent_storage("child_recover").unwrap();
         let mut child_state = AgentState::new("child_recover");
         child_state.turn_index = 1;
         child_state.status = AgentStatus::AwakeIdle;
@@ -3842,7 +3842,7 @@ mod tests {
             .expect("host shutdown should be bounded")
             .unwrap();
 
-        let storage = AppStorage::new(host.agent_data_dir(&agent_id)).unwrap();
+        let storage = host.agent_storage(&agent_id).unwrap();
         let persisted = storage.read_agent().unwrap().unwrap();
         assert_eq!(persisted.status, AgentStatus::AwakeIdle);
         assert_eq!(persisted.current_run_id, None);
@@ -3926,7 +3926,8 @@ mod tests {
 
         host.shutdown().await.unwrap();
 
-        let persisted = AppStorage::new(host.agent_data_dir(&agent_id))
+        let persisted = host
+            .agent_storage(&agent_id)
             .unwrap()
             .read_agent()
             .unwrap()
