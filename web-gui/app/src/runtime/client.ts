@@ -193,6 +193,12 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) return undefined;
       return streamAgentEvents(baseUrl, fetchImpl, agentId, options);
     },
+    async sendOperatorPrompt(agentId: string, text: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, { text });
+    },
   };
 }
 
@@ -336,6 +342,23 @@ async function getJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: string
     throw new Error(`GET ${path} failed with ${response.status}`);
   }
   return (await response.json()) as T;
+}
+
+async function postJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: string, body: unknown): Promise<T> {
+  const response = await fetchImpl(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`POST ${path} failed with ${response.status}`);
+  }
+
+  const text = await response.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: BriefRecordDto): AgentSummary {

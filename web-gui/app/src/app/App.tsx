@@ -29,6 +29,10 @@ export function App() {
   const toggleInspector = useRuntimeStore((state) => state.toggleInspector);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
+  const selectedAgentSession = useRuntimeStore((state) =>
+    selectedAgent?.id ? state.sessionsByAgentId[selectedAgent.id] : undefined,
+  );
+  const sendOperatorPrompt = useRuntimeStore((state) => state.sendOperatorPrompt);
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
@@ -180,9 +184,12 @@ export function App() {
             detail={selectedAgentDetail}
             displayLevel={displayLevel}
             loading={agentDetailLoading}
+            sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
+            promptError={selectedAgentSession?.promptError}
             onRefresh={() => {
               void refreshAgentDetail();
             }}
+            onSendPrompt={(text) => sendOperatorPrompt(selectedAgent.id, text, displayLevel)}
             onOpenInspector={() => setInspectorOpen(true)}
           />
         ) : null}

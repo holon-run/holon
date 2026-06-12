@@ -9,6 +9,7 @@ export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnectin
 export interface AgentSessionState {
   loading: boolean;
   liveStatus: AgentLiveStatus;
+  sendingPrompt: boolean;
   detail: AgentDetail | null;
   eventsBySeq: Record<number, unknown>;
   eventSeqs: number[];
@@ -16,6 +17,28 @@ export interface AgentSessionState {
   oldestSeq?: number;
   hasOlder?: boolean;
   error?: string;
+  promptError?: string;
+}
+
+function appendOptimisticOperatorPrompt(detail: AgentDetail | null, prompt: string): AgentDetail | null {
+  if (!detail) return detail;
+  const timestamp = new Date().toISOString();
+  return {
+    ...detail,
+    timeline: [
+      ...detail.timeline,
+      {
+        id: `operator-prompt:pending:${timestamp}`,
+        kind: "operator",
+        label: "Operator input",
+        body: prompt,
+        timestamp,
+        meta: "sending",
+        minDisplayLevel: "info",
+        sourceIds: ["pending-operator-prompt"],
+      },
+    ],
+  };
 }
 
 export interface RuntimeStoreState {
@@ -38,6 +61,7 @@ export interface RuntimeStoreState {
   toggleNavCollapsed: () => void;
   refreshBootstrap: () => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
+  sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
   startAgentEventStream: (agentId: string | undefined, displayLevel: DisplayLevel) => void;
   stopAgentEventStream: (agentId: string | undefined) => void;
 }
@@ -145,6 +169,57 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
+  sendOperatorPrompt: async (agentId, text, displayLevel) => {
+    const prompt = text.trim();
+    if (!agentId || !prompt) {
+      return;
+    }
+
+    set((state) => ({
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...emptyAgentSession(),
+          ...state.sessionsByAgentId[agentId],
+          sendingPrompt: true,
+          promptError: undefined,
+          detail: appendOptimisticOperatorPrompt(state.sessionsByAgentId[agentId]?.detail ?? null, prompt),
+        },
+      },
+    }));
+
+    try {
+      await runtimeClient.sendOperatorPrompt(agentId, prompt);
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...emptyAgentSession(),
+            ...state.sessionsByAgentId[agentId],
+            sendingPrompt: false,
+            promptError: undefined,
+          },
+        },
+      }));
+      await get().refreshAgentDetail(agentId, displayLevel);
+      get().startAgentEventStream(agentId, displayLevel);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...emptyAgentSession(),
+            ...state.sessionsByAgentId[agentId],
+            sendingPrompt: false,
+            promptError: message,
+          },
+        },
+      }));
+      throw error;
+    }
+  },
+
   startAgentEventStream: (agentId, displayLevel) => {
     if (!agentId) return;
     stopAgentEventStream(agentId);
@@ -194,6 +269,7 @@ function emptyAgentSession(): AgentSessionState {
   return {
     loading: false,
     liveStatus: "idle",
+    sendingPrompt: false,
     detail: null,
     eventsBySeq: {},
     eventSeqs: [],

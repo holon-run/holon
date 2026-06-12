@@ -687,6 +687,17 @@ code {
   outline: none;
 }
 
+.composer textarea:disabled {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 8%, var(--surface));
+}
+
+.composer-status {
+  padding: 0 16px 10px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
 .composer-toolbar {
   display: flex;
   align-items: center;

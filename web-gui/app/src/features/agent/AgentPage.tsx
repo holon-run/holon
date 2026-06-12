@@ -1,3 +1,5 @@
+import { useState, type FormEvent } from "react";
+
 import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import type { AgentDetail, AgentSummary, AgentTimelineItem, DisplayLevel } from "../../runtime/types";
 
@@ -6,13 +8,40 @@ interface AgentPageProps {
   detail: AgentDetail | null;
   displayLevel: DisplayLevel;
   loading: boolean;
+  sendingPrompt: boolean;
+  promptError?: string;
   onRefresh: () => void;
+  onSendPrompt: (text: string) => Promise<void>;
   onOpenInspector: () => void;
 }
 
-export function AgentPage({ agent, detail, displayLevel, loading, onRefresh, onOpenInspector }: AgentPageProps) {
+export function AgentPage({
+  agent,
+  detail,
+  displayLevel,
+  loading,
+  sendingPrompt,
+  promptError,
+  onRefresh,
+  onSendPrompt,
+  onOpenInspector,
+}: AgentPageProps) {
+  const [prompt, setPrompt] = useState("");
   const activeAgent = detail?.agent ?? agent;
   const timeline = filterTimelineByDisplayLevel(detail?.timeline ?? fallbackTimeline(activeAgent), displayLevel);
+  const trimmedPrompt = prompt.trim();
+  const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSendPrompt) return;
+    try {
+      await onSendPrompt(trimmedPrompt);
+      setPrompt("");
+    } catch {
+      // Keep the draft in place; runtime-store exposes the user-facing error.
+    }
+  }
 
   return (
     <section className="page agent-page" aria-label="Agent conversation">
@@ -57,8 +86,19 @@ export function AgentPage({ agent, detail, displayLevel, loading, onRefresh, onO
             ))}
           </div>
 
-          <form className="composer" aria-label={`Send operator input to ${activeAgent.id}`}>
-            <textarea rows={2} placeholder={`Send operator input to ${activeAgent.id}...`} />
+          <form className="composer" aria-label={`Send operator input to ${activeAgent.id}`} onSubmit={handleSubmit}>
+            <textarea
+              rows={2}
+              placeholder={`Send operator input to ${activeAgent.id}...`}
+              value={prompt}
+              disabled={sendingPrompt}
+              onChange={(event) => setPrompt(event.target.value)}
+            />
+            {promptError ? (
+              <div className="composer-status" role="alert">
+                {promptError}
+              </div>
+            ) : null}
             <div className="composer-toolbar">
               <div className="composer-left">
                 <button type="button" aria-label="Attach">
@@ -69,8 +109,8 @@ export function AgentPage({ agent, detail, displayLevel, loading, onRefresh, onO
                 <button className="model-button" type="button" onClick={onOpenInspector}>
                   {activeAgent.model}⌄
                 </button>
-                <button className="send-button" type="submit" aria-label="Send">
-                  ↑
+                <button className="send-button" type="submit" aria-label="Send" disabled={!canSendPrompt}>
+                  {sendingPrompt ? "…" : "↑"}
                 </button>
               </div>
             </div>
