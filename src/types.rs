@@ -1649,7 +1649,7 @@ pub struct AgentState {
     pub last_runtime_failure: Option<RuntimeFailureSummary>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -1670,7 +1670,7 @@ impl TokenUsage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AgentTokenUsageSummary {
     pub total: TokenUsage,
     pub total_model_rounds: u64,
@@ -2707,6 +2707,8 @@ pub struct TaskStatusSnapshot {
     pub child_observability: Option<ChildAgentObservabilitySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_supervision: Option<ChildSupervisionProjection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_token_usage: Option<AgentTokenUsageSummary>,
 }
 
 impl TaskStatusSnapshot {
@@ -2716,6 +2718,8 @@ impl TaskStatusSnapshot {
         let child_observability = task_detail_value(&task.detail, "child_observability")
             .and_then(|value| serde_json::from_value(value.clone()).ok());
         let child_supervision = ChildSupervisionProjection::from_task_record(task);
+        let child_token_usage = task_detail_value(&task.detail, "child_token_usage")
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
 
         Self {
             task_id: task.id.clone(),
@@ -2730,6 +2734,7 @@ impl TaskStatusSnapshot {
             child_agent_id,
             child_observability,
             child_supervision,
+            child_token_usage,
         }
     }
 }
@@ -5050,5 +5055,65 @@ mod tests {
         ] {
             assert!(AgentProfilePreset::PublicNamed.allows_tool_capability_family(family));
         }
+    }
+
+    #[test]
+    fn task_status_snapshot_includes_child_token_usage_from_detail() {
+        let task = TaskRecord {
+            id: "task-child-1".into(),
+            agent_id: "parent".into(),
+            kind: TaskKind::ChildAgentTask,
+            status: TaskStatus::Completed,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("child agent task".into()),
+            detail: Some(serde_json::json!({
+                "child_agent_id": "child-1",
+                "child_token_usage": {
+                    "total": {
+                        "input_tokens": 100,
+                        "output_tokens": 50,
+                        "total_tokens": 150,
+                    },
+                    "total_model_rounds": 3,
+                    "last_turn": {
+                        "input_tokens": 30,
+                        "output_tokens": 20,
+                        "total_tokens": 50,
+                    },
+                },
+            })),
+            recovery: None,
+        };
+        let snapshot = TaskStatusSnapshot::from_task_record(&task);
+        let usage = snapshot.child_token_usage.expect("child_token_usage");
+        assert_eq!(usage.total.input_tokens, 100);
+        assert_eq!(usage.total.output_tokens, 50);
+        assert_eq!(usage.total.total_tokens, 150);
+        assert_eq!(usage.total_model_rounds, 3);
+        let last = usage.last_turn.expect("last_turn");
+        assert_eq!(last.input_tokens, 30);
+        assert_eq!(last.output_tokens, 20);
+    }
+
+    #[test]
+    fn task_status_snapshot_child_token_usage_absent_without_detail() {
+        let task = TaskRecord {
+            id: "task-cmd-1".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: Some("command task".into()),
+            detail: None,
+            recovery: None,
+        };
+        let snapshot = TaskStatusSnapshot::from_task_record(&task);
+        assert!(snapshot.child_token_usage.is_none());
     }
 }

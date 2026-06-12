@@ -1439,6 +1439,17 @@ impl RuntimeHost {
                 "child_profile_preset": AgentProfilePreset::PrivateChild,
                 "child_observability": runtime.child_agent_observability().await?,
             });
+
+            metadata["child_token_usage"] = serde_json::json!({
+                "total": {
+                    "input_tokens": state.total_input_tokens,
+                    "output_tokens": state.total_output_tokens,
+                    "total_tokens": state.total_input_tokens.saturating_add(state.total_output_tokens),
+                },
+                "total_model_rounds": state.total_model_rounds,
+                "last_turn": state.last_turn_token_usage,
+            });
+
             if worktree {
                 if let Some(worktree) = state.worktree_session.as_ref() {
                     let changed_files =
@@ -1513,6 +1524,15 @@ impl RuntimeHost {
                 "child_visibility": AgentVisibility::Private,
                 "child_ownership": AgentOwnership::ParentSupervised,
                 "child_profile_preset": AgentProfilePreset::PrivateChild,
+                "child_token_usage": {
+                    "total": {
+                        "input_tokens": state.total_input_tokens,
+                        "output_tokens": state.total_output_tokens,
+                        "total_tokens": state.total_input_tokens.saturating_add(state.total_output_tokens),
+                    },
+                    "total_model_rounds": state.total_model_rounds,
+                    "last_turn": state.last_turn_token_usage,
+                },
             })),
         }))
     }
