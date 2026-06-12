@@ -39,6 +39,13 @@ export function App() {
     loading: agentDetailLoading,
     refresh: refreshAgentDetail,
   } = useAgentDetail(selectedAgent?.id, displayLevel);
+  const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
+  const selectedAgentSourceStatus =
+    agentDetailLoading && !selectedAgentDetail
+      ? "syncing"
+      : selectedAgentDetail?.source === "http" && !selectedAgentDetail.error
+        ? "live"
+        : "preview";
 
   return (
     <div
@@ -96,14 +103,13 @@ export function App() {
                 <span className="agent-row-title">
                   <strong>{agent.id}</strong>
                   <em className={`agent-state-dot ${agent.lifecycle}`} aria-label={agent.lifecycle} />
+                  {agentSignalCount(agent) > 0 ? <span className="agent-row-count">{agentSignalCount(agent)}</span> : null}
                 </span>
-                <small>{agent.focusSummary}</small>
                 <span className="agent-row-meta">
                   <span>{agent.lifecycle}</span>
                   <span>{agent.currentWork?.state ?? agent.posture}</span>
                 </span>
               </span>
-              {agentSignalCount(agent) > 0 ? <span className="agent-row-count">{agentSignalCount(agent)}</span> : null}
             </button>
           ))}
         </section>
@@ -161,17 +167,28 @@ export function App() {
                 <strong>{selectedAgent?.currentWork?.objective ?? "No current work item"}</strong>
                 <em>{selectedAgent?.currentWork?.state ?? selectedAgent?.lifecycle ?? "unknown"}</em>
               </button>
-              <div className="display-level" aria-label="Display level">
-                {(["info", "verbose", "debug"] as const).map((level) => (
-                  <button
-                    className={displayLevel === level ? "is-active" : ""}
-                    key={level}
-                    type="button"
-                    onClick={() => setDisplayLevel(level)}
-                  >
-                    {levelLabel(level)}
+              <div className="agent-top-controls">
+                <div className="agent-stream-controls" aria-label="Agent stream status">
+                  <span className={`source-chip ${selectedAgentSourceStatus}`}>{selectedAgentSourceStatus}</span>
+                  <span className={`source-chip live-status ${selectedAgentLiveStatus}`}>
+                    {liveStatusLabel(selectedAgentLiveStatus)}
+                  </span>
+                  <button type="button" disabled={agentDetailLoading} onClick={() => void refreshAgentDetail()}>
+                    {agentDetailLoading ? "Refreshing…" : "Refresh"}
                   </button>
-                ))}
+                </div>
+                <div className="display-level" aria-label="Display level">
+                  {(["info", "verbose", "debug"] as const).map((level) => (
+                    <button
+                      className={displayLevel === level ? "is-active" : ""}
+                      key={level}
+                      type="button"
+                      onClick={() => setDisplayLevel(level)}
+                    >
+                      {levelLabel(level)}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           ) : null}
@@ -194,16 +211,11 @@ export function App() {
             agent={selectedAgent}
             detail={selectedAgentDetail}
             displayLevel={displayLevel}
-            loading={agentDetailLoading}
             sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
             promptError={selectedAgentSession?.promptError}
             hasOlderEvents={selectedAgentSession?.hasOlder ?? selectedAgentDetail?.hasOlderEvents ?? false}
             loadingOlderEvents={selectedAgentSession?.loadingOlder ?? false}
-            liveStatus={selectedAgentSession?.liveStatus ?? "idle"}
             historyError={selectedAgentSession?.historyError}
-            onRefresh={() => {
-              void refreshAgentDetail();
-            }}
             onLoadOlderEvents={() => loadOlderAgentEvents(selectedAgent.id, displayLevel)}
             onSendPrompt={(text) => sendOperatorPrompt(selectedAgent.id, text, displayLevel)}
             onOpenInspector={() => setInspectorOpen(true)}
@@ -238,4 +250,12 @@ function levelLabel(level: DisplayLevel): string {
 
 function agentSignalCount(agent: AgentSummary): number {
   return agent.pending + agent.activeTaskCount + agent.waitingCount;
+}
+
+function liveStatusLabel(status: string): string {
+  if (status === "connecting") return "connecting";
+  if (status === "streaming") return "streaming";
+  if (status === "reconnecting") return "reconnecting";
+  if (status === "error") return "stream error";
+  return "idle";
 }

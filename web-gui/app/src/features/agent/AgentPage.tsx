@@ -3,20 +3,15 @@ import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "re
 import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import type { AgentDetail, AgentSummary, AgentTimelineItem, DisplayLevel } from "../../runtime/types";
 
-type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "error";
-
 interface AgentPageProps {
   agent: AgentSummary;
   detail: AgentDetail | null;
   displayLevel: DisplayLevel;
-  loading: boolean;
   sendingPrompt: boolean;
   hasOlderEvents: boolean;
   loadingOlderEvents: boolean;
   promptError?: string;
   historyError?: string;
-  liveStatus: AgentLiveStatus;
-  onRefresh: () => void;
   onLoadOlderEvents: () => Promise<void>;
   onSendPrompt: (text: string) => Promise<void>;
   onOpenInspector: () => void;
@@ -30,14 +25,11 @@ export function AgentPage({
   agent,
   detail,
   displayLevel,
-  loading,
   sendingPrompt,
   hasOlderEvents,
   loadingOlderEvents,
   promptError,
   historyError,
-  liveStatus,
-  onRefresh,
   onLoadOlderEvents,
   onSendPrompt,
   onOpenInspector,
@@ -55,7 +47,6 @@ export function AgentPage({
   const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
   const newestTimelineItem = timeline[timeline.length - 1];
   const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
-  const sourceStatus = loading && !detail ? "syncing" : detail?.source === "http" && !detail.error ? "live" : "preview";
 
   useEffect(() => {
     setVisibleInfoItemLimit(DEFAULT_INFO_TIMELINE_ITEM_LIMIT);
@@ -118,25 +109,6 @@ export function AgentPage({
     <section className="page agent-page" aria-label="Agent conversation">
       <div className="agent-workbench">
         <section className="conversation-pane">
-          <div className="conversation-head">
-            <div className="conversation-title">
-              <span className="eyebrow">Conversation</span>
-              <h1>{activeAgent.id}</h1>
-              <div className="conversation-subline" aria-label="Agent context">
-                <span>{activeAgent.lifecycle}</span>
-                <span>{activeAgent.workspace}</span>
-                <span>{activeAgent.model}</span>
-              </div>
-            </div>
-            <div className="conversation-actions">
-              <span className={`source-chip ${sourceStatus}`}>{sourceStatus}</span>
-              <span className={`source-chip live-status ${liveStatus}`}>{liveStatusLabel(liveStatus)}</span>
-              <button type="button" disabled={loading} onClick={onRefresh}>
-                {loading ? "Refreshing…" : "Refresh"}
-              </button>
-            </div>
-          </div>
-
           <div className="conversation-context">
             <div>
               <span>Current work</span>
@@ -250,12 +222,4 @@ function formatDisplayTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(parsed);
-}
-
-function liveStatusLabel(status: AgentLiveStatus): string {
-  if (status === "connecting") return "connecting";
-  if (status === "streaming") return "streaming";
-  if (status === "reconnecting") return "reconnecting";
-  if (status === "error") return "stream error";
-  return "idle";
 }

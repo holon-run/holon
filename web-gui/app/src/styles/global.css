@@ -199,6 +199,15 @@ button {
   gap: 7px;
 }
 
+.agent-row-title strong {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.agent-row-title .agent-row-count {
+  margin-left: auto;
+}
+
 .agent-row strong,
 .connection-status strong {
   display: block;
@@ -228,9 +237,14 @@ button {
 }
 
 .agent-row-meta span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-row-meta span:first-child {
+  flex: 0 0 auto;
 }
 
 .agent-row-meta span + span::before {
@@ -359,6 +373,14 @@ button {
   background: color-mix(in srgb, var(--surface) 72%, transparent);
 }
 
+.agent-top-controls,
+.agent-stream-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
 .top-title {
   display: flex;
   align-items: center;
@@ -378,6 +400,7 @@ button {
 .back-button,
 .top-actions button,
 .display-level button,
+.agent-stream-controls button,
 .composer button,
 .section-head button,
 .agent-card footer button,
@@ -436,6 +459,14 @@ button {
   background: var(--surface);
   color: var(--text);
   box-shadow: 0 1px 2px rgba(24, 34, 48, 0.08);
+}
+
+.agent-stream-controls button {
+  min-height: 28px;
+  padding: 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 680;
 }
 
 .page {
@@ -856,55 +887,8 @@ code {
 
 .conversation-pane {
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto 1fr auto;
   min-height: 0;
-}
-
-.conversation-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 22px 28px 12px;
-}
-
-.conversation-head h1 {
-  margin: 3px 0 6px;
-  font-size: 28px;
-  letter-spacing: -0.03em;
-}
-
-.conversation-title {
-  min-width: 0;
-}
-
-.conversation-subline {
-  display: flex;
-  max-width: 760px;
-  flex-wrap: wrap;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.conversation-subline span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.conversation-subline span + span::before {
-  margin-right: 6px;
-  color: var(--faint);
-  content: "·";
-}
-
-.conversation-actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
 }
 
 .source-chip {
@@ -956,7 +940,7 @@ code {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(120px, auto) minmax(140px, auto);
   gap: 10px;
-  padding: 0 28px 14px;
+  padding: 18px 28px 14px;
 }
 
 .conversation-context div {
