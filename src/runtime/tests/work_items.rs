@@ -4409,7 +4409,7 @@ async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
     assert!(closure
         .evidence
         .iter()
-        .any(|item| item == "current_work_item_scheduling_state=WaitingExternal"));
+        .any(|item| item == "work_item_scheduling_state=WaitingExternal"));
 }
 
 #[tokio::test]
@@ -4590,7 +4590,7 @@ async fn blocking_current_work_item_releases_focus_and_unblock_does_not_repick()
 }
 
 #[tokio::test]
-async fn wait_for_tool_result_reports_released_blocked_focus() {
+async fn wait_for_tool_result_keeps_blocked_focus_current() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -4631,10 +4631,20 @@ async fn wait_for_tool_result_reports_released_blocked_focus() {
 
     let payload = result.envelope.result.unwrap();
     assert_eq!(payload["work_item"]["readiness"].as_str(), Some("blocked"));
-    assert_eq!(payload["work_item"]["is_current"].as_bool(), Some(false));
-    assert_eq!(payload["work_item"]["focus"].as_str(), Some("blocked"));
+    assert_eq!(payload["work_item"]["is_current"].as_bool(), Some(true));
+    assert_eq!(payload["work_item"]["focus"].as_str(), Some("current"));
     let state = runtime.agent_state().await.unwrap();
-    assert!(state.current_work_item_id.is_none());
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(work.id.as_str())
+    );
+    assert!(state.current_turn_work_item_id.is_none());
+    let events = runtime.storage().read_recent_events(10).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "work_item_turn_binding_released"
+            && event.data["reason"] == "work_item_waiting"
+            && event.data["work_item_id"].as_str() == Some(work.id.as_str())
+    }));
 }
 
 #[tokio::test]

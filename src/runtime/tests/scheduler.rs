@@ -765,6 +765,52 @@ fn idle_boundary_decision_inspects_wait_facts_while_asleep() {
 }
 
 #[test]
+fn idle_boundary_decision_waits_for_non_current_work_item_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Asleep;
+    storage.write_agent(&agent).unwrap();
+    let mut waiting = WorkItemRecord::new("default", "waiting work", WorkItemState::Open);
+    waiting.id = "work-waiting".into();
+    waiting.blocked_by = Some("task result".into());
+    storage.append_work_item(&waiting).unwrap();
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-task".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(waiting.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Task,
+            source: None,
+            subject_ref: None,
+            waiting_for: "task result".into(),
+            wake_sources: vec![WakeSource::TaskResult {
+                task_id: "task-1".into(),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(projection.current_work_item_scheduling_state, None);
+    assert_eq!(
+        projection.waiting_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::WaitingTask)
+    );
+    let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::WaitForTask);
+    assert_eq!(decision.reason, "work_item_task_wait");
+    assert_eq!(decision.work_item_id.as_deref(), Some("work-waiting"));
+}
+
+#[test]
 fn idle_boundary_decision_does_not_treat_asleep_with_queued_input_as_idle() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new(dir.path()).unwrap();

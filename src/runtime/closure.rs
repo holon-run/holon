@@ -11,7 +11,7 @@ pub(super) struct ClosureFacts {
     pub(super) active_waiting_intents: usize,
     pub(super) active_agent_waiting_intents: usize,
     pub(super) active_timers: usize,
-    pub(super) current_work_item_scheduling_state: Option<WorkItemSchedulingState>,
+    pub(super) waiting_work_item_scheduling_state: Option<WorkItemSchedulingState>,
     pub(super) work_signal: Option<WorkReactivationSignal>,
     pub(super) turn_started: bool,
     pub(super) turn_in_progress: bool,
@@ -49,8 +49,8 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
     if facts.active_timers > 0 {
         evidence.push(format!("active_timers={}", facts.active_timers));
     }
-    if let Some(state) = facts.current_work_item_scheduling_state {
-        evidence.push(format!("current_work_item_scheduling_state={state:?}"));
+    if let Some(state) = facts.waiting_work_item_scheduling_state {
+        evidence.push(format!("work_item_scheduling_state={state:?}"));
     }
     if let Some(work_signal) = facts.work_signal.as_ref() {
         evidence.push(format!(
@@ -159,7 +159,7 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
         };
     }
 
-    match facts.current_work_item_scheduling_state {
+    match facts.waiting_work_item_scheduling_state {
         Some(WorkItemSchedulingState::WaitingTask) => {
             return ClosureDecision {
                 outcome: ClosureOutcome::Waiting,

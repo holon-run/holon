@@ -99,7 +99,7 @@ impl RuntimeHandle {
             let updated = self
                 .write_wait_for_work_item_blocker(existing, &reason, recheck_at)
                 .await?;
-            self.release_current_work_item_if_matches(agent_id, &updated, "work_item_waiting")
+            self.clear_current_turn_work_item_if_matches(agent_id, &updated, "work_item_waiting")
                 .await?;
             work_item = Some(updated);
         }
@@ -294,6 +294,36 @@ impl RuntimeHandle {
             }),
         ))?;
         Ok(record)
+    }
+
+    async fn clear_current_turn_work_item_if_matches(
+        &self,
+        agent_id: &str,
+        record: &WorkItemRecord,
+        reason: &str,
+    ) -> Result<bool> {
+        let released = {
+            let mut guard = self.inner.agent.lock().await;
+            if guard.state.current_turn_work_item_id.as_deref() != Some(record.id.as_str()) {
+                return Ok(false);
+            }
+            guard.state.current_turn_work_item_id = None;
+            guard.persist_state(&self.inner.storage)?;
+            true
+        };
+        if released {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "work_item_turn_binding_released",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "work_item_id": record.id.as_str(),
+                    "reason": reason,
+                    "readiness": record.readiness(),
+                    "revision": record.revision,
+                }),
+            ))?;
+        }
+        Ok(released)
     }
 
     async fn clear_wait_for_blocker_after_task_result(
