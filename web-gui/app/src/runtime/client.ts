@@ -25,7 +25,7 @@ async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentI
     getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`),
     getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/briefs?limit=5`),
     getJson<TranscriptEntryDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/transcript?limit=40`),
-    getJson<EventPageResponseDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/events?limit=20&order=desc&max_level=verbose`),
+    getJson<EventPageResponseDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/events?limit=80&order=desc&max_level=debug`),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const agent = projectAgent(fallbackEntry, state, briefs[0]);

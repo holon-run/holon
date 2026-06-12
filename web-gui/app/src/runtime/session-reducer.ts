@@ -55,9 +55,9 @@ const displayLevelRank: Record<DisplayLevel, number> = {
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
   const transcriptItems = input.transcript.map(projectTranscriptEntry);
   const briefItems = input.briefs.map(projectBriefRecord);
-  const eventItems = (input.events.events ?? []).slice(0, 12).map(projectEventEnvelope);
+  const eventItems = (input.events.events ?? []).map(projectEventEnvelope);
 
-  return [...transcriptItems, ...briefItems, ...eventItems]
+  return dedupeTimelineItems([...transcriptItems, ...briefItems, ...eventItems])
     .filter((item): item is AgentTimelineItem => Boolean(item))
     .sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
 }
@@ -77,7 +77,7 @@ function projectTranscriptEntry(entry: SessionTranscriptEntry): AgentTimelineIte
   const data = asRecord(entry.data);
   const timestamp = entry.created_at ?? "";
 
-  if (kind === "incoming_message" || kind === "continuation_prompt" || kind === "subagent_prompt") {
+  if (kind === "incoming_message") {
     return item({
       id: entry.id,
       kind: "operator",
@@ -86,6 +86,20 @@ function projectTranscriptEntry(entry: SessionTranscriptEntry): AgentTimelineIte
       timestamp,
       meta: compactJoin([kind, roundMeta(entry.round)]),
       minDisplayLevel: "info",
+      sourceIds: [entry.id],
+      debug: debugJson(entry),
+    });
+  }
+
+  if (kind === "continuation_prompt" || kind === "subagent_prompt") {
+    return item({
+      id: entry.id,
+      kind: "system",
+      label: labelForTranscriptKind(kind),
+      body: readableText(entry.data) || labelForTranscriptKind(kind),
+      timestamp,
+      meta: compactJoin([kind, roundMeta(entry.round)]),
+      minDisplayLevel: "verbose",
       sourceIds: [entry.id],
       debug: debugJson(entry),
     });
@@ -193,12 +207,47 @@ function projectRuntimeEvent(
   eventType: string,
   payload: Record<string, unknown> | undefined,
 ): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel"> {
+  if (eventType === "message_enqueued") {
+    const message = messageEnvelopeProjection(payload);
+    if (message?.origin === "operator") {
+      return {
+        kind: "operator",
+        label: "Operator input",
+        body: message.body || "Operator input.",
+        minDisplayLevel: "info",
+      };
+    }
+
+    return {
+      kind: "system",
+      label: "Message queued",
+      body: message?.body || readableText(payload) || "Runtime message queued.",
+      minDisplayLevel: "debug",
+    };
+  }
+
   if (eventType === "tool_executed") {
     return {
       kind: "tool",
       label: "Tool executed",
       body: summarizeToolExecution(payload),
       minDisplayLevel: "verbose",
+    };
+  }
+
+  if (
+    eventType === "turn_local_checkpoint_resume_requested" ||
+    eventType === "turn_local_checkpoint_requested" ||
+    eventType === "turn_local_checkpoint_recorded" ||
+    eventType === "continuation_trigger_received" ||
+    eventType === "continuation_resolved" ||
+    eventType === "closure_decided"
+  ) {
+    return {
+      kind: "system",
+      label: systemRuntimeLabel(eventType),
+      body: summarizeSystemRuntimeEvent(eventType, payload),
+      minDisplayLevel: eventType === "turn_local_checkpoint_resume_requested" ? "verbose" : "debug",
     };
   }
 
@@ -257,6 +306,27 @@ function projectRuntimeEvent(
     body: readableText(payload) || humanizeEventType(eventType),
     minDisplayLevel: "debug",
   };
+}
+
+function dedupeTimelineItems(items: Array<AgentTimelineItem | undefined>): Array<AgentTimelineItem | undefined> {
+  const seen = new Set<string>();
+  return items.filter((candidate) => {
+    if (!candidate) return false;
+    const key = timelineDedupeKey(candidate);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function timelineDedupeKey(item: AgentTimelineItem): string {
+  if (item.kind === "operator") {
+    return `operator:${normalizeTextKey(item.body)}`;
+  }
+  if (item.kind === "assistant" && item.minDisplayLevel === "info") {
+    return `assistant-result:${normalizeTextKey(item.body)}`;
+  }
+  return `item:${item.id}`;
 }
 
 function item(draft: SessionItemDraft): AgentTimelineItem {
@@ -319,6 +389,57 @@ function summarizeDebugEvent(eventType: string, payload: Record<string, unknown>
     ? undefined
     : `${numberField(payload, "input_tokens") ?? 0} in / ${numberField(payload, "output_tokens") ?? 0} out`;
   return compactJoin([humanizeEventType(eventType), model, stopReason, tokens]);
+}
+
+function summarizeSystemRuntimeEvent(eventType: string, payload: Record<string, unknown> | undefined): string {
+  if (eventType === "turn_local_checkpoint_resume_requested") {
+    return "Refreshing local context; asking the model to continue.";
+  }
+  if (eventType === "turn_local_checkpoint_requested") {
+    return compactJoin(["Context checkpoint requested", stringField(payload, "checkpoint_mode")]);
+  }
+  if (eventType === "turn_local_checkpoint_recorded") {
+    if (payload?.checkpoint_recorded === false) return "Context checkpoint produced no visible text.";
+    return compactJoin(["Context checkpoint recorded", stringField(payload, "text_preview")]);
+  }
+  if (eventType === "continuation_trigger_received") {
+    return readableText(payload) || "Continuation trigger received.";
+  }
+  if (eventType === "continuation_resolved") {
+    return readableText(payload) || "Continuation resolved.";
+  }
+  if (eventType === "closure_decided") {
+    return readableText(asRecord(payload?.closure) ?? payload) || "Closure decided.";
+  }
+  return readableText(payload) || humanizeEventType(eventType);
+}
+
+function systemRuntimeLabel(eventType: string): string {
+  if (eventType.startsWith("turn_local_checkpoint_")) return "Context checkpoint";
+  if (eventType.startsWith("continuation_")) return "Continuation";
+  if (eventType === "closure_decided") return "Closure";
+  return humanizeEventType(eventType);
+}
+
+function messageEnvelopeProjection(payload: Record<string, unknown> | undefined): { origin: "operator" | "runtime"; body: string } | undefined {
+  if (!payload) return undefined;
+  const origin = asRecord(payload.origin);
+  const originKind = stringField(origin, "kind")?.toLowerCase();
+  const body = asRecord(payload.body);
+  return {
+    origin: originKind === "operator" ? "operator" : "runtime",
+    body: messageBodyText(body),
+  };
+}
+
+function messageBodyText(body: Record<string, unknown> | undefined): string {
+  if (!body) return "";
+  const text = stringField(body, "text");
+  if (text) return text;
+  const message = stringField(body, "message");
+  if (message) return message;
+  if (body.value != null) return debugJson(body.value);
+  return "";
 }
 
 function readableText(value: unknown): string {
@@ -386,6 +507,10 @@ function humanizeEventType(value: string): string {
 
 function compactJoin(parts: Array<string | undefined | null>): string {
   return parts.filter(Boolean).join(" · ");
+}
+
+function normalizeTextKey(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
 }
 
 function sortableTime(value: string): number {
