@@ -1493,6 +1493,76 @@
               "task_id": {
                 "type": "string"
               },
+              "token_usage": {
+                "properties": {
+                  "last_turn": {
+                    "properties": {
+                      "input_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "total_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "input_tokens",
+                      "output_tokens",
+                      "total_tokens"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "total": {
+                    "properties": {
+                      "input_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "total_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "input_tokens",
+                      "output_tokens",
+                      "total_tokens"
+                    ],
+                    "type": "object"
+                  },
+                  "total_model_rounds": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "total",
+                  "total_model_rounds"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "updated_at": {
                 "format": "date-time",
                 "type": "string"
@@ -1830,6 +1900,76 @@
               },
               "task_id": {
                 "type": "string"
+              },
+              "token_usage": {
+                "properties": {
+                  "last_turn": {
+                    "properties": {
+                      "input_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "total_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "input_tokens",
+                      "output_tokens",
+                      "total_tokens"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "total": {
+                    "properties": {
+                      "input_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "total_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "input_tokens",
+                      "output_tokens",
+                      "total_tokens"
+                    ],
+                    "type": "object"
+                  },
+                  "total_model_rounds": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "total",
+                  "total_model_rounds"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -2204,6 +2344,76 @@
           },
           "task_id": {
             "type": "string"
+          },
+          "token_usage": {
+            "properties": {
+              "last_turn": {
+                "properties": {
+                  "input_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "output_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "total_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "input_tokens",
+                  "output_tokens",
+                  "total_tokens"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "total": {
+                "properties": {
+                  "input_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "output_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "total_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "input_tokens",
+                  "output_tokens",
+                  "total_tokens"
+                ],
+                "type": "object"
+              },
+              "total_model_rounds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total",
+              "total_model_rounds"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "updated_at": {
             "format": "date-time",
@@ -2601,6 +2811,76 @@
               },
               "task_id": {
                 "type": "string"
+              },
+              "token_usage": {
+                "properties": {
+                  "last_turn": {
+                    "properties": {
+                      "input_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "total_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "input_tokens",
+                      "output_tokens",
+                      "total_tokens"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "total": {
+                    "properties": {
+                      "input_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "total_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "input_tokens",
+                      "output_tokens",
+                      "total_tokens"
+                    ],
+                    "type": "object"
+                  },
+                  "total_model_rounds": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "total",
+                  "total_model_rounds"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
               },
               "updated_at": {
                 "format": "date-time",
