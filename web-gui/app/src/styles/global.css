@@ -668,6 +668,92 @@ code {
   font-size: 0.88em;
 }
 
+.markdown-content {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.markdown-content > *:first-child {
+  margin-top: 0;
+}
+
+.markdown-content > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content p,
+.markdown-content ul,
+.markdown-content ol,
+.markdown-content blockquote,
+.markdown-content pre,
+.markdown-content table {
+  margin: 0 0 0.75em;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 1.35em;
+}
+
+.markdown-content li + li {
+  margin-top: 0.2em;
+}
+
+.markdown-content a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.markdown-content a:hover {
+  text-decoration: underline;
+}
+
+.markdown-content blockquote {
+  padding-left: 12px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 36%, var(--line));
+  color: var(--muted);
+}
+
+.markdown-content pre {
+  overflow: auto;
+  max-height: 320px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f172a;
+  color: #dbeafe;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.markdown-content pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+}
+
+.markdown-content table {
+  display: block;
+  max-width: 100%;
+  overflow: auto;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.markdown-content th,
+.markdown-content td {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+}
+
+.markdown-content.compact {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.42;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -872,6 +958,21 @@ code {
   margin: 0;
   color: var(--muted);
   line-height: 1.45;
+}
+
+.agent-card-brief {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.agent-card-brief strong {
+  display: inline;
+  overflow: visible;
+  color: var(--text);
+  white-space: normal;
 }
 
 .state-chip {
@@ -1184,21 +1285,6 @@ code {
 .system + .event,
 .system + .system {
   margin-top: -8px;
-}
-
-.bubble p {
-  margin: 0;
-  overflow-wrap: anywhere;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-
-.tool .bubble p,
-.event .bubble p,
-.system .bubble p {
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.42;
 }
 
 .message-heading {

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
+import { MarkdownContent } from "../../components/MarkdownContent";
 import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import type {
   AgentDetail,
@@ -204,7 +205,7 @@ export function AgentPage({
                         ) : null}
                       </div>
                     ) : null}
-                    <p>{item.body}</p>
+                    <MarkdownContent text={item.body} compact={item.kind === "tool" || item.kind === "event" || item.kind === "system"} />
                     {item.detail ? (
                       <div className={`message-detail ${item.detail.tone ?? "data"}`}>
                         <span>{item.detail.label}</span>

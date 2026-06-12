@@ -1,3 +1,4 @@
+import { MarkdownContent } from "../../components/MarkdownContent";
 import type { AgentSummary, DashboardMetric, RuntimeConnection } from "../../runtime/types";
 
 interface DashboardPageProps {
@@ -119,7 +120,9 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                     </div>
                     <div>
                       <span>Last brief</span>
-                      <strong title={agent.lastBrief}>{agent.lastBrief}</strong>
+                      <div className="agent-card-brief" title={agent.lastBrief}>
+                        <MarkdownContent text={agent.lastBrief} compact />
+                      </div>
                     </div>
                   </div>
                   <footer>
