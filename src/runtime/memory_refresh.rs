@@ -1286,8 +1286,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|value| value.as_str()
-                == Some("current_work_item_scheduling_state=WaitingExternal")));
+            .any(|value| value.as_str() == Some("work_item_scheduling_state=WaitingExternal")));
     }
 
     #[test]

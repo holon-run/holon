@@ -26,6 +26,8 @@ pub(crate) struct SchedulerProjection {
     pub active_work_item_waiting_intents: usize,
     pub active_agent_waiting_intents: usize,
     pub active_timers: usize,
+    pub waiting_work_item: Option<WorkItemRecord>,
+    pub waiting_work_item_scheduling_state: Option<WorkItemSchedulingState>,
     pub last_turn_terminal: Option<TurnTerminalKind>,
     pub turn_in_progress: bool,
     pub runtime_error: bool,
@@ -114,6 +116,20 @@ impl SchedulerProjection {
             .iter()
             .find(|item| item.is_current)
             .map(|item| item.scheduling_state);
+        let waiting_work_item_projection = work_queue.readiness.iter().find(|item| {
+            (item.is_current || item.has_active_waits || item.has_active_task_waits)
+                && matches!(
+                    item.scheduling_state,
+                    WorkItemSchedulingState::WaitingOperator
+                        | WorkItemSchedulingState::WaitingTask
+                        | WorkItemSchedulingState::WaitingExternal
+                        | WorkItemSchedulingState::WaitingTimer
+                        | WorkItemSchedulingState::WaitingSystem
+                )
+        });
+        let waiting_work_item = waiting_work_item_projection.map(|item| item.work_item.clone());
+        let waiting_work_item_scheduling_state =
+            waiting_work_item_projection.map(|item| item.scheduling_state);
         let active_waiting_intents = storage
             .latest_waiting_intents()?
             .into_iter()
@@ -149,6 +165,8 @@ impl SchedulerProjection {
             active_work_item_waiting_intents,
             active_agent_waiting_intents,
             active_timers,
+            waiting_work_item,
+            waiting_work_item_scheduling_state,
             last_turn_terminal: snapshot.last_turn_terminal.clone(),
             turn_in_progress: snapshot.active_run_id.is_some(),
             runtime_error: runtime_error_active(
@@ -848,8 +866,8 @@ pub(crate) fn wait_decision_for_projection(
                 .evidence(format!("active_timers={}", projection.active_timers)),
         );
     }
-    projection.current_work_item.as_ref().and_then(|item| {
-        match projection.current_work_item_scheduling_state {
+    projection.waiting_work_item.as_ref().and_then(|item| {
+        match projection.waiting_work_item_scheduling_state {
             Some(WorkItemSchedulingState::WaitingOperator) => Some(
                 SchedulerDecision::new(
                     SchedulerDecisionKind::WaitForOperator,
@@ -857,13 +875,13 @@ pub(crate) fn wait_decision_for_projection(
                 )
                 .liveness_only(true)
                 .work_item_id(item.id.clone())
-                .evidence("current_work_item_scheduling_state=WaitingOperator"),
+                .evidence("work_item_scheduling_state=WaitingOperator"),
             ),
             Some(WorkItemSchedulingState::WaitingTask) => Some(
                 SchedulerDecision::new(SchedulerDecisionKind::WaitForTask, "work_item_task_wait")
                     .liveness_only(true)
                     .work_item_id(item.id.clone())
-                    .evidence("current_work_item_scheduling_state=WaitingTask"),
+                    .evidence("work_item_scheduling_state=WaitingTask"),
             ),
             Some(WorkItemSchedulingState::WaitingExternal) => Some(
                 SchedulerDecision::new(
@@ -872,13 +890,13 @@ pub(crate) fn wait_decision_for_projection(
                 )
                 .liveness_only(true)
                 .work_item_id(item.id.clone())
-                .evidence("current_work_item_scheduling_state=WaitingExternal"),
+                .evidence("work_item_scheduling_state=WaitingExternal"),
             ),
             Some(WorkItemSchedulingState::WaitingTimer) => Some(
                 SchedulerDecision::new(SchedulerDecisionKind::WaitForTimer, "work_item_timer_wait")
                     .liveness_only(true)
                     .work_item_id(item.id.clone())
-                    .evidence("current_work_item_scheduling_state=WaitingTimer"),
+                    .evidence("work_item_scheduling_state=WaitingTimer"),
             ),
             Some(WorkItemSchedulingState::WaitingSystem) => Some(
                 SchedulerDecision::new(
@@ -887,7 +905,7 @@ pub(crate) fn wait_decision_for_projection(
                 )
                 .liveness_only(true)
                 .work_item_id(item.id.clone())
-                .evidence("current_work_item_scheduling_state=WaitingSystem"),
+                .evidence("work_item_scheduling_state=WaitingSystem"),
             ),
             _ => None,
         }
