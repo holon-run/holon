@@ -204,7 +204,7 @@ button {
   min-width: 0;
 }
 
-.agent-row-title .agent-row-count {
+.agent-row-title .agent-row-status {
   margin-left: auto;
 }
 
@@ -274,18 +274,35 @@ button {
   background: #94a3b8;
 }
 
-.agent-row-count {
+.agent-row-status {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  min-width: 22px;
-  height: 22px;
-  padding: 0 6px;
+  max-width: 92px;
+  height: 20px;
+  padding: 0 7px;
   border-radius: 999px;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-row-status.input {
   background: color-mix(in srgb, var(--warning) 12%, var(--surface));
   color: var(--warning);
-  font-size: 12px;
-  font-weight: 760;
+}
+
+.agent-row-status.running {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  color: var(--accent);
+}
+
+.agent-row-status.waiting {
+  background: color-mix(in srgb, var(--muted) 14%, var(--surface));
+  color: var(--muted);
 }
 
 .agent-list-state {
@@ -370,7 +387,7 @@ button {
 
 .app-shell[data-nav-collapsed="true"] .global-nav strong,
 .app-shell[data-nav-collapsed="true"] .agent-row-main,
-.app-shell[data-nav-collapsed="true"] .agent-row-count,
+.app-shell[data-nav-collapsed="true"] .agent-row-status,
 .app-shell[data-nav-collapsed="true"] .connection-status span:last-child,
 .app-shell[data-nav-collapsed="true"] .side-heading {
   display: none;

@@ -129,28 +129,36 @@ export function App() {
               <span>{loading ? "Waiting for the local runtime." : "The runtime has no visible agents yet."}</span>
             </div>
           ) : (
-            bootstrap.agents.map((agent) => (
-              <button
-                className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
-                key={agent.id}
-                title={`${agent.id} · ${agent.focusSummary}`}
-                type="button"
-                onClick={() => navigateAgent(agent.id)}
-              >
-                <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
-                <span className="agent-row-main">
-                  <span className="agent-row-title">
-                    <strong>{agent.id}</strong>
-                    <em className={`agent-state-dot ${agent.lifecycle}`} aria-label={agent.lifecycle} />
-                    {agentSignalCount(agent) > 0 ? <span className="agent-row-count">{agentSignalCount(agent)}</span> : null}
+            bootstrap.agents.map((agent) => {
+              const status = agentStatusIndicator(agent);
+
+              return (
+                <button
+                  className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
+                  key={agent.id}
+                  title={`${agent.id} · ${agent.focusSummary}${status ? ` · ${status.title}` : ""}`}
+                  type="button"
+                  onClick={() => navigateAgent(agent.id)}
+                >
+                  <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
+                  <span className="agent-row-main">
+                    <span className="agent-row-title">
+                      <strong>{agent.id}</strong>
+                      <em className={`agent-state-dot ${agent.lifecycle}`} aria-label={agent.lifecycle} />
+                      {status ? (
+                        <span className={`agent-row-status ${status.tone}`} aria-label={status.title} title={status.title}>
+                          {status.label}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="agent-row-meta">
+                      <span>{agent.lifecycle}</span>
+                      <span>{agent.currentWork?.state ?? agent.posture}</span>
+                    </span>
                   </span>
-                  <span className="agent-row-meta">
-                    <span>{agent.lifecycle}</span>
-                    <span>{agent.currentWork?.state ?? agent.posture}</span>
-                  </span>
-                </span>
-              </button>
-            ))
+                </button>
+              );
+            })
           )}
         </section>
 
@@ -314,8 +322,26 @@ function levelLabel(level: DisplayLevel): string {
   return "Debug";
 }
 
-function agentSignalCount(agent: AgentSummary): number {
-  return agent.pending + agent.activeTaskCount + agent.waitingCount;
+function agentStatusIndicator(agent: AgentSummary): { label: string; title: string; tone: "input" | "running" | "waiting" } | null {
+  const details = [
+    agent.pending > 0 ? `${agent.pending} pending input${agent.pending === 1 ? "" : "s"}` : undefined,
+    agent.activeTaskCount > 0
+      ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}`
+      : undefined,
+    agent.waitingCount > 0 ? `${agent.waitingCount} waiting condition${agent.waitingCount === 1 ? "" : "s"}` : undefined,
+  ].filter(Boolean);
+
+  if (details.length === 0) return null;
+
+  if (agent.pending > 0) {
+    return { label: "Needs input", title: details.join(" · "), tone: "input" };
+  }
+
+  if (agent.activeTaskCount > 0) {
+    return { label: "Running", title: details.join(" · "), tone: "running" };
+  }
+
+  return { label: "Waiting", title: details.join(" · "), tone: "waiting" };
 }
 
 function liveStatusLabel(status: string): string {
