@@ -140,7 +140,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 format!("occupancy_to_release={occupancy_to_release:?}"),
             ],
         )?;
-        self.runtime.inner.storage.write_agent(&guard.state)?;
+        guard.persist_state(&self.runtime.inner.storage)?;
 
         Ok(ControlPostureOutcome {
             requested_action,
@@ -178,7 +178,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }
 
         if should_write {
-            self.runtime.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.runtime.inner.storage)?;
         }
 
         Ok(ShutdownPostureOutcome {
@@ -194,7 +194,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             queued_messages: guard.queue.len(),
         };
         if apply_bootstrap_recovered_projection(&mut guard.state, facts) {
-            self.runtime.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.runtime.inner.storage)?;
         }
         Ok(guard.state.clone())
     }
@@ -218,7 +218,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 format!("sleeping_until={:?}", guard.state.sleeping_until),
             ],
         )?;
-        self.runtime.inner.storage.write_agent(&guard.state)?;
+        guard.persist_state(&self.runtime.inner.storage)?;
         Ok(guard.state.clone())
     }
 
@@ -253,7 +253,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 format!("sleeping_until={:?}", guard.state.sleeping_until),
             ],
         )?;
-        self.runtime.inner.storage.write_agent(&guard.state)?;
+        guard.persist_state(&self.runtime.inner.storage)?;
         Ok(Some(guard.state.clone()))
     }
 
@@ -278,7 +278,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 format!("previous_sleeping_until={previous_sleeping_until:?}"),
             ],
         )?;
-        self.runtime.inner.storage.write_agent(&guard.state)?;
+        guard.persist_state(&self.runtime.inner.storage)?;
         Ok(Some(guard.state.clone()))
     }
 
@@ -309,7 +309,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         mut guard: tokio::sync::MutexGuard<'_, RuntimeAgent>,
     ) -> Result<RunLoopPoll> {
         guard.state.current_run_id = None;
-        self.runtime.inner.storage.write_agent(&guard.state)?;
+        guard.persist_state(&self.runtime.inner.storage)?;
         Ok(RunLoopPoll::Shutdown)
     }
 
@@ -375,7 +375,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             if !claimed {
                 let _ = guard.queue.pop_if_next(&candidate.message.id);
                 guard.state.pending = guard.queue.len();
-                self.runtime.inner.storage.write_agent(&guard.state)?;
+                guard.persist_state(&self.runtime.inner.storage)?;
                 return Ok(RunLoopPoll::Idle);
             }
             let message = guard
@@ -392,7 +392,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 reason: Arc::new(StdMutex::new("operator_aborted".into())),
             });
             guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
-            self.runtime.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.runtime.inner.storage)?;
             (message, guard.state.clone())
         };
 

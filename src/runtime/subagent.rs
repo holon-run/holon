@@ -302,7 +302,7 @@ impl RuntimeHandle {
                 response.input_tokens,
                 response.output_tokens,
             ));
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
         }
 
         self.persist_transcript_evidence(&TranscriptEntry {

@@ -106,7 +106,7 @@ impl RuntimeHandle {
                     if let Some(work_item_id) = message.work_item_id.as_deref() {
                         let mut guard = self.inner.agent.lock().await;
                         guard.state.current_turn_work_item_id = Some(work_item_id.to_string());
-                        self.inner.storage.write_agent(&guard.state)?;
+                        guard.persist_state(&self.inner.storage)?;
                     }
                     self.process_interactive_message(
                         &message,
@@ -159,7 +159,7 @@ impl RuntimeHandle {
                 scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
             }
             if status_mutable || matches!(message.kind, MessageKind::TaskResult) {
-                self.inner.storage.write_agent(&guard.state)?;
+                guard.persist_state(&self.inner.storage)?;
             }
         }
 
@@ -192,7 +192,7 @@ impl RuntimeHandle {
                 &memory_refresh.current_snapshot,
             )?;
             if work_refs_changed || memory_refresh.working_memory_updated || episode_changed {
-                self.inner.storage.write_agent(&guard.state)?;
+                guard.persist_state(&self.inner.storage)?;
             }
         }
         self.inner.storage.append_event(&AuditEvent::new(

@@ -344,8 +344,20 @@ struct BuiltinWebSearchSelection {
 #[derive(Debug)]
 struct RuntimeAgent {
     state: AgentState,
+    last_persisted_state: AgentState,
     queue: RuntimeQueue,
     current_run_abort: Option<CurrentRunAbortHandle>,
+}
+
+impl RuntimeAgent {
+    fn persist_state(&mut self, storage: &AppStorage) -> Result<()> {
+        if let Err(error) = storage.write_agent(&self.state) {
+            self.state = self.last_persisted_state.clone();
+            return Err(error);
+        }
+        self.last_persisted_state = self.state.clone();
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -422,6 +434,16 @@ impl CurrentRunAbortSnapshot {
 }
 
 impl RuntimeHandle {
+    pub(crate) async fn update_agent_state<F>(&self, mutate: F) -> Result<AgentState>
+    where
+        F: FnOnce(&mut AgentState) -> Result<()>,
+    {
+        let mut guard = self.inner.agent.lock().await;
+        mutate(&mut guard.state)?;
+        guard.persist_state(&self.inner.storage)?;
+        Ok(guard.state.clone())
+    }
+
     fn build_execution_root_id(
         workspace_id: &str,
         projection_kind: WorkspaceProjectionKind,
@@ -466,7 +488,7 @@ impl RuntimeHandle {
         }
         handle.token.cancel();
         scheduler::apply_stop_projection(&mut guard.state);
-        self.inner.storage.write_agent(&guard.state)?;
+        guard.persist_state(&self.inner.storage)?;
         drop(guard);
 
         self.inner.storage.append_event(&AuditEvent::new(
@@ -591,9 +613,11 @@ impl RuntimeHandle {
         if self.inner.provider_reconfig.is_some() {
             self.reconfigure_provider_for_state(&next_state).await?;
         }
-        let mut guard = self.inner.agent.lock().await;
-        guard.state = next_state;
-        self.inner.storage.write_agent(&guard.state)?;
+        self.update_agent_state(|state| {
+            *state = next_state;
+            Ok(())
+        })
+        .await?;
         Ok(())
     }
 
@@ -614,9 +638,11 @@ impl RuntimeHandle {
         if self.inner.provider_reconfig.is_some() {
             self.reconfigure_provider_for_state(&next_state).await?;
         }
-        let mut guard = self.inner.agent.lock().await;
-        guard.state = next_state;
-        self.inner.storage.write_agent(&guard.state)?;
+        self.update_agent_state(|state| {
+            *state = next_state;
+            Ok(())
+        })
+        .await?;
         Ok(())
     }
 
@@ -783,7 +809,7 @@ impl RuntimeHandle {
             guard.state.active_skills.retain(|skill| {
                 matches!(skill.activation_state, SkillActivationState::SessionActive)
             });
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
             guard.state.clone()
         };
         self.append_state_changed_events(&state)?;
@@ -845,7 +871,7 @@ impl RuntimeHandle {
                 skill.activation_state = SkillActivationState::SessionActive;
             }
         }
-        self.inner.storage.write_agent(&guard.state)?;
+        guard.persist_state(&self.inner.storage)?;
         Ok(())
     }
 
@@ -936,7 +962,7 @@ impl RuntimeHandle {
                 });
             false
         };
-        self.inner.storage.write_agent(&guard.state)?;
+        guard.persist_state(&self.inner.storage)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "skill_activated",
             serde_json::json!({
@@ -1001,7 +1027,7 @@ impl RuntimeHandle {
             guard.state.pending = guard.queue.len();
             guard.state.last_wake_reason = Some(format!("{:?}", message.kind));
             guard.state.total_message_count = self.inner.storage.count_messages()?;
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
         }
         scheduler_executor::SchedulerDecisionExecutor::new(self)
             .admit_message_wake(&message)
@@ -1211,7 +1237,7 @@ impl RuntimeHandle {
                         scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
                     }
                     guard.current_run_abort = None;
-                    self.inner.storage.write_agent(&guard.state)?;
+                    guard.persist_state(&self.inner.storage)?;
                     guard.state.clone()
                 };
                 self.append_state_changed_events(&failed_state)?;

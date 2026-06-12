@@ -37,7 +37,7 @@ impl RuntimeHandle {
             let agent_changed =
                 maybe_compact_agent(&self.inner.storage, &mut guard.state, &context_config)?;
             if agent_changed {
-                self.inner.storage.write_agent(&guard.state)?;
+                guard.persist_state(&self.inner.storage)?;
             }
             let state = guard.state.clone();
             drop(guard);

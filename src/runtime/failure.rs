@@ -326,7 +326,7 @@ impl RuntimeHandle {
                 detail_hint: Some("run `holon daemon logs` for details".into()),
                 failure_artifact: Some(failure_artifact),
             });
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
         }
         Ok(())
     }

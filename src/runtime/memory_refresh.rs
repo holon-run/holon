@@ -59,7 +59,7 @@ impl RuntimeHandle {
     ) -> Result<()> {
         let mut guard = self.inner.agent.lock().await;
         guard.state.last_continuation = Some(continuation_resolution.clone());
-        self.inner.storage.write_agent(&guard.state)?;
+        guard.persist_state(&self.inner.storage)?;
         Ok(())
     }
 
@@ -250,7 +250,7 @@ impl RuntimeHandle {
                     let mut guard = self.inner.agent.lock().await;
                     if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                         guard.state.pending_wake_hint = None;
-                        self.inner.storage.write_agent(&guard.state)?;
+                        guard.persist_state(&self.inner.storage)?;
                     }
                     return Ok(false);
                 }
@@ -265,7 +265,7 @@ impl RuntimeHandle {
                 let mut guard = self.inner.agent.lock().await;
                 if guard.state.pending_wake_hint.as_ref() == Some(&pending) {
                     guard.state.pending_wake_hint = None;
-                    self.inner.storage.write_agent(&guard.state)?;
+                    guard.persist_state(&self.inner.storage)?;
                 }
                 Ok(true)
             }
@@ -933,11 +933,8 @@ mod tests {
         persist_test_work_item(test_runtime, &record, true);
         let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
         guard.state.current_work_item_id = Some(record.id.clone());
-        test_runtime
-            .runtime
-            .inner
-            .storage
-            .write_agent(&guard.state)
+        guard
+            .persist_state(&test_runtime.runtime.inner.storage)
             .unwrap();
         record
     }

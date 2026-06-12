@@ -58,7 +58,7 @@ impl RuntimeHandle {
                     scheduler::apply_idle_projection(&mut guard.state, &self.inner.storage)?;
                 }
             }
-            self.inner.storage.write_agent(&guard.state)?;
+            guard.persist_state(&self.inner.storage)?;
         }
         self.inner
             .storage
@@ -127,7 +127,7 @@ impl RuntimeHandle {
             {
                 let mut guard = self.inner.agent.lock().await;
                 guard.state.current_turn_work_item_id = Some(work_item_id);
-                self.inner.storage.write_agent(&guard.state)?;
+                guard.persist_state(&self.inner.storage)?;
             }
             self.process_interactive_message(
                 message,
@@ -361,7 +361,7 @@ mod tests {
             let mut guard = runtime.inner.agent.lock().await;
             guard.state.status = AgentStatus::AwakeRunning;
             guard.state.current_run_id = Some("run-1".into());
-            runtime.inner.storage.write_agent(&guard.state).unwrap();
+            guard.persist_state(&runtime.inner.storage).unwrap();
         }
 
         runtime

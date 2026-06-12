@@ -215,6 +215,22 @@ impl RuntimeHost {
         &self.inner.runtime_db
     }
 
+    pub fn agent_storage(&self, agent_id: &str) -> Result<AppStorage> {
+        let storage =
+            AppStorage::new_for_agent(self.agent_data_dir(agent_id), agent_id.to_string())?;
+        storage.enable_scheduler_control_plane_db(self.runtime_db().clone())?;
+        Ok(storage)
+    }
+
+    fn agent_storage_read_only(&self, agent_id: &str) -> Result<AppStorage> {
+        let storage = AppStorage::open_read_only_for_agent(
+            self.agent_data_dir(agent_id),
+            agent_id.to_string(),
+        )?;
+        storage.enable_scheduler_control_plane_db(self.runtime_db().clone())?;
+        Ok(storage)
+    }
+
     pub(crate) fn bridge(&self) -> RuntimeHostBridge {
         RuntimeHostBridge {
             inner: Arc::downgrade(&self.inner),
@@ -305,7 +321,8 @@ impl RuntimeHost {
         agent_id: &str,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
         self.public_agent_identity(agent_id)?;
-        let state = AppStorage::new_for_agent(self.agent_data_dir(agent_id), agent_id.to_string())
+        let state = self
+            .agent_storage(agent_id)
             .map_err(PublicAgentError::Runtime)?
             .read_agent()
             .map_err(PublicAgentError::Runtime)?
@@ -672,10 +689,7 @@ impl RuntimeHost {
         &self,
         identity: &AgentIdentityRecord,
     ) -> Result<AgentListEntry> {
-        let storage = AppStorage::new_for_agent(
-            self.agent_data_dir(&identity.agent_id),
-            identity.agent_id.clone(),
-        )?;
+        let storage = self.agent_storage(&identity.agent_id)?;
         let agent = match storage.read_agent() {
             Ok(Some(agent)) => agent,
             Ok(None) => stopped_unloaded_agent(&identity.agent_id),
@@ -740,10 +754,7 @@ impl RuntimeHost {
                 });
                 continue;
             }
-            let storage = AppStorage::new_for_agent(
-                self.agent_data_dir(&identity.agent_id),
-                identity.agent_id.clone(),
-            )?;
+            let storage = self.agent_storage(&identity.agent_id)?;
             let state = storage
                 .read_agent()?
                 .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
@@ -815,10 +826,7 @@ impl RuntimeHost {
         text: String,
         authority_class: AuthorityClass,
     ) -> Result<EffectivePrompt> {
-        let storage = AppStorage::open_read_only_for_agent(
-            self.agent_data_dir(&identity.agent_id),
-            identity.agent_id.clone(),
-        )?;
+        let storage = self.agent_storage_read_only(&identity.agent_id)?;
         let state = storage
             .read_agent()?
             .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
@@ -926,10 +934,7 @@ impl RuntimeHost {
         &self,
         identity: &AgentIdentityRecord,
     ) -> Result<Value> {
-        let storage = AppStorage::open_read_only_for_agent(
-            self.agent_data_dir(&identity.agent_id),
-            identity.agent_id.clone(),
-        )?;
+        let storage = self.agent_storage_read_only(&identity.agent_id)?;
         let state = storage
             .read_agent()?
             .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
@@ -957,10 +962,7 @@ impl RuntimeHost {
                 && record.kind == AgentKind::Child
                 && record.parent_agent_id.as_deref() == Some(parent_agent_id)
         }) {
-            let storage = AppStorage::new_for_agent(
-                self.agent_data_dir(&identity.agent_id),
-                identity.agent_id.clone(),
-            )?;
+            let storage = self.agent_storage(&identity.agent_id)?;
             let state = storage
                 .read_agent()?
                 .unwrap_or_else(|| AgentState::new(identity.agent_id.clone()));
@@ -1143,12 +1145,10 @@ impl RuntimeHost {
         let Some(task_id) = identity.delegated_from_task_id.as_deref() else {
             return Ok(true);
         };
-        let parent_data_dir = self.agent_data_dir(parent_agent_id);
-        if !parent_data_dir.exists() {
+        if !self.agent_data_dir(parent_agent_id).exists() {
             return Ok(true);
         }
-        let parent_storage =
-            AppStorage::new_for_agent(parent_data_dir, parent_agent_id.to_string())?;
+        let parent_storage = self.agent_storage(parent_agent_id)?;
         let Some(task) = parent_storage.latest_task_record(task_id)? else {
             return Ok(true);
         };
@@ -1345,10 +1345,7 @@ impl RuntimeHost {
         child_turn_baseline: u64,
         worktree: bool,
     ) -> Result<ChildTaskTerminalResult> {
-        let storage = AppStorage::new_for_agent(
-            self.agent_data_dir(child_agent_id),
-            child_agent_id.to_string(),
-        )?;
+        let storage = self.agent_storage(child_agent_id)?;
         if let Some(result) = self
             .completed_child_terminal_from_storage(&storage, child_agent_id, child_turn_baseline)
             .await?
@@ -1810,10 +1807,7 @@ impl RuntimeHostBridge {
         {
             return Ok(None);
         }
-        let storage = AppStorage::new_for_agent(
-            host.agent_data_dir(child_agent_id),
-            child_agent_id.to_string(),
-        )?;
+        let storage = host.agent_storage(child_agent_id)?;
         let state = storage
             .read_agent()?
             .unwrap_or_else(|| AgentState::new(child_agent_id.to_string()));
@@ -2379,6 +2373,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unloaded_list_agent_entries_reads_agent_state_from_db_without_agent_json() {
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+                .unwrap();
+        let identity = AgentIdentityRecord::new(
+            "release-bot",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        runtime_db.agent_identities().upsert(&identity).unwrap();
+        let mut state = AgentState::new("release-bot");
+        state.status = AgentStatus::Asleep;
+        runtime_db.agent_states().upsert(&state).unwrap();
+
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok"))).unwrap();
+        assert!(!host
+            .agent_data_dir("release-bot")
+            .join(".holon/state/agent.json")
+            .exists());
+
+        let entry = host
+            .list_agent_entries()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.identity.agent_id == "release-bot")
+            .expect("release-bot should be listed from DB-only state");
+        assert_eq!(entry.status, AgentStatus::Asleep);
+    }
+
+    #[tokio::test]
+    async fn external_ingress_stopped_gate_reads_agent_state_from_db_without_agent_json() {
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+                .unwrap();
+        let identity = AgentIdentityRecord::new(
+            "release-bot",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        runtime_db.agent_identities().upsert(&identity).unwrap();
+        let mut state = AgentState::new("release-bot");
+        state.status = AgentStatus::Stopped;
+        runtime_db.agent_states().upsert(&state).unwrap();
+
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok"))).unwrap();
+        assert!(!host
+            .agent_data_dir("release-bot")
+            .join(".holon/state/agent.json")
+            .exists());
+
+        let error = match host
+            .get_public_agent_for_external_ingress("release-bot")
+            .await
+        {
+            Ok(_) => panic!("stopped DB agent state should reject external ingress"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, PublicAgentError::Stopped { .. }));
+    }
+
+    #[tokio::test]
     async fn pre_server_prepare_repairs_completed_empty_host_agent_registry_cutover() {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
@@ -2556,7 +2628,7 @@ mod tests {
             .expect("unloaded release-bot should still be listed");
         assert_eq!(
             stored_release_bot.scheduling_posture.posture,
-            AgentSchedulingPosture::Unknown
+            AgentSchedulingPosture::Idle
         );
     }
 
@@ -2578,7 +2650,7 @@ mod tests {
         assert!(agent_home.join("notes").is_dir());
         assert!(agent_home.join("work").is_dir());
         assert!(agent_home.join("skills").is_dir());
-        assert!(agent_home.join(".holon/state/agent.json").is_file());
+        assert!(!agent_home.join(".holon/state/agent.json").exists());
         assert!(agent_home.join(".holon/ledger").is_dir());
         assert!(!agent_home.join("agent.json").exists());
         let provenance: crate::agent_template::TemplateProvenanceRecord = serde_json::from_slice(
@@ -3257,7 +3329,7 @@ mod tests {
         );
         host.append_agent_identity(&child).unwrap();
 
-        let child_storage = AppStorage::new(host.agent_data_dir("child_test")).unwrap();
+        let child_storage = host.agent_storage("child_test").unwrap();
         let mut child_state = AgentState::new("child_test");
         child_state.status = AgentStatus::AwakeRunning;
         child_state.pending = 1;
@@ -3316,7 +3388,7 @@ mod tests {
         let (_home, host) = test_host();
         let config = host.config().clone();
         let parent_agent_id = config.default_agent_id.clone();
-        let parent_storage = AppStorage::new(host.agent_data_dir(&parent_agent_id)).unwrap();
+        let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
         parent_storage
             .append_task(&TaskRecord {
                 id: "task-1".into(),
@@ -3347,7 +3419,7 @@ mod tests {
         );
         host.append_agent_identity(&child).unwrap();
 
-        let child_storage = AppStorage::new(host.agent_data_dir("child_test")).unwrap();
+        let child_storage = host.agent_storage("child_test").unwrap();
         let mut child_state = AgentState::new("child_test");
         child_state.status = AgentStatus::AwaitingTask;
         child_storage.write_agent(&child_state).unwrap();
@@ -3392,7 +3464,7 @@ mod tests {
         let (_home, host) = test_host();
         let config = host.config().clone();
         let parent_agent_id = config.default_agent_id.clone();
-        let parent_storage = AppStorage::new(host.agent_data_dir(&parent_agent_id)).unwrap();
+        let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
         parent_storage
             .append_task(&TaskRecord {
                 id: "task-recover-child".into(),
@@ -3430,7 +3502,7 @@ mod tests {
         .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
         host.append_agent_identity(&child).unwrap();
 
-        let child_storage = AppStorage::new(host.agent_data_dir("child_recover")).unwrap();
+        let child_storage = host.agent_storage("child_recover").unwrap();
         let mut child_state = AgentState::new("child_recover");
         child_state.turn_index = 1;
         child_state.status = AgentStatus::AwakeIdle;
@@ -3770,7 +3842,7 @@ mod tests {
             .expect("host shutdown should be bounded")
             .unwrap();
 
-        let storage = AppStorage::new(host.agent_data_dir(&agent_id)).unwrap();
+        let storage = host.agent_storage(&agent_id).unwrap();
         let persisted = storage.read_agent().unwrap().unwrap();
         assert_eq!(persisted.status, AgentStatus::AwakeIdle);
         assert_eq!(persisted.current_run_id, None);
@@ -3854,7 +3926,8 @@ mod tests {
 
         host.shutdown().await.unwrap();
 
-        let persisted = AppStorage::new(host.agent_data_dir(&agent_id))
+        let persisted = host
+            .agent_storage(&agent_id)
             .unwrap()
             .read_agent()
             .unwrap()

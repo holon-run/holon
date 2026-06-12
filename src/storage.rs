@@ -367,7 +367,6 @@ impl AppStorage {
     }
 
     pub(crate) fn enable_scheduler_control_plane_db(&self, runtime_db: RuntimeDb) -> Result<()> {
-        self.ensure_writable()?;
         let agent_id = self.current_agent_id()?;
         {
             let mut counter = self
@@ -924,6 +923,7 @@ impl AppStorage {
         }
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.agent_states().upsert(agent)?;
+            return Ok(());
         }
         let content = serde_json::to_vec_pretty(agent)?;
         let tmp_path = self
@@ -943,11 +943,14 @@ impl AppStorage {
     pub fn read_agent(&self) -> Result<Option<AgentState>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             if let Some(agent_id) = self.current_agent_id()? {
-                if let Some(agent) = runtime_db.agent_states().latest(&agent_id)? {
-                    return Ok(Some(agent));
-                }
+                return runtime_db.agent_states().latest(&agent_id);
             }
+            return Ok(None);
         }
+        self.read_agent_file()
+    }
+
+    pub(crate) fn read_legacy_agent_for_import(&self) -> Result<Option<AgentState>> {
         self.read_agent_file()
     }
 
@@ -4402,10 +4405,11 @@ mod tests {
     }
 
     #[test]
-    fn write_agent_with_runtime_db_keeps_legacy_agent_json_export_current() {
+    fn write_agent_with_runtime_db_writes_db_only() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
+        let legacy_before = fs::read_to_string(dir.path().join(".holon/state/agent.json")).unwrap();
         let runtime_db = RuntimeDb::open_and_migrate(
             storage.runtime_dir().join("state/runtime.sqlite"),
             storage.runtime_dir().join("state/runtime.lock"),
@@ -4424,10 +4428,33 @@ mod tests {
         agent.turn_index = 7;
         storage.write_agent(&agent).unwrap();
 
-        let reopened_without_db = AppStorage::new(dir.path()).unwrap();
-        let restored = reopened_without_db.read_agent().unwrap().unwrap();
+        let restored = storage.read_agent().unwrap().unwrap();
         assert_eq!(restored.status, AgentStatus::Stopped);
         assert_eq!(restored.turn_index, 7);
+        assert_eq!(
+            fs::read_to_string(dir.path().join(".holon/state/agent.json")).unwrap(),
+            legacy_before
+        );
+    }
+
+    #[test]
+    fn read_agent_with_runtime_db_does_not_fallback_to_legacy_agent_json() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        let mut legacy_agent = AgentState::new("default");
+        legacy_agent.status = AgentStatus::Stopped;
+        storage.write_agent(&legacy_agent).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        runtime_db.agent_states().import_legacy(None).unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+
+        assert_eq!(storage.read_agent().unwrap(), None);
     }
 
     #[test]
@@ -4466,7 +4493,7 @@ mod tests {
         )
         .unwrap();
 
-        let restored = storage.read_agent().unwrap().unwrap();
+        let restored = storage.read_legacy_agent_for_import().unwrap().unwrap();
         assert_eq!(restored.status, AgentStatus::Stopped);
     }
 
