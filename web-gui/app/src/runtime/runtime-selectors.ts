@@ -2,7 +2,10 @@ import type { AgentSummary } from "./types";
 import type { RuntimeStoreState } from "./runtime-store";
 
 export function selectSelectedAgent(state: RuntimeStoreState): AgentSummary | undefined {
-  return state.bootstrap.agents.find((agent) => agent.id === state.selectedAgentId) ?? state.bootstrap.agents[0];
+  if (state.selectedAgentId) {
+    return state.bootstrap.agents.find((agent) => agent.id === state.selectedAgentId);
+  }
+  return state.bootstrap.agents[0];
 }
 
 export function selectSelectedAgentDetail(state: RuntimeStoreState) {

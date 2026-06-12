@@ -1,3 +1,5 @@
+import { useLayoutEffect } from "react";
+
 import { AgentPage } from "../features/agent/AgentPage";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
@@ -8,6 +10,7 @@ import { useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, DisplayLevel, RouteKey } from "../runtime/types";
+import { pushBrowserRoute, routeFromLocation } from "./routes";
 
 const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
   { key: "dashboard", label: "Dashboard", icon: "◎" },
@@ -47,6 +50,31 @@ export function App() {
         ? "live"
         : "preview";
 
+  useLayoutEffect(() => {
+    const applyBrowserRoute = () => {
+      const nextRoute = routeFromLocation(window.location);
+      if (nextRoute.route === "agent" && nextRoute.agentId) {
+        openAgent(nextRoute.agentId);
+        return;
+      }
+      setRoute(nextRoute.route);
+    };
+
+    applyBrowserRoute();
+    window.addEventListener("popstate", applyBrowserRoute);
+    return () => window.removeEventListener("popstate", applyBrowserRoute);
+  }, [openAgent, setRoute]);
+
+  function navigateRoute(nextRoute: RouteKey) {
+    setRoute(nextRoute);
+    pushBrowserRoute(nextRoute, selectedAgentId);
+  }
+
+  function navigateAgent(agentId: string) {
+    openAgent(agentId);
+    pushBrowserRoute("agent", agentId);
+  }
+
   return (
     <div
       className="app-shell"
@@ -77,7 +105,7 @@ export function App() {
               type="button"
               aria-label={item.label}
               title={item.label}
-              onClick={() => setRoute(item.key)}
+              onClick={() => navigateRoute(item.key)}
             >
               <span>{item.icon}</span>
               <strong>{item.label}</strong>
@@ -96,7 +124,7 @@ export function App() {
               key={agent.id}
               title={`${agent.id} · ${agent.focusSummary}`}
               type="button"
-              onClick={() => openAgent(agent.id)}
+              onClick={() => navigateAgent(agent.id)}
             >
               <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
               <span className="agent-row-main">
@@ -134,13 +162,13 @@ export function App() {
                   className="back-button"
                   type="button"
                   aria-label="Back to dashboard"
-                  onClick={() => setRoute("dashboard")}
+                  onClick={() => navigateRoute("dashboard")}
                 >
                   ←
                 </button>
               ) : null}
               <div>
-                <strong>{route === "agent" ? selectedAgent?.id ?? "Agent" : pageTitle(route)}</strong>
+                <strong>{route === "agent" ? (selectedAgent?.id ?? selectedAgentId) || "Agent" : pageTitle(route)}</strong>
                 <span>
                   {route === "agent"
                     ? selectedAgent?.subtitle ?? "loading agent"
@@ -203,7 +231,7 @@ export function App() {
             onRefresh={() => {
               void refresh();
             }}
-            onOpenAgent={openAgent}
+            onOpenAgent={navigateAgent}
           />
         ) : null}
         {route === "agent" && selectedAgent ? (
@@ -221,12 +249,28 @@ export function App() {
             onOpenInspector={() => setInspectorOpen(true)}
           />
         ) : null}
+        {route === "agent" && !selectedAgent ? <MissingAgentPage agentId={selectedAgentId} loading={loading} /> : null}
         {route === "search" ? <SearchPage /> : null}
         {route === "settings" ? <SettingsPage connection={bootstrap.connection} /> : null}
       </main>
 
       {selectedAgent ? <InspectorPanel agent={selectedAgent} open={inspectorOpen} onClose={() => setInspectorOpen(false)} /> : null}
     </div>
+  );
+}
+
+function MissingAgentPage({ agentId, loading }: { agentId: string; loading: boolean }) {
+  return (
+    <section className="page agent-page" aria-label="Agent conversation">
+      <div className="agent-workbench">
+        <section className="conversation-pane">
+          <div className="conversation-empty">
+            <strong>{loading ? "Loading agent…" : "Agent not found"}</strong>
+            <span>{agentId ? agentId : "No agent id was provided in the current route."}</span>
+          </div>
+        </section>
+      </div>
+    </section>
   );
 }
 
