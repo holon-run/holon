@@ -26,7 +26,7 @@ async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentI
     getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`),
     getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/briefs?limit=5`),
     getJson<TranscriptEntryDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/transcript?limit=40`),
-    getJson<EventPageResponseDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/events?limit=80&order=desc&max_level=${displayLevel}`),
+    fetchAgentEvents(baseUrl, fetchImpl, agentId, { limit: 80, order: "desc", displayLevel }),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const agent = projectAgent(fallbackEntry, state, briefs[0]);
@@ -157,6 +157,14 @@ export interface AgentEventStreamOptions {
   onError?: (error: Error) => void;
 }
 
+export interface AgentEventPageOptions {
+  beforeSeq?: number;
+  afterSeq?: number;
+  limit?: number;
+  order?: "asc" | "desc";
+  displayLevel?: DisplayLevel;
+}
+
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE);
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -189,6 +197,12 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         };
       }
     },
+    async getAgentEvents(agentId: string, options: AgentEventPageOptions = {}): Promise<EventPageResponseDto> {
+      if (!baseUrl) {
+        return { events: [], has_older: false };
+      }
+      return fetchAgentEvents(baseUrl, fetchImpl, agentId, options);
+    },
     streamAgentEvents(agentId: string, options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
       if (!baseUrl) return undefined;
       return streamAgentEvents(baseUrl, fetchImpl, agentId, options);
@@ -200,6 +214,23 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, { text });
     },
   };
+}
+
+async function fetchAgentEvents(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  agentId: string,
+  options: AgentEventPageOptions,
+): Promise<EventPageResponseDto> {
+  const query = new URLSearchParams();
+  if (options.beforeSeq != null) query.set("before_seq", String(options.beforeSeq));
+  if (options.afterSeq != null) query.set("after_seq", String(options.afterSeq));
+  if (options.limit != null) query.set("limit", String(options.limit));
+  if (options.order) query.set("order", options.order);
+  if (options.displayLevel) query.set("max_level", options.displayLevel);
+  const queryString = query.toString();
+  const path = `/agents/${encodeURIComponent(agentId)}/events${queryString ? `?${queryString}` : ""}`;
+  return getJson<EventPageResponseDto>(fetchImpl, baseUrl, path);
 }
 
 function streamAgentEvents(

@@ -8,6 +8,7 @@ export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnectin
 
 export interface AgentSessionState {
   loading: boolean;
+  loadingOlder: boolean;
   liveStatus: AgentLiveStatus;
   sendingPrompt: boolean;
   detail: AgentDetail | null;
@@ -17,6 +18,7 @@ export interface AgentSessionState {
   oldestSeq?: number;
   hasOlder?: boolean;
   error?: string;
+  historyError?: string;
   promptError?: string;
 }
 
@@ -61,6 +63,7 @@ export interface RuntimeStoreState {
   toggleNavCollapsed: () => void;
   refreshBootstrap: () => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
+  loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
   startAgentEventStream: (agentId: string | undefined, displayLevel: DisplayLevel) => void;
   stopAgentEventStream: (agentId: string | undefined) => void;
@@ -169,6 +172,48 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
+  loadOlderAgentEvents: async (agentId, displayLevel) => {
+    if (!agentId) return;
+    const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
+    if (session.loadingOlder || !session.hasOlder || session.oldestSeq == null) return;
+
+    set((state) => ({
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...emptyAgentSession(),
+          ...state.sessionsByAgentId[agentId],
+          loadingOlder: true,
+          historyError: undefined,
+        },
+      },
+    }));
+
+    try {
+      const page = await runtimeClient.getAgentEvents(agentId, {
+        beforeSeq: session.oldestSeq,
+        limit: 80,
+        order: "desc",
+        displayLevel,
+      });
+
+      set((state) => mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq, page.has_older, displayLevel));
+    } catch (error) {
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...emptyAgentSession(),
+            ...state.sessionsByAgentId[agentId],
+            loadingOlder: false,
+            historyError: error instanceof Error ? error.message : String(error),
+          },
+        },
+      }));
+      throw error;
+    }
+  },
+
   sendOperatorPrompt: async (agentId, text, displayLevel) => {
     const prompt = text.trim();
     if (!agentId || !prompt) {
@@ -268,6 +313,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 function emptyAgentSession(): AgentSessionState {
   return {
     loading: false,
+    loadingOlder: false,
     liveStatus: "idle",
     sendingPrompt: false,
     detail: null,
@@ -317,7 +363,7 @@ function applyStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnve
       ...current.eventsBySeq,
       [seq]: event,
     };
-    const eventSeqs = Array.from(new Set([...current.eventSeqs, seq])).sort((left, right) => left - right).slice(-300);
+    const eventSeqs = Array.from(new Set([...current.eventSeqs, seq])).sort((left, right) => left - right);
     const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
     const liveTimeline = reduceAgentSessionTimeline({
       transcript: [],
@@ -353,11 +399,67 @@ function applyStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnve
   });
 }
 
+function mergeEventPageIntoSession(
+  state: RuntimeStoreState,
+  agentId: string,
+  pageEvents: StreamEventEnvelopeDto[],
+  pageOldestSeq: number | undefined,
+  pageHasOlder: boolean | undefined,
+  displayLevel: DisplayLevel,
+): Partial<RuntimeStoreState> {
+  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  const eventsBySeq = {
+    ...current.eventsBySeq,
+    ...eventsBySeqFromPage(pageEvents),
+  };
+  const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
+  const historyTimeline = reduceAgentSessionTimeline({
+    transcript: [],
+    briefs: [],
+    events: { events: pageEvents },
+    eventDisplayLevel: displayLevel,
+  });
+  const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
+  const detail = current.detail
+    ? {
+        ...current.detail,
+        timeline: mergeTimeline(historyTimeline, current.detail.timeline),
+        events,
+        oldestEventSeq: pageOldestSeq ?? eventSeqs[0] ?? current.detail.oldestEventSeq,
+        hasOlderEvents: pageHasOlder,
+      }
+    : current.detail;
+
+  return {
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...current,
+        detail,
+        eventsBySeq,
+        eventSeqs,
+        oldestSeq: pageOldestSeq ?? eventSeqs[0] ?? current.oldestSeq,
+        hasOlder: pageHasOlder,
+        loadingOlder: false,
+        historyError: undefined,
+      },
+    },
+  };
+}
+
 function eventsBySeq(events: StreamEventEnvelopeDto[]): Record<number, unknown> {
+  return eventsBySeqFromPage(events);
+}
+
+function eventsBySeqFromPage(events: StreamEventEnvelopeDto[]): Record<number, unknown> {
   return Object.fromEntries(events.filter((event) => event.event_seq != null).map((event) => [event.event_seq, event]));
 }
 
 function eventSeqs(events: StreamEventEnvelopeDto[]): number[] {
+  return eventSeqsFromPage(events);
+}
+
+function eventSeqsFromPage(events: StreamEventEnvelopeDto[]): number[] {
   return events
     .map((event) => event.event_seq)
     .filter((seq): seq is number => seq != null)

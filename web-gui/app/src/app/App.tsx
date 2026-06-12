@@ -33,6 +33,7 @@ export function App() {
     selectedAgent?.id ? state.sessionsByAgentId[selectedAgent.id] : undefined,
   );
   const sendOperatorPrompt = useRuntimeStore((state) => state.sendOperatorPrompt);
+  const loadOlderAgentEvents = useRuntimeStore((state) => state.loadOlderAgentEvents);
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
@@ -186,9 +187,13 @@ export function App() {
             loading={agentDetailLoading}
             sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
             promptError={selectedAgentSession?.promptError}
+            hasOlderEvents={selectedAgentSession?.hasOlder ?? selectedAgentDetail?.hasOlderEvents ?? false}
+            loadingOlderEvents={selectedAgentSession?.loadingOlder ?? false}
+            historyError={selectedAgentSession?.historyError}
             onRefresh={() => {
               void refreshAgentDetail();
             }}
+            onLoadOlderEvents={() => loadOlderAgentEvents(selectedAgent.id, displayLevel)}
             onSendPrompt={(text) => sendOperatorPrompt(selectedAgent.id, text, displayLevel)}
             onOpenInspector={() => setInspectorOpen(true)}
           />

@@ -2,9 +2,16 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  min-height: 100vh;
+  min-height: 100%;
+  overflow: hidden;
   background: var(--page);
   color: var(--text);
   font-size: 15px;
@@ -22,7 +29,9 @@ button {
 .app-shell {
   display: grid;
   grid-template-columns: 306px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .app-shell[data-panel="open"] {
@@ -41,7 +50,9 @@ button {
   position: relative;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
   padding: 10px 8px 12px;
   background: var(--sidebar);
   color: #324354;
@@ -125,6 +136,13 @@ button {
   padding: 7px 8px;
 }
 
+.agent-switcher {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .agent-badge {
   display: grid;
   flex: 0 0 auto;
@@ -179,7 +197,11 @@ button {
 }
 
 .main-shell {
+  display: flex;
+  min-height: 0;
   min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--page);
 }
 
@@ -287,7 +309,14 @@ button {
 }
 
 .page {
-  min-height: calc(100vh - 57px);
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.agent-page {
+  display: grid;
+  overflow: hidden;
 }
 
 .page-inner {
@@ -520,13 +549,13 @@ code {
 
 .agent-workbench {
   display: grid;
-  min-height: calc(100vh - 114px);
+  min-height: 0;
 }
 
 .conversation-pane {
   display: grid;
   grid-template-rows: auto 1fr auto;
-  min-height: inherit;
+  min-height: 0;
 }
 
 .conversation-head {
@@ -578,7 +607,39 @@ code {
   display: grid;
   align-content: end;
   gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
   padding: 28px;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+}
+
+.history-loader,
+.history-status {
+  justify-self: center;
+}
+
+.history-loader button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.history-loader button:disabled {
+  cursor: default;
+  opacity: 0.68;
+}
+
+.history-status {
+  max-width: 720px;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  color: var(--danger);
+  font-size: 12px;
 }
 
 .message {
