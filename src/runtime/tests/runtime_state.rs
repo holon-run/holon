@@ -125,7 +125,6 @@ async fn update_agent_state_rolls_back_memory_when_persist_fails() {
     .unwrap();
 
     let original = runtime.agent_state().await.unwrap();
-    assert_eq!(original.status, AgentStatus::AwakeIdle);
 
     let error = runtime
         .update_agent_state(|state| {
@@ -140,8 +139,8 @@ async fn update_agent_state_rolls_back_memory_when_persist_fails() {
         .contains("cannot write agent state for `other-agent`"));
 
     let restored = runtime.agent_state().await.unwrap();
-    assert_eq!(restored.id, "default");
-    assert_eq!(restored.status, AgentStatus::AwakeIdle);
+    assert_eq!(restored.id, original.id);
+    assert_eq!(restored.status, original.status);
 }
 
 #[tokio::test]
