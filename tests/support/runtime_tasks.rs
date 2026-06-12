@@ -39,7 +39,7 @@ use holon::{
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration, Instant};
 
 use crate::support::runtime_helpers::{
     aggressive_compaction_config, delegated_prompt_text, git, init_git_repo,
@@ -679,6 +679,57 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
         runtime.latest_task_records_snapshot()?.is_empty(),
         "batch items should not promote into command_task records"
     );
+    Ok(())
+}
+
+pub async fn exec_command_batch_does_not_wait_for_background_pipe_holders() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+
+    let started = Instant::now();
+    let call = ToolCall {
+        id: "tool-exec-batch-background-pipe".into(),
+        name: "ExecCommandBatch".into(),
+        input: json!({
+            "items": [
+                {
+                    "cmd": "sh -c '(sleep 5) & printf parent_done'",
+                    "login": false,
+                    "yield_time_ms": 10_000,
+                    "max_output_tokens": 256
+                }
+            ]
+        }),
+    };
+    let execute = registry.execute(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &call,
+    );
+
+    let (result, _) = timeout(Duration::from_secs(3), execute)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "ExecCommandBatch waited for a background child that only held stdout/stderr open"
+            )
+        })??;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "ExecCommandBatch should return after the foreground command exits"
+    );
+    let value = parse_tool_result_payload(&result)?;
+    assert_eq!(value["item_count"], 1);
+    assert_eq!(value["completed_count"], 1);
+    assert_eq!(value["items"][0]["status"], "completed");
+    assert!(value["items"][0]["result"]["stdout_preview"]
+        .as_str()
+        .expect("stdout preview")
+        .contains("parent_done"));
     Ok(())
 }
 

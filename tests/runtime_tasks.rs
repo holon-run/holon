@@ -25,6 +25,7 @@ runtime_async_tests!(
     shell_tools_truncate_large_output_before_provider_reinjection,
     exec_command_reports_nonzero_exit_and_truncates_output,
     exec_command_batch_returns_grouped_item_results,
+    exec_command_batch_does_not_wait_for_background_pipe_holders,
     exec_command_batch_top_level_defaults_apply_to_items,
     exec_command_batch_stop_on_error_skips_later_items,
     exec_command_spawn_failure_returns_shell_recovery_hint,
