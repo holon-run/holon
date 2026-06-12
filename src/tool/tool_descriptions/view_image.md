@@ -5,10 +5,13 @@ prompt describing what to inspect. It records provider-neutral evidence such as
 media type, byte count, SHA-256, and dimensions when they can be read from the
 file header.
 
-`ViewImage` selects a configured primary or fallback model that advertises
-`image_input` support and includes structured selection diagnostics in the
-result. If no configured model supports image input, the tool returns a
-`vision_adapter_unavailable` error with the evaluated candidates.
+`ViewImage` selects an explicit `vision.default` provider/model when configured.
+Otherwise it auto-discovers an authenticated provider/model that advertises
+`image_input` support and whose transport can generate visual observations.
+Conversation `model.fallbacks` remain only a compatibility candidate source, not
+the primary ViewImage selection mechanism. The result includes structured
+selection diagnostics. If no configured model supports image input, the tool
+returns a `vision_adapter_unavailable` error with the evaluated candidates.
 
 When the selected vision model is OpenAI-compatible, `ViewImage` sends the image
 and prompt to that model and returns a generated `visual_observation` alongside

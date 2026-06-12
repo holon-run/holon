@@ -41,6 +41,8 @@ fn test_config() -> AppConfig {
         stored_config: Default::default(),
         default_model: holon::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),
         fallback_models: Vec::new(),
+        vision_model: None,
+        vision_candidate_models: Vec::new(),
         runtime_max_output_tokens: 8192,
         default_tool_output_tokens: 8_000,
         max_tool_output_tokens: 64_000,

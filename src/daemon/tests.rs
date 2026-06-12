@@ -76,6 +76,8 @@ fn test_config() -> AppConfig {
             model: "claude-sonnet-4-6".into(),
         },
         fallback_models: vec![],
+        vision_model: None,
+        vision_candidate_models: Vec::new(),
         runtime_max_output_tokens: 8192,
         default_tool_output_tokens: crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32,
         max_tool_output_tokens: crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32,
