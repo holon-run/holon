@@ -370,6 +370,11 @@ pub async fn subagent_task_status_exposes_live_and_terminal_child_observability(
         .as_ref()
         .and_then(|child| child.last_result_brief.as_deref())
         .is_some_and(|brief| brief.contains("slow child result")));
+    // Verify token usage is exposed on terminal task status for completed child tasks
+    assert!(
+        terminal_snapshot.token_usage.is_some(),
+        "terminal task status should include child agent token usage"
+    );
     Ok(())
 }
 
