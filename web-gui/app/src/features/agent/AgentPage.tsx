@@ -1,3 +1,4 @@
+import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import type { AgentDetail, AgentSummary, AgentTimelineItem, DisplayLevel } from "../../runtime/types";
 
 interface AgentPageProps {
@@ -11,7 +12,7 @@ interface AgentPageProps {
 
 export function AgentPage({ agent, detail, displayLevel, loading, onRefresh, onOpenInspector }: AgentPageProps) {
   const activeAgent = detail?.agent ?? agent;
-  const timeline = filterTimeline(detail?.timeline ?? fallbackTimeline(activeAgent), displayLevel);
+  const timeline = filterTimelineByDisplayLevel(detail?.timeline ?? fallbackTimeline(activeAgent), displayLevel);
 
   return (
     <section className="page agent-page" aria-label="Agent conversation">
@@ -89,15 +90,11 @@ function fallbackTimeline(agent: AgentSummary): AgentTimelineItem[] {
       body: agent.lastBrief,
       timestamp: agent.lastTurnTime,
       meta: "brief",
+      minDisplayLevel: "info",
+      sourceIds: [`${agent.id}-fallback-brief`],
       debug: JSON.stringify(agent, null, 2),
     },
   ];
-}
-
-function filterTimeline(items: AgentTimelineItem[], displayLevel: DisplayLevel): AgentTimelineItem[] {
-  if (displayLevel === "debug") return items;
-  if (displayLevel === "verbose") return items.filter((item) => item.kind !== "event" || item.label !== "runtime event");
-  return items.filter((item) => item.kind === "operator" || item.kind === "assistant").slice(-12);
 }
 
 function formatDisplayTime(value: string): string {

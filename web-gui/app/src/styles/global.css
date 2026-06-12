@@ -594,7 +594,8 @@ code {
 }
 
 .message.tool,
-.message.event {
+.message.event,
+.message.system {
   justify-self: center;
   width: min(900px, 100%);
 }
@@ -616,7 +617,8 @@ code {
 }
 
 .tool .bubble,
-.event .bubble {
+.event .bubble,
+.system .bubble {
   background: color-mix(in srgb, var(--accent) 7%, var(--surface));
 }
 

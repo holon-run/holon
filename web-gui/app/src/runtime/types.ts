@@ -44,7 +44,7 @@ export interface AgentSummary {
   currentWork?: WorkItemSummary;
 }
 
-export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event";
+export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event" | "system";
 
 export interface AgentTimelineItem {
   id: string;
@@ -53,6 +53,8 @@ export interface AgentTimelineItem {
   body: string;
   timestamp: string;
   meta: string;
+  minDisplayLevel: DisplayLevel;
+  sourceIds: string[];
   debug?: string;
 }
 
