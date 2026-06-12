@@ -1849,6 +1849,24 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "xiaomi",
+            "mimo-v2.5-pro",
+            "Xiaomi MiMo V2.5 Pro",
+            1_000_000,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "xiaomi",
+            "mimo-v2.5-pro-ultraspeed",
+            "Xiaomi MiMo V2.5 Pro UltraSpeed",
+            1_000_000,
+            131_072,
+            true,
+            false,
+        ),
+        catalog_model(
+            "xiaomi",
             "mimo-v2-flash",
             "Xiaomi MiMo V2 Flash",
             262_144,
@@ -1876,11 +1894,20 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "xiaomi-token-plan",
-            "mimo-v2-flash",
-            "Xiaomi MiMo V2 Flash",
-            262_144,
-            8_192,
+            "mimo-v2.5-pro",
+            "Xiaomi MiMo V2.5 Pro",
+            1_000_000,
+            131_072,
+            true,
             false,
+        ),
+        catalog_model(
+            "xiaomi-token-plan",
+            "mimo-v2.5-pro-ultraspeed",
+            "Xiaomi MiMo V2.5 Pro UltraSpeed",
+            1_000_000,
+            131_072,
+            true,
             false,
         ),
         catalog_model(
@@ -2032,12 +2059,12 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
     extend_catalog_model_aliases_from_source(
         &mut entries,
         "xiaomi",
-        &[
-            "xiaomi-anthropic",
-            "xiaomi-openai",
-            "xiaomi-token-plan-anthropic",
-            "xiaomi-token-plan-openai",
-        ],
+        &["xiaomi-anthropic", "xiaomi-openai"],
+    );
+    extend_catalog_model_aliases_from_source(
+        &mut entries,
+        "xiaomi-token-plan",
+        &["xiaomi-token-plan-anthropic", "xiaomi-token-plan-openai"],
     );
     extend_catalog_model_aliases_from_source(
         &mut entries,
@@ -2349,18 +2376,48 @@ mod tests {
         assert_eq!(deepseek_openai.source, ModelMetadataSource::BuiltInCatalog);
 
         let xiaomi = catalog.resolve_policy(
-            &ModelRef::parse("xiaomi-token-plan-openai/mimo-v2-pro").unwrap(),
+            &ModelRef::parse("xiaomi-token-plan-openai/mimo-v2.5-pro").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
             None,
             &base_context(),
             8192,
         );
-        assert_eq!(xiaomi.display_name, "Xiaomi MiMo V2 Pro");
-        assert_eq!(xiaomi.context_window_tokens, Some(1_048_576));
-        assert_eq!(xiaomi.runtime_max_output_tokens, 32_000);
+        assert_eq!(xiaomi.display_name, "Xiaomi MiMo V2.5 Pro");
+        assert_eq!(xiaomi.context_window_tokens, Some(1_000_000));
+        assert_eq!(xiaomi.runtime_max_output_tokens, 131_072);
         assert!(xiaomi.capabilities.reasoning_summaries);
         assert_eq!(xiaomi.source, ModelMetadataSource::BuiltInCatalog);
+
+        let xiaomi_ultraspeed = catalog.resolve_policy(
+            &ModelRef::parse("xiaomi-anthropic/mimo-v2.5-pro-ultraspeed").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(
+            xiaomi_ultraspeed.display_name,
+            "Xiaomi MiMo V2.5 Pro UltraSpeed"
+        );
+        assert_eq!(xiaomi_ultraspeed.context_window_tokens, Some(1_000_000));
+        assert_eq!(xiaomi_ultraspeed.runtime_max_output_tokens, 131_072);
+        assert!(xiaomi_ultraspeed.capabilities.reasoning_summaries);
+        assert_eq!(
+            xiaomi_ultraspeed.source,
+            ModelMetadataSource::BuiltInCatalog
+        );
+
+        assert!(catalog
+            .get(&ModelRef::parse("xiaomi/mimo-v2-pro").unwrap())
+            .is_some());
+        assert!(catalog
+            .get(&ModelRef::parse("xiaomi-token-plan/mimo-v2-flash").unwrap())
+            .is_none());
+        assert!(catalog
+            .get(&ModelRef::parse("xiaomi-token-plan-anthropic/mimo-v2-flash").unwrap())
+            .is_none());
 
         let zai = catalog.resolve_policy(
             &ModelRef::parse("zai-anthropic/glm-4.7").unwrap(),
