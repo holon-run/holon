@@ -7,6 +7,7 @@ import type {
   RuntimeBootstrap,
   RuntimeConnection,
   WorkItemSummary,
+  DisplayLevel,
 } from "./types";
 
 export interface RuntimeClientOptions {
@@ -18,18 +19,18 @@ function fixtureAgentDetail(agentId: string): AgentDetail {
   return agentDetailFixtures[agentId] ?? agentDetailFixtures[Object.keys(agentDetailFixtures)[0]];
 }
 
-async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentId: string): Promise<AgentDetail> {
+async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentId: string, displayLevel: DisplayLevel): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
   const [entry, state, briefs, transcript, events] = await Promise.all([
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list").then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId)),
     getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`),
     getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/briefs?limit=5`),
     getJson<TranscriptEntryDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/transcript?limit=40`),
-    getJson<EventPageResponseDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/events?limit=80&order=desc&max_level=debug`),
+    getJson<EventPageResponseDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/events?limit=80&order=desc&max_level=${displayLevel}`),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const agent = projectAgent(fallbackEntry, state, briefs[0]);
-  const timeline = reduceAgentSessionTimeline({ transcript, briefs, events });
+  const timeline = reduceAgentSessionTimeline({ transcript, briefs, events, eventDisplayLevel: displayLevel });
 
   return {
     agent,
@@ -142,13 +143,13 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         return withFixtureFallback(baseUrl, message);
       }
     },
-    async getAgentDetail(agentId: string): Promise<AgentDetail> {
+    async getAgentDetail(agentId: string, displayLevel: DisplayLevel = "info"): Promise<AgentDetail> {
       if (!baseUrl) {
         return fixtureAgentDetail(agentId);
       }
 
       try {
-        return await fetchAgentDetail(baseUrl, fetchImpl, agentId);
+        return await fetchAgentDetail(baseUrl, fetchImpl, agentId, displayLevel);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {

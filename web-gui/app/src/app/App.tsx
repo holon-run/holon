@@ -31,7 +31,7 @@ export function App() {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
     refresh: refreshAgentDetail,
-  } = useAgentDetail(selectedAgent?.id);
+  } = useAgentDetail(selectedAgent?.id, displayLevel);
 
   function openAgent(agentId: string) {
     setSelectedAgentId(agentId);

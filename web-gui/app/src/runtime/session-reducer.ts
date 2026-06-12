@@ -32,6 +32,7 @@ export interface ReduceAgentSessionInput {
   events: {
     events?: SessionEventEnvelope[];
   };
+  eventDisplayLevel?: DisplayLevel;
 }
 
 interface SessionItemDraft {
@@ -55,7 +56,8 @@ const displayLevelRank: Record<DisplayLevel, number> = {
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
   const transcriptItems = input.transcript.map(projectTranscriptEntry);
   const briefItems = input.briefs.map(projectBriefRecord);
-  const eventItems = (input.events.events ?? []).map(projectEventEnvelope);
+  const eventDisplayLevel = input.eventDisplayLevel ?? "debug";
+  const eventItems = (input.events.events ?? []).map((event) => projectEventEnvelope(event, eventDisplayLevel));
 
   return dedupeTimelineItems([...transcriptItems, ...briefItems, ...eventItems])
     .filter((item): item is AgentTimelineItem => Boolean(item))
@@ -183,7 +185,7 @@ function projectBriefRecord(brief: SessionBriefRecord): AgentTimelineItem | unde
   });
 }
 
-function projectEventEnvelope(event: SessionEventEnvelope): AgentTimelineItem | undefined {
+function projectEventEnvelope(event: SessionEventEnvelope, eventDisplayLevel: DisplayLevel): AgentTimelineItem | undefined {
   if (!event.id && event.event_seq == null) return undefined;
   const id = event.id ?? `event-${event.event_seq}`;
   const payload = asRecord(event.payload);
@@ -197,10 +199,14 @@ function projectEventEnvelope(event: SessionEventEnvelope): AgentTimelineItem | 
     body: projection.body,
     timestamp: event.ts ?? "",
     meta: event.event_seq == null ? eventType : `${eventType} · event #${event.event_seq}`,
-    minDisplayLevel: projection.minDisplayLevel,
+    minDisplayLevel: capDisplayLevel(projection.minDisplayLevel, eventDisplayLevel),
     sourceIds: [id],
     debug: debugJson(event),
   });
+}
+
+function capDisplayLevel(level: DisplayLevel, maxLevel: DisplayLevel): DisplayLevel {
+  return displayLevelRank[level] > displayLevelRank[maxLevel] ? maxLevel : level;
 }
 
 function projectRuntimeEvent(
