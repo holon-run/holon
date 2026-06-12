@@ -990,9 +990,10 @@ code {
 .message.tool,
 .message.event,
 .message.system {
-  align-self: center;
-  width: min(900px, 100%);
-  max-width: min(900px, 100%);
+  align-self: flex-start;
+  width: min(760px, 72%);
+  max-width: min(760px, 72%);
+  margin-left: 22px;
 }
 
 .bubble {
@@ -1016,7 +1017,30 @@ code {
 .tool .bubble,
 .event .bubble,
 .system .bubble {
-  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  padding: 10px 12px;
+  border-style: dashed;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  box-shadow: none;
+}
+
+.assistant + .assistant {
+  margin-top: -6px;
+}
+
+.assistant + .tool,
+.assistant + .event,
+.assistant + .system,
+.tool + .tool,
+.tool + .event,
+.tool + .system,
+.event + .tool,
+.event + .event,
+.event + .system,
+.system + .tool,
+.system + .event,
+.system + .system {
+  margin-top: -8px;
 }
 
 .bubble p {
@@ -1024,6 +1048,14 @@ code {
   overflow-wrap: anywhere;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+.tool .bubble p,
+.event .bubble p,
+.system .bubble p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.42;
 }
 
 .message-heading {
@@ -1060,6 +1092,12 @@ code {
   display: grid;
   gap: 6px;
   margin-top: 12px;
+}
+
+.tool .message-detail,
+.event .message-detail,
+.system .message-detail {
+  margin-top: 8px;
 }
 
 .message-detail span {
@@ -1108,6 +1146,13 @@ code {
 
 .message.operator .message-meta {
   justify-content: flex-end;
+}
+
+.message.tool .message-meta,
+.message.event .message-meta,
+.message.system .message-meta {
+  margin-left: 12px;
+  font-size: 11px;
 }
 
 .conversation-empty {

@@ -60,9 +60,11 @@ export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): Agen
   const eventDisplayLevel = input.eventDisplayLevel ?? "debug";
   const eventItems = (input.events.events ?? []).map((event) => projectEventEnvelope(event, eventDisplayLevel));
 
-  return mergeAgentTimelineItems([], [...transcriptItems, ...briefItems, ...eventItems])
+  const sorted = mergeAgentTimelineItems([], [...transcriptItems, ...briefItems, ...eventItems])
     .filter((item): item is AgentTimelineItem => Boolean(item))
     .sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
+
+  return compactAgentTimelineItems(sorted);
 }
 
 export function mergeAgentTimelineItems(
@@ -173,7 +175,7 @@ function projectTranscriptEntry(entry: SessionTranscriptEntry): AgentTimelineIte
       body: summarizeToolResults(data?.results),
       timestamp,
       meta: compactJoin(["tool results", roundMeta(entry.round)]),
-      minDisplayLevel: "verbose",
+      minDisplayLevel: "debug",
       sourceIds: [entry.id],
       debug: debugJson(entry),
     });
@@ -310,11 +312,24 @@ function projectRuntimeEvent(
   }
 
   if (eventType === "assistant_round_recorded") {
+    const textPreview = cleanStringField(payload, "text_preview");
+    if (!textPreview) {
+      return {
+        kind: "event",
+        label: "Assistant activity",
+        body: compactJoin([
+          numberField(payload, "tool_call_count") == null ? undefined : `${numberField(payload, "tool_call_count")} tool calls`,
+          stringField(payload, "stop_reason"),
+        ]),
+        minDisplayLevel: "debug",
+      };
+    }
+
     return {
       kind: "assistant",
       label: "Assistant round",
       body: compactJoin([
-        stringField(payload, "text_preview"),
+        textPreview,
         numberField(payload, "tool_call_count") == null ? undefined : `${numberField(payload, "tool_call_count")} tool calls`,
         stringField(payload, "stop_reason"),
       ]),
@@ -361,8 +376,8 @@ function timelineDedupeKey(item: AgentTimelineItem): string {
   if (item.kind === "operator") {
     return `operator:${normalizeTextKey(item.body)}`;
   }
-  if (item.kind === "assistant" && item.minDisplayLevel === "info") {
-    return `assistant-result:${normalizeTextKey(item.body)}`;
+  if (item.kind === "assistant") {
+    return `assistant:${normalizeTextKey(item.body)}`;
   }
   return `item:${item.id}`;
 }
@@ -376,6 +391,30 @@ function timelineItemPriority(item: AgentTimelineItem): number {
 
 function item(draft: SessionItemDraft): AgentTimelineItem {
   return draft;
+}
+
+export function compactAgentTimelineItems(items: AgentTimelineItem[]): AgentTimelineItem[] {
+  return items.filter((candidate, index) => !isAssistantPreviewDuplicate(candidate, items, index));
+}
+
+function isAssistantPreviewDuplicate(candidate: AgentTimelineItem, items: AgentTimelineItem[], candidateIndex: number): boolean {
+  if (candidate.kind !== "assistant" || candidate.label !== "Assistant round") return false;
+  const candidateText = normalizeTextKey(candidate.body);
+  if (candidateText.length < 80) return false;
+
+  return items.some((item, index) => {
+    if (index === candidateIndex || item.kind !== "assistant" || item.minDisplayLevel !== "info") return false;
+    return isSameAssistantText(candidateText, normalizeTextKey(item.body));
+  });
+}
+
+function isSameAssistantText(left: string, right: string): boolean {
+  if (!left || !right) return false;
+  if (left === right) return true;
+
+  const [shorter, longer] = left.length < right.length ? [left, right] : [right, left];
+  if (shorter.length < 160) return false;
+  return longer.startsWith(shorter);
 }
 
 function labelForTranscriptKind(kind: string): string {
@@ -596,6 +635,13 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function stringField(value: Record<string, unknown> | undefined, key: string): string | undefined {
   const candidate = value?.[key];
   return typeof candidate === "string" && candidate.trim() ? candidate : undefined;
+}
+
+function cleanStringField(value: Record<string, unknown> | undefined, key: string): string | undefined {
+  const candidate = stringField(value, key);
+  if (!candidate) return undefined;
+  const normalized = candidate.trim().toLowerCase();
+  return normalized === "none" || normalized === "null" ? undefined : candidate;
 }
 
 function firstStringField(value: Record<string, unknown> | undefined, keys: string[]): string | undefined {

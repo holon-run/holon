@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 import { createRuntimeClient, type AgentEventStreamSubscription, type StreamEventEnvelopeDto } from "./client";
-import { mergeAgentTimelineItems, reduceAgentSessionTimeline } from "./session-reducer";
+import { compactAgentTimelineItems, mergeAgentTimelineItems, reduceAgentSessionTimeline } from "./session-reducer";
 import type { AgentDetail, AgentTimelineItem, DisplayLevel, RouteKey, RuntimeBootstrap } from "./types";
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "error";
@@ -471,9 +471,10 @@ function isStreamEventEnvelope(event: unknown): event is StreamEventEnvelopeDto 
 }
 
 function mergeTimeline(existing: AgentTimelineItem[], incoming: AgentTimelineItem[]): AgentTimelineItem[] {
-  return mergeAgentTimelineItems(existing, incoming).sort(
+  const sorted = mergeAgentTimelineItems(existing, incoming).sort(
     (left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp),
   );
+  return compactAgentTimelineItems(sorted);
 }
 
 function sortableTime(value: string): number {
