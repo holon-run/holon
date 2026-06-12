@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "mdorigin dev --root .. --config ../mdorigin.config.json",
     "build:index": "mdorigin build index --root .. --config ../mdorigin.config.json",
-    "build:search": "mdorigin build search --root .. --config ../mdorigin.config.json --out ../dist/search",
-    "build:cloudflare": "mdorigin build cloudflare --root .. --config ../mdorigin.config.json --search ../dist/search --out ../dist/cloudflare",
+    "build:search": "mdorigin build search --root .. --config ../mdorigin.config.json --out ./dist/search",
+    "build:cloudflare": "mdorigin build cloudflare --root .. --config ../mdorigin.config.json --search ./dist/search --out ../dist/cloudflare",
     "build": "npm run build:index && npm run build:search && npm run build:cloudflare",
     "deploy": "wrangler deploy --config ../wrangler.jsonc"
   },
