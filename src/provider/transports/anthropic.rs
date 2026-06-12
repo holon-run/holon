@@ -55,6 +55,8 @@ struct MessagesRequest<'a> {
     system: Value,
     messages: Vec<ApiMessage>,
     tools: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     betas: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -192,12 +194,14 @@ impl AgentProvider for AnthropicProvider {
         let rolling_cache_marker =
             rolling_conversation_cache_marker(&wire_conversation, cache_strategy);
         let messages = build_anthropic_messages(&wire_conversation, rolling_cache_marker);
+        let response_format_tool_choice = anthropic_response_format_tool_choice(&request);
         let request_body = MessagesRequest {
             model: &self.model,
             max_tokens: self.max_output_tokens,
             system: build_anthropic_system(&request, cache_strategy),
             messages,
             tools: build_anthropic_tools(&request),
+            tool_choice: response_format_tool_choice,
             betas: self.context_management.betas.clone(),
             metadata: build_anthropic_metadata(&request, cache_strategy),
             temperature: (cache_strategy == AnthropicCacheStrategy::ClaudeCodePromptCache)
@@ -346,10 +350,13 @@ impl AgentProvider for AnthropicProvider {
                 request_trace.as_ref(),
             ));
         }
+        let response_format_tool_name = anthropic_response_format_tool_name(&request);
         let blocks = parsed
             .content
             .into_iter()
-            .filter_map(api_response_block_to_model)
+            .filter_map(|block| {
+                api_response_block_to_model(block, response_format_tool_name.as_deref())
+            })
             .collect::<Vec<_>>();
         if blocks.is_empty() {
             return Err(anyhow!(
@@ -661,7 +668,39 @@ fn build_anthropic_tools(request: &ProviderTurnRequest) -> Vec<Value> {
             "name": "web_search"
         }));
     }
+    if let Some(tool) = anthropic_response_format_tool(request) {
+        tools.push(tool);
+    }
     tools
+}
+
+fn anthropic_response_format_tool(request: &ProviderTurnRequest) -> Option<Value> {
+    match request.response_format.as_ref()? {
+        ProviderResponseFormatRequest::JsonSchema(format) => Some(json!({
+            "name": anthropic_response_format_tool_name(request)?,
+            "description": format!(
+                "Return the final response as a JSON object matching the `{}` schema.",
+                format.name
+            ),
+            "input_schema": format.schema,
+            "strict": format.strict,
+        })),
+    }
+}
+
+fn anthropic_response_format_tool_name(request: &ProviderTurnRequest) -> Option<String> {
+    match request.response_format.as_ref()? {
+        ProviderResponseFormatRequest::JsonSchema(format) => {
+            Some(format!("structured_response_{}", format.name))
+        }
+    }
+}
+
+fn anthropic_response_format_tool_choice(request: &ProviderTurnRequest) -> Option<Value> {
+    Some(json!({
+        "type": "tool",
+        "name": anthropic_response_format_tool_name(request)?,
+    }))
 }
 
 fn native_web_search_diagnostics(
@@ -688,12 +727,10 @@ fn response_format_diagnostics(
         ProviderResponseFormatRequest::JsonSchema(format) => {
             Some(ProviderResponseFormatDiagnostics {
                 requested: true,
-                lowered: false,
+                lowered: true,
                 format_type: "json_schema".into(),
                 schema_name: Some(format.name.clone()),
-                fallback_reason: Some(
-                    "anthropic transport does not support JSON Schema response format".into(),
-                ),
+                fallback_reason: None,
             })
         }
     }
@@ -1004,16 +1041,28 @@ fn text_contains_tool_call_markup(text: &str) -> bool {
         || text.contains("<｜｜DSML｜｜invoke")
 }
 
-fn api_response_block_to_model(block: ApiResponseBlock) -> Option<ModelBlock> {
+fn api_response_block_to_model(
+    block: ApiResponseBlock,
+    response_format_tool_name: Option<&str>,
+) -> Option<ModelBlock> {
     match block.kind.as_str() {
         "text" => Some(ModelBlock::Text {
             text: block.text.unwrap_or_default(),
         }),
-        "tool_use" => Some(ModelBlock::ToolUse {
-            id: block.id?,
-            name: block.name?,
-            input: block.input.unwrap_or_else(|| json!({})),
-        }),
+        "tool_use" => {
+            let name = block.name?;
+            let input = block.input.unwrap_or_else(|| json!({}));
+            if Some(name.as_str()) == response_format_tool_name {
+                return Some(ModelBlock::Text {
+                    text: serde_json::to_string(&input).ok()?,
+                });
+            }
+            Some(ModelBlock::ToolUse {
+                id: block.id?,
+                name,
+                input,
+            })
+        }
         "thinking" => Some(ModelBlock::Thinking {
             text: block.thinking.unwrap_or_default(),
             signature: block.signature.unwrap_or_default(),
@@ -1663,7 +1712,8 @@ mod tests {
             input: None,
         };
 
-        let model_block = api_response_block_to_model(block).expect("text block should be kept");
+        let model_block =
+            api_response_block_to_model(block, None).expect("text block should be kept");
         match model_block {
             ModelBlock::Text { text } => {
                 assert!(text.contains("<｜｜DSML｜｜tool_calls>"));
@@ -2123,6 +2173,7 @@ mod tests {
             },
             messages: build_anthropic_messages(&request.conversation, rolling_cache_marker),
             tools: build_anthropic_tools(request),
+            tool_choice: anthropic_response_format_tool_choice(request),
             betas: Vec::new(),
             metadata: None,
             temperature: None,
@@ -2405,7 +2456,7 @@ mod tests {
     }
 
     #[test]
-    fn response_format_diagnostics_reports_unsupported_json_schema() {
+    fn anthropic_request_payload_lowers_json_schema_response_format_as_forced_tool() {
         let mut request = ProviderTurnRequest::plain(
             "system",
             vec![ConversationMessage::UserText("return json".into())],
@@ -2425,17 +2476,51 @@ mod tests {
             },
         ));
 
+        let payload = anthropic_request_payload_for_test(&request);
+
+        assert_eq!(
+            payload["tools"][0]["name"],
+            json!("structured_response_answer_v1")
+        );
+        assert_eq!(payload["tools"][0]["strict"], json!(true));
+        assert_eq!(
+            payload["tools"][0]["input_schema"]["properties"]["answer"]["type"],
+            json!("string")
+        );
+        assert_eq!(
+            payload["tool_choice"],
+            json!({ "type": "tool", "name": "structured_response_answer_v1" })
+        );
+
         let diagnostics = response_format_diagnostics(&request)
             .expect("response format diagnostics should be recorded");
 
         assert!(diagnostics.requested);
-        assert!(!diagnostics.lowered);
+        assert!(diagnostics.lowered);
         assert_eq!(diagnostics.format_type, "json_schema");
         assert_eq!(diagnostics.schema_name.as_deref(), Some("answer_v1"));
-        assert!(diagnostics
-            .fallback_reason
-            .as_deref()
-            .unwrap_or_default()
-            .contains("does not support JSON Schema response format"));
+        assert!(diagnostics.fallback_reason.is_none());
+    }
+
+    #[test]
+    fn api_response_block_converts_forced_response_format_tool_input_to_text_json() {
+        let block = ApiResponseBlock {
+            kind: "tool_use".to_string(),
+            text: None,
+            thinking: None,
+            signature: None,
+            data: None,
+            id: Some("toolu_1".to_string()),
+            name: Some("structured_response_answer_v1".to_string()),
+            input: Some(json!({ "answer": "ok" })),
+        };
+
+        let model_block = api_response_block_to_model(block, Some("structured_response_answer_v1"))
+            .expect("forced response format tool input should become text");
+
+        match model_block {
+            ModelBlock::Text { text } => assert_eq!(text, r#"{"answer":"ok"}"#),
+            other => panic!("unexpected block: {other:?}"),
+        }
     }
 }
