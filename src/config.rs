@@ -90,6 +90,8 @@ pub struct ModelRef {
 pub struct RuntimeModelCatalog {
     pub default_model: ModelRef,
     pub fallback_models: Vec<ModelRef>,
+    pub vision_model: Option<ModelRef>,
+    pub vision_candidate_models: Vec<ModelRef>,
     pub disable_provider_fallback: bool,
     pub provider_transports: HashMap<ProviderId, ProviderTransportKind>,
     pub built_in_catalog: BuiltInModelCatalog,
@@ -124,6 +126,8 @@ pub struct AppConfig {
     pub web_config: crate::web::WebConfig,
     pub default_model: ModelRef,
     pub fallback_models: Vec<ModelRef>,
+    pub vision_model: Option<ModelRef>,
+    pub vision_candidate_models: Vec<ModelRef>,
     pub runtime_max_output_tokens: u32,
     pub default_tool_output_tokens: u32,
     pub max_tool_output_tokens: u32,
@@ -231,6 +235,8 @@ pub struct HolonConfigFile {
     pub providers: ProvidersConfigFile,
     #[serde(default, skip_serializing_if = "RuntimeConfigFile::is_empty")]
     pub runtime: RuntimeConfigFile,
+    #[serde(default, skip_serializing_if = "VisionConfigFile::is_empty")]
+    pub vision: VisionConfigFile,
     #[serde(default, skip_serializing_if = "TuiConfigFile::is_empty")]
     pub tui: TuiConfigFile,
     #[serde(default, skip_serializing_if = "WebConfigFile::is_empty")]
@@ -251,6 +257,12 @@ pub struct ModelConfigFile {
 pub struct ModelsConfigFile {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub catalog: BTreeMap<String, ModelRuntimeOverride>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct VisionConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
 }
 
 pub type ProvidersConfigFile = BTreeMap<ProviderId, ProviderConfigFile>;
@@ -665,6 +677,7 @@ impl AppConfig {
         }
         let explicit_default = resolve_default_model(&stored_config)?;
         let explicit_fallbacks = resolve_fallback_models(&stored_config)?;
+        let explicit_vision_model = resolve_vision_model(&stored_config)?;
         let (default_model, fallback_models) = match resolve_model_selection_for_load_mode(
             explicit_default,
             explicit_fallbacks,
@@ -679,6 +692,8 @@ impl AppConfig {
             }
             Err(error) => return Err(error),
         };
+        let vision_candidate_models =
+            authenticated_model_candidates(&providers, &validated_model_overrides);
         let tui_alternate_screen = env::var("HOLON_TUI_ALTERNATE_SCREEN")
             .ok()
             .map(|value| AltScreenMode::parse(&value))
@@ -711,6 +726,8 @@ impl AppConfig {
             web_config,
             default_model,
             fallback_models,
+            vision_model: explicit_vision_model,
+            vision_candidate_models,
             runtime_max_output_tokens,
             default_tool_output_tokens,
             max_tool_output_tokens,
@@ -799,6 +816,8 @@ impl RuntimeModelCatalog {
         Self {
             default_model: config.default_model.clone(),
             fallback_models: config.fallback_models.clone(),
+            vision_model: config.vision_model.clone(),
+            vision_candidate_models: config.vision_candidate_models.clone(),
             disable_provider_fallback: config.provider_fallback_disabled(),
             provider_transports: config
                 .providers
@@ -963,10 +982,44 @@ impl RuntimeModelCatalog {
             .first()
             .cloned()
             .unwrap_or_else(|| self.effective_model(model_override));
+        if let Some(model_ref) = &self.vision_model {
+            return self.select_view_image_vision_model_from_candidates(
+                base_context_config,
+                primary,
+                vec![model_ref.clone()],
+                "explicit_vision_model_supports_image_input",
+                "explicit_vision_model_unavailable",
+            );
+        }
+
+        let mut candidates = self.vision_candidate_models.clone();
+        for model_ref in chain {
+            if !candidates.iter().any(|existing| existing == &model_ref) {
+                candidates.push(model_ref);
+            }
+        }
+
+        self.select_view_image_vision_model_from_candidates(
+            base_context_config,
+            primary,
+            candidates,
+            "auto_discovered_vision_model_supports_image_input",
+            "no_configured_model_supports_view_image_observation",
+        )
+    }
+
+    fn select_view_image_vision_model_from_candidates(
+        &self,
+        base_context_config: &ContextConfig,
+        primary: ModelRef,
+        model_refs: Vec<ModelRef>,
+        selected_adapter_reason: &str,
+        unavailable_reason: &str,
+    ) -> ViewImageVisionSelection {
         let mut candidates = Vec::new();
         let mut selected = None;
 
-        for model_ref in &chain {
+        for model_ref in &model_refs {
             let policy = self.built_in_catalog.resolve_policy(
                 model_ref,
                 &self.model_overrides,
@@ -1004,17 +1057,13 @@ impl RuntimeModelCatalog {
                 selected_mode: ViewImageSelectedMode::Unavailable,
                 vision_provider: None,
                 vision_model: None,
-                selection_reason: "no_configured_model_supports_view_image_observation".to_string(),
+                selection_reason: unavailable_reason.to_string(),
                 primary_provider: Some(primary.provider.as_str().to_string()),
                 primary_model: Some(primary.model),
                 candidates,
             };
         };
 
-        let primary_image_input = candidates
-            .first()
-            .map(|candidate| candidate.image_input)
-            .unwrap_or(false);
         let primary_supports_image = selected == primary;
         ViewImageVisionSelection {
             selected_mode: if primary_supports_image {
@@ -1026,10 +1075,8 @@ impl RuntimeModelCatalog {
             vision_model: Some(selected.model.clone()),
             selection_reason: if primary_supports_image {
                 "current_primary_model_supports_image_input"
-            } else if primary_image_input {
-                "primary_provider_transport_unsupported_for_view_image_observation"
             } else {
-                "primary_model_lacks_image_input"
+                selected_adapter_reason
             }
             .to_string(),
             primary_provider: Some(primary.provider.as_str().to_string()),
@@ -1053,6 +1100,8 @@ impl Default for RuntimeModelCatalog {
         Self {
             default_model: ModelRef::parse("openai/gpt-5.4").expect("valid default model ref"),
             fallback_models: Vec::new(),
+            vision_model: None,
+            vision_candidate_models: Vec::new(),
             disable_provider_fallback: false,
             provider_transports: HashMap::new(),
             built_in_catalog: BuiltInModelCatalog::default(),
@@ -1359,6 +1408,12 @@ impl ModelsConfigFile {
     }
 }
 
+impl VisionConfigFile {
+    fn is_empty(&self) -> bool {
+        self.default.is_none()
+    }
+}
+
 fn resolve_model_catalog(
     stored_config: &HolonConfigFile,
 ) -> Result<HashMap<ModelRef, ModelRuntimeOverride>> {
@@ -1623,6 +1678,14 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             kind: "model_ref_list",
             description:
                 "Explicit fallback provider/model refs. Null or an empty persisted list means unset; when unset, the runtime derives fallbacks from authenticated providers.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "vision.default",
+            kind: "model_ref",
+            description:
+                "Explicit provider/model ref for ViewImage visual observation generation. When unset, ViewImage auto-discovers an authenticated image-capable provider and keeps model.fallbacks only as a compatibility candidate source.",
             default: Value::Null,
             allowed_values: vec![],
         },
@@ -1954,6 +2017,12 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
                 .map(Value::String)
                 .collect(),
         )),
+        "vision.default" => Ok(config
+            .vision
+            .default
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null)),
         "models.catalog" => Ok(serde_json::to_value(&config.models.catalog)?),
         "model.unknown_fallback" => Ok(config
             .model
@@ -2207,6 +2276,10 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 .map(|model| model.as_string())
                 .collect();
         }
+        "vision.default" => {
+            let parsed = ModelRef::parse(raw_value)?;
+            config.vision.default = Some(parsed.as_string());
+        }
         "models.catalog" => {
             config.models.catalog = parse_model_catalog_value(raw_value)?;
         }
@@ -2430,6 +2503,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
     match key {
         "model.default" => config.model.default = None,
         "model.fallbacks" => config.model.fallbacks.clear(),
+        "vision.default" => config.vision.default = None,
         "models.catalog" => config.models.catalog.clear(),
         "model.unknown_fallback" => config.model.unknown_fallback = None,
         "model.unknown_fallback.context_window_tokens" => {
@@ -3716,6 +3790,16 @@ fn resolve_fallback_models(stored_config: &HolonConfigFile) -> Result<Option<Vec
     }
 }
 
+fn resolve_vision_model(stored_config: &HolonConfigFile) -> Result<Option<ModelRef>> {
+    if let Ok(value) = env::var("HOLON_VISION_MODEL") {
+        return ModelRef::parse(&value).map(Some);
+    }
+    if let Some(value) = &stored_config.vision.default {
+        return ModelRef::parse(value).map(Some);
+    }
+    Ok(None)
+}
+
 fn authenticated_model_candidates(
     providers: &ProviderRegistry,
     model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
@@ -4470,6 +4554,8 @@ mod tests {
                 .iter()
                 .map(|value| ModelRef::parse(value).unwrap())
                 .collect(),
+            vision_model: None,
+            vision_candidate_models: Vec::new(),
             runtime_max_output_tokens: 8192,
             default_tool_output_tokens: crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32,
             max_tool_output_tokens: crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32,
@@ -6455,7 +6541,8 @@ mod tests {
 
     #[test]
     fn view_image_vision_selection_uses_primary_when_image_capable() {
-        let fixture = test_app_config("openai/gpt-5.4", &["anthropic/claude-sonnet-4-6"]);
+        let mut fixture = test_app_config("openai/gpt-5.4", &["anthropic/claude-sonnet-4-6"]);
+        fixture.config.vision_candidate_models = vec![ModelRef::parse("openai/gpt-5.4").unwrap()];
         let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
         let selection =
@@ -6474,8 +6561,35 @@ mod tests {
     }
 
     #[test]
-    fn view_image_vision_selection_uses_fallback_adapter_when_primary_lacks_image() {
-        let fixture = test_app_config("arcee/trinity-mini", &["openai/gpt-5.4-mini"]);
+    fn view_image_vision_selection_uses_explicit_vision_model() {
+        let mut fixture = test_app_config("arcee/trinity-mini", &["openai/gpt-5.4-mini"]);
+        fixture.config.vision_model = Some(ModelRef::parse("openai/gpt-5.4").unwrap());
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+        let selection =
+            catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
+
+        assert_eq!(
+            selection.selected_mode,
+            crate::types::ViewImageSelectedMode::VisionAdapter
+        );
+        assert_eq!(selection.primary_provider.as_deref(), Some("arcee"));
+        assert_eq!(selection.primary_model.as_deref(), Some("trinity-mini"));
+        assert_eq!(selection.vision_provider.as_deref(), Some("openai"));
+        assert_eq!(selection.vision_model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(
+            selection.selection_reason,
+            "explicit_vision_model_supports_image_input"
+        );
+        assert_eq!(selection.candidates.len(), 1);
+        assert!(selection.candidates[0].image_input);
+    }
+
+    #[test]
+    fn view_image_vision_selection_auto_discovers_authenticated_adapter() {
+        let mut fixture = test_app_config("arcee/trinity-mini", &[]);
+        fixture.config.vision_candidate_models =
+            vec![ModelRef::parse("openai/gpt-5.4-mini").unwrap()];
         let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
         let selection =
@@ -6491,17 +6605,18 @@ mod tests {
         assert_eq!(selection.vision_model.as_deref(), Some("gpt-5.4-mini"));
         assert_eq!(
             selection.selection_reason,
-            "primary_model_lacks_image_input"
+            "auto_discovered_vision_model_supports_image_input"
         );
         assert_eq!(selection.candidates.len(), 2);
-        assert!(!selection.candidates[0].image_input);
-        assert!(selection.candidates[1].image_input);
+        assert!(selection.candidates[0].image_input);
+        assert!(!selection.candidates[1].image_input);
     }
 
     #[test]
-    fn view_image_vision_selection_uses_configured_custom_fallback_capabilities() {
-        let mut fixture = test_app_config("arcee/trinity-mini", &["custom-openai/my-vision-model"]);
+    fn view_image_vision_selection_uses_configured_custom_auto_discovery_capabilities() {
+        let mut fixture = test_app_config("arcee/trinity-mini", &[]);
         let custom_model = ModelRef::parse("custom-openai/my-vision-model").unwrap();
+        fixture.config.vision_candidate_models = vec![custom_model.clone()];
         fixture.config.providers.insert(
             custom_model.provider.clone(),
             ProviderRuntimeConfig {
@@ -6563,19 +6678,20 @@ mod tests {
         assert_eq!(selection.vision_model.as_deref(), Some("my-vision-model"));
         assert_eq!(
             selection.selection_reason,
-            "primary_model_lacks_image_input"
+            "auto_discovered_vision_model_supports_image_input"
         );
         assert_eq!(selection.candidates.len(), 2);
-        assert!(!selection.candidates[0].image_input);
-        assert!(selection.candidates[1].image_input);
+        assert!(selection.candidates[0].image_input);
+        assert!(!selection.candidates[1].image_input);
     }
 
     #[test]
     fn view_image_vision_selection_skips_image_capable_unsupported_transports() {
-        let fixture = test_app_config(
-            "anthropic/claude-sonnet-4-6",
-            &["gemini/gemini-2.5-pro", "openai/gpt-5.4-mini"],
-        );
+        let mut fixture = test_app_config("anthropic/claude-sonnet-4-6", &[]);
+        fixture.config.vision_candidate_models = vec![
+            ModelRef::parse("gemini/gemini-2.5-pro").unwrap(),
+            ModelRef::parse("openai/gpt-5.4-mini").unwrap(),
+        ];
         let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
         let selection =
@@ -6594,7 +6710,7 @@ mod tests {
         assert_eq!(selection.vision_model.as_deref(), Some("gpt-5.4-mini"));
         assert_eq!(
             selection.selection_reason,
-            "primary_provider_transport_unsupported_for_view_image_observation"
+            "auto_discovered_vision_model_supports_image_input"
         );
         assert_eq!(
             selection.candidates[0].reason,
@@ -6602,11 +6718,31 @@ mod tests {
         );
         assert_eq!(
             selection.candidates[1].reason,
-            "provider_transport_unsupported_for_view_image_observation"
+            "model_advertises_image_input"
         );
         assert_eq!(
             selection.candidates[2].reason,
-            "model_advertises_image_input"
+            "provider_transport_unsupported_for_view_image_observation"
+        );
+    }
+
+    #[test]
+    fn view_image_vision_selection_keeps_fallback_chain_as_compatibility_candidates() {
+        let fixture = test_app_config("arcee/trinity-mini", &["openai/gpt-5.4-mini"]);
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+        let selection =
+            catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
+
+        assert_eq!(
+            selection.selected_mode,
+            crate::types::ViewImageSelectedMode::VisionAdapter
+        );
+        assert_eq!(selection.vision_provider.as_deref(), Some("openai"));
+        assert_eq!(selection.vision_model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(
+            selection.selection_reason,
+            "auto_discovered_vision_model_supports_image_input"
         );
     }
 
