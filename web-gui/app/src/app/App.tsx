@@ -77,7 +77,7 @@ export function App() {
   }, [openAgent, setRoute]);
 
   useEffect(() => {
-    if (route !== "agent" || modelCatalogLoading || modelCatalog.options.length > 0) return;
+    if ((route !== "agent" && route !== "settings") || modelCatalogLoading || modelCatalog.options.length > 0) return;
     void refreshModelCatalog();
   }, [modelCatalog.options.length, modelCatalogLoading, refreshModelCatalog, route]);
 
@@ -298,7 +298,15 @@ export function App() {
         ) : null}
         {route === "agent" && !selectedAgent ? <MissingAgentPage agentId={selectedAgentId} loading={loading} /> : null}
         {route === "search" ? <SearchPage /> : null}
-        {route === "settings" ? <SettingsPage connection={bootstrap.connection} /> : null}
+        {route === "settings" ? (
+          <SettingsPage
+            connection={bootstrap.connection}
+            modelCatalog={modelCatalog}
+            modelCatalogLoading={modelCatalogLoading}
+            modelCatalogError={modelCatalogError}
+            onRefreshModels={refreshModelCatalog}
+          />
+        ) : null}
       </main>
 
       {selectedAgent ? <InspectorPanel agent={selectedAgent} open={inspectorOpen} onClose={() => setInspectorOpen(false)} /> : null}
