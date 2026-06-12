@@ -43,6 +43,11 @@ export function App() {
     refresh: refreshAgentDetail,
   } = useAgentDetail(selectedAgent?.id, displayLevel);
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
+  const selectedAgentCurrentWork = selectedAgent?.currentWork;
+  const selectedAgentContext =
+    route === "agent" && selectedAgent
+      ? [selectedAgent.lifecycle, selectedAgent.posture].filter(Boolean).join(" · ")
+      : "loading agent";
   const selectedAgentSourceStatus =
     agentDetailLoading && !selectedAgentDetail
       ? "syncing"
@@ -178,7 +183,7 @@ export function App() {
                 <strong>{route === "agent" ? (selectedAgent?.id ?? selectedAgentId) || "Agent" : pageTitle(route)}</strong>
                 <span>
                   {route === "agent"
-                    ? selectedAgent?.subtitle ?? "loading agent"
+                    ? selectedAgentContext
                     : pageSubtitle(route, bootstrap.attentionCount, bootstrap.agents.length)}
                 </span>
               </div>
@@ -197,11 +202,21 @@ export function App() {
 
           {route === "agent" ? (
             <div className="agent-top-context" aria-label="Agent conversation context">
-              <button className="work-summary" type="button" onClick={() => setInspectorOpen(true)}>
-                <span>Current work item</span>
-                <strong>{selectedAgent?.currentWork?.objective ?? "No current work item"}</strong>
-                <em>{selectedAgent?.currentWork?.state ?? "none"}</em>
-              </button>
+              <div className="agent-context-main">
+                <button
+                  className={`work-summary ${selectedAgentCurrentWork ? "has-work" : "is-empty"}`}
+                  type="button"
+                  onClick={() => setInspectorOpen(true)}
+                >
+                  <span className="work-summary-label">Current work</span>
+                  <strong>{selectedAgentCurrentWork?.objective ?? "No active work item"}</strong>
+                  <span className="work-summary-meta">
+                    {selectedAgentCurrentWork
+                      ? `${selectedAgentCurrentWork.state} · ${selectedAgentCurrentWork.id}`
+                      : "Ready for operator input"}
+                  </span>
+                </button>
+              </div>
               <div className="agent-top-controls">
                 <div className="agent-stream-controls" aria-label="Agent stream status">
                   <span className={`source-chip ${selectedAgentSourceStatus}`}>{selectedAgentSourceStatus}</span>

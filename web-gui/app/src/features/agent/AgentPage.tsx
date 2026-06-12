@@ -122,41 +122,48 @@ export function AgentPage({
                 {historyError}
               </div>
             ) : null}
-            {timeline.map((item) => (
-              <article className={`message ${item.kind}`} key={item.id}>
-                <div className="bubble">
-                  <div className="message-heading">
-                    <span className="message-label">{item.label}</span>
-                    {item.kind === "tool" || item.kind === "event" || item.kind === "system" ? (
-                      <span className="message-inline-meta">
-                        {formatTimelineMeta(item.meta, displayLevel)}
-                      </span>
+            {timeline.map((item, index) => {
+              const compactAssistant = item.kind === "assistant" && timeline[index - 1]?.kind === "assistant";
+              return (
+                <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}`} key={item.id}>
+                  <div className="bubble">
+                    {!compactAssistant ? (
+                      <div className="message-heading">
+                        <span className="message-label">{item.label}</span>
+                        {item.kind === "tool" || item.kind === "event" || item.kind === "system" ? (
+                          <span className="message-inline-meta">
+                            {formatTimelineMeta(item.meta, displayLevel)}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    <p>{item.body}</p>
+                    {item.detail ? (
+                      <div className={`message-detail ${item.detail.tone ?? "data"}`}>
+                        <span>{item.detail.label}</span>
+                        <pre>{item.detail.text}</pre>
+                      </div>
                     ) : null}
                   </div>
-                  <p>{item.body}</p>
-                  {item.detail ? (
-                    <div className={`message-detail ${item.detail.tone ?? "data"}`}>
-                      <span>{item.detail.label}</span>
-                      <pre>{item.detail.text}</pre>
+                  {displayLevel !== "info" && item.activities?.length ? (
+                    <ActivityTrail activities={item.activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
+                  ) : null}
+                  {!compactAssistant ? (
+                    <div className="message-meta">
+                      <time>{formatDisplayTime(item.timestamp)}</time>
+                      {item.kind === "tool" || item.kind === "event" || item.kind === "system" ? null : (
+                        <span>{formatTimelineMeta(item.meta, displayLevel)}</span>
+                      )}
+                      {displayLevel !== "info" ? (
+                        <button className="copy-action" type="button" onClick={onOpenInspector}>
+                          inspect
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
-                </div>
-                {displayLevel !== "info" && item.activities?.length ? (
-                  <ActivityTrail activities={item.activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
-                ) : null}
-                <div className="message-meta">
-                  <time>{formatDisplayTime(item.timestamp)}</time>
-                  {item.kind === "tool" || item.kind === "event" || item.kind === "system" ? null : (
-                    <span>{formatTimelineMeta(item.meta, displayLevel)}</span>
-                  )}
-                  {displayLevel !== "info" ? (
-                    <button className="copy-action" type="button" onClick={onOpenInspector}>
-                      inspect
-                    </button>
-                  ) : null}
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
             {timeline.length === 0 ? (
               <div className="conversation-empty">
                 <strong>No visible messages</strong>
