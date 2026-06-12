@@ -10,8 +10,13 @@ interface DashboardPageProps {
 }
 
 export function DashboardPage({ agents, metrics, connection, loading, onRefresh, onOpenAgent }: DashboardPageProps) {
-  const isBootstrapping = loading && agents.length === 0;
-  const connectionLabel = connection.source === "http" ? "Live runtime" : isBootstrapping ? "Connecting" : "Preview data";
+  const hasAgents = agents.length > 0;
+  const hasConnectionError = Boolean(connection.error);
+  const isBootstrapping = loading && !hasAgents;
+  const isRefreshing = loading && hasAgents;
+  const isPreview = connection.source === "fixture";
+  const dashboardState = getDashboardState({ isBootstrapping, hasAgents, hasConnectionError, isPreview });
+  const connectionLabel = connection.source === "http" ? "Live runtime" : hasConnectionError ? "Runtime unavailable" : "Preview data";
   const agentCountLabel = `${agents.length} ${agents.length === 1 ? "agent" : "agents"}`;
 
   return (
@@ -35,25 +40,22 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
             </div>
           </div>
 
-          <div className="metric-strip" aria-label="Runtime metrics">
-            {metrics.map((metric) => (
-              <div className={`metric-card ${metric.tone ?? "default"}`} key={metric.label}>
-                <span>{metric.label}</span>
-                <strong>{metric.value}</strong>
-              </div>
-            ))}
-          </div>
+          {dashboardState ? <DashboardStateCard state={dashboardState} detail={connection.error ?? connection.summary} /> : null}
 
-          {connection.source === "fixture" && !isBootstrapping ? (
-            <aside className="dashboard-notice" role="status">
-              <strong>Preview data</strong>
-              <span>{connection.error ?? connection.summary}</span>
-            </aside>
+          {metrics.length > 0 ? (
+            <div className="metric-strip" aria-label="Runtime metrics">
+              {metrics.map((metric) => (
+                <div className={`metric-card ${metric.tone ?? "default"}`} key={metric.label}>
+                  <span>{metric.label}</span>
+                  <strong>{metric.value}</strong>
+                </div>
+              ))}
+            </div>
           ) : null}
 
-          {loading && agents.length > 0 ? (
+          {isRefreshing ? (
             <div className="dashboard-refreshing" role="status">
-              Refreshing agent state…
+              Refreshing agent state while keeping the current roster visible…
             </div>
           ) : null}
 
@@ -71,6 +73,15 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                   </div>
                 </article>
               ))}
+            </div>
+          ) : !hasAgents ? (
+            <div className="dashboard-empty" role="status">
+              <strong>{hasConnectionError ? "Runtime data is unavailable" : "No agents are currently visible"}</strong>
+              <span>
+                {hasConnectionError
+                  ? "Check the local Holon API connection, then refresh this dashboard."
+                  : "Start or wake an agent and refresh to populate the roster."}
+              </span>
             </div>
           ) : (
             <div className="agent-roster">
@@ -124,5 +135,62 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
         </section>
       </div>
     </section>
+  );
+}
+
+type DashboardState = "loading" | "empty" | "disconnected" | "preview";
+
+function getDashboardState({
+  isBootstrapping,
+  hasAgents,
+  hasConnectionError,
+  isPreview,
+}: {
+  isBootstrapping: boolean;
+  hasAgents: boolean;
+  hasConnectionError: boolean;
+  isPreview: boolean;
+}): DashboardState | undefined {
+  if (isBootstrapping) return "loading";
+  if (hasConnectionError) return "disconnected";
+  if (!hasAgents) return "empty";
+  if (isPreview) return "preview";
+  return undefined;
+}
+
+function DashboardStateCard({ state, detail }: { state: DashboardState; detail: string }) {
+  const copy: Record<DashboardState, { label: string; title: string; body: string }> = {
+    loading: {
+      label: "Connecting",
+      title: "Loading runtime snapshot",
+      body: "Waiting for the local runtime before showing agent data.",
+    },
+    empty: {
+      label: "Empty",
+      title: "Runtime is reachable, but no agents are visible",
+      body: "This is an empty runtime state, not a loading state.",
+    },
+    disconnected: {
+      label: "Disconnected",
+      title: "Using the last available preview surface",
+      body: "The local runtime request failed. Live data will resume after the API is reachable.",
+    },
+    preview: {
+      label: "Preview",
+      title: "Showing bundled preview data",
+      body: "Configure or reach the local Holon API to switch this dashboard to live data.",
+    },
+  };
+  const selected = copy[state];
+
+  return (
+    <aside className={`dashboard-state ${state}`} role="status">
+      <span>{selected.label}</span>
+      <div>
+        <strong>{selected.title}</strong>
+        <p>{selected.body}</p>
+        <small>{detail}</small>
+      </div>
+    </aside>
   );
 }

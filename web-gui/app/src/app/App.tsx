@@ -118,28 +118,35 @@ export function App() {
             <span>Active agents</span>
             <strong>{bootstrap.agents.length}</strong>
           </div>
-          {bootstrap.agents.map((agent) => (
-            <button
-              className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
-              key={agent.id}
-              title={`${agent.id} · ${agent.focusSummary}`}
-              type="button"
-              onClick={() => navigateAgent(agent.id)}
-            >
-              <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
-              <span className="agent-row-main">
-                <span className="agent-row-title">
-                  <strong>{agent.id}</strong>
-                  <em className={`agent-state-dot ${agent.lifecycle}`} aria-label={agent.lifecycle} />
-                  {agentSignalCount(agent) > 0 ? <span className="agent-row-count">{agentSignalCount(agent)}</span> : null}
+          {bootstrap.agents.length === 0 ? (
+            <div className="agent-list-state" role="status">
+              <strong>{loading ? "Syncing agents…" : "No agents"}</strong>
+              <span>{loading ? "Waiting for the local runtime." : "The runtime has no visible agents yet."}</span>
+            </div>
+          ) : (
+            bootstrap.agents.map((agent) => (
+              <button
+                className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
+                key={agent.id}
+                title={`${agent.id} · ${agent.focusSummary}`}
+                type="button"
+                onClick={() => navigateAgent(agent.id)}
+              >
+                <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
+                <span className="agent-row-main">
+                  <span className="agent-row-title">
+                    <strong>{agent.id}</strong>
+                    <em className={`agent-state-dot ${agent.lifecycle}`} aria-label={agent.lifecycle} />
+                    {agentSignalCount(agent) > 0 ? <span className="agent-row-count">{agentSignalCount(agent)}</span> : null}
+                  </span>
+                  <span className="agent-row-meta">
+                    <span>{agent.lifecycle}</span>
+                    <span>{agent.currentWork?.state ?? agent.posture}</span>
+                  </span>
                 </span>
-                <span className="agent-row-meta">
-                  <span>{agent.lifecycle}</span>
-                  <span>{agent.currentWork?.state ?? agent.posture}</span>
-                </span>
-              </span>
-            </button>
-          ))}
+              </button>
+            ))
+          )}
         </section>
 
         <div className="sidebar-bottom">

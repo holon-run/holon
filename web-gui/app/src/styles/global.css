@@ -288,6 +288,33 @@ button {
   font-weight: 760;
 }
 
+.agent-list-state {
+  display: grid;
+  gap: 4px;
+  margin: 2px 8px 0;
+  padding: 10px;
+  border: 1px dashed color-mix(in srgb, var(--line-strong) 55%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--sidebar-soft) 50%, transparent);
+}
+
+.agent-list-state strong,
+.agent-list-state span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-list-state strong {
+  color: #182230;
+  font-size: 12px;
+}
+
+.agent-list-state span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .side-heading {
   display: flex;
   align-items: center;
@@ -645,20 +672,62 @@ code {
   font-size: 28px;
 }
 
-.dashboard-notice {
+.dashboard-state {
   display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--warning) 34%, var(--line));
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--warning) 8%, var(--surface));
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
   color: var(--muted);
 }
 
-.dashboard-notice strong {
+.dashboard-state > span {
   flex: 0 0 auto;
+  min-width: 92px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 820;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.dashboard-state strong,
+.dashboard-empty strong {
+  display: block;
   color: var(--text);
+}
+
+.dashboard-state p,
+.dashboard-state small {
+  display: block;
+  margin: 2px 0 0;
+  line-height: 1.45;
+}
+
+.dashboard-state small {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.dashboard-state.disconnected,
+.dashboard-state.preview {
+  border-color: color-mix(in srgb, var(--warning) 34%, var(--line));
+  background: color-mix(in srgb, var(--warning) 8%, var(--surface));
+}
+
+.dashboard-state.disconnected > span,
+.dashboard-state.preview > span {
+  color: var(--warning);
+}
+
+.dashboard-state.empty {
+  border-style: dashed;
+  background: var(--surface);
 }
 
 .dashboard-refreshing {
@@ -670,6 +739,22 @@ code {
   color: var(--muted);
   font-size: 12px;
   font-weight: 680;
+}
+
+.dashboard-empty {
+  display: grid;
+  place-items: center;
+  min-height: 220px;
+  padding: 32px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--muted);
+  text-align: center;
+}
+
+.dashboard-empty span {
+  margin-top: 6px;
 }
 
 .eyebrow {
