@@ -604,8 +604,8 @@ code {
 }
 
 .message-list {
-  display: grid;
-  align-content: end;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
   min-height: 0;
   overflow-y: auto;
@@ -616,7 +616,7 @@ code {
 
 .history-loader,
 .history-status {
-  justify-self: center;
+  align-self: center;
 }
 
 .history-loader button {
@@ -647,17 +647,17 @@ code {
 }
 
 .message.assistant {
-  justify-self: start;
+  align-self: flex-start;
 }
 
 .message.operator {
-  justify-self: end;
+  align-self: flex-end;
 }
 
 .message.tool,
 .message.event,
 .message.system {
-  justify-self: center;
+  align-self: center;
   width: min(900px, 100%);
 }
 
