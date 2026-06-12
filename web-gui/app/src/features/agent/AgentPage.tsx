@@ -3,6 +3,8 @@ import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "re
 import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import type { AgentDetail, AgentSummary, AgentTimelineItem, DisplayLevel } from "../../runtime/types";
 
+type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "error";
+
 interface AgentPageProps {
   agent: AgentSummary;
   detail: AgentDetail | null;
@@ -13,6 +15,7 @@ interface AgentPageProps {
   loadingOlderEvents: boolean;
   promptError?: string;
   historyError?: string;
+  liveStatus: AgentLiveStatus;
   onRefresh: () => void;
   onLoadOlderEvents: () => Promise<void>;
   onSendPrompt: (text: string) => Promise<void>;
@@ -33,6 +36,7 @@ export function AgentPage({
   loadingOlderEvents,
   promptError,
   historyError,
+  liveStatus,
   onRefresh,
   onLoadOlderEvents,
   onSendPrompt,
@@ -51,6 +55,7 @@ export function AgentPage({
   const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
   const newestTimelineItem = timeline[timeline.length - 1];
   const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
+  const sourceStatus = loading && !detail ? "syncing" : detail?.source === "http" && !detail.error ? "live" : "preview";
 
   useEffect(() => {
     setVisibleInfoItemLimit(DEFAULT_INFO_TIMELINE_ITEM_LIMIT);
@@ -114,20 +119,36 @@ export function AgentPage({
       <div className="agent-workbench">
         <section className="conversation-pane">
           <div className="conversation-head">
-            <div>
-              <span className="eyebrow">Agent conversation</span>
+            <div className="conversation-title">
+              <span className="eyebrow">Conversation</span>
               <h1>{activeAgent.id}</h1>
-              <p>{activeAgent.postureReason}</p>
+              <div className="conversation-subline" aria-label="Agent context">
+                <span>{activeAgent.lifecycle}</span>
+                <span>{activeAgent.workspace}</span>
+                <span>{activeAgent.model}</span>
+              </div>
             </div>
             <div className="conversation-actions">
-              {detail?.source === "http" && !detail.error ? (
-                <span className="source-chip live">live</span>
-              ) : (
-                <span className="source-chip">fixture fallback</span>
-              )}
+              <span className={`source-chip ${sourceStatus}`}>{sourceStatus}</span>
+              <span className={`source-chip live-status ${liveStatus}`}>{liveStatusLabel(liveStatus)}</span>
               <button type="button" disabled={loading} onClick={onRefresh}>
                 {loading ? "Refreshing…" : "Refresh"}
               </button>
+            </div>
+          </div>
+
+          <div className="conversation-context">
+            <div>
+              <span>Current work</span>
+              <strong>{activeAgent.currentWork?.objective ?? activeAgent.postureReason}</strong>
+            </div>
+            <div>
+              <span>Posture</span>
+              <strong>{activeAgent.posture}</strong>
+            </div>
+            <div>
+              <span>Attention</span>
+              <strong>{activeAgent.attention}</strong>
             </div>
           </div>
 
@@ -162,6 +183,12 @@ export function AgentPage({
                 </div>
               </article>
             ))}
+            {timeline.length === 0 ? (
+              <div className="conversation-empty">
+                <strong>No visible messages</strong>
+                <span>Switch to Verbose or Debug to inspect lower-level runtime events.</span>
+              </div>
+            ) : null}
           </div>
 
           <form className="composer" aria-label={`Send operator input to ${activeAgent.id}`} onSubmit={handleSubmit}>
@@ -223,4 +250,12 @@ function formatDisplayTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(parsed);
+}
+
+function liveStatusLabel(status: AgentLiveStatus): string {
+  if (status === "connecting") return "connecting";
+  if (status === "streaming") return "streaming";
+  if (status === "reconnecting") return "reconnecting";
+  if (status === "error") return "stream error";
+  return "idle";
 }

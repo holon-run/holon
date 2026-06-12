@@ -7,7 +7,7 @@ import { selectSelectedAgent } from "../runtime/runtime-selectors";
 import { useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
-import type { DisplayLevel, RouteKey } from "../runtime/types";
+import type { AgentSummary, DisplayLevel, RouteKey } from "../runtime/types";
 
 const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
   { key: "dashboard", label: "Dashboard", icon: "◎" },
@@ -79,21 +79,31 @@ export function App() {
         </nav>
 
         <section className="side-section agent-switcher" aria-label="Active agents">
-          <div className="side-heading">Active agents</div>
+          <div className="side-heading">
+            <span>Active agents</span>
+            <strong>{bootstrap.agents.length}</strong>
+          </div>
           {bootstrap.agents.map((agent) => (
             <button
-              className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""}`}
+              className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
               key={agent.id}
+              title={`${agent.id} · ${agent.focusSummary}`}
               type="button"
               onClick={() => openAgent(agent.id)}
             >
               <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
-              <span>
-                <strong>{agent.id}</strong>
-                <small>
-                  {agent.lifecycle} · {agent.focusSummary}
-                </small>
+              <span className="agent-row-main">
+                <span className="agent-row-title">
+                  <strong>{agent.id}</strong>
+                  <em className={`agent-state-dot ${agent.lifecycle}`} aria-label={agent.lifecycle} />
+                </span>
+                <small>{agent.focusSummary}</small>
+                <span className="agent-row-meta">
+                  <span>{agent.lifecycle}</span>
+                  <span>{agent.currentWork?.state ?? agent.posture}</span>
+                </span>
               </span>
+              {agentSignalCount(agent) > 0 ? <span className="agent-row-count">{agentSignalCount(agent)}</span> : null}
             </button>
           ))}
         </section>
@@ -189,6 +199,7 @@ export function App() {
             promptError={selectedAgentSession?.promptError}
             hasOlderEvents={selectedAgentSession?.hasOlder ?? selectedAgentDetail?.hasOlderEvents ?? false}
             loadingOlderEvents={selectedAgentSession?.loadingOlder ?? false}
+            liveStatus={selectedAgentSession?.liveStatus ?? "idle"}
             historyError={selectedAgentSession?.historyError}
             onRefresh={() => {
               void refreshAgentDetail();
@@ -223,4 +234,8 @@ function levelLabel(level: DisplayLevel): string {
   if (level === "info") return "Info";
   if (level === "verbose") return "Verbose";
   return "Debug";
+}
+
+function agentSignalCount(agent: AgentSummary): number {
+  return agent.pending + agent.activeTaskCount + agent.waitingCount;
 }
