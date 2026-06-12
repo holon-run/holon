@@ -11,7 +11,7 @@ export const runtimeFixture: RuntimeBootstrap = {
     { label: "Agents", value: "2" },
     { label: "Needs attention", value: "1", tone: "attention" },
     { label: "Active tasks", value: "0", tone: "muted" },
-    { label: "Open work", value: "1" },
+    { label: "Current work", value: "1" },
   ],
   agents: [
     {

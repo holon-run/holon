@@ -352,7 +352,7 @@ async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): 
   const agents = statePairs.map(([entry, state, brief]) => projectAgent(entry, state, brief));
   const attentionCount = agents.filter((agent) => agent.pending > 0 || agent.waitingCount > 0).length;
   const activeTaskCount = agents.reduce((sum, agent) => sum + agent.activeTaskCount, 0);
-  const openWorkCount = agents.filter((agent) => agent.currentWork).length;
+  const currentWorkCount = agents.filter((agent) => agent.currentWork).length;
   const connection: RuntimeConnection = {
     mode: handshake.auth?.mode === "bearer" ? "remote" : "local",
     source: "http",
@@ -363,7 +363,7 @@ async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): 
   return {
     attentionCount,
     connection,
-    metrics: buildMetrics(agents.length, attentionCount, activeTaskCount, openWorkCount),
+    metrics: buildMetrics(agents.length, attentionCount, activeTaskCount, currentWorkCount),
     agents,
   };
 }
@@ -436,7 +436,8 @@ function selectCurrentWork(
   workItems: Array<{ id?: string; objective?: string; state?: string }>,
   currentWorkItemId?: string | null,
 ): WorkItemSummary | undefined {
-  const selected = workItems.find((item) => item.id === currentWorkItemId) ?? workItems.find((item) => item.state === "open") ?? workItems[0];
+  if (!currentWorkItemId) return undefined;
+  const selected = workItems.find((item) => item.id === currentWorkItemId);
   if (!selected?.id) return undefined;
   return {
     id: selected.id,
@@ -458,12 +459,12 @@ function withFixtureFallback(baseUrl: string, error: string): RuntimeBootstrap {
   };
 }
 
-function buildMetrics(agentCount: number, attentionCount: number, activeTaskCount: number, openWorkCount: number): DashboardMetric[] {
+function buildMetrics(agentCount: number, attentionCount: number, activeTaskCount: number, currentWorkCount: number): DashboardMetric[] {
   return [
     { label: "Agents", value: String(agentCount) },
     { label: "Needs attention", value: String(attentionCount), tone: attentionCount > 0 ? "attention" : "muted" },
     { label: "Active tasks", value: String(activeTaskCount), tone: activeTaskCount > 0 ? "attention" : "muted" },
-    { label: "Open work", value: String(openWorkCount) },
+    { label: "Current work", value: String(currentWorkCount) },
   ];
 }
 

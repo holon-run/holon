@@ -887,7 +887,7 @@ code {
 
 .conversation-pane {
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: 1fr auto;
   min-height: 0;
 }
 
@@ -934,41 +934,6 @@ code {
 .source-chip.live-status.error {
   border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
   color: var(--danger);
-}
-
-.conversation-context {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(120px, auto) minmax(140px, auto);
-  gap: 10px;
-  padding: 18px 28px 14px;
-}
-
-.conversation-context div {
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface) 78%, transparent);
-}
-
-.conversation-context span,
-.conversation-context strong {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.conversation-context span {
-  color: var(--faint);
-  font-size: 11px;
-  font-weight: 760;
-  text-transform: uppercase;
-}
-
-.conversation-context strong {
-  margin-top: 2px;
-  font-size: 13px;
 }
 
 .message-list {

@@ -109,21 +109,6 @@ export function AgentPage({
     <section className="page agent-page" aria-label="Agent conversation">
       <div className="agent-workbench">
         <section className="conversation-pane">
-          <div className="conversation-context">
-            <div>
-              <span>Current work</span>
-              <strong>{activeAgent.currentWork?.objective ?? activeAgent.postureReason}</strong>
-            </div>
-            <div>
-              <span>Posture</span>
-              <strong>{activeAgent.posture}</strong>
-            </div>
-            <div>
-              <span>Attention</span>
-              <strong>{activeAgent.attention}</strong>
-            </div>
-          </div>
-
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
             {hasOlderEvents ? (
               <div className="history-loader">

@@ -165,7 +165,7 @@ export function App() {
               <button className="work-summary" type="button" onClick={() => setInspectorOpen(true)}>
                 <span>Current work item</span>
                 <strong>{selectedAgent?.currentWork?.objective ?? "No current work item"}</strong>
-                <em>{selectedAgent?.currentWork?.state ?? selectedAgent?.lifecycle ?? "unknown"}</em>
+                <em>{selectedAgent?.currentWork?.state ?? "none"}</em>
               </button>
               <div className="agent-top-controls">
                 <div className="agent-stream-controls" aria-label="Agent stream status">
