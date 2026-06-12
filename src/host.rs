@@ -1438,6 +1438,11 @@ impl RuntimeHost {
                 "child_ownership": AgentOwnership::ParentSupervised,
                 "child_profile_preset": AgentProfilePreset::PrivateChild,
                 "child_observability": runtime.child_agent_observability().await?,
+                "token_usage": json!({
+                    "total": crate::types::TokenUsage::new(state.total_input_tokens, state.total_output_tokens),
+                    "last_turn": state.last_turn_token_usage.clone(),
+                    "total_model_rounds": state.total_model_rounds,
+                }),
             });
             if worktree {
                 if let Some(worktree) = state.worktree_session.as_ref() {
@@ -1507,13 +1512,21 @@ impl RuntimeHost {
         Ok(Some(ChildTaskTerminalResult {
             status,
             text,
-            task_detail: Some(json!({
-                "child_agent_id": child_agent_id,
-                "child_kind": AgentKind::Child,
-                "child_visibility": AgentVisibility::Private,
-                "child_ownership": AgentOwnership::ParentSupervised,
-                "child_profile_preset": AgentProfilePreset::PrivateChild,
-            })),
+            task_detail: {
+                let mut detail = json!( {
+                    "child_agent_id": child_agent_id,
+                    "child_kind": AgentKind::Child,
+                    "child_visibility": AgentVisibility::Private,
+                    "child_ownership": AgentOwnership::ParentSupervised,
+                    "child_profile_preset": AgentProfilePreset::PrivateChild,
+                });
+                detail["token_usage"] = json!({
+                    "total": crate::types::TokenUsage::new(state.total_input_tokens, state.total_output_tokens),
+                    "last_turn": state.last_turn_token_usage.clone(),
+                    "total_model_rounds": state.total_model_rounds,
+                });
+                Some(detail)
+            },
         }))
     }
 

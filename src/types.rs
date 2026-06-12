@@ -1649,7 +1649,7 @@ pub struct AgentState {
     pub last_runtime_failure: Option<RuntimeFailureSummary>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -1670,7 +1670,7 @@ impl TokenUsage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct AgentTokenUsageSummary {
     pub total: TokenUsage,
     pub total_model_rounds: u64,
@@ -2707,6 +2707,8 @@ pub struct TaskStatusSnapshot {
     pub child_observability: Option<ChildAgentObservabilitySnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_supervision: Option<ChildSupervisionProjection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<AgentTokenUsageSummary>,
 }
 
 impl TaskStatusSnapshot {
@@ -2716,6 +2718,8 @@ impl TaskStatusSnapshot {
         let child_observability = task_detail_value(&task.detail, "child_observability")
             .and_then(|value| serde_json::from_value(value.clone()).ok());
         let child_supervision = ChildSupervisionProjection::from_task_record(task);
+        let token_usage = task_detail_value(&task.detail, "token_usage")
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
 
         Self {
             task_id: task.id.clone(),
@@ -2730,6 +2734,7 @@ impl TaskStatusSnapshot {
             child_agent_id,
             child_observability,
             child_supervision,
+            token_usage,
         }
     }
 }
@@ -2760,6 +2765,8 @@ pub struct TaskOutputSnapshot {
     pub failure_artifact: Option<FailureArtifact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_supervision: Option<ChildSupervisionProjection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<AgentTokenUsageSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

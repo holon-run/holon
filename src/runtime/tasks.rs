@@ -1635,6 +1635,12 @@ impl RuntimeHandle {
                 }
             });
 
+        let token_usage = task
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.get("token_usage"))
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
+
         Ok(TaskOutputSnapshot {
             task_id: task.id,
             kind: task.kind.as_str().to_string(),
@@ -1648,6 +1654,7 @@ impl RuntimeHandle {
             exit_status,
             failure_artifact,
             child_supervision,
+            token_usage,
         })
     }
 
