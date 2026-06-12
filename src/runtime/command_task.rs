@@ -1154,9 +1154,17 @@ async fn collect_remaining_output(running: &mut RunningCommand, captured: &mut C
     };
     // After the main process exits, background children may hold pipe write-ends
     // open indefinitely.  Cap the drain so the agent cannot block forever.
-    let _ = tokio::time::timeout(COLLECT_OUTPUT_DRAIN_TIMEOUT, drain).await;
-    for handle in running.reader_handles.drain(..) {
-        let _ = handle.await;
+    if tokio::time::timeout(COLLECT_OUTPUT_DRAIN_TIMEOUT, drain)
+        .await
+        .is_ok()
+    {
+        for handle in running.reader_handles.drain(..) {
+            let _ = handle.await;
+        }
+    } else {
+        for handle in running.reader_handles.drain(..) {
+            handle.abort();
+        }
     }
 }
 
@@ -1175,9 +1183,17 @@ async fn collect_remaining_output_into_file(
     };
     // After the main process exits, background children may hold pipe write-ends
     // open indefinitely.  Cap the drain so the agent cannot block forever.
-    let _ = tokio::time::timeout(COLLECT_OUTPUT_DRAIN_TIMEOUT, drain).await;
-    for handle in running.reader_handles.drain(..) {
-        let _ = handle.await;
+    if tokio::time::timeout(COLLECT_OUTPUT_DRAIN_TIMEOUT, drain)
+        .await
+        .is_ok()
+    {
+        for handle in running.reader_handles.drain(..) {
+            let _ = handle.await;
+        }
+    } else {
+        for handle in running.reader_handles.drain(..) {
+            handle.abort();
+        }
     }
     Ok(())
 }
