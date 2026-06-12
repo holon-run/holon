@@ -46,6 +46,12 @@ export interface AgentSummary {
 
 export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event" | "system";
 
+export interface AgentTimelineItemDetail {
+  label: string;
+  text: string;
+  tone?: "command" | "output" | "data";
+}
+
 export interface AgentTimelineItem {
   id: string;
   kind: AgentTimelineItemKind;
@@ -55,6 +61,7 @@ export interface AgentTimelineItem {
   meta: string;
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
+  detail?: AgentTimelineItemDetail;
   debug?: string;
 }
 

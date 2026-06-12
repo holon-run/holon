@@ -1,4 +1,4 @@
-import type { AgentTimelineItem, AgentTimelineItemKind, DisplayLevel } from "./types";
+import type { AgentTimelineItem, AgentTimelineItemDetail, AgentTimelineItemKind, DisplayLevel } from "./types";
 
 export interface SessionTranscriptEntry {
   id?: string;
@@ -44,6 +44,7 @@ interface SessionItemDraft {
   meta: string;
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
+  detail?: AgentTimelineItemDetail;
   debug?: string;
 }
 
@@ -237,6 +238,7 @@ function projectEventEnvelope(event: SessionEventEnvelope, eventDisplayLevel: Di
     meta: event.event_seq == null ? eventType : `${eventType} · event #${event.event_seq}`,
     minDisplayLevel: capDisplayLevel(projection.minDisplayLevel, eventDisplayLevel),
     sourceIds: [id],
+    detail: projection.detail,
     debug: debugJson(event),
   });
 }
@@ -248,7 +250,7 @@ function capDisplayLevel(level: DisplayLevel, maxLevel: DisplayLevel): DisplayLe
 function projectRuntimeEvent(
   eventType: string,
   payload: Record<string, unknown> | undefined,
-): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel"> & { timestamp?: string } {
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string } {
   if (eventType === "message_enqueued") {
     const message = messageEnvelopeProjection(payload);
     if (message?.origin === "operator") {
@@ -278,13 +280,8 @@ function projectRuntimeEvent(
     };
   }
 
-  if (eventType === "tool_executed") {
-    return {
-      kind: "tool",
-      label: "Tool executed",
-      body: summarizeToolExecution(payload),
-      minDisplayLevel: "verbose",
-    };
+  if (eventType === "tool_executed" || eventType === "tool_execution_failed") {
+    return projectToolExecution(eventType, payload);
   }
 
   if (
@@ -407,19 +404,87 @@ function summarizeToolResults(value: unknown): string {
   ]);
 }
 
-function summarizeToolExecution(payload: Record<string, unknown> | undefined): string {
+function projectToolExecution(
+  eventType: string,
+  payload: Record<string, unknown> | undefined,
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> {
   const toolName = stringField(payload, "tool_name") ?? "tool";
-  const status = stringField(payload, "status") ?? (payload?.error ? "failed" : "completed");
+  const failed = eventType === "tool_execution_failed" || Boolean(payload?.error);
+  const label = toolFriendlyLabel(toolName, failed);
   const summary = stringField(payload, "summary");
-  const display = stringField(payload, "exec_command_display");
-  const batchItems = arrayField(payload, "exec_command_batch_items");
+  const commandPreview = execCommandPreview(payload);
+  const result = asRecord(payload?.exec_command_result);
+  const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status");
+  const durationMs = numberField(payload, "duration_ms") ?? numberField(result, "duration_ms");
   const applyPatch = asRecord(payload?.apply_patch_result);
+  const error = stringField(payload, "error");
+  const body = compactJoin([
+    exitStatus == null ? undefined : `exit ${exitStatus}`,
+    durationMs == null ? undefined : formatDuration(durationMs),
+    applyPatch ? stringField(applyPatch, "summary_text") : undefined,
+    commandPreview || applyPatch ? undefined : summary,
+    error,
+  ]);
+  const outputPreview = commandOutputPreview(payload);
 
-  if (summary) return `${toolName}: ${summary}`;
-  if (display) return `${toolName}: ${display}`;
-  if (batchItems?.length) return `${toolName}: ${batchItems.length} command batch item${batchItems.length === 1 ? "" : "s"} ${status}`;
-  if (applyPatch) return `${toolName}: patch ${status}`;
-  return `${toolName} ${status}.`;
+  return {
+    kind: "tool",
+    label,
+    body: body || (failed ? "Failed." : "Completed."),
+    detail: commandPreview
+      ? { label: toolName === "ExecCommandBatch" ? "Commands" : "Command", text: commandPreview, tone: "command" }
+      : outputPreview
+        ? { label: "Output", text: outputPreview, tone: "output" }
+        : undefined,
+    minDisplayLevel: "verbose",
+  };
+}
+
+function execCommandPreview(payload: Record<string, unknown> | undefined): string | undefined {
+  const direct = firstStringField(payload, ["exec_command_display", "cmd_display"]);
+  if (direct) return direct;
+
+  const batchItems = arrayField(payload, "exec_command_batch_items");
+  if (batchItems?.length) {
+    const commands = batchItems
+      .map((item) => {
+        const record = asRecord(item);
+        return firstStringField(record, ["cmd_display", "cmd"]);
+      })
+      .filter((command): command is string => Boolean(command));
+    if (commands.length) return commands.join("\n");
+  }
+
+  const result = asRecord(payload?.exec_command_result);
+  return (
+    firstStringField(result, ["cmd_display", "cmd"]) ??
+    firstStringField(payload, ["exec_command_cmd", "cmd", "cmd_preview"]) ??
+    firstStringField(asRecord(payload?.command_cost), ["cmd_preview"]) ??
+    firstStringField(asRecord(payload?.exec_command_cost), ["cmd_preview"])
+  );
+}
+
+function commandOutputPreview(payload: Record<string, unknown> | undefined): string | undefined {
+  const result = asRecord(payload?.exec_command_result);
+  return (
+    firstStringField(payload, ["stdout_preview", "stderr_preview", "output_preview"]) ??
+    firstStringField(result, ["stdout_preview", "stderr_preview", "output_preview", "summary_text"])
+  );
+}
+
+function toolFriendlyLabel(toolName: string, failed: boolean): string {
+  if (toolName === "ApplyPatch") return failed ? "Patch failed" : "Applied patch";
+  if (toolName === "ExecCommand") return failed ? "Command failed" : "Command finished";
+  if (toolName === "ExecCommandBatch") return failed ? "Command batch failed" : "Command batch finished";
+  if (toolName === "UpdateWorkItem") return failed ? "Work item update failed" : "Updated work item";
+  if (toolName === "PickWorkItem") return failed ? "Work item switch failed" : "Picked work item";
+  if (toolName === "CompleteWorkItem") return failed ? "Work item completion failed" : "Completed work item";
+  return failed ? "Tool failed" : "Tool finished";
+}
+
+function formatDuration(milliseconds: number): string {
+  if (milliseconds < 1000) return `${milliseconds}ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)}s`;
 }
 
 function summarizeWorkItemEvent(eventType: string, payload: Record<string, unknown> | undefined): string {
@@ -531,6 +596,14 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function stringField(value: Record<string, unknown> | undefined, key: string): string | undefined {
   const candidate = value?.[key];
   return typeof candidate === "string" && candidate.trim() ? candidate : undefined;
+}
+
+function firstStringField(value: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const candidate = stringField(value, key);
+    if (candidate) return candidate;
+  }
+  return undefined;
 }
 
 function numberField(value: Record<string, unknown> | undefined, key: string): number | undefined {

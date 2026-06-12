@@ -1026,9 +1026,15 @@ code {
   white-space: pre-wrap;
 }
 
-.message-label {
-  display: block;
+.message-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 6px;
+}
+
+.message-label {
   color: var(--faint);
   font-size: 11px;
   font-weight: 760;
@@ -1036,14 +1042,39 @@ code {
   text-transform: uppercase;
 }
 
+.message-inline-meta {
+  overflow: hidden;
+  max-width: 58%;
+  color: var(--faint);
+  font-size: 11px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .operator .message-label {
   color: rgba(255, 255, 255, 0.62);
 }
 
-.bubble pre {
+.message-detail {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.message-detail span {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.message-detail pre,
+.bubble > pre {
   overflow: auto;
   max-height: 280px;
-  margin: 12px 0 0;
+  margin: 0;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1051,6 +1082,19 @@ code {
   color: #dbeafe;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.bubble > pre {
+  margin-top: 12px;
+}
+
+.message-detail.command pre {
+  background: color-mix(in srgb, #0f172a 94%, var(--accent));
+  color: #e0f2fe;
+}
+
+.message-detail.output pre {
+  background: color-mix(in srgb, #0f172a 94%, var(--success));
 }
 
 .message-meta {

@@ -125,13 +125,28 @@ export function AgentPage({
             {timeline.map((item) => (
               <article className={`message ${item.kind}`} key={item.id}>
                 <div className="bubble">
-                  <span className="message-label">{item.label}</span>
+                  <div className="message-heading">
+                    <span className="message-label">{item.label}</span>
+                    {item.kind === "tool" || item.kind === "event" || item.kind === "system" ? (
+                      <span className="message-inline-meta">
+                        {displayLevel === "info" ? item.meta.split(" · ")[0] : item.meta}
+                      </span>
+                    ) : null}
+                  </div>
                   <p>{item.body}</p>
+                  {item.detail ? (
+                    <div className={`message-detail ${item.detail.tone ?? "data"}`}>
+                      <span>{item.detail.label}</span>
+                      <pre>{item.detail.text}</pre>
+                    </div>
+                  ) : null}
                   {displayLevel === "debug" && item.debug ? <pre>{item.debug}</pre> : null}
                 </div>
                 <div className="message-meta">
                   <time>{formatDisplayTime(item.timestamp)}</time>
-                  <span>{displayLevel === "info" ? item.meta.split(" · ")[0] : `${item.meta} · ${displayLevel}`}</span>
+                  {item.kind === "tool" || item.kind === "event" || item.kind === "system" ? null : (
+                    <span>{displayLevel === "info" ? item.meta.split(" · ")[0] : `${item.meta} · ${displayLevel}`}</span>
+                  )}
                   {displayLevel !== "info" ? (
                     <button className="copy-action" type="button" onClick={onOpenInspector}>
                       inspect
