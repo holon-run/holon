@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import type { AgentDetail, AgentSummary, AgentTimelineActivity, AgentTimelineItem, DisplayLevel } from "../../runtime/types";
@@ -68,8 +68,7 @@ export function AgentPage({
     }
   }, [timelineVersion]);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function sendDraftPrompt() {
     if (!canSendPrompt) return;
     try {
       await onSendPrompt(trimmedPrompt);
@@ -77,6 +76,17 @@ export function AgentPage({
     } catch {
       // Keep the draft in place; runtime-store exposes the user-facing error.
     }
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await sendDraftPrompt();
+  }
+
+  async function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    await sendDraftPrompt();
   }
 
   function handleMessageListScroll() {
@@ -179,6 +189,7 @@ export function AgentPage({
               value={prompt}
               disabled={sendingPrompt}
               onChange={(event) => setPrompt(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
             />
             {promptError ? (
               <div className="composer-status" role="alert">
