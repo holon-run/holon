@@ -16,6 +16,8 @@ export interface RuntimeClientOptions {
 }
 
 const DEFAULT_DEV_API_BASE = "/holon-api";
+const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
+const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
 
 function fixtureAgentDetail(agentId: string): AgentDetail {
   return agentDetailFixtures[agentId] ?? agentDetailFixtures[Object.keys(agentDetailFixtures)[0]];
@@ -24,11 +26,20 @@ function fixtureAgentDetail(agentId: string): AgentDetail {
 async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentId: string, displayLevel: DisplayLevel): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
   const [entry, state, briefs, transcript, events] = await Promise.all([
-    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list").then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId)),
+    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS })
+      .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
+      .catch(() => undefined),
     getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`),
-    getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/briefs?limit=5`),
-    getJson<TranscriptEntryDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/transcript?limit=40`),
-    fetchAgentEvents(baseUrl, fetchImpl, agentId, { limit: 80, order: "desc", displayLevel }),
+    getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/briefs?limit=5`, {
+      timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS,
+    }).catch(() => []),
+    getJson<TranscriptEntryDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/transcript?limit=40`, {
+      timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS,
+    }).catch(() => []),
+    fetchAgentEvents(baseUrl, fetchImpl, agentId, { limit: 80, order: "desc", displayLevel }).catch((): EventPageResponseDto => ({
+      events: [],
+      has_older: false,
+    })),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const agent = projectAgent(fallbackEntry, state, briefs[0]);
@@ -339,8 +350,12 @@ async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): 
 
       try {
         const [state, briefs] = await Promise.all([
-          getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodeURIComponent(id)}/state`),
-          getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodeURIComponent(id)}/briefs?limit=1`),
+          getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodeURIComponent(id)}/state`, {
+            timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS,
+          }),
+          getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodeURIComponent(id)}/briefs?limit=1`, {
+            timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS,
+          }),
         ]);
         return [entry, state, briefs[0]] as const;
       } catch {
@@ -368,10 +383,18 @@ async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): 
   };
 }
 
-async function getJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: string): Promise<T> {
+async function getJson<T>(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  path: string,
+  options: { timeoutMs?: number } = {},
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     headers: { Accept: "application/json" },
-  });
+    signal: controller.signal,
+  }).finally(() => window.clearTimeout(timeout));
   if (!response.ok) {
     throw new Error(`GET ${path} failed with ${response.status}`);
   }
@@ -505,4 +528,3 @@ function formatTime(value: string | null | undefined): string {
   if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
 }
-

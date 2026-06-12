@@ -106,10 +106,19 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     set({ bootstrapLoading: true, bootstrapError: undefined });
     try {
       const bootstrap = await runtimeClient.getBootstrap();
-      set({
-        bootstrap,
-        bootstrapLoading: false,
-        bootstrapError: bootstrap.connection.error,
+      set((state) => {
+        if (bootstrap.connection.source === "fixture" && state.bootstrap.connection.source === "http") {
+          return {
+            bootstrap: state.bootstrap,
+            bootstrapLoading: false,
+            bootstrapError: bootstrap.connection.error,
+          };
+        }
+        return {
+          bootstrap,
+          bootstrapLoading: false,
+          bootstrapError: bootstrap.connection.error,
+        };
       });
     } catch (error) {
       set({

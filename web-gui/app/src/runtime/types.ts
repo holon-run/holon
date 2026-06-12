@@ -52,6 +52,19 @@ export interface AgentTimelineItemDetail {
   tone?: "command" | "output" | "data";
 }
 
+export interface AgentTimelineActivity {
+  id: string;
+  kind: AgentTimelineItemKind;
+  label: string;
+  body: string;
+  timestamp: string;
+  meta: string;
+  minDisplayLevel: DisplayLevel;
+  sourceIds: string[];
+  detail?: AgentTimelineItemDetail;
+  debug?: string;
+}
+
 export interface AgentTimelineItem {
   id: string;
   kind: AgentTimelineItemKind;
@@ -62,6 +75,7 @@ export interface AgentTimelineItem {
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
   detail?: AgentTimelineItemDetail;
+  activities?: AgentTimelineActivity[];
   debug?: string;
 }
 

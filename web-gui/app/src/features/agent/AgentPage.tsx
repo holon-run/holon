@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
-import type { AgentDetail, AgentSummary, AgentTimelineItem, DisplayLevel } from "../../runtime/types";
+import type { AgentDetail, AgentSummary, AgentTimelineActivity, AgentTimelineItem, DisplayLevel } from "../../runtime/types";
 
 interface AgentPageProps {
   agent: AgentSummary;
@@ -129,7 +129,7 @@ export function AgentPage({
                     <span className="message-label">{item.label}</span>
                     {item.kind === "tool" || item.kind === "event" || item.kind === "system" ? (
                       <span className="message-inline-meta">
-                        {displayLevel === "info" ? item.meta.split(" · ")[0] : item.meta}
+                        {formatTimelineMeta(item.meta, displayLevel)}
                       </span>
                     ) : null}
                   </div>
@@ -140,12 +140,14 @@ export function AgentPage({
                       <pre>{item.detail.text}</pre>
                     </div>
                   ) : null}
-                  {displayLevel === "debug" && item.debug ? <pre>{item.debug}</pre> : null}
                 </div>
+                {displayLevel !== "info" && item.activities?.length ? (
+                  <ActivityTrail activities={item.activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
+                ) : null}
                 <div className="message-meta">
                   <time>{formatDisplayTime(item.timestamp)}</time>
                   {item.kind === "tool" || item.kind === "event" || item.kind === "system" ? null : (
-                    <span>{displayLevel === "info" ? item.meta.split(" · ")[0] : `${item.meta} · ${displayLevel}`}</span>
+                    <span>{formatTimelineMeta(item.meta, displayLevel)}</span>
                   )}
                   {displayLevel !== "info" ? (
                     <button className="copy-action" type="button" onClick={onOpenInspector}>
@@ -198,6 +200,48 @@ export function AgentPage({
   );
 }
 
+function ActivityTrail({
+  activities,
+  displayLevel,
+  onOpenInspector,
+}: {
+  activities: AgentTimelineActivity[];
+  displayLevel: DisplayLevel;
+  onOpenInspector: () => void;
+}) {
+  const visibleActivities = displayLevel === "debug" ? activities : activities.slice(-4);
+  const hiddenCount = activities.length - visibleActivities.length;
+
+  return (
+    <div className="activity-trail" aria-label="Agent activity">
+      {visibleActivities.map((activity) => (
+        <div className={`activity-item ${activity.kind}`} key={activity.id}>
+          <div className="activity-row">
+            <span className="activity-label">{activity.label}</span>
+            <span className="activity-body">{activity.body}</span>
+            <time>{formatDisplayTime(activity.timestamp)}</time>
+          </div>
+          {displayLevel === "debug" ? (
+            <div className="activity-meta">
+              <span>{activity.meta}</span>
+              <button className="copy-action" type="button" onClick={onOpenInspector}>
+                inspect
+              </button>
+            </div>
+          ) : null}
+          {displayLevel === "debug" && activity.detail ? (
+            <div className={`message-detail activity-detail ${activity.detail.tone ?? "data"}`}>
+              <span>{activity.detail.label}</span>
+              <pre>{activity.detail.text}</pre>
+            </div>
+          ) : null}
+        </div>
+      ))}
+      {hiddenCount > 0 ? <div className="activity-more">+{hiddenCount} earlier activities</div> : null}
+    </div>
+  );
+}
+
 function fallbackTimeline(agent: AgentSummary): AgentTimelineItem[] {
   return [
     {
@@ -222,4 +266,14 @@ function formatDisplayTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(parsed);
+}
+
+function formatTimelineMeta(meta: string, displayLevel: DisplayLevel): string {
+  if (displayLevel === "debug") return `${meta} · debug`;
+  const parts = meta
+    .split(" · ")
+    .map((part) => part.trim())
+    .filter((part) => part && !/^event #\d+$/i.test(part));
+  if (displayLevel === "verbose") return parts.join(" · ") || meta.split(" · ")[0] || meta;
+  return parts[0] || meta;
 }

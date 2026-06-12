@@ -1135,6 +1135,83 @@ code {
   background: color-mix(in srgb, #0f172a 94%, var(--success));
 }
 
+.activity-trail {
+  display: grid;
+  gap: 5px;
+  width: min(680px, 100%);
+  margin: 8px 0 0 18px;
+  padding-left: 14px;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+
+.activity-item {
+  display: grid;
+  gap: 5px;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 82%, var(--accent) 4%);
+}
+
+.activity-item.tool {
+  background: color-mix(in srgb, var(--surface) 78%, var(--success) 5%);
+}
+
+.activity-row,
+.activity-meta {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: 8px;
+}
+
+.activity-label {
+  flex: 0 0 auto;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.activity-body {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-row time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.activity-meta {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.activity-meta span {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-detail {
+  margin-top: 2px;
+}
+
+.activity-more {
+  color: var(--faint);
+  font-size: 11px;
+}
+
 .message-meta {
   display: flex;
   align-items: center;
