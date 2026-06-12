@@ -286,7 +286,7 @@ fn parse_visual_observation(
         elements: optional_value_array(object.get("elements"), "elements")?,
         relations: optional_value_array(object.get("relations"), "relations")?,
         issues: optional_value_array(object.get("issues"), "issues")?,
-        uncertainties: optional_string_array(object.get("uncertainties"), "uncertainties")?,
+        uncertainties: optional_uncertainties(object.get("uncertainties"))?,
         external_sources: optional_value_array(object.get("external_sources"), "external_sources")?,
     })
 }
@@ -331,21 +331,40 @@ fn optional_value_array(value: Option<&Value>, field: &str) -> Result<Vec<Value>
     }
 }
 
-fn optional_string_array(value: Option<&Value>, field: &str) -> Result<Vec<String>> {
-    match value {
-        Some(Value::Array(values)) => values
-            .iter()
-            .map(|value| {
-                value.as_str().map(ToString::to_string).ok_or_else(|| {
-                    anyhow!("vision adapter response field `{field}` must contain only strings")
+fn optional_uncertainties(value: Option<&Value>) -> Result<Vec<String>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or_else(|| {
+        anyhow!("vision adapter response field `uncertainties` must be an array when present")
+    })?;
+    values
+        .iter()
+        .map(|value| {
+            if let Some(text) = value.as_str() {
+                return Ok(text.to_string());
+            }
+            let Some(object) = value.as_object() else {
+                return Err(anyhow!(
+                    "vision adapter response field `uncertainties` must contain strings or objects with text"
+                ));
+            };
+            ["text", "description", "summary", "message"]
+                .iter()
+                .find_map(|field| object.get(*field).and_then(Value::as_str))
+                .map(ToString::to_string)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "vision adapter response field `uncertainties` object entries must include text"
+                    )
                 })
-            })
-            .collect(),
-        Some(_) => Err(anyhow!(
-            "vision adapter response field `{field}` must be an array when present"
-        )),
-        None => Ok(Vec::new()),
-    }
+        })
+        .filter_map(|result| match result {
+            Ok(text) if text.trim().is_empty() => None,
+            Ok(text) => Some(Ok(text)),
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -687,6 +706,33 @@ mod tests {
             vec!["small text is unclear".to_string()]
         );
         assert!(observation.elements.is_empty());
+    }
+
+    #[test]
+    fn normalizes_object_uncertainties_from_vision_adapter() {
+        let observation = parse_visual_observation(
+            r#"{
+                "type": "visual_observation",
+                "schema": "visual_observation.v1",
+                "summary": "A logo is visible.",
+                "uncertainties": [
+                    {"text": "The inner shape may be stylized."},
+                    {"description": "Small text is hard to read."}
+                ]
+            }"#,
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            observation.uncertainties,
+            vec![
+                "The inner shape may be stylized.".to_string(),
+                "Small text is hard to read.".to_string()
+            ]
+        );
     }
 
     #[test]

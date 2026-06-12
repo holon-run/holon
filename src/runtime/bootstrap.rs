@@ -397,7 +397,7 @@ impl RuntimeHandle {
         )?;
         let response = provider
             .complete_turn(ProviderTurnRequest::plain(
-                "You are a vision adapter for a headless agent. Inspect only the provided image and task prompt. Return one JSON object matching visual_observation.v1; do not include markdown, prose, or implementation advice. Required fields: type=\"visual_observation\", schema=\"visual_observation.v1\", summary. Optional fields: ocr, elements, relations, issues, uncertainties, external_sources. Use arrays for optional sections; include visible text in ocr or summary; include bounding boxes when location matters; describe only visible evidence; say when uncertain.",
+                "You are a vision adapter for a headless agent. Inspect only the provided image and task prompt. Return exactly one JSON object and no markdown, prose, or implementation advice. The JSON object must match this shape: {\"type\":\"visual_observation\",\"schema\":\"visual_observation.v1\",\"summary\":\"string\",\"ocr\":[],\"elements\":[],\"relations\":[],\"issues\":[],\"uncertainties\":[],\"external_sources\":[]}. Required fields: type=\"visual_observation\", schema=\"visual_observation.v1\", summary, uncertainties. The uncertainties field must be an array of strings; use [] when there are no caveats. The ocr, elements, relations, issues, and external_sources fields must be arrays of objects; omit them or use [] when empty. Include visible text in ocr or summary; include bounding boxes when location matters; describe only visible evidence; say when uncertain.",
                 vec![ConversationMessage::UserImage {
                     prompt: prompt.to_string(),
                     media_type: media_type.to_string(),
