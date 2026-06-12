@@ -1263,8 +1263,8 @@ code {
 
 .activity-trail {
   display: grid;
-  gap: 5px;
-  width: min(680px, 100%);
+  gap: 7px;
+  width: min(760px, 100%);
   margin: 8px 0 0 18px;
   padding-left: 14px;
   border-left: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
@@ -1272,8 +1272,8 @@ code {
 
 .activity-item {
   display: grid;
-  gap: 5px;
-  padding: 7px 9px;
+  gap: 7px;
+  padding: 8px 10px;
   border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, var(--surface) 82%, var(--accent) 4%);
@@ -1285,10 +1285,14 @@ code {
 
 .activity-row,
 .activity-meta {
-  display: flex;
+  display: grid;
   align-items: baseline;
   min-width: 0;
   gap: 8px;
+}
+
+.activity-row {
+  grid-template-columns: auto minmax(0, 1fr) auto;
 }
 
 .activity-label {
@@ -1318,6 +1322,7 @@ code {
 }
 
 .activity-meta {
+  grid-template-columns: minmax(0, 1fr) auto;
   color: var(--faint);
   font-size: 11px;
 }
@@ -1331,6 +1336,12 @@ code {
 
 .activity-detail {
   margin-top: 2px;
+}
+
+.activity-detail pre {
+  max-height: 220px;
+  padding: 10px;
+  font-size: 11.5px;
 }
 
 .activity-more {

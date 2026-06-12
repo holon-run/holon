@@ -619,18 +619,73 @@ function projectToolExecution(
     error,
   ]);
   const outputPreview = commandOutputPreview(payload);
+  const detail = toolExecutionDetail(toolName, payload, commandPreview, outputPreview);
 
   return {
     kind: "tool",
     label,
     body: body || (failed ? "Failed." : "Completed."),
-    detail: commandPreview
-      ? { label: toolName === "ExecCommandBatch" ? "Commands" : "Command", text: commandPreview, tone: "command" }
-      : outputPreview
-        ? { label: "Output", text: outputPreview, tone: "output" }
-        : undefined,
+    detail,
     minDisplayLevel: "verbose",
   };
+}
+
+function toolExecutionDetail(
+  toolName: string,
+  payload: Record<string, unknown> | undefined,
+  commandPreview: string | undefined,
+  outputPreview: string | undefined,
+): AgentTimelineItemDetail | undefined {
+  if (toolName === "ExecCommandBatch") {
+    const batchDetail = commandBatchDetail(payload);
+    if (batchDetail) return { label: "Commands", text: batchDetail, tone: "command" };
+  }
+
+  if (commandPreview && outputPreview) {
+    return { label: "Command + output", text: `${commandPreview}\n\nOutput:\n${outputPreview}`, tone: "command" };
+  }
+  if (commandPreview) {
+    return { label: toolName === "ExecCommandBatch" ? "Commands" : "Command", text: commandPreview, tone: "command" };
+  }
+  if (outputPreview) return { label: "Output", text: outputPreview, tone: "output" };
+  return undefined;
+}
+
+function commandBatchDetail(payload: Record<string, unknown> | undefined): string | undefined {
+  const batchItems = arrayField(payload, "exec_command_batch_items");
+  if (!batchItems?.length) return undefined;
+
+  const resultItems = arrayField(asRecord(payload?.exec_command_result), "items") ?? [];
+  const lines = batchItems
+    .map((item, index) => {
+      const itemRecord = asRecord(item);
+      const command = firstStringField(itemRecord, ["cmd_display", "cmd"]);
+      if (!command) return undefined;
+      const resultRecord = asRecord(resultItems[index]);
+      return formatBatchCommandLine(index, command, resultRecord);
+    })
+    .filter((line): line is string => Boolean(line));
+
+  return lines.length ? lines.join("\n") : undefined;
+}
+
+function formatBatchCommandLine(index: number, command: string, resultItem: Record<string, unknown> | undefined): string {
+  const status = stringField(resultItem, "status");
+  const result = asRecord(resultItem?.result);
+  const exitStatus = numberField(result, "exit_status");
+  const outputPreview = firstStringField(result, ["stdout_preview", "stderr_preview", "output_preview"]);
+  const statusText = compactJoin([status, exitStatus == null ? undefined : `exit ${exitStatus}`]);
+  const headline = `${index + 1}. ${statusText ? `[${statusText}] ` : ""}${command}`;
+  if (!outputPreview) return headline;
+  return `${headline}\n   ${indentPreview(outputPreview)}`;
+}
+
+function indentPreview(value: string): string {
+  return value
+    .trim()
+    .split("\n")
+    .slice(0, 6)
+    .join("\n   ");
 }
 
 function execCommandPreview(payload: Record<string, unknown> | undefined): string | undefined {

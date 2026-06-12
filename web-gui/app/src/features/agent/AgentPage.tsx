@@ -236,7 +236,7 @@ function ActivityTrail({
               </button>
             </div>
           ) : null}
-          {displayLevel === "debug" && activity.detail ? (
+          {activity.detail ? (
             <div className={`message-detail activity-detail ${activity.detail.tone ?? "data"}`}>
               <span>{activity.detail.label}</span>
               <pre>{activity.detail.text}</pre>
