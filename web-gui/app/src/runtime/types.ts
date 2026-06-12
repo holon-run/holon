@@ -63,6 +63,17 @@ export interface AgentDetail {
   timeline: AgentTimelineItem[];
   source: "http" | "fixture";
   error?: string;
+  events?: Array<{
+    id?: string;
+    event_seq?: number;
+    ts?: string;
+    type?: string;
+    payload?: unknown;
+  }>;
+  eventCursorSeq?: number;
+  newestEventSeq?: number;
+  oldestEventSeq?: number;
+  hasOlderEvents?: boolean;
 }
 
 export interface RuntimeBootstrap {

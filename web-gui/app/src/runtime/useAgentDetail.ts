@@ -13,11 +13,25 @@ export function useAgentDetail(agentId: string | undefined, displayLevel: Displa
   const detail = useRuntimeStore((state) => (agentId ? state.sessionsByAgentId[agentId]?.detail ?? null : null));
   const loading = useRuntimeStore((state) => (agentId ? state.sessionsByAgentId[agentId]?.loading ?? false : false));
   const refreshAgentDetail = useRuntimeStore((state) => state.refreshAgentDetail);
-  const refresh = () => refreshAgentDetail(agentId, displayLevel);
+  const startAgentEventStream = useRuntimeStore((state) => state.startAgentEventStream);
+  const stopAgentEventStream = useRuntimeStore((state) => state.stopAgentEventStream);
+  const refresh = async () => {
+    await refreshAgentDetail(agentId, displayLevel);
+    startAgentEventStream(agentId, displayLevel);
+  };
 
   useEffect(() => {
-    void refresh();
-  }, [agentId, displayLevel, refreshAgentDetail]);
+    let cancelled = false;
+    void refreshAgentDetail(agentId, displayLevel).then(() => {
+      if (!cancelled) {
+        startAgentEventStream(agentId, displayLevel);
+      }
+    });
+    return () => {
+      cancelled = true;
+      stopAgentEventStream(agentId);
+    };
+  }, [agentId, displayLevel, refreshAgentDetail, startAgentEventStream, stopAgentEventStream]);
 
   return { detail, loading, refresh };
 }

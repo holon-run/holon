@@ -36,6 +36,11 @@ async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentI
     agent,
     source: "http",
     timeline,
+    events: events.events ?? [],
+    eventCursorSeq: events.cursor_seq,
+    newestEventSeq: events.newest_seq,
+    oldestEventSeq: events.oldest_seq,
+    hasOlderEvents: events.has_older,
   };
 }
 
@@ -116,7 +121,7 @@ interface TranscriptEntryDto {
   data?: unknown;
 }
 
-interface EventPageResponseDto {
+export interface EventPageResponseDto {
   events?: Array<{
     id?: string;
     event_seq?: number;
@@ -124,6 +129,32 @@ interface EventPageResponseDto {
     type?: string;
     payload?: unknown;
   }>;
+  oldest_seq?: number;
+  newest_seq?: number;
+  cursor_seq?: number;
+  has_older?: boolean;
+}
+
+export interface StreamEventEnvelopeDto {
+  id?: string;
+  event_seq?: number;
+  ts?: string;
+  agent_id?: string;
+  type?: string;
+  provenance?: unknown;
+  payload?: unknown;
+}
+
+export interface AgentEventStreamSubscription {
+  close: () => void;
+}
+
+export interface AgentEventStreamOptions {
+  afterSeq?: number;
+  limit?: number;
+  onOpen?: () => void;
+  onEvent: (event: StreamEventEnvelopeDto) => void;
+  onError?: (error: Error) => void;
 }
 
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
@@ -158,7 +189,101 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         };
       }
     },
+    streamAgentEvents(agentId: string, options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
+      if (!baseUrl) return undefined;
+      return streamAgentEvents(baseUrl, fetchImpl, agentId, options);
+    },
   };
+}
+
+function streamAgentEvents(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  agentId: string,
+  options: AgentEventStreamOptions,
+): AgentEventStreamSubscription {
+  const controller = new AbortController();
+  const encodedAgentId = encodeURIComponent(agentId);
+  const query = new URLSearchParams();
+  if (options.limit != null) query.set("limit", String(options.limit));
+  if (options.afterSeq != null) query.set("after_seq", String(options.afterSeq));
+  const queryString = query.toString();
+  const path = `/agents/${encodedAgentId}/events/stream${queryString ? `?${queryString}` : ""}`;
+
+  void readEventStream(fetchImpl, `${baseUrl}${path}`, controller.signal, options);
+
+  return {
+    close: () => controller.abort(),
+  };
+}
+
+async function readEventStream(
+  fetchImpl: typeof fetch,
+  url: string,
+  signal: AbortSignal,
+  options: AgentEventStreamOptions,
+): Promise<void> {
+  try {
+    const response = await fetchImpl(url, {
+      headers: { Accept: "text/event-stream" },
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(`GET ${new URL(url).pathname} failed with ${response.status}`);
+    }
+    if (!response.body) {
+      throw new Error("event stream response body is not readable");
+    }
+
+    options.onOpen?.();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = takeSseFrames(buffer);
+      buffer = frames.remaining;
+      for (const frame of frames.frames) {
+        const event = parseSseEventFrame(frame);
+        if (event) options.onEvent(event);
+      }
+    }
+  } catch (error) {
+    if (!signal.aborted) {
+      options.onError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+}
+
+function takeSseFrames(buffer: string): { frames: string[]; remaining: string } {
+  const frames: string[] = [];
+  let remaining = buffer;
+  while (true) {
+    const lfIndex = remaining.indexOf("\n\n");
+    const crlfIndex = remaining.indexOf("\r\n\r\n");
+    const candidates = [lfIndex, crlfIndex].filter((index) => index >= 0);
+    if (candidates.length === 0) break;
+    const index = Math.min(...candidates);
+    const delimiterLength = remaining.startsWith("\r\n\r\n", index) ? 4 : 2;
+    frames.push(remaining.slice(0, index));
+    remaining = remaining.slice(index + delimiterLength);
+  }
+  return { frames, remaining };
+}
+
+function parseSseEventFrame(frame: string): StreamEventEnvelopeDto | undefined {
+  const dataLines: string[] = [];
+  for (const line of frame.split(/\r?\n/)) {
+    if (line.startsWith(":")) continue;
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+  if (dataLines.length === 0) return undefined;
+  return JSON.parse(dataLines.join("\n")) as StreamEventEnvelopeDto;
 }
 
 async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): Promise<RuntimeBootstrap> {

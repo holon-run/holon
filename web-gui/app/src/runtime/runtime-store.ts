@@ -1,7 +1,8 @@
 import { create } from "zustand";
 
-import { createRuntimeClient } from "./client";
-import type { AgentDetail, DisplayLevel, RouteKey, RuntimeBootstrap } from "./types";
+import { createRuntimeClient, type AgentEventStreamSubscription, type StreamEventEnvelopeDto } from "./client";
+import { reduceAgentSessionTimeline } from "./session-reducer";
+import type { AgentDetail, AgentTimelineItem, DisplayLevel, RouteKey, RuntimeBootstrap } from "./types";
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "error";
 
@@ -37,9 +38,13 @@ export interface RuntimeStoreState {
   toggleNavCollapsed: () => void;
   refreshBootstrap: () => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
+  startAgentEventStream: (agentId: string | undefined, displayLevel: DisplayLevel) => void;
+  stopAgentEventStream: (agentId: string | undefined) => void;
 }
 
 const runtimeClient = createRuntimeClient();
+const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
+const reconnectTimers = new Map<string, number>();
 
 const emptyBootstrap: RuntimeBootstrap = {
   attentionCount: 0,
@@ -115,6 +120,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
             detail,
             loading: false,
             liveStatus: detail.error ? "error" : "idle",
+            eventsBySeq: eventsBySeq(detail.events ?? []),
+            eventSeqs: eventSeqs(detail.events ?? []),
+            newestSeq: detail.eventCursorSeq ?? detail.newestEventSeq,
+            oldestSeq: detail.oldestEventSeq,
+            hasOlder: detail.hasOlderEvents,
             error: detail.error,
           },
         },
@@ -134,6 +144,50 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       }));
     }
   },
+
+  startAgentEventStream: (agentId, displayLevel) => {
+    if (!agentId) return;
+    stopAgentEventStream(agentId);
+    const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
+    if (session.detail?.error) return;
+
+    setAgentLiveStatus(set, agentId, "connecting");
+    const subscription = runtimeClient.streamAgentEvents(agentId, {
+      afterSeq: session.newestSeq,
+      limit: 100,
+      onOpen: () => setAgentLiveStatus(set, agentId, "streaming"),
+      onEvent: (event) => applyStreamEvent(set, agentId, event),
+      onError: (error) => {
+        activeEventStreams.delete(agentId);
+        set((state) => ({
+          sessionsByAgentId: {
+            ...state.sessionsByAgentId,
+            [agentId]: {
+              ...emptyAgentSession(),
+              ...state.sessionsByAgentId[agentId],
+              liveStatus: "reconnecting",
+              error: error.message,
+            },
+          },
+        }));
+        const timer = window.setTimeout(() => {
+          reconnectTimers.delete(agentId);
+          get().startAgentEventStream(agentId, displayLevel);
+        }, 1500);
+        reconnectTimers.set(agentId, timer);
+      },
+    });
+    if (!subscription) {
+      setAgentLiveStatus(set, agentId, "idle");
+      return;
+    }
+    activeEventStreams.set(agentId, subscription);
+  },
+
+  stopAgentEventStream: (agentId) => {
+    if (!agentId) return;
+    stopAgentEventStream(agentId);
+  },
 }));
 
 function emptyAgentSession(): AgentSessionState {
@@ -144,4 +198,108 @@ function emptyAgentSession(): AgentSessionState {
     eventsBySeq: {},
     eventSeqs: [],
   };
+}
+
+type StoreSet = (
+  partial:
+    | Partial<RuntimeStoreState>
+    | RuntimeStoreState
+    | ((state: RuntimeStoreState) => Partial<RuntimeStoreState> | RuntimeStoreState),
+  replace?: false,
+) => void;
+
+function stopAgentEventStream(agentId: string): void {
+  activeEventStreams.get(agentId)?.close();
+  activeEventStreams.delete(agentId);
+  const timer = reconnectTimers.get(agentId);
+  if (timer != null) {
+    window.clearTimeout(timer);
+    reconnectTimers.delete(agentId);
+  }
+}
+
+function setAgentLiveStatus(set: StoreSet, agentId: string, liveStatus: AgentLiveStatus): void {
+  set((state) => ({
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...emptyAgentSession(),
+        ...state.sessionsByAgentId[agentId],
+        liveStatus,
+      },
+    },
+  }));
+}
+
+function applyStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnvelopeDto): void {
+  const seq = event.event_seq;
+  if (seq == null) return;
+
+  set((state) => {
+    const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+    const eventsBySeq = {
+      ...current.eventsBySeq,
+      [seq]: event,
+    };
+    const eventSeqs = Array.from(new Set([...current.eventSeqs, seq])).sort((left, right) => left - right).slice(-300);
+    const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
+    const liveTimeline = reduceAgentSessionTimeline({
+      transcript: [],
+      briefs: [],
+      events: { events },
+      eventDisplayLevel: "debug",
+    });
+    const detail = current.detail
+      ? {
+          ...current.detail,
+          timeline: mergeTimeline(current.detail.timeline, liveTimeline),
+          events,
+          newestEventSeq: Math.max(seq, current.detail.newestEventSeq ?? 0),
+          oldestEventSeq: current.detail.oldestEventSeq ?? eventSeqs[0],
+        }
+      : current.detail;
+
+    return {
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...current,
+          detail,
+          eventsBySeq,
+          eventSeqs,
+          newestSeq: Math.max(seq, current.newestSeq ?? 0),
+          oldestSeq: current.oldestSeq ?? eventSeqs[0],
+          liveStatus: "streaming",
+          error: undefined,
+        },
+      },
+    };
+  });
+}
+
+function eventsBySeq(events: StreamEventEnvelopeDto[]): Record<number, unknown> {
+  return Object.fromEntries(events.filter((event) => event.event_seq != null).map((event) => [event.event_seq, event]));
+}
+
+function eventSeqs(events: StreamEventEnvelopeDto[]): number[] {
+  return events
+    .map((event) => event.event_seq)
+    .filter((seq): seq is number => seq != null)
+    .sort((left, right) => left - right);
+}
+
+function isStreamEventEnvelope(event: unknown): event is StreamEventEnvelopeDto {
+  return typeof event === "object" && event !== null;
+}
+
+function mergeTimeline(existing: AgentTimelineItem[], incoming: AgentTimelineItem[]): AgentTimelineItem[] {
+  const byId = new Map<string, AgentTimelineItem>();
+  for (const item of existing) byId.set(item.id, item);
+  for (const item of incoming) byId.set(item.id, item);
+  return Array.from(byId.values()).sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
+}
+
+function sortableTime(value: string): number {
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }
