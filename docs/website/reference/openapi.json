@@ -1372,6 +1372,76 @@
                   "null"
                 ]
               },
+              "child_token_usage": {
+                "properties": {
+                  "last_turn": {
+                    "properties": {
+                      "input_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "total_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "input_tokens",
+                      "output_tokens",
+                      "total_tokens"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "total": {
+                    "properties": {
+                      "input_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "total_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "input_tokens",
+                      "output_tokens",
+                      "total_tokens"
+                    ],
+                    "type": "object"
+                  },
+                  "total_model_rounds": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "total",
+                  "total_model_rounds"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "command": {
                 "properties": {
                   "accepts_input": {
@@ -2084,6 +2154,76 @@
               "null"
             ]
           },
+          "child_token_usage": {
+            "properties": {
+              "last_turn": {
+                "properties": {
+                  "input_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "output_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "total_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "input_tokens",
+                  "output_tokens",
+                  "total_tokens"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "total": {
+                "properties": {
+                  "input_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "output_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "total_tokens": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "input_tokens",
+                  "output_tokens",
+                  "total_tokens"
+                ],
+                "type": "object"
+              },
+              "total_model_rounds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total",
+              "total_model_rounds"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "command": {
             "properties": {
               "accepts_input": {
@@ -2475,6 +2615,76 @@
                   "supervision_task_id",
                   "cleanup_owner",
                   "followup_target"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "child_token_usage": {
+                "properties": {
+                  "last_turn": {
+                    "properties": {
+                      "input_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "total_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "input_tokens",
+                      "output_tokens",
+                      "total_tokens"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "total": {
+                    "properties": {
+                      "input_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "total_tokens": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "input_tokens",
+                      "output_tokens",
+                      "total_tokens"
+                    ],
+                    "type": "object"
+                  },
+                  "total_model_rounds": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "total",
+                  "total_model_rounds"
                 ],
                 "type": [
                   "object",

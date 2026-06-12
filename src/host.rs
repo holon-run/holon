@@ -40,12 +40,12 @@ use crate::{
     types::{
         AdmissionContext, AgentIdentityRecord, AgentIdentityView, AgentKind, AgentLifecycleHint,
         AgentListEntry, AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState,
-        AgentStatus, AgentSummary, AgentVisibility, AuthorityClass, ChildAgentSummary,
-        ClosureOutcome, ExternalTriggerRecord, MessageBody, MessageDeliverySurface,
-        MessageEnvelope, MessageKind, MessageOrigin, OperatorNotificationRecord, Priority,
-        RuntimeFailureSummary, SpawnAgentModelResolution, SpawnAgentModelResolutionStatus,
-        TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        AgentStatus, AgentSummary, AgentTokenUsageSummary, AgentVisibility, AuthorityClass,
+        ChildAgentSummary, ClosureOutcome, ExternalTriggerRecord, MessageBody,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
+        OperatorNotificationRecord, Priority, RuntimeFailureSummary, SpawnAgentModelResolution,
+        SpawnAgentModelResolutionStatus, TaskRecord, TaskStatus, TokenUsage, TranscriptEntry,
+        TranscriptEntryKind, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -1452,6 +1452,13 @@ impl RuntimeHost {
                     });
                 }
             }
+            let child_token_usage = AgentTokenUsageSummary {
+                total: TokenUsage::new(state.total_input_tokens, state.total_output_tokens),
+                total_model_rounds: state.total_model_rounds,
+                last_turn: state.last_turn_token_usage.clone(),
+            };
+            metadata["child_token_usage"] =
+                serde_json::to_value(&child_token_usage).unwrap_or(Value::Null);
             let task_detail = Some(metadata);
 
             self.archive_private_agent(child_agent_id).await?;
@@ -1504,6 +1511,12 @@ impl RuntimeHost {
             })
             .unwrap_or_default();
 
+        let child_token_usage = AgentTokenUsageSummary {
+            total: TokenUsage::new(state.total_input_tokens, state.total_output_tokens),
+            total_model_rounds: state.total_model_rounds,
+            last_turn: state.last_turn_token_usage.clone(),
+        };
+
         Ok(Some(ChildTaskTerminalResult {
             status,
             text,
@@ -1513,6 +1526,7 @@ impl RuntimeHost {
                 "child_visibility": AgentVisibility::Private,
                 "child_ownership": AgentOwnership::ParentSupervised,
                 "child_profile_preset": AgentProfilePreset::PrivateChild,
+                "child_token_usage": serde_json::to_value(&child_token_usage).unwrap_or(Value::Null),
             })),
         }))
     }
