@@ -1227,7 +1227,10 @@ impl ProviderTransportKind {
     pub fn supports_view_image_observation_generation(self) -> bool {
         matches!(
             self,
-            Self::OpenAiCodexResponses | Self::OpenAiResponses | Self::OpenAiChatCompletions
+            Self::OpenAiCodexResponses
+                | Self::OpenAiResponses
+                | Self::OpenAiChatCompletions
+                | Self::AnthropicMessages
         )
     }
 }
@@ -6686,12 +6689,41 @@ mod tests {
     }
 
     #[test]
-    fn view_image_vision_selection_skips_image_capable_unsupported_transports() {
+    fn view_image_vision_selection_uses_anthropic_messages_when_image_capable() {
         let mut fixture = test_app_config("anthropic/claude-sonnet-4-6", &[]);
-        fixture.config.vision_candidate_models = vec![
-            ModelRef::parse("gemini/gemini-2.5-pro").unwrap(),
-            ModelRef::parse("openai/gpt-5.4-mini").unwrap(),
-        ];
+        fixture.config.vision_candidate_models =
+            vec![ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap()];
+        let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+        let selection =
+            catalog.select_view_image_vision_model(&ContextConfig::default(), None, None);
+
+        assert_eq!(
+            selection.selected_mode,
+            crate::types::ViewImageSelectedMode::NativeImageWithObservation
+        );
+        assert_eq!(selection.primary_provider.as_deref(), Some("anthropic"));
+        assert_eq!(
+            selection.primary_model.as_deref(),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(selection.vision_provider.as_deref(), Some("anthropic"));
+        assert_eq!(selection.vision_model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(
+            selection.selection_reason,
+            "current_primary_model_supports_image_input"
+        );
+        assert_eq!(
+            selection.candidates[0].reason,
+            "model_advertises_image_input"
+        );
+    }
+
+    #[test]
+    fn view_image_vision_selection_skips_image_capable_unsupported_transports() {
+        let mut fixture = test_app_config("gemini/gemini-2.5-pro", &[]);
+        fixture.config.vision_candidate_models =
+            vec![ModelRef::parse("openai/gpt-5.4-mini").unwrap()];
         let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
         let selection =
@@ -6701,27 +6733,21 @@ mod tests {
             selection.selected_mode,
             crate::types::ViewImageSelectedMode::VisionAdapter
         );
-        assert_eq!(selection.primary_provider.as_deref(), Some("anthropic"));
-        assert_eq!(
-            selection.primary_model.as_deref(),
-            Some("claude-sonnet-4-6")
-        );
+        assert_eq!(selection.primary_provider.as_deref(), Some("gemini"));
+        assert_eq!(selection.primary_model.as_deref(), Some("gemini-2.5-pro"));
         assert_eq!(selection.vision_provider.as_deref(), Some("openai"));
         assert_eq!(selection.vision_model.as_deref(), Some("gpt-5.4-mini"));
         assert_eq!(
             selection.selection_reason,
             "auto_discovered_vision_model_supports_image_input"
         );
+        assert_eq!(selection.candidates.len(), 2);
         assert_eq!(
             selection.candidates[0].reason,
-            "provider_transport_unsupported_for_view_image_observation"
-        );
-        assert_eq!(
-            selection.candidates[1].reason,
             "model_advertises_image_input"
         );
         assert_eq!(
-            selection.candidates[2].reason,
+            selection.candidates[1].reason,
             "provider_transport_unsupported_for_view_image_observation"
         );
     }

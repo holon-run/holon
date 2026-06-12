@@ -747,7 +747,11 @@ fn conversation_message_has_content(message: &ConversationMessage) -> bool {
     match message {
         ConversationMessage::UserText(text) => !text.trim().is_empty(),
         ConversationMessage::UserBlocks(blocks) => !blocks.is_empty(),
-        ConversationMessage::UserImage { prompt, .. } => !prompt.trim().is_empty(),
+        ConversationMessage::UserImage {
+            prompt,
+            data_base64,
+            ..
+        } => !prompt.trim().is_empty() || !data_base64.is_empty(),
         ConversationMessage::AssistantBlocks(blocks) => !blocks.is_empty(),
         ConversationMessage::UserToolResults(results) => !results.is_empty(),
     }
@@ -780,15 +784,38 @@ fn conversation_message_to_api(
                     .collect(),
             ),
         },
-        ConversationMessage::UserImage { prompt, .. } => ApiMessage {
+        ConversationMessage::UserImage {
+            prompt,
+            media_type,
+            data_base64,
+        } => ApiMessage {
             role: "user",
-            content: Value::Array(vec![maybe_mark_cache_control(
-                json!({
-                    "type": "text",
-                    "text": format!("{prompt}\n\n[image input omitted: this provider transport does not support image lowering yet]"),
-                }),
-                rolling_cache_block_index == Some(0),
-            )]),
+            content: Value::Array(
+                [
+                    (!prompt.trim().is_empty()).then(|| {
+                        maybe_mark_cache_control(
+                            json!({
+                                "type": "text",
+                                "text": prompt,
+                            }),
+                            rolling_cache_block_index == Some(0),
+                        )
+                    }),
+                    (!data_base64.is_empty()).then(|| {
+                        json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": data_base64,
+                            },
+                        })
+                    }),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+            ),
         },
         ConversationMessage::AssistantBlocks(blocks) => ApiMessage {
             role: "assistant",
@@ -1789,6 +1816,40 @@ mod tests {
                 .as_array()
                 .is_some_and(|content| !content.is_empty())
         }));
+    }
+
+    #[test]
+    fn build_anthropic_messages_lowers_user_image_content_blocks() {
+        let conversation = vec![ConversationMessage::UserImage {
+            prompt: "Describe the visible error dialog.".to_string(),
+            media_type: "image/png".to_string(),
+            data_base64: "iVBORw0KGgo=".to_string(),
+        }];
+
+        let messages = build_anthropic_messages(
+            &conversation,
+            rolling_conversation_cache_marker(
+                &conversation,
+                AnthropicCacheStrategy::MessagesNative,
+            ),
+        );
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content[0]["type"], "text");
+        assert_eq!(
+            messages[0].content[0]["text"],
+            "Describe the visible error dialog."
+        );
+        assert_eq!(
+            messages[0].content[0]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+        assert_eq!(messages[0].content[1]["type"], "image");
+        assert_eq!(messages[0].content[1]["source"]["type"], "base64");
+        assert_eq!(messages[0].content[1]["source"]["media_type"], "image/png");
+        assert_eq!(messages[0].content[1]["source"]["data"], "iVBORw0KGgo=");
+        assert!(messages[0].content[1].get("cache_control").is_none());
     }
 
     #[test]
