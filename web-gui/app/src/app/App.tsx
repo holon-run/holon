@@ -1,10 +1,10 @@
-import { useMemo, useState } from "react";
-
 import { AgentPage } from "../features/agent/AgentPage";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import { selectSelectedAgent } from "../runtime/runtime-selectors";
+import { useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { DisplayLevel, RouteKey } from "../runtime/types";
@@ -17,26 +17,23 @@ const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
 
 export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
-  const [route, setRoute] = useState<RouteKey>("dashboard");
-  const [selectedAgentId, setSelectedAgentId] = useState("");
-  const [displayLevel, setDisplayLevel] = useState<DisplayLevel>("info");
-  const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [navCollapsed, setNavCollapsed] = useState(false);
-
-  const selectedAgent = useMemo(
-    () => bootstrap.agents.find((agent) => agent.id === selectedAgentId) ?? bootstrap.agents[0],
-    [bootstrap.agents, selectedAgentId],
-  );
+  const route = useRuntimeStore((state) => state.route);
+  const selectedAgentId = useRuntimeStore((state) => state.selectedAgentId);
+  const displayLevel = useRuntimeStore((state) => state.displayLevel);
+  const inspectorOpen = useRuntimeStore((state) => state.inspectorOpen);
+  const navCollapsed = useRuntimeStore((state) => state.navCollapsed);
+  const setRoute = useRuntimeStore((state) => state.setRoute);
+  const openAgent = useRuntimeStore((state) => state.openAgent);
+  const setDisplayLevel = useRuntimeStore((state) => state.setDisplayLevel);
+  const setInspectorOpen = useRuntimeStore((state) => state.setInspectorOpen);
+  const toggleInspector = useRuntimeStore((state) => state.toggleInspector);
+  const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
+  const selectedAgent = useRuntimeStore(selectSelectedAgent);
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
     refresh: refreshAgentDetail,
   } = useAgentDetail(selectedAgent?.id, displayLevel);
-
-  function openAgent(agentId: string) {
-    setSelectedAgentId(agentId);
-    setRoute("agent");
-  }
 
   return (
     <div
@@ -55,7 +52,7 @@ export function App() {
           type="button"
           aria-label={navCollapsed ? "Expand navigation" : "Collapse navigation"}
           title={navCollapsed ? "Expand navigation" : "Collapse navigation"}
-          onClick={() => setNavCollapsed((value) => !value)}
+          onClick={toggleNavCollapsed}
         >
           ‹
         </button>
@@ -135,7 +132,7 @@ export function App() {
                 type="button"
                 aria-label="Toggle object inspector"
                 title="Toggle object inspector"
-                onClick={() => setInspectorOpen((value) => !value)}
+                onClick={toggleInspector}
               >
                 ▭
               </button>

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect } from "react";
 
-import { createRuntimeClient } from "./client";
+import { useRuntimeStore } from "./runtime-store";
 import type { RuntimeBootstrap } from "./types";
 
 interface RuntimeDashboardState {
@@ -10,34 +10,16 @@ interface RuntimeDashboardState {
 }
 
 export function useRuntimeDashboard(): RuntimeDashboardState {
-  const client = useMemo(() => createRuntimeClient(), []);
-  const [bootstrap, setBootstrap] = useState<RuntimeBootstrap | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      setBootstrap(await client.getBootstrap());
-    } finally {
-      setLoading(false);
-    }
-  }, [client]);
+  const bootstrap = useRuntimeStore((state) => state.bootstrap);
+  const loading = useRuntimeStore((state) => state.bootstrapLoading);
+  const refresh = useRuntimeStore((state) => state.refreshBootstrap);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
   return {
-    bootstrap: bootstrap ?? {
-      attentionCount: 0,
-      connection: {
-        mode: "local",
-        source: "fixture",
-        summary: "loading runtime dashboard",
-      },
-      metrics: [],
-      agents: [],
-    },
+    bootstrap,
     loading,
     refresh,
   };

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect } from "react";
 
-import { createRuntimeClient } from "./client";
+import { useRuntimeStore } from "./runtime-store";
 import type { AgentDetail, DisplayLevel } from "./types";
 
 interface AgentDetailState {
@@ -10,26 +10,14 @@ interface AgentDetailState {
 }
 
 export function useAgentDetail(agentId: string | undefined, displayLevel: DisplayLevel): AgentDetailState {
-  const client = useMemo(() => createRuntimeClient(), []);
-  const [detail, setDetail] = useState<AgentDetail | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const refresh = useCallback(async () => {
-    if (!agentId) {
-      setDetail(null);
-      return;
-    }
-    setLoading(true);
-    try {
-      setDetail(await client.getAgentDetail(agentId, displayLevel));
-    } finally {
-      setLoading(false);
-    }
-  }, [agentId, client, displayLevel]);
+  const detail = useRuntimeStore((state) => (agentId ? state.sessionsByAgentId[agentId]?.detail ?? null : null));
+  const loading = useRuntimeStore((state) => (agentId ? state.sessionsByAgentId[agentId]?.loading ?? false : false));
+  const refreshAgentDetail = useRuntimeStore((state) => state.refreshAgentDetail);
+  const refresh = () => refreshAgentDetail(agentId, displayLevel);
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [agentId, displayLevel, refreshAgentDetail]);
 
   return { detail, loading, refresh };
 }
