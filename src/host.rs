@@ -215,7 +215,7 @@ impl RuntimeHost {
         &self.inner.runtime_db
     }
 
-    fn agent_storage(&self, agent_id: &str) -> Result<AppStorage> {
+    pub fn agent_storage(&self, agent_id: &str) -> Result<AppStorage> {
         let storage =
             AppStorage::new_for_agent(self.agent_data_dir(agent_id), agent_id.to_string())?;
         storage.enable_scheduler_control_plane_db(self.runtime_db().clone())?;

@@ -755,7 +755,10 @@ async fn dump_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use holon::config::{provider_registry_for_tests, AltScreenMode, ModelRef};
+    use holon::{
+        config::{provider_registry_for_tests, AltScreenMode, ModelRef},
+        runtime_db::RuntimeDb,
+    };
 
     fn test_config() -> AppConfig {
         let home = tempfile::tempdir().unwrap().keep();
@@ -1113,8 +1116,8 @@ mod tests {
     fn export_scheduler_fixture_writes_replay_harness_shape() {
         let config = test_config();
         let agent_id = "default";
-        let agent_home = config.data_dir.join("agents/default");
-        let storage = AppStorage::new_for_agent(&agent_home, agent_id).unwrap();
+        let host = RuntimeHost::new(config.clone()).unwrap();
+        let storage = host.agent_storage(agent_id).unwrap();
         let mut agent = holon::types::AgentState::new("default");
         agent.current_work_item_id = Some("work-1".into());
         storage.write_agent(&agent).unwrap();
@@ -1144,6 +1147,25 @@ mod tests {
         assert!(output.path().join("ledger/messages.jsonl").exists());
         assert!(output.path().join("ledger/tools.jsonl").exists());
         assert!(output.path().join("ledger/transcript.jsonl").exists());
+    }
+
+    #[test]
+    fn export_scheduler_fixture_reads_agent_state_from_runtime_db() {
+        let config = test_config();
+        let runtime_db =
+            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+                .unwrap();
+        let mut agent = holon::types::AgentState::new("default");
+        agent.current_work_item_id = Some("work-db".into());
+        runtime_db.agent_states().upsert(&agent).unwrap();
+
+        let output = tempfile::tempdir().unwrap();
+        export_scheduler_fixture(&config, None, output.path()).unwrap();
+
+        let agent_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(output.path().join("agent.json")).unwrap())
+                .unwrap();
+        assert_eq!(agent_json["current_work_item_id"].as_str(), Some("work-db"));
     }
 
     #[test]
@@ -1480,8 +1502,9 @@ fn export_scheduler_fixture(
     output: &Path,
 ) -> Result<()> {
     let agent_id = agent.unwrap_or_else(|| config.default_agent_id.clone());
+    let host = RuntimeHost::new(config.clone())?;
     let agent_home = config.data_dir.join("agents").join(&agent_id);
-    let storage = AppStorage::new_for_agent(&agent_home, agent_id.clone())?;
+    let storage = host.agent_storage(&agent_id)?;
     let agent = storage.read_agent()?.with_context(|| {
         format!(
             "agent state not found for {agent_id} in {}",

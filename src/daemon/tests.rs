@@ -17,7 +17,13 @@ use crate::config::{provider_registry_for_tests, AppConfig, ModelRef, ProviderId
 use crate::{
     host::RuntimeHost,
     provider::StubProvider,
-    types::{AuthorityClass, CommandTaskSpec, RuntimeFailurePhase, RuntimeFailureSummary},
+    runtime_db::RuntimeDb,
+    storage::AppStorage,
+    types::{
+        AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentState,
+        AgentVisibility, AuthorityClass, CommandTaskSpec, RuntimeFailurePhase,
+        RuntimeFailureSummary,
+    },
 };
 use chrono::Utc;
 use std::{
@@ -254,6 +260,39 @@ async fn daemon_status_surfaces_persisted_last_failure_when_runtime_stopped() {
         failure_artifact: None,
     };
     persist_last_runtime_failure(&config, &failure).unwrap();
+    let status = daemon_status(&config).await.unwrap();
+    assert_eq!(status.state, DaemonLifecycleState::Stopped);
+    assert_eq!(status.last_failure, Some(failure));
+}
+
+#[tokio::test]
+async fn daemon_status_surfaces_db_only_public_agent_runtime_failure_when_stopped() {
+    let config = test_config();
+    let host_storage = AppStorage::new_global(config.home_dir.join("host")).unwrap();
+    let identity = AgentIdentityRecord::new(
+        "public-agent",
+        AgentKind::Named,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    host_storage.append_agent_identity(&identity).unwrap();
+    let runtime_db =
+        RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())
+            .unwrap();
+    let failure = RuntimeFailureSummary {
+        occurred_at: Utc::now(),
+        summary: "public runtime failed".into(),
+        phase: RuntimeFailurePhase::RuntimeTurn,
+        detail_hint: Some("runtime artifact".into()),
+        failure_artifact: None,
+    };
+    let mut agent = AgentState::new("public-agent");
+    agent.last_runtime_failure = Some(failure.clone());
+    runtime_db.agent_states().upsert(&agent).unwrap();
+
     let status = daemon_status(&config).await.unwrap();
     assert_eq!(status.state, DaemonLifecycleState::Stopped);
     assert_eq!(status.last_failure, Some(failure));
