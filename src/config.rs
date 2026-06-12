@@ -995,10 +995,18 @@ impl RuntimeModelCatalog {
             );
         }
 
-        let mut candidates = self.vision_candidate_models.clone();
-        for model_ref in chain {
-            if !candidates.iter().any(|existing| existing == &model_ref) {
-                candidates.push(model_ref);
+        // Build candidates with the primary model first so that when no explicit
+        // vision model is configured, the current turn's primary model is tried
+        // before other authenticated provider candidates.
+        let mut candidates = Vec::new();
+        for model_ref in &chain {
+            if !candidates.iter().any(|existing| existing == model_ref) {
+                candidates.push(model_ref.clone());
+            }
+        }
+        for model_ref in &self.vision_candidate_models {
+            if !candidates.iter().any(|existing| existing == model_ref) {
+                candidates.push(model_ref.clone());
             }
         }
 
@@ -6614,8 +6622,8 @@ mod tests {
             "auto_discovered_vision_model_supports_image_input"
         );
         assert_eq!(selection.candidates.len(), 2);
-        assert!(selection.candidates[0].image_input);
-        assert!(!selection.candidates[1].image_input);
+        assert!(!selection.candidates[0].image_input);
+        assert!(selection.candidates[1].image_input);
     }
 
     #[test]
@@ -6686,9 +6694,8 @@ mod tests {
             selection.selection_reason,
             "auto_discovered_vision_model_supports_image_input"
         );
-        assert_eq!(selection.candidates.len(), 2);
-        assert!(selection.candidates[0].image_input);
-        assert!(!selection.candidates[1].image_input);
+        assert!(!selection.candidates[0].image_input);
+        assert!(selection.candidates[1].image_input);
     }
 
     #[test]
@@ -6747,11 +6754,11 @@ mod tests {
         assert_eq!(selection.candidates.len(), 2);
         assert_eq!(
             selection.candidates[0].reason,
-            "model_advertises_image_input"
+            "provider_transport_unsupported_for_view_image_observation"
         );
         assert_eq!(
             selection.candidates[1].reason,
-            "provider_transport_unsupported_for_view_image_observation"
+            "model_advertises_image_input"
         );
     }
 

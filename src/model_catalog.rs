@@ -562,6 +562,25 @@ fn built_in_entries() -> Vec<BuiltInModelMetadata> {
             source: ModelMetadataSource::BuiltInCatalog,
         },
         BuiltInModelMetadata {
+            model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.4"),
+            display_name: "GPT-5.4 (Codex)".into(),
+            description: "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.".into(),
+            context_window_tokens: Some(272_000),
+            effective_context_window_percent: 95,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: Some(ModelVerbosity::Low),
+            tool_output_truncation_estimated_tokens: Some(2_500),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                reasoning_summaries: true,
+                interactive_exec: true,
+                ..ModelCapabilityFlags::default()
+            },
+            source: ModelMetadataSource::BuiltInCatalog,
+        },
+        BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-5.3-codex"),
             display_name: "GPT-5.3 Codex (Codex)".into(),
             description: "Codex runtime defaults mirrored from the local OpenAI Codex model metadata contract.".into(),
