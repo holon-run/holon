@@ -59,9 +59,27 @@ export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): Agen
   const eventDisplayLevel = input.eventDisplayLevel ?? "debug";
   const eventItems = (input.events.events ?? []).map((event) => projectEventEnvelope(event, eventDisplayLevel));
 
-  return dedupeTimelineItems([...transcriptItems, ...briefItems, ...eventItems])
+  return mergeAgentTimelineItems([], [...transcriptItems, ...briefItems, ...eventItems])
     .filter((item): item is AgentTimelineItem => Boolean(item))
     .sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
+}
+
+export function mergeAgentTimelineItems(
+  existing: Array<AgentTimelineItem | undefined>,
+  incoming: Array<AgentTimelineItem | undefined>,
+): AgentTimelineItem[] {
+  const bySemanticKey = new Map<string, AgentTimelineItem>();
+
+  for (const candidate of [...existing, ...incoming]) {
+    if (!candidate) continue;
+    const key = timelineDedupeKey(candidate);
+    const current = bySemanticKey.get(key);
+    if (!current || timelineItemPriority(candidate) >= timelineItemPriority(current)) {
+      bySemanticKey.set(key, candidate);
+    }
+  }
+
+  return Array.from(bySemanticKey.values());
 }
 
 export function filterTimelineByDisplayLevel(
@@ -80,11 +98,26 @@ function projectTranscriptEntry(entry: SessionTranscriptEntry): AgentTimelineIte
   const timestamp = entry.created_at ?? "";
 
   if (kind === "incoming_message") {
+    const message = messageEnvelopeProjection(data);
+    if (message?.origin !== "operator") {
+      return item({
+        id: entry.id,
+        kind: "system",
+        label: "Runtime input",
+        body: message?.body || readableText(entry.data) || "Runtime input received.",
+        timestamp,
+        meta: compactJoin([kind, roundMeta(entry.round)]),
+        minDisplayLevel: "verbose",
+        sourceIds: [entry.id],
+        debug: debugJson(entry),
+      });
+    }
+
     return item({
       id: entry.id,
       kind: "operator",
       label: labelForTranscriptKind(kind),
-      body: readableText(entry.data) || "Operator input.",
+      body: message.body || readableText(entry.data) || "Operator input.",
       timestamp,
       meta: compactJoin([kind, roundMeta(entry.round)]),
       minDisplayLevel: "info",
@@ -197,7 +230,7 @@ function projectEventEnvelope(event: SessionEventEnvelope, eventDisplayLevel: Di
     kind: projection.kind,
     label: projection.label,
     body: projection.body,
-    timestamp: event.ts ?? "",
+    timestamp: projection.timestamp ?? event.ts ?? "",
     meta: event.event_seq == null ? eventType : `${eventType} · event #${event.event_seq}`,
     minDisplayLevel: capDisplayLevel(projection.minDisplayLevel, eventDisplayLevel),
     sourceIds: [id],
@@ -212,7 +245,7 @@ function capDisplayLevel(level: DisplayLevel, maxLevel: DisplayLevel): DisplayLe
 function projectRuntimeEvent(
   eventType: string,
   payload: Record<string, unknown> | undefined,
-): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel"> {
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel"> & { timestamp?: string } {
   if (eventType === "message_enqueued") {
     const message = messageEnvelopeProjection(payload);
     if (message?.origin === "operator") {
@@ -229,6 +262,16 @@ function projectRuntimeEvent(
       label: "Message queued",
       body: message?.body || readableText(payload) || "Runtime message queued.",
       minDisplayLevel: "debug",
+    };
+  }
+
+  if (eventType === "brief_created") {
+    return {
+      kind: "assistant",
+      label: stringField(payload, "kind") === "result" ? "Result" : "Brief Created",
+      body: stringField(payload, "text") ?? "Brief text unavailable.",
+      timestamp: stringField(payload, "created_at"),
+      minDisplayLevel: "info",
     };
   }
 
@@ -314,17 +357,6 @@ function projectRuntimeEvent(
   };
 }
 
-function dedupeTimelineItems(items: Array<AgentTimelineItem | undefined>): Array<AgentTimelineItem | undefined> {
-  const seen = new Set<string>();
-  return items.filter((candidate) => {
-    if (!candidate) return false;
-    const key = timelineDedupeKey(candidate);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
 function timelineDedupeKey(item: AgentTimelineItem): string {
   if (item.kind === "operator") {
     return `operator:${normalizeTextKey(item.body)}`;
@@ -333,6 +365,13 @@ function timelineDedupeKey(item: AgentTimelineItem): string {
     return `assistant-result:${normalizeTextKey(item.body)}`;
   }
   return `item:${item.id}`;
+}
+
+function timelineItemPriority(item: AgentTimelineItem): number {
+  if (item.id.startsWith("operator-prompt:pending:")) return 0;
+  if (item.sourceIds.includes("pending-operator-prompt")) return 0;
+  if (item.id.startsWith("event-") || item.meta.includes("event #")) return 1;
+  return 2;
 }
 
 function item(draft: SessionItemDraft): AgentTimelineItem {
