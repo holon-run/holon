@@ -78,7 +78,7 @@ const emptyBootstrap: RuntimeBootstrap = {
   connection: {
     mode: "local",
     source: "fixture",
-    summary: "loading runtime dashboard",
+    summary: "Connecting to local runtime…",
   },
   metrics: [],
   agents: [],

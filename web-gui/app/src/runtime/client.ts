@@ -453,7 +453,7 @@ function withFixtureFallback(baseUrl: string, error: string): RuntimeBootstrap {
       source: "fixture",
       baseUrl,
       error,
-      summary: `${baseUrl} unavailable · showing fixture fallback`,
+      summary: `${baseUrl} unavailable · using preview data`,
     },
   };
 }

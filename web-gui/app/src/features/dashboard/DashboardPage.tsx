@@ -10,20 +10,32 @@ interface DashboardPageProps {
 }
 
 export function DashboardPage({ agents, metrics, connection, loading, onRefresh, onOpenAgent }: DashboardPageProps) {
+  const isBootstrapping = loading && agents.length === 0;
+  const connectionLabel = connection.source === "http" ? "Live runtime" : isBootstrapping ? "Connecting" : "Preview data";
+  const agentCountLabel = `${agents.length} ${agents.length === 1 ? "agent" : "agents"}`;
+
   return (
     <section className="page dashboard-page" aria-label="Dashboard">
       <div className="page-inner dashboard-inner">
-        <section className="runtime-overview" aria-label="Runtime overview">
-          <div className="overview-copy">
-            <span className="eyebrow">Runtime dashboard</span>
-            <h1>Local Holon workbench</h1>
-            <p>
-              Reads existing Holon routes: <code>/handshake</code>, <code>/agents/list</code>,{" "}
-              <code>/agents/:id/state</code>, and <code>/agents/:id/briefs</code>. No GUI-specific
-              backend API is required for this slice.
-            </p>
+        <section className="dashboard-section dashboard-roster-section">
+          <div className="section-head dashboard-head">
+            <div>
+              <span className="eyebrow">Agents</span>
+              <h1>Agent roster</h1>
+              <p>{agentCountLabel} · local Holon runtime overview</p>
+            </div>
+            <div className="dashboard-actions">
+              <span className={`connection-pill ${connection.source}`}>
+                <span className="runtime-dot" />
+                {connectionLabel}
+              </span>
+              <button type="button" disabled={loading} onClick={onRefresh}>
+                {loading ? "Refreshing…" : "Refresh"}
+              </button>
+            </div>
           </div>
-          <div className="metric-grid">
+
+          <div className="metric-strip" aria-label="Runtime metrics">
             {metrics.map((metric) => (
               <div className={`metric-card ${metric.tone ?? "default"}`} key={metric.label}>
                 <span>{metric.label}</span>
@@ -31,73 +43,84 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
               </div>
             ))}
           </div>
-        </section>
 
-        {connection.source === "fixture" ? (
-          <aside className="dashboard-notice" role="status">
-            <strong>Fixture fallback</strong>
-            <span>{connection.error ?? connection.summary}</span>
-          </aside>
-        ) : null}
+          {connection.source === "fixture" && !isBootstrapping ? (
+            <aside className="dashboard-notice" role="status">
+              <strong>Preview data</strong>
+              <span>{connection.error ?? connection.summary}</span>
+            </aside>
+          ) : null}
 
-        <section className="dashboard-section">
-          <div className="section-head">
-            <div>
-              <span className="eyebrow">Agents</span>
-              <h2>Agent roster</h2>
+          {loading && agents.length > 0 ? (
+            <div className="dashboard-refreshing" role="status">
+              Refreshing agent state…
             </div>
-            <button type="button" disabled={loading} onClick={onRefresh}>
-              {loading ? "Refreshing…" : "Refresh"}
-            </button>
-          </div>
+          ) : null}
 
-          <div className="agent-roster">
-            {agents.map((agent) => (
-              <article className="agent-card" key={agent.id}>
-                <div className="agent-card-head">
-                  <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
-                  <div>
-                    <strong>{agent.id}</strong>
-                    <small>{agent.profile}</small>
+          {isBootstrapping ? (
+            <div className="agent-roster" aria-label="Loading agents">
+              {Array.from({ length: 4 }, (_, index) => (
+                <article className="agent-card skeleton-card" aria-hidden="true" key={index}>
+                  <div className="skeleton-line short" />
+                  <div className="skeleton-line" />
+                  <div className="skeleton-grid">
+                    <span />
+                    <span />
+                    <span />
+                    <span />
                   </div>
-                  <span className={`state-chip ${agent.lifecycle}`}>{agent.lifecycle}</span>
-                </div>
-                <p>{agent.focusSummary}</p>
-                <div className="agent-detail-grid">
-                  <div>
-                    <span>Current work</span>
-                    <strong>{agent.currentWork?.objective ?? "none"}</strong>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="agent-roster">
+              {agents.map((agent) => (
+                <article className="agent-card" key={agent.id}>
+                  <div className="agent-card-head">
+                    <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
+                    <div>
+                      <strong>{agent.id}</strong>
+                      <small>{agent.profile}</small>
+                    </div>
+                    <span className={`state-chip ${agent.lifecycle}`}>{agent.lifecycle}</span>
                   </div>
-                  <div>
-                    <span>Workspace</span>
-                    <strong>{agent.workspace}</strong>
+                  <p>{agent.focusSummary}</p>
+                  <div className="agent-detail-grid">
+                    <div title={agent.currentWork?.objective ?? "none"}>
+                      <span>Current work</span>
+                      <strong>{agent.currentWork?.objective ?? "none"}</strong>
+                    </div>
+                    <div title={agent.workspace}>
+                      <span>Workspace</span>
+                      <strong>{agent.workspace}</strong>
+                    </div>
+                    <div>
+                      <span>Attention</span>
+                      <strong>{agent.attention}</strong>
+                    </div>
+                    <div title={agent.model}>
+                      <span>Model</span>
+                      <strong>{agent.model}</strong>
+                    </div>
+                    <div>
+                      <span>Posture</span>
+                      <strong>{agent.posture}</strong>
+                    </div>
+                    <div>
+                      <span>Last brief</span>
+                      <strong title={agent.lastBrief}>{agent.lastBrief}</strong>
+                    </div>
                   </div>
-                  <div>
-                    <span>Attention</span>
-                    <strong>{agent.attention}</strong>
-                  </div>
-                  <div>
-                    <span>Model</span>
-                    <strong>{agent.model}</strong>
-                  </div>
-                  <div>
-                    <span>Posture</span>
-                    <strong>{agent.posture}</strong>
-                  </div>
-                  <div>
-                    <span>Tasks</span>
-                    <strong>{agent.activeTaskCount}</strong>
-                  </div>
-                </div>
-                <footer>
-                  <span>{agent.footer}</span>
-                  <button type="button" aria-label={`Open ${agent.id}`} onClick={() => onOpenAgent(agent.id)}>
-                    →
-                  </button>
-                </footer>
-              </article>
-            ))}
-          </div>
+                  <footer>
+                    <span>{agent.footer}</span>
+                    <button type="button" aria-label={`Open ${agent.id}`} onClick={() => onOpenAgent(agent.id)}>
+                      →
+                    </button>
+                  </footer>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       </div>
     </section>

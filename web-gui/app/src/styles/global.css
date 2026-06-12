@@ -325,6 +325,11 @@ button {
   padding: 28px;
 }
 
+.dashboard-inner {
+  display: grid;
+  gap: 16px;
+}
+
 .section-head {
   display: flex;
   align-items: center;
@@ -335,6 +340,58 @@ button {
 .section-head h2 {
   margin: 2px 0 0;
   font-size: 22px;
+}
+
+.dashboard-section {
+  display: grid;
+  gap: 14px;
+}
+
+.dashboard-roster-section {
+  align-content: start;
+}
+
+.dashboard-head {
+  gap: 18px;
+  margin-bottom: 0;
+}
+
+.dashboard-head h1 {
+  margin: 2px 0 4px;
+  font-size: clamp(26px, 3vw, 34px);
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+}
+
+.dashboard-head p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.dashboard-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.connection-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.connection-pill.fixture .runtime-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 14%, transparent);
 }
 
 .runtime-overview {
@@ -380,6 +437,12 @@ code {
   gap: 12px;
 }
 
+.metric-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .metric-card {
   display: flex;
   min-height: 104px;
@@ -412,11 +475,19 @@ code {
   color: var(--muted);
 }
 
+.metric-strip .metric-card {
+  min-height: 78px;
+  padding: 13px 14px;
+}
+
+.metric-strip .metric-card strong {
+  font-size: 28px;
+}
+
 .dashboard-notice {
   display: flex;
   gap: 10px;
   align-items: center;
-  margin-bottom: 18px;
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--warning) 34%, var(--line));
   border-radius: 12px;
@@ -425,21 +496,33 @@ code {
 }
 
 .dashboard-notice strong {
+  flex: 0 0 auto;
   color: var(--text);
 }
 
+.dashboard-refreshing {
+  justify-self: start;
+  padding: 8px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 680;
+}
+
 .eyebrow {
-  color: var(--faint);
-  font-size: 11px;
-  font-weight: 760;
-  letter-spacing: 0.12em;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 820;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
 .agent-roster {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .agent-card,
@@ -452,7 +535,19 @@ code {
 }
 
 .agent-card {
-  padding: 16px;
+  display: grid;
+  gap: 14px;
+  padding: 15px;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.agent-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
 }
 
 .agent-card-head,
@@ -466,15 +561,22 @@ code {
 
 .agent-card-head > div {
   flex: 1;
+  min-width: 0;
 }
 
 .agent-card-head strong,
 .agent-card-head small {
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-card p {
+  min-height: 44px;
+  margin: 0;
   color: var(--muted);
+  line-height: 1.45;
 }
 
 .state-chip {
@@ -503,14 +605,19 @@ code {
 .agent-detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .agent-detail-grid div {
   min-width: 0;
-  padding: 10px;
-  border-radius: 10px;
+  overflow: hidden;
+  padding: 9px 10px;
+  border-radius: 8px;
   background: var(--surface-soft);
+}
+
+.agent-detail-grid div:last-child {
+  grid-column: 1 / -1;
 }
 
 .agent-detail-grid span,
@@ -526,7 +633,7 @@ code {
 
 .agent-detail-grid strong {
   overflow: hidden;
-  margin-top: 4px;
+  margin-top: 2px;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
@@ -536,15 +643,80 @@ code {
   .runtime-overview {
     grid-template-columns: 1fr;
   }
+
+  .agent-roster,
+  .metric-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-head,
+  .dashboard-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 .agent-card footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 16px;
+  gap: 10px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.agent-card footer span {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-card footer button {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+}
+
+.skeleton-card {
+  min-height: 250px;
+  pointer-events: none;
+}
+
+.skeleton-line,
+.skeleton-grid span {
+  display: block;
+  overflow: hidden;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--surface-soft),
+    color-mix(in srgb, var(--surface-soft) 72%, #fff),
+    var(--surface-soft)
+  );
+}
+
+.skeleton-line {
+  width: 100%;
+  height: 18px;
+}
+
+.skeleton-line.short {
+  width: 48%;
+}
+
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: auto;
+}
+
+.skeleton-grid span {
+  height: 52px;
+  border-radius: 8px;
 }
 
 .agent-workbench {
