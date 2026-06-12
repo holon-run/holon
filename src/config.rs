@@ -995,10 +995,21 @@ impl RuntimeModelCatalog {
             );
         }
 
-        let mut candidates = self.vision_candidate_models.clone();
-        for model_ref in chain {
-            if !candidates.iter().any(|existing| existing == &model_ref) {
-                candidates.push(model_ref);
+        let mut candidates = Vec::new();
+        // Try the current turn's primary model first when vision.default is absent.
+        if let Some(primary_ref) = chain.first() {
+            candidates.push(primary_ref.clone());
+        }
+        // Then configured vision candidate models (authenticated providers).
+        for model_ref in &self.vision_candidate_models {
+            if !candidates.iter().any(|existing| existing == model_ref) {
+                candidates.push(model_ref.clone());
+            }
+        }
+        // Then remaining chain entries (fallback models).
+        for model_ref in chain.iter().skip(1) {
+            if !candidates.iter().any(|existing| existing == model_ref) {
+                candidates.push(model_ref.clone());
             }
         }
 
@@ -6614,8 +6625,8 @@ mod tests {
             "auto_discovered_vision_model_supports_image_input"
         );
         assert_eq!(selection.candidates.len(), 2);
-        assert!(selection.candidates[0].image_input);
-        assert!(!selection.candidates[1].image_input);
+        assert!(!selection.candidates[0].image_input);
+        assert!(selection.candidates[1].image_input);
     }
 
     #[test]
@@ -6687,8 +6698,8 @@ mod tests {
             "auto_discovered_vision_model_supports_image_input"
         );
         assert_eq!(selection.candidates.len(), 2);
-        assert!(selection.candidates[0].image_input);
-        assert!(!selection.candidates[1].image_input);
+        assert!(!selection.candidates[0].image_input);
+        assert!(selection.candidates[1].image_input);
     }
 
     #[test]
@@ -6747,11 +6758,11 @@ mod tests {
         assert_eq!(selection.candidates.len(), 2);
         assert_eq!(
             selection.candidates[0].reason,
-            "model_advertises_image_input"
+            "provider_transport_unsupported_for_view_image_observation"
         );
         assert_eq!(
             selection.candidates[1].reason,
-            "provider_transport_unsupported_for_view_image_observation"
+            "model_advertises_image_input"
         );
     }
 
