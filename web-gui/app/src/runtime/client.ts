@@ -15,6 +15,8 @@ export interface RuntimeClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+const DEFAULT_DEV_API_BASE = "/holon-api";
+
 function fixtureAgentDetail(agentId: string): AgentDetail {
   return agentDetailFixtures[agentId] ?? agentDetailFixtures[Object.keys(agentDetailFixtures)[0]];
 }
@@ -166,7 +168,8 @@ export interface AgentEventPageOptions {
 }
 
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
-  const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE);
+  const defaultBaseUrl = import.meta.env.DEV ? DEFAULT_DEV_API_BASE : undefined;
+  const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return {
