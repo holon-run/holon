@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     agent_template::{agent_memory_operator_path, agent_memory_self_path},
-    memory::refs::{RuntimeRef, ToolExecutionRefSelector},
+    memory::refs::{RuntimeRef, ToolExecutionRefSelector, ToolOutputSelector},
     runtime_db::{EvidenceKind, RuntimeDb},
     storage::AppStorage,
     tool::helpers::{
@@ -918,6 +918,10 @@ fn collect_documents(
     documents.extend(work_item_documents(storage, runtime_db.as_ref())?);
     documents.extend(task_documents(storage, runtime_db.as_ref())?);
     documents.extend(command_execution_documents(storage, runtime_db.as_ref())?);
+    documents.extend(generic_tool_execution_output_documents(
+        storage,
+        runtime_db.as_ref(),
+    )?);
     Ok(documents)
 }
 
@@ -939,6 +943,9 @@ fn document_for_pending_source(
         "task" => task_document_by_id(storage, &source.source_id),
         "tool_command_receipt" | "tool_command_output" => {
             command_tool_execution_document_by_ref(storage, &source.source_ref)
+        }
+        "tool_execution_output" => {
+            generic_tool_execution_output_document_by_ref(storage, &source.source_ref)
         }
         _ => Ok(None),
     }
@@ -968,7 +975,15 @@ fn document_for_runtime_ref(
             id,
             batch_item_index,
             selector,
-        } => command_tool_execution_document(storage, id, *batch_item_index, *selector),
+        } => {
+            let document =
+                command_tool_execution_document(storage, id, *batch_item_index, *selector)?;
+            if document.is_some() {
+                Ok(document)
+            } else {
+                generic_tool_execution_output_document(storage, id, *batch_item_index, *selector)
+            }
+        }
     }
 }
 
@@ -1830,6 +1845,37 @@ fn command_execution_documents(
     Ok(documents)
 }
 
+fn generic_tool_execution_output_documents(
+    storage: &AppStorage,
+    runtime_db: Option<&RuntimeDb>,
+) -> Result<Vec<MemoryDocument>> {
+    let mut documents = Vec::new();
+    let records = if let Some(runtime_db) = runtime_db {
+        runtime_db
+            .evidence()
+            .recent_payloads(
+                EvidenceKind::ToolExecution,
+                &storage_agent_id(storage),
+                usize::MAX,
+            )?
+            .into_iter()
+            .map(|row| serde_json::from_str::<ToolExecutionRecord>(&row.payload_json))
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    } else {
+        storage.read_recent_tool_executions(usize::MAX)?
+    };
+    for record in records {
+        if matches!(
+            record.tool_name.as_str(),
+            "ExecCommand" | "ExecCommandBatch"
+        ) {
+            continue;
+        }
+        documents.push(generic_tool_execution_output_document_from_record(&record));
+    }
+    Ok(documents)
+}
+
 fn command_tool_execution_document_by_ref(
     storage: &AppStorage,
     source_ref: &str,
@@ -1846,15 +1892,29 @@ fn command_tool_execution_document_by_ref(
     Ok(None)
 }
 
-fn command_tool_execution_document(
+fn generic_tool_execution_output_document_by_ref(
+    storage: &AppStorage,
+    source_ref: &str,
+) -> Result<Option<MemoryDocument>> {
+    let runtime_ref = RuntimeRef::parse(source_ref).ok();
+    if let Some(RuntimeRef::ToolExecution {
+        id,
+        batch_item_index,
+        selector,
+    }) = runtime_ref
+    {
+        return generic_tool_execution_output_document(storage, &id, batch_item_index, selector);
+    };
+    Ok(None)
+}
+
+fn tool_execution_record(
     storage: &AppStorage,
     tool_execution_id: &str,
-    batch_item_index: Option<usize>,
-    selector: ToolExecutionRefSelector,
-) -> Result<Option<MemoryDocument>> {
+) -> Result<Option<ToolExecutionRecord>> {
     let runtime_db = storage.runtime_db()?;
-    let record = if let Some(runtime_db) = runtime_db.as_ref() {
-        runtime_db
+    if let Some(runtime_db) = runtime_db.as_ref() {
+        Ok(runtime_db
             .evidence()
             .payload_by_id(
                 EvidenceKind::ToolExecution,
@@ -1862,13 +1922,22 @@ fn command_tool_execution_document(
                 tool_execution_id,
             )?
             .map(|row| serde_json::from_str::<ToolExecutionRecord>(&row.payload_json))
-            .transpose()?
+            .transpose()?)
     } else {
-        storage
+        Ok(storage
             .read_recent_tool_executions(usize::MAX)?
             .into_iter()
-            .find(|record| record.id == tool_execution_id)
-    };
+            .find(|record| record.id == tool_execution_id))
+    }
+}
+
+fn command_tool_execution_document(
+    storage: &AppStorage,
+    tool_execution_id: &str,
+    batch_item_index: Option<usize>,
+    selector: ToolExecutionRefSelector,
+) -> Result<Option<MemoryDocument>> {
+    let record = tool_execution_record(storage, tool_execution_id)?;
     let Some(record) = record else {
         return Ok(None);
     };
@@ -1895,6 +1964,75 @@ fn command_tool_execution_document(
             command_output_document(&record, Some(index), stream.as_ref_selector()),
         ),
         _ => Ok(None),
+    }
+}
+
+fn generic_tool_execution_output_document(
+    storage: &AppStorage,
+    tool_execution_id: &str,
+    batch_item_index: Option<usize>,
+    selector: ToolExecutionRefSelector,
+) -> Result<Option<MemoryDocument>> {
+    if batch_item_index.is_some()
+        || selector != ToolExecutionRefSelector::Output(ToolOutputSelector::Output)
+    {
+        return Ok(None);
+    }
+    let Some(record) = tool_execution_record(storage, tool_execution_id)? else {
+        return Ok(None);
+    };
+    if matches!(
+        record.tool_name.as_str(),
+        "ExecCommand" | "ExecCommandBatch"
+    ) {
+        return Ok(None);
+    }
+    Ok(Some(generic_tool_execution_output_document_from_record(
+        &record,
+    )))
+}
+
+fn generic_tool_execution_output_document_from_record(
+    record: &ToolExecutionRecord,
+) -> MemoryDocument {
+    let source_ref = command_output_source_ref(&record.id, None, "output");
+    let output = json!({
+        "source_type": "tool_execution_output",
+        "tool_execution_id": record.id,
+        "tool_name": record.tool_name,
+        "selector": "output",
+        "status": record.status,
+        "summary": record.summary,
+        "output": record.output,
+        "message": "Output evidence recovered from the tool execution record."
+    });
+    let body = serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string());
+    MemoryDocument {
+        source_ref,
+        source_kind: "tool_execution_output".into(),
+        scope_kind: "agent".into(),
+        workspace_id: None,
+        agent_id: record.agent_id.clone(),
+        source_path: None,
+        title: format!("{} tool output", record.tool_name),
+        sanitized_excerpt: format!(
+            "tool_execution_id={} tool_name={} selector=output summary={}",
+            record.id,
+            record.tool_name,
+            truncate_chars(&record.summary, 240).0
+        ),
+        body,
+        metadata: json!({
+            "tool_execution_id": record.id,
+            "tool_name": record.tool_name,
+            "turn_index": record.turn_index,
+            "work_item_id": record.work_item_id,
+            "selector": "output",
+            "governance_surface": "runtime_evidence",
+            "provenance_class": "tool_execution_record",
+            "trust_class": "runtime_evidence",
+        }),
+        updated_at: record.completed_at.unwrap_or(record.created_at),
     }
 }
 
@@ -3789,5 +3927,70 @@ mod tests {
         assert!(memory
             .content
             .contains("\"availability\": \"output_unavailable\""));
+    }
+
+    #[test]
+    fn generic_tool_output_source_ref_is_indexed_and_retrievable() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-generic-output-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: Some("work-generic-output-1246".into()),
+                turn_index: 7,
+                turn_id: Some("turn-generic-output-1246".into()),
+                tool_name: "ViewImage".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 42,
+                authority_class: crate::types::AuthorityClass::OperatorInstruction,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: json!({
+                    "path": "fixtures/pixel.png",
+                    "prompt": "inspect generic_tool_output_1246"
+                }),
+                output: json!({
+                    "envelope": {
+                        "result": {
+                            "visual_observation": "generic_tool_output_1246 visual observation",
+                            "metadata": {
+                                "width": 1,
+                                "height": 1
+                            }
+                        }
+                    },
+                    "is_error": false
+                }),
+                summary: "validated image metadata".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let source_ref = "tool_execution:tool-generic-output-1246:output";
+        let results = search_memory(
+            &storage,
+            "generic_tool_output_1246",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        let result = results
+            .iter()
+            .find(|result| result.source_ref == source_ref)
+            .expect("generic tool output should be indexed");
+        assert_eq!(result.kind, "tool_execution_output");
+        assert_eq!(result.metadata["tool_name"].as_str(), Some("ViewImage"));
+
+        let memory = get_memory(&storage, source_ref, None, Some("ws-holon"))
+            .unwrap()
+            .expect("generic tool output should be retrievable");
+        assert!(memory.content.contains("generic_tool_output_1246"));
+        assert!(memory.content.contains("\"tool_name\": \"ViewImage\""));
+        assert!(memory
+            .content
+            .contains("\"source_type\": \"tool_execution_output\""));
     }
 }

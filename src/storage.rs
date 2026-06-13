@@ -887,7 +887,14 @@ impl AppStorage {
                     }
                 }
             }
-            _ => {}
+            _ => {
+                let source_ref = command_output_source_ref(&record.id, None, "output");
+                self.enqueue_memory_index_source(
+                    "tool_execution_output",
+                    &source_ref,
+                    &source_ref,
+                )?;
+            }
         }
         Ok(())
     }
