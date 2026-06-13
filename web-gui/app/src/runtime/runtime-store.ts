@@ -39,6 +39,11 @@ export interface AgentSessionState {
   modelError?: string;
 }
 
+interface AgentRosterActivity {
+  operatorAt?: string;
+  briefAt?: string;
+}
+
 function appendOptimisticOperatorPrompt(detail: AgentDetail | null, agent: AgentSummary | undefined, prompt: string): AgentDetail | null {
   const baseDetail = detail ?? createLiveAgentDetail(agent);
   if (!baseDetail) return null;
@@ -74,6 +79,7 @@ export interface RuntimeStoreState {
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;
   modelCatalogError?: string;
+  rosterActivityByAgentId: Record<string, AgentRosterActivity>;
   sessionsByAgentId: Record<string, AgentSessionState>;
 
   setRoute: (route: RouteKey) => void;
@@ -130,6 +136,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   bootstrapLoading: true,
   modelCatalog: emptyModelCatalog,
   modelCatalogLoading: false,
+  rosterActivityByAgentId: {},
   sessionsByAgentId: {},
 
   setRoute: (route) => set({ route }),
@@ -159,7 +166,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
             };
           }
           return {
-            bootstrap,
+            bootstrap: sortBootstrapAgents(bootstrap, state.rosterActivityByAgentId),
             bootstrapLoading: false,
             bootstrapError: bootstrap.connection.error,
           };
@@ -276,22 +283,27 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       return;
     }
 
-    set((state) => ({
-      sessionsByAgentId: {
-        ...state.sessionsByAgentId,
-        [agentId]: {
-          ...emptyAgentSession(),
-          ...state.sessionsByAgentId[agentId],
-          sendingPrompt: true,
-          promptError: undefined,
-          detail: appendOptimisticOperatorPrompt(
-            state.sessionsByAgentId[agentId]?.detail ?? null,
-            state.bootstrap.agents.find((agent) => agent.id === agentId),
-            prompt,
-          ),
+    set((state) => {
+      const rosterActivityByAgentId = touchRosterActivity(state.rosterActivityByAgentId, agentId, "operator", new Date().toISOString());
+      return {
+        bootstrap: sortBootstrapAgents(state.bootstrap, rosterActivityByAgentId),
+        rosterActivityByAgentId,
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...emptyAgentSession(),
+            ...state.sessionsByAgentId[agentId],
+            sendingPrompt: true,
+            promptError: undefined,
+            detail: appendOptimisticOperatorPrompt(
+              state.sessionsByAgentId[agentId]?.detail ?? null,
+              state.bootstrap.agents.find((agent) => agent.id === agentId),
+              prompt,
+            ),
+          },
         },
-      },
-    }));
+      };
+    });
 
     try {
       await runtimeClient.sendOperatorPrompt(agentId, prompt);
@@ -586,6 +598,86 @@ function mergeAgentIntoBootstrap(bootstrap: RuntimeBootstrap, updatedAgent: Agen
   };
 }
 
+function sortBootstrapAgents(bootstrap: RuntimeBootstrap, rosterActivityByAgentId: Record<string, AgentRosterActivity>): RuntimeBootstrap {
+  return {
+    ...bootstrap,
+    agents: sortAgentsByRosterActivity(bootstrap.agents, rosterActivityByAgentId),
+  };
+}
+
+function sortAgentsByRosterActivity(
+  agents: AgentSummary[],
+  rosterActivityByAgentId: Record<string, AgentRosterActivity>,
+): AgentSummary[] {
+  return [...agents].sort((left, right) => {
+    const leftActivity = rosterActivityByAgentId[left.id];
+    const rightActivity = rosterActivityByAgentId[right.id];
+    const operator = compareIsoDesc(leftActivity?.operatorAt, rightActivity?.operatorAt);
+    if (operator !== 0) return operator;
+    const brief = compareIsoDesc(leftActivity?.briefAt, rightActivity?.briefAt);
+    if (brief !== 0) return brief;
+    return left.id.localeCompare(right.id);
+  });
+}
+
+function compareIsoDesc(left: string | undefined, right: string | undefined): number {
+  const leftTime = sortableTime(left ?? "");
+  const rightTime = sortableTime(right ?? "");
+  return rightTime - leftTime;
+}
+
+function touchRosterActivity(
+  current: Record<string, AgentRosterActivity>,
+  agentId: string,
+  kind: "operator" | "brief",
+  timestamp: string | undefined,
+): Record<string, AgentRosterActivity> {
+  if (!timestamp) return current;
+  const existing = current[agentId];
+  const field = kind === "operator" ? "operatorAt" : "briefAt";
+  if (sortableTime(existing?.[field] ?? "") >= sortableTime(timestamp)) return current;
+  return {
+    ...current,
+    [agentId]: {
+      ...existing,
+      [field]: timestamp,
+    },
+  };
+}
+
+function touchRosterActivityFromEvent(
+  current: Record<string, AgentRosterActivity>,
+  agentId: string,
+  event: StreamEventEnvelopeDto,
+): Record<string, AgentRosterActivity> {
+  if (event.type === "brief_created") {
+    return touchRosterActivity(current, agentId, "brief", eventTimestamp(event));
+  }
+  if (event.type === "message_enqueued" && messageOrigin(event.payload) === "operator") {
+    return touchRosterActivity(current, agentId, "operator", eventTimestamp(event));
+  }
+  return current;
+}
+
+function eventTimestamp(event: StreamEventEnvelopeDto): string | undefined {
+  const payload = asRecord(event.payload);
+  return stringField(payload, "created_at") ?? event.ts;
+}
+
+function messageOrigin(payload: unknown): string | undefined {
+  const origin = asRecord(asRecord(payload)?.origin);
+  return stringField(origin, "kind") ?? stringField(origin, "role") ?? stringField(asRecord(payload), "origin");
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function stringField(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
 function countAgentsNeedingAttention(agents: AgentSummary[]): number {
   return agents.filter((agent) => agent.pending > 0 || agent.waitingCount > 0).length;
 }
@@ -661,7 +753,10 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
   const newestSeq = Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0, current.newestSeq ?? 0, highestSeq(eventSeqs) ?? 0);
 
   return {
-    bootstrap: detail.source === "http" && !detail.error ? mergeAgentIntoBootstrap(state.bootstrap, detail.agent) : state.bootstrap,
+    bootstrap:
+      detail.source === "http" && !detail.error
+        ? sortBootstrapAgents(mergeAgentIntoBootstrap(state.bootstrap, detail.agent), state.rosterActivityByAgentId)
+        : state.bootstrap,
     sessionsByAgentId: {
       ...state.sessionsByAgentId,
       [agentId]: {
@@ -719,6 +814,7 @@ function applyStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnve
         },
       };
     }
+    const rosterActivityByAgentId = touchRosterActivityFromEvent(state.rosterActivityByAgentId, agentId, event);
     const eventsBySeq = {
       ...current.eventsBySeq,
       [seq]: event,
@@ -743,6 +839,8 @@ function applyStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnve
       : baseDetail;
 
     return {
+      bootstrap: sortBootstrapAgents(state.bootstrap, rosterActivityByAgentId),
+      rosterActivityByAgentId,
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
         [agentId]: {
