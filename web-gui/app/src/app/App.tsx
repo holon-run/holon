@@ -269,8 +269,16 @@ export function App() {
                   >
                     {liveStatusLabel(selectedAgentLiveStatus)}
                   </StatusBadge>
-                  <Button type="button" size="sm" variant="secondary" disabled={agentDetailLoading} onClick={() => void refreshAgentDetail()}>
-                    {agentDetailLoading ? "Refreshing…" : "Refresh"}
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    aria-label={agentDetailLoading ? "Refreshing agent detail" : "Refresh agent detail"}
+                    title={agentDetailLoading ? "Refreshing…" : "Refresh agent detail"}
+                    disabled={agentDetailLoading}
+                    onClick={() => void refreshAgentDetail()}
+                  >
+                    ↻
                   </Button>
                 </div>
                 <SegmentedControl className="display-level" label="Display level">

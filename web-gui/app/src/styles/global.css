@@ -475,9 +475,9 @@ button {
 }
 
 .agent-top-context {
-  align-items: stretch;
+  align-items: center;
   min-height: 0;
-  padding-block: 10px;
+  padding-block: 6px;
   border-top: 1px solid var(--line);
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--surface) 86%, transparent), color-mix(in srgb, var(--surface) 62%, transparent));
@@ -534,24 +534,21 @@ button {
   width: 100%;
   align-items: center;
   gap: 8px 10px;
-  min-height: 42px;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  background: var(--surface);
+  min-height: 34px;
+  padding: 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
   color: inherit;
   text-align: left;
-  box-shadow: var(--shadow-card);
   transition:
     border-color 140ms ease,
-    box-shadow 140ms ease,
-    transform 140ms ease;
+    background 140ms ease;
 }
 
 .work-summary:hover {
   border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
-  box-shadow: var(--shadow-soft);
-  transform: translateY(-1px);
+  background: var(--surface);
 }
 
 .work-summary-label,
@@ -563,7 +560,7 @@ button {
 
 .work-summary-label {
   color: var(--faint);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 780;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -579,7 +576,7 @@ button {
 .work-summary-meta {
   justify-self: end;
   overflow: hidden;
-  max-width: 220px;
+  max-width: 180px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -612,10 +609,12 @@ button {
 }
 
 .agent-stream-controls button {
+  width: 30px;
+  min-width: 30px;
   min-height: 28px;
-  padding: 0 10px;
+  padding: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 680;
 }
 
