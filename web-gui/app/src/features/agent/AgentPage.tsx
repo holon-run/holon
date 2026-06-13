@@ -75,6 +75,7 @@ export function AgentPage({
       }),
     [displayLevel, sourceTimeline, visibleTimelineItemLimit],
   );
+  const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
   const trimmedPrompt = prompt.trim();
   const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
   const newestTimelineItem = timeline[timeline.length - 1];
@@ -198,13 +199,12 @@ export function AgentPage({
                 {historyError}
               </div>
             ) : null}
-            {timeline.map((item, index) => (
-              <TimelineMessage
-                compactAssistant={item.kind === "assistant" && timeline[index - 1]?.kind === "assistant"}
+            {timelineTurns.map((turn) => (
+              <TimelineTurnGroup
                 displayLevel={displayLevel}
-                item={item}
-                key={item.id}
+                key={turn.id}
                 onOpenInspector={onOpenInspector}
+                turn={turn}
               />
             ))}
             {timeline.length === 0 ? (
@@ -331,6 +331,64 @@ function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
   if (displayLevel === "verbose") return DEFAULT_VERBOSE_TIMELINE_ITEM_LIMIT;
   return DEFAULT_INFO_TIMELINE_ITEM_LIMIT;
 }
+
+interface TimelineTurn {
+  id: string;
+  label: string;
+  timestamp: string;
+  items: AgentTimelineItem[];
+}
+
+function groupTimelineTurns(timeline: AgentTimelineItem[]): TimelineTurn[] {
+  const turns: TimelineTurn[] = [];
+  let current: TimelineTurn | undefined;
+
+  for (const item of timeline) {
+    if (!current || item.kind === "operator") {
+      current = {
+        id: item.kind === "operator" ? `turn:${item.id}` : `activity:${item.id}`,
+        label: item.kind === "operator" ? "Operator turn" : "Runtime activity",
+        timestamp: item.timestamp,
+        items: [],
+      };
+      turns.push(current);
+    }
+    current.items.push(item);
+  }
+
+  return turns;
+}
+
+const TimelineTurnGroup = memo(function TimelineTurnGroup({
+  turn,
+  displayLevel,
+  onOpenInspector,
+}: {
+  turn: TimelineTurn;
+  displayLevel: DisplayLevel;
+  onOpenInspector: () => void;
+}) {
+  return (
+    <section className="timeline-turn" aria-label={turn.label}>
+      <div className="timeline-turn-rail" aria-hidden="true" />
+      <div className="timeline-turn-body">
+        <div className="timeline-turn-header">
+          <span>{turn.label}</span>
+          <time>{formatDisplayTime(turn.timestamp)}</time>
+        </div>
+        {turn.items.map((item, index) => (
+          <TimelineMessage
+            compactAssistant={item.kind === "assistant" && turn.items[index - 1]?.kind === "assistant"}
+            displayLevel={displayLevel}
+            item={item}
+            key={item.id}
+            onOpenInspector={onOpenInspector}
+          />
+        ))}
+      </div>
+    </section>
+  );
+});
 
 const TimelineMessage = memo(function TimelineMessage({
   item,
