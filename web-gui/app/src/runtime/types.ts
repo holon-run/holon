@@ -65,7 +65,7 @@ export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event" 
 export interface AgentTimelineItemDetail {
   label: string;
   text: string;
-  tone?: "command" | "output" | "data";
+  tone?: "command" | "output" | "data" | "diff";
 }
 
 export interface AgentTimelineActivity {

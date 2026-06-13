@@ -1416,6 +1416,11 @@ code {
   background: color-mix(in srgb, #0f172a 94%, var(--success));
 }
 
+.message-detail.diff pre {
+  background: color-mix(in srgb, #0f172a 94%, var(--warning));
+  color: #fef3c7;
+}
+
 .activity-trail {
   display: grid;
   gap: 7px;

@@ -610,23 +610,23 @@ function projectToolExecution(
 ): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> {
   const toolName = stringField(payload, "tool_name") ?? "tool";
   const failed = eventType === "tool_execution_failed" || Boolean(payload?.error);
+  const projection = projectKnownToolExecution(toolName, payload);
   const label = toolFriendlyLabel(toolName, failed);
   const summary = stringField(payload, "summary");
   const commandPreview = execCommandPreview(payload);
   const result = asRecord(payload?.exec_command_result);
   const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status");
   const durationMs = numberField(payload, "duration_ms") ?? numberField(result, "duration_ms");
-  const applyPatch = asRecord(payload?.apply_patch_result);
   const error = stringField(payload, "error");
   const body = compactJoin([
     exitStatus == null ? undefined : `exit ${exitStatus}`,
     durationMs == null ? undefined : formatDuration(durationMs),
-    applyPatch ? stringField(applyPatch, "summary_text") : undefined,
-    commandPreview || applyPatch ? undefined : summary,
+    projection?.body,
+    commandPreview || projection ? undefined : summary,
     error,
   ]);
   const outputPreview = commandOutputPreview(payload);
-  const detail = toolExecutionDetail(toolName, payload, commandPreview, outputPreview);
+  const detail = projection?.detail ?? toolExecutionDetail(toolName, payload, commandPreview, outputPreview);
 
   return {
     kind: "tool",
@@ -635,6 +635,67 @@ function projectToolExecution(
     detail,
     minDisplayLevel: "verbose",
   };
+}
+
+function projectKnownToolExecution(
+  toolName: string,
+  payload: Record<string, unknown> | undefined,
+): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  if (toolName === "ApplyPatch") return projectApplyPatchTool(payload);
+  return undefined;
+}
+
+function projectApplyPatchTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.apply_patch_result);
+  if (!result) return undefined;
+
+  const changedFiles = arrayField(result, "changed_files")
+    ?.map(asRecord)
+    .filter((file): file is Record<string, unknown> => Boolean(file));
+  const changedPaths = stringArrayField(result, "changed_paths");
+  const pathSummary =
+    changedFiles?.map((file) => stringField(file, "path")).filter((path): path is string => Boolean(path)) ?? changedPaths;
+  const fileCount = numberField(result, "changed_file_count") ?? pathSummary.length;
+  const body = compactJoin([
+    fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : undefined,
+    pathSummary.length ? pathSummary.join(", ") : stringField(result, "summary_text"),
+  ]);
+  const detailText = applyPatchDetailText(result, changedFiles, changedPaths);
+
+  return {
+    body,
+    detail: detailText
+      ? {
+          label: "Patch diff",
+          text: detailText,
+          tone: "diff",
+        }
+      : undefined,
+  };
+}
+
+function applyPatchDetailText(
+  result: Record<string, unknown>,
+  changedFiles: Record<string, unknown>[] | undefined,
+  changedPaths: string[],
+): string {
+  if (changedFiles?.length) {
+    return changedFiles
+      .map((file) => {
+        const path = stringField(file, "path") ?? "unknown path";
+        const action = stringField(file, "action");
+        const diffPreview = stringField(file, "diff_preview");
+        const hunks = arrayField(file, "hunks");
+        const hunkSummary = hunks?.length ? `${hunks.length} hunk${hunks.length === 1 ? "" : "s"}` : undefined;
+        const header = compactJoin([action, path, hunkSummary]);
+        return diffPreview ? `${header}\n${diffPreview}` : header;
+      })
+      .join("\n\n");
+  }
+
+  const patch = stringField(result, "patch") ?? stringField(result, "diff_preview");
+  if (patch) return patch;
+  return changedPaths.length ? changedPaths.join("\n") : "";
 }
 
 function toolExecutionDetail(
@@ -874,6 +935,12 @@ function firstStringField(value: Record<string, unknown> | undefined, keys: stri
     if (candidate) return candidate;
   }
   return undefined;
+}
+
+function stringArrayField(value: Record<string, unknown> | undefined, key: string): string[] {
+  const candidate = value?.[key];
+  if (!Array.isArray(candidate)) return [];
+  return candidate.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
 }
 
 function numberField(value: Record<string, unknown> | undefined, key: string): number | undefined {
