@@ -358,6 +358,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn memory_get_tool_accepts_generic_tool_output_source_refs() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("done")),
+            "default".into(),
+            ContextConfig::default(),
+        )
+        .unwrap();
+        runtime
+            .storage()
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-generic-get-1246".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 0,
+                turn_id: None,
+                tool_name: "ViewImage".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 10,
+                authority_class: AuthorityClass::OperatorInstruction,
+                status: ToolExecutionStatus::Success,
+                input: json!({"path": "fixtures/pixel.png", "prompt": "inspect"}),
+                output: json!({
+                    "envelope": {
+                        "result": {
+                            "visual_observation": "memory_get_generic_tool_output_1246"
+                        }
+                    },
+                    "is_error": false
+                }),
+                summary: "validated image metadata".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let result = execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &json!({
+                "source_ref": "tool_execution:tool-generic-get-1246:output"
+            }),
+        )
+        .await
+        .unwrap();
+        let content = result.envelope.result.unwrap()["memory"]["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        assert!(content.contains("\"source_type\": \"tool_execution_output\""));
+        assert!(content.contains("\"tool_name\": \"ViewImage\""));
+        assert!(content.contains("memory_get_generic_tool_output_1246"));
+    }
+
+    #[tokio::test]
     async fn memory_get_tool_accepts_task_source_refs() {
         let dir = tempdir().unwrap();
         let workspace = tempdir().unwrap();
