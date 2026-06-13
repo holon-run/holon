@@ -1,12 +1,14 @@
 import { useEffect } from "react";
 
-import { useRuntimeStore } from "./runtime-store";
+import { type BootstrapRefreshOptions, useRuntimeStore } from "./runtime-store";
 import type { RuntimeBootstrap } from "./types";
+
+const DASHBOARD_AUTO_REFRESH_MS = 3_000;
 
 interface RuntimeDashboardState {
   bootstrap: RuntimeBootstrap;
   loading: boolean;
-  refresh: () => Promise<void>;
+  refresh: (options?: BootstrapRefreshOptions) => Promise<void>;
 }
 
 export function useRuntimeDashboard(): RuntimeDashboardState {
@@ -16,6 +18,21 @@ export function useRuntimeDashboard(): RuntimeDashboardState {
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") {
+        void refresh({ background: true });
+      }
+    };
+
+    const interval = window.setInterval(refreshIfVisible, DASHBOARD_AUTO_REFRESH_MS);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
   }, [refresh]);
 
   return {

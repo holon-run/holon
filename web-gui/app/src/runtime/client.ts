@@ -472,6 +472,8 @@ async function getJson<T>(
 }
 
 async function postJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: string, body: unknown): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
@@ -479,7 +481,8 @@ async function postJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: strin
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-  });
+    signal: controller.signal,
+  }).finally(() => window.clearTimeout(timeout));
   if (!response.ok) {
     throw new Error(`POST ${path} failed with ${response.status}`);
   }

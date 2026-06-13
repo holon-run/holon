@@ -6,6 +6,10 @@ import type { AgentDetail, AgentSummary, AgentTimelineItem, DisplayLevel, RouteK
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
 
+export interface BootstrapRefreshOptions {
+  background?: boolean;
+}
+
 export interface AgentSessionState {
   loading: boolean;
   loadingOlder: boolean;
@@ -67,7 +71,7 @@ export interface RuntimeStoreState {
   setInspectorOpen: (open: boolean) => void;
   toggleInspector: () => void;
   toggleNavCollapsed: () => void;
-  refreshBootstrap: () => Promise<void>;
+  refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
   refreshModelCatalog: () => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
@@ -82,6 +86,8 @@ const runtimeClient = createRuntimeClient();
 const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
 const reconnectTimers = new Map<string, number>();
 const staleTimers = new Map<string, number>();
+let bootstrapRefreshInFlight: Promise<void> | undefined;
+let bootstrapRefreshTimer: number | undefined;
 const STREAM_STALE_TIMEOUT_MS = 45_000;
 const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
@@ -122,30 +128,42 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   toggleInspector: () => set((state) => ({ inspectorOpen: !state.inspectorOpen })),
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
 
-  refreshBootstrap: async () => {
-    set({ bootstrapLoading: true, bootstrapError: undefined });
-    try {
-      const bootstrap = await runtimeClient.getBootstrap();
-      set((state) => {
-        if (bootstrap.connection.source === "fixture" && state.bootstrap.connection.source === "http") {
+  refreshBootstrap: async (options = {}) => {
+    if (bootstrapRefreshInFlight) return bootstrapRefreshInFlight;
+    if (options.background) {
+      set({ bootstrapError: undefined });
+    } else {
+      set({ bootstrapLoading: true, bootstrapError: undefined });
+    }
+
+    bootstrapRefreshInFlight = (async () => {
+      try {
+        const bootstrap = await runtimeClient.getBootstrap();
+        set((state) => {
+          if (bootstrap.connection.source === "fixture" && state.bootstrap.connection.source === "http") {
+            return {
+              bootstrap: state.bootstrap,
+              bootstrapLoading: false,
+              bootstrapError: bootstrap.connection.error,
+            };
+          }
           return {
-            bootstrap: state.bootstrap,
+            bootstrap,
             bootstrapLoading: false,
             bootstrapError: bootstrap.connection.error,
           };
-        }
-        return {
-          bootstrap,
+        });
+      } catch (error) {
+        set({
           bootstrapLoading: false,
-          bootstrapError: bootstrap.connection.error,
-        };
-      });
-    } catch (error) {
-      set({
-        bootstrapLoading: false,
-        bootstrapError: error instanceof Error ? error.message : String(error),
-      });
-    }
+          bootstrapError: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        bootstrapRefreshInFlight = undefined;
+      }
+    })();
+
+    return bootstrapRefreshInFlight;
   },
 
   refreshModelCatalog: async () => {
@@ -183,6 +201,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     try {
       const detail = await runtimeClient.getAgentDetail(agentId, displayLevel);
       set((state) => ({
+        bootstrap: detail.source === "http" && !detail.error ? mergeAgentIntoBootstrap(state.bootstrap, detail.agent) : state.bootstrap,
         sessionsByAgentId: {
           ...state.sessionsByAgentId,
           [agentId]: {
@@ -279,6 +298,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
     try {
       await runtimeClient.sendOperatorPrompt(agentId, prompt);
+      scheduleBootstrapRefresh(get, 250);
       set((state) => ({
         sessionsByAgentId: {
           ...state.sessionsByAgentId,
@@ -290,8 +310,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           },
         },
       }));
-      await get().refreshAgentDetail(agentId, displayLevel);
-      get().startAgentEventStream(agentId, displayLevel);
+      void get()
+        .refreshAgentDetail(agentId, displayLevel)
+        .finally(() => {
+          get().startAgentEventStream(agentId, displayLevel);
+        });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
@@ -389,6 +412,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       onEvent: (event) => {
         markStreamActivity(set, agentId);
         applyStreamEvent(set, agentId, event);
+        scheduleBootstrapRefresh(get);
       },
       onClose: () => scheduleStreamReconnect(get, set, agentId, displayLevel, "event stream closed"),
       onError: (error) => scheduleStreamReconnect(get, set, agentId, displayLevel, error.message),
@@ -542,6 +566,46 @@ function setSessionModelError(set: StoreSet, agentId: string, error: string | un
       },
     },
   }));
+}
+
+function scheduleBootstrapRefresh(get: () => RuntimeStoreState, delayMs = 1_000): void {
+  if (bootstrapRefreshTimer != null) return;
+  bootstrapRefreshTimer = window.setTimeout(() => {
+    bootstrapRefreshTimer = undefined;
+    void get().refreshBootstrap({ background: true });
+  }, delayMs);
+}
+
+function mergeAgentIntoBootstrap(bootstrap: RuntimeBootstrap, updatedAgent: AgentSummary): RuntimeBootstrap {
+  const existingIndex = bootstrap.agents.findIndex((agent) => agent.id === updatedAgent.id);
+  const agents =
+    existingIndex >= 0
+      ? bootstrap.agents.map((agent) => (agent.id === updatedAgent.id ? updatedAgent : agent))
+      : [...bootstrap.agents, updatedAgent];
+
+  return {
+    ...bootstrap,
+    agents,
+    attentionCount: countAgentsNeedingAttention(agents),
+    metrics: buildBootstrapMetrics(agents),
+  };
+}
+
+function countAgentsNeedingAttention(agents: AgentSummary[]): number {
+  return agents.filter((agent) => agent.pending > 0 || agent.waitingCount > 0).length;
+}
+
+function buildBootstrapMetrics(agents: AgentSummary[]): RuntimeBootstrap["metrics"] {
+  const attentionCount = countAgentsNeedingAttention(agents);
+  const activeTaskCount = agents.reduce((sum, agent) => sum + agent.activeTaskCount, 0);
+  const currentWorkCount = agents.filter((agent) => agent.currentWork).length;
+
+  return [
+    { label: "Agents", value: String(agents.length) },
+    { label: "Needs attention", value: String(attentionCount), tone: attentionCount > 0 ? "attention" : "muted" },
+    { label: "Active tasks", value: String(activeTaskCount), tone: activeTaskCount > 0 ? "attention" : "muted" },
+    { label: "Current work", value: String(currentWorkCount) },
+  ];
 }
 
 function updateAgentModelInState(
