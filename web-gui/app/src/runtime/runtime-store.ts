@@ -10,6 +10,16 @@ export interface BootstrapRefreshOptions {
   background?: boolean;
 }
 
+function createLiveAgentDetail(agent: AgentSummary | undefined): AgentDetail | null {
+  if (!agent) return null;
+  return {
+    agent,
+    timeline: [],
+    source: "http",
+    events: [],
+  };
+}
+
 export interface AgentSessionState {
   loading: boolean;
   loadingOlder: boolean;
@@ -29,13 +39,14 @@ export interface AgentSessionState {
   modelError?: string;
 }
 
-function appendOptimisticOperatorPrompt(detail: AgentDetail | null, prompt: string): AgentDetail | null {
-  if (!detail) return detail;
+function appendOptimisticOperatorPrompt(detail: AgentDetail | null, agent: AgentSummary | undefined, prompt: string): AgentDetail | null {
+  const baseDetail = detail ?? createLiveAgentDetail(agent);
+  if (!baseDetail) return null;
   const timestamp = new Date().toISOString();
   return {
-    ...detail,
+    ...baseDetail,
     timeline: [
-      ...detail.timeline,
+      ...baseDetail.timeline,
       {
         id: `operator-prompt:pending:${timestamp}`,
         kind: "operator",
@@ -273,7 +284,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           ...state.sessionsByAgentId[agentId],
           sendingPrompt: true,
           promptError: undefined,
-          detail: appendOptimisticOperatorPrompt(state.sessionsByAgentId[agentId]?.detail ?? null, prompt),
+          detail: appendOptimisticOperatorPrompt(
+            state.sessionsByAgentId[agentId]?.detail ?? null,
+            state.bootstrap.agents.find((agent) => agent.id === agentId),
+            prompt,
+          ),
         },
       },
     }));
@@ -716,15 +731,16 @@ function applyStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnve
       eventDisplayLevel: "debug",
     });
     const events = [...(current.detail?.events ?? []), event];
-    const detail = current.detail
+    const baseDetail = current.detail ?? createLiveAgentDetail(state.bootstrap.agents.find((agent) => agent.id === agentId));
+    const detail = baseDetail
       ? {
-          ...current.detail,
-          timeline: mergeTimeline(current.detail.timeline, liveTimelineDelta),
+          ...baseDetail,
+          timeline: mergeTimeline(baseDetail.timeline, liveTimelineDelta),
           events,
-          newestEventSeq: Math.max(seq, current.detail.newestEventSeq ?? 0),
-          oldestEventSeq: current.detail.oldestEventSeq ?? eventSeqs[0],
+          newestEventSeq: Math.max(seq, baseDetail.newestEventSeq ?? 0),
+          oldestEventSeq: baseDetail.oldestEventSeq ?? eventSeqs[0],
         }
-      : current.detail;
+      : baseDetail;
 
     return {
       sessionsByAgentId: {
