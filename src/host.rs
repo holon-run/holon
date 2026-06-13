@@ -1399,6 +1399,7 @@ impl RuntimeHost {
                 || state.status == AgentStatus::Stopped;
             let is_terminal = observed_new_turn
                 && quiescent
+                && !child_has_active_lifecycle_blockers(&storage, child_agent_id)?
                 && !matches!(
                     closure.outcome,
                     ClosureOutcome::Waiting | ClosureOutcome::Continuable
@@ -1510,6 +1511,19 @@ impl RuntimeHost {
         else {
             return Ok(None);
         };
+        if state.current_run_id.is_some()
+            || state.pending > 0
+            || child_has_active_lifecycle_blockers(storage, child_agent_id)?
+        {
+            return Ok(None);
+        }
+        let closure = RuntimeHandle::closure_decision_from_storage(storage, &state)?;
+        if matches!(
+            closure.outcome,
+            ClosureOutcome::Waiting | ClosureOutcome::Continuable
+        ) {
+            return Ok(None);
+        }
 
         let mut status = if terminal.kind.is_failure() {
             TaskStatus::Failed
@@ -2051,6 +2065,30 @@ impl RuntimeHostBridge {
     ) -> Result<WorkspaceEntry> {
         self.host()?.ensure_workspace_entry(workspace_anchor)
     }
+}
+
+fn child_has_active_lifecycle_blockers(storage: &AppStorage, child_agent_id: &str) -> Result<bool> {
+    if storage
+        .latest_active_task_records_for_agent(child_agent_id, 1)?
+        .into_iter()
+        .any(|task| {
+            matches!(
+                task.status,
+                TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
+            )
+        })
+    {
+        return Ok(true);
+    }
+
+    Ok(storage
+        .latest_wait_conditions()?
+        .into_iter()
+        .any(|condition| {
+            condition.agent_id == child_agent_id
+                && condition.status == crate::types::WaitConditionStatus::Active
+                && condition.kind == crate::types::WaitConditionKind::Task
+        }))
 }
 
 #[cfg(test)]
@@ -3622,6 +3660,208 @@ mod tests {
             .unwrap()
             .expect("child identity should remain recorded");
         assert_eq!(child_identity.status, AgentRegistryStatus::Archived);
+
+        runtime_task.abort();
+    }
+
+    #[tokio::test]
+    async fn recovered_child_monitor_waits_for_active_child_tasks() {
+        let (_home, host) = test_host();
+        let config = host.config().clone();
+        let parent_agent_id = config.default_agent_id.clone();
+        let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
+        parent_storage
+            .append_task(&TaskRecord {
+                id: "task-recover-active-child-task".into(),
+                agent_id: parent_agent_id.clone(),
+                kind: crate::types::TaskKind::ChildAgentTask,
+                status: TaskStatus::Running,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("delegated child".into()),
+                detail: Some(serde_json::json!({
+                    "child_agent_id": "child_recover_active_task",
+                    "child_turn_baseline": 0,
+                    "task_status": "running",
+                })),
+                recovery: Some(TaskRecoverySpec::ChildAgentTask {
+                    summary: "delegated child".into(),
+                    prompt: "continue delegated child".into(),
+                    authority_class: AuthorityClass::OperatorInstruction,
+                    workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
+                }),
+            })
+            .unwrap();
+
+        let child = AgentIdentityRecord::new(
+            "child_recover_active_task",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_agent_id.clone()),
+            Some("task-recover-active-child-task".into()),
+        )
+        .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
+        host.append_agent_identity(&child).unwrap();
+
+        let child_storage = host.agent_storage("child_recover_active_task").unwrap();
+        let mut child_state = AgentState::new("child_recover_active_task");
+        child_state.turn_index = 1;
+        child_state.status = AgentStatus::AwakeIdle;
+        child_state.last_turn_terminal = Some(crate::types::TurnTerminalRecord {
+            turn_index: 1,
+            turn_id: "test".into(),
+            kind: crate::types::TurnTerminalKind::Completed,
+            reason: None,
+            last_assistant_message: Some("child says done before command finished".into()),
+            checkpoint: None,
+            completed_at: chrono::Utc::now(),
+            duration_ms: 1,
+        });
+        child_storage.write_agent(&child_state).unwrap();
+        child_storage
+            .append_task(&TaskRecord {
+                id: "child-command-still-running".into(),
+                agent_id: "child_recover_active_task".into(),
+                kind: crate::types::TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("verification".into()),
+                detail: None,
+                recovery: None,
+            })
+            .unwrap();
+
+        drop(host);
+
+        let restarted =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let runtime = restarted.default_runtime().await.unwrap();
+        let runtime_task = tokio::spawn(runtime.clone().run());
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let task = runtime
+            .storage()
+            .latest_task_record("task-recover-active-child-task")
+            .unwrap()
+            .expect("recovered task should remain recorded");
+        assert_eq!(task.status, TaskStatus::Running);
+        let child_identity = restarted
+            .agent_identity_record("child_recover_active_task")
+            .unwrap()
+            .expect("child identity should remain recorded");
+        assert_eq!(child_identity.status, AgentRegistryStatus::Active);
+
+        runtime_task.abort();
+    }
+
+    #[tokio::test]
+    async fn recovered_child_monitor_waits_for_active_child_task_result_wait() {
+        let (_home, host) = test_host();
+        let config = host.config().clone();
+        let parent_agent_id = config.default_agent_id.clone();
+        let parent_storage = host.agent_storage(&parent_agent_id).unwrap();
+        parent_storage
+            .append_task(&TaskRecord {
+                id: "task-recover-active-child-wait".into(),
+                agent_id: parent_agent_id.clone(),
+                kind: crate::types::TaskKind::ChildAgentTask,
+                status: TaskStatus::Running,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("delegated child".into()),
+                detail: Some(serde_json::json!({
+                    "child_agent_id": "child_recover_active_wait",
+                    "child_turn_baseline": 0,
+                    "task_status": "running",
+                })),
+                recovery: Some(TaskRecoverySpec::ChildAgentTask {
+                    summary: "delegated child".into(),
+                    prompt: "continue delegated child".into(),
+                    authority_class: AuthorityClass::OperatorInstruction,
+                    workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
+                }),
+            })
+            .unwrap();
+
+        let child = AgentIdentityRecord::new(
+            "child_recover_active_wait",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_agent_id.clone()),
+            Some("task-recover-active-child-wait".into()),
+        )
+        .with_lineage_parent_agent_id(Some(parent_agent_id.clone()));
+        host.append_agent_identity(&child).unwrap();
+
+        let child_storage = host.agent_storage("child_recover_active_wait").unwrap();
+        let mut child_state = AgentState::new("child_recover_active_wait");
+        child_state.turn_index = 1;
+        child_state.status = AgentStatus::AwakeIdle;
+        child_state.last_turn_terminal = Some(crate::types::TurnTerminalRecord {
+            turn_index: 1,
+            turn_id: "test".into(),
+            kind: crate::types::TurnTerminalKind::Completed,
+            reason: None,
+            last_assistant_message: Some("child says done before wait resolved".into()),
+            checkpoint: None,
+            completed_at: chrono::Utc::now(),
+            duration_ms: 1,
+        });
+        child_storage.write_agent(&child_state).unwrap();
+        let now = chrono::Utc::now();
+        child_storage
+            .append_wait_condition(&crate::types::WaitConditionRecord {
+                id: "wait-child-task-result".into(),
+                agent_id: "child_recover_active_wait".into(),
+                work_item_id: None,
+                status: crate::types::WaitConditionStatus::Active,
+                kind: crate::types::WaitConditionKind::Task,
+                source: None,
+                subject_ref: Some("child-command".into()),
+                waiting_for: "task result".into(),
+                wake_sources: vec![crate::types::WakeSource::TaskResult {
+                    task_id: "child-command".into(),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+            })
+            .unwrap();
+
+        drop(host);
+
+        let restarted =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let runtime = restarted.default_runtime().await.unwrap();
+        let runtime_task = tokio::spawn(runtime.clone().run());
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let task = runtime
+            .storage()
+            .latest_task_record("task-recover-active-child-wait")
+            .unwrap()
+            .expect("recovered task should remain recorded");
+        assert_eq!(task.status, TaskStatus::Running);
+        let child_identity = restarted
+            .agent_identity_record("child_recover_active_wait")
+            .unwrap()
+            .expect("child identity should remain recorded");
+        assert_eq!(child_identity.status, AgentRegistryStatus::Active);
 
         runtime_task.abort();
     }

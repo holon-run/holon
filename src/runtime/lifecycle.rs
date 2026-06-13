@@ -195,6 +195,39 @@ impl RuntimeHandle {
         }))
     }
 
+    pub(crate) fn closure_decision_from_storage(
+        storage: &AppStorage,
+        state: &AgentState,
+    ) -> Result<ClosureDecision> {
+        let projection = scheduler::SchedulerProjection::from_state(storage, state)?;
+        Ok(derive_closure_decision(&ClosureFacts {
+            runtime_error: projection.runtime_error,
+            awaiting_operator_input: projection.current_work_item_waits_for_operator(),
+            active_blocking_tasks: projection
+                .active_tasks
+                .iter()
+                .filter(|task| task.is_blocking())
+                .count(),
+            active_waiting_intents: projection.active_waiting_intents,
+            active_agent_waiting_intents: projection.active_agent_waiting_intents,
+            active_timers: projection.active_timers,
+            waiting_work_item_scheduling_state: projection.waiting_work_item_scheduling_state,
+            work_signal: projection.work_reactivation_signal(),
+            turn_started: state.turn_index > 0,
+            turn_in_progress: state.current_run_id.is_some(),
+            turn_terminal_kind: state
+                .last_turn_terminal
+                .as_ref()
+                .filter(|record| record.turn_index == state.turn_index)
+                .map(|record| record.kind),
+            runtime_posture: Some(if state.status == AgentStatus::Asleep {
+                RuntimePosture::Sleeping
+            } else {
+                RuntimePosture::Awake
+            }),
+        }))
+    }
+
     pub(super) fn append_state_changed_events(&self, state: &AgentState) -> Result<()> {
         let state_payload = to_json_value(state);
         self.inner.storage.append_event(&AuditEvent::new(
