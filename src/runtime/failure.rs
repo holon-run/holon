@@ -1,8 +1,28 @@
 use super::*;
 use crate::provider::ProviderAttemptTimeline;
-use crate::types::{FailureArtifact, FailureArtifactCategory};
+use crate::types::{FailureArtifact, FailureArtifactCategory, TurnTerminalRecord};
 
 impl RuntimeHandle {
+    pub(super) async fn ensure_runtime_failure_terminal(
+        &self,
+        last_assistant_message: Option<String>,
+        duration_ms: u64,
+    ) -> Result<TurnTerminalRecord> {
+        let existing = {
+            let guard = self.inner.agent.lock().await;
+            guard
+                .state
+                .last_turn_terminal
+                .clone()
+                .filter(|terminal| terminal.turn_index == guard.state.turn_index)
+        };
+        if let Some(terminal) = existing {
+            return Ok(terminal);
+        }
+        self.persist_turn_aborted_record("", "runtime_error", last_assistant_message, duration_ms)
+            .await
+    }
+
     fn sanitize_failure_artifact_url(raw: &str) -> String {
         let Ok(mut url) = reqwest::Url::parse(raw) else {
             return raw.to_string();
@@ -289,15 +309,12 @@ impl RuntimeHandle {
             .map(ToString::to_string)
             .filter(|line| !line.trim().is_empty())
             .collect::<Vec<_>>();
-        let brief = brief::make_failure(&message.agent_id, message, failure_text.clone());
+        let terminal = self.ensure_runtime_failure_terminal(None, 0).await?;
+        let mut brief = brief::make_failure(&message.agent_id, message, failure_text.clone());
+        brief.turn_id = Some(terminal.turn_id.clone());
+        brief.turn_index = Some(terminal.turn_index);
         self.persist_brief(&brief).await?;
-        let terminal = {
-            let guard = self.inner.agent.lock().await;
-            guard.state.last_turn_terminal.clone()
-        };
-        if let Some(terminal) = terminal {
-            self.persist_turn_record(&terminal).await?;
-        }
+        self.persist_turn_record(&terminal).await?;
         self.persist_transcript_evidence(&TranscriptEntry::new(
             message.agent_id.clone(),
             TranscriptEntryKind::RuntimeFailure,

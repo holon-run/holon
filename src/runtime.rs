@@ -1205,6 +1205,7 @@ impl RuntimeHandle {
                     ))?;
                 } else {
                     error!("failed to process message {}: {err:#}", message.id);
+                    self.ensure_runtime_failure_terminal(None, 0).await?;
                     self.inner.storage.append_event(&AuditEvent::new(
                         "runtime_error",
                         serde_json::json!({
@@ -1218,6 +1219,14 @@ impl RuntimeHandle {
                     ))?;
                     self.persist_runtime_failure_artifacts(&message, &err)
                         .await?;
+                    self.inner.storage.append_queue_entry(&QueueEntryRecord {
+                        message_id: message.id.clone(),
+                        agent_id: message.agent_id.clone(),
+                        priority: message.priority.clone(),
+                        status: QueueEntryStatus::Aborted,
+                        created_at: message.created_at,
+                        updated_at: Utc::now(),
+                    })?;
                 }
                 let failed_state = {
                     let mut guard = self.inner.agent.lock().await;

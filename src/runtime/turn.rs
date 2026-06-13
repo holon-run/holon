@@ -1755,7 +1755,7 @@ impl RuntimeHandle {
         }))
     }
 
-    async fn persist_turn_aborted_record(
+    pub(super) async fn persist_turn_aborted_record(
         &self,
         run_id: &str,
         reason: &str,
