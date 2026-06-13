@@ -67,6 +67,7 @@ export function App() {
       : selectedAgentDetail?.source === "http" && !selectedAgentDetail.error
         ? "live"
         : "preview";
+  const isInitialBootstrapping = loading && bootstrap.connection.summary === "Connecting to local runtime…" && !bootstrap.connection.error;
 
   useLayoutEffect(() => {
     const applyBrowserRoute = () => {
@@ -96,6 +97,10 @@ export function App() {
   function navigateAgent(agentId: string) {
     openAgent(agentId);
     pushBrowserRoute("agent", agentId);
+  }
+
+  if (isInitialBootstrapping) {
+    return <BootstrappingPage />;
   }
 
   return (
@@ -334,6 +339,21 @@ export function App() {
 
       {selectedAgent ? <InspectorPanel agent={selectedAgent} open={inspectorOpen} onClose={() => setInspectorOpen(false)} /> : null}
     </div>
+  );
+}
+
+function BootstrappingPage() {
+  return (
+    <main className="boot-page" aria-label="Holon is loading">
+      <section className="boot-card" role="status" aria-live="polite">
+        <span className="boot-mark">◎</span>
+        <div>
+          <p>Starting Holon Web GUI</p>
+          <h1>Preparing runtime data…</h1>
+          <span>Loading the runtime handshake and agent roster before rendering the workspace.</span>
+        </div>
+      </section>
+    </main>
   );
 }
 

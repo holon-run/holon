@@ -34,6 +34,65 @@ button {
   outline-offset: 2px;
 }
 
+.boot-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 32px;
+  background:
+    radial-gradient(circle at 42% 26%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 28rem),
+    var(--page);
+}
+
+.boot-card {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  width: min(520px, 100%);
+  padding: 24px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 68%, transparent);
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: var(--shadow-lg);
+}
+
+.boot-mark {
+  display: grid;
+  flex: 0 0 auto;
+  width: 54px;
+  height: 54px;
+  place-items: center;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--accent) 14%, white);
+  color: var(--accent-strong);
+  font-size: 1.6rem;
+}
+
+.boot-card p,
+.boot-card h1 {
+  margin: 0;
+}
+
+.boot-card p {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.boot-card h1 {
+  margin-top: 4px;
+  font-size: 1.35rem;
+}
+
+.boot-card span {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 306px minmax(0, 1fr);
