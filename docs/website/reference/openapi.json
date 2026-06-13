@@ -210,6 +210,236 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "PerformanceDiagnosticsSnapshot": {
+        "properties": {
+          "captured_at": {
+            "type": "string"
+          },
+          "db": {
+            "items": {
+              "properties": {
+                "avg_bytes": {
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "avg_ms": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "count": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "max_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "total_bytes": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "total_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "count",
+                "total_ms",
+                "max_ms",
+                "avg_ms"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "http": {
+            "items": {
+              "properties": {
+                "avg_bytes": {
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "avg_ms": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "count": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "max_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "total_bytes": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "total_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "count",
+                "total_ms",
+                "max_ms",
+                "avg_ms"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "process_uptime_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "projections": {
+            "items": {
+              "properties": {
+                "avg_bytes": {
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "avg_ms": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "count": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "max_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "total_bytes": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "total_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "count",
+                "total_ms",
+                "max_ms",
+                "avg_ms"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "scheduler": {
+            "items": {
+              "properties": {
+                "avg_bytes": {
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "avg_ms": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "count": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "max_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "total_bytes": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "total_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "count",
+                "total_ms",
+                "max_ms",
+                "avg_ms"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "captured_at",
+          "process_uptime_ms",
+          "http",
+          "projections",
+          "db",
+          "scheduler"
+        ],
+        "title": "PerformanceDiagnosticsSnapshot",
+        "type": "object"
+      },
       "PickWorkItemRequest": {
         "additionalProperties": false,
         "properties": {
@@ -6371,6 +6601,54 @@
           }
         ],
         "summary": "Update runtime config",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/control/runtime/performance": {
+      "get": {
+        "description": "Return bounded in-process performance diagnostics for HTTP, projections, DB, and scheduler activity.",
+        "operationId": "runtimePerformance",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PerformanceDiagnosticsSnapshot"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Runtime performance diagnostics",
         "tags": [
           "runtime"
         ]
