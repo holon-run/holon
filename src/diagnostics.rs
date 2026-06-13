@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 static PROCESS_STARTED_AT: OnceLock<Instant> = OnceLock::new();
@@ -28,7 +29,7 @@ static SCHEDULER_POLL_SHUTDOWN: MetricAccumulator =
     MetricAccumulator::new("scheduler.poll.shutdown");
 static SCHEDULER_POLL_SKIPPED: MetricAccumulator = MetricAccumulator::new("scheduler.poll.skipped");
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PerformanceDiagnosticsSnapshot {
     pub captured_at: String,
     pub process_uptime_ms: u64,
@@ -38,7 +39,7 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub scheduler: Vec<MetricSnapshot>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MetricSnapshot {
     pub name: String,
     pub count: u64,

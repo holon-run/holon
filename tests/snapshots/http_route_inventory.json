@@ -416,6 +416,22 @@
   },
   {
     "method": "get",
+    "path": "/control/runtime/performance",
+    "handler": "runtime_performance",
+    "operation_id": "runtimePerformance",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/control/runtime/readiness",
     "handler": "runtime_readiness",
     "operation_id": "runtimeReadiness",
