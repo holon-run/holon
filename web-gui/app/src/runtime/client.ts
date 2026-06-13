@@ -399,28 +399,7 @@ async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): 
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list"),
   ]);
 
-  const statePairs = await Promise.all(
-    agentEntries.map(async (entry) => {
-      const id = entry.identity?.agent_id;
-      if (!id) return [entry, undefined, undefined] as const;
-
-      try {
-        const [state, briefs] = await Promise.all([
-          getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodeURIComponent(id)}/state`, {
-            timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS,
-          }),
-          getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodeURIComponent(id)}/briefs?limit=1`, {
-            timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS,
-          }),
-        ]);
-        return [entry, state, briefs[0]] as const;
-      } catch {
-        return [entry, undefined, undefined] as const;
-      }
-    }),
-  );
-
-  const agents = statePairs.map(([entry, state, brief]) => projectAgent(entry, state, brief));
+  const agents = agentEntries.map((entry) => projectAgent(entry));
   const attentionCount = agents.filter((agent) => agent.pending > 0 || agent.waitingCount > 0).length;
   const activeTaskCount = agents.reduce((sum, agent) => sum + agent.activeTaskCount, 0);
   const currentWorkCount = agents.filter((agent) => agent.currentWork).length;

@@ -1,4 +1,3 @@
-import { MarkdownContent } from "../../components/MarkdownContent";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -126,12 +125,6 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                     <div>
                       <span>Posture</span>
                       <strong>{agent.posture}</strong>
-                    </div>
-                    <div>
-                      <span>Last brief</span>
-                      <div className="agent-card-brief" title={agent.lastBrief}>
-                        <MarkdownContent text={agent.lastBrief} compact />
-                      </div>
                     </div>
                   </div>
                   <footer>
