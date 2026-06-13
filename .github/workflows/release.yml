@@ -109,6 +109,13 @@ jobs:
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64.
 
+          ## Changes
+
+          - Add GLM-5.2 model catalog support for BigModel and Z.ai provider configurations.
+          - Improve runtime closeout and persistence by serializing SQLite writes and recording terminal turn records for runtime errors.
+          - Expose private child agent status and child token usage through local control and supervised task status surfaces.
+          - Keep the generated docs search bundle outside the content root and add the agent actor invocation RFC.
+
           ## Install
 
           Homebrew:
