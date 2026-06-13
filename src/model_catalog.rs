@@ -1993,6 +1993,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             true,
             false,
         ),
+        catalog_model("zai", "glm-5.2", "GLM-5.2", 1_000_000, 131_072, true, false),
         catalog_model("zai", "glm-5.1", "GLM-5.1", 202_800, 131_100, true, false),
         catalog_model("zai", "glm-5", "GLM-5", 202_800, 131_100, true, false),
         catalog_model(
@@ -2420,26 +2421,45 @@ mod tests {
             .is_none());
 
         let zai = catalog.resolve_policy(
-            &ModelRef::parse("zai-anthropic/glm-4.7").unwrap(),
+            &ModelRef::parse("zai-anthropic/glm-5.2").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
             None,
             &base_context(),
             8192,
         );
-        assert_eq!(zai.display_name, "GLM-4.7");
+        assert_eq!(zai.display_name, "GLM-5.2");
+        assert_eq!(zai.context_window_tokens, Some(1_000_000));
+        assert_eq!(zai.runtime_max_output_tokens, 131_072);
         assert_eq!(zai.source, ModelMetadataSource::BuiltInCatalog);
 
         let bigmodel = catalog.resolve_policy(
-            &ModelRef::parse("bigmodel-openai/glm-4.7").unwrap(),
+            &ModelRef::parse("bigmodel-openai/glm-5.2").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
             None,
             &base_context(),
             8192,
         );
-        assert_eq!(bigmodel.display_name, "GLM-4.7");
+        assert_eq!(bigmodel.display_name, "GLM-5.2");
+        assert_eq!(bigmodel.context_window_tokens, Some(1_000_000));
+        assert_eq!(bigmodel.runtime_max_output_tokens, 131_072);
         assert_eq!(bigmodel.source, ModelMetadataSource::BuiltInCatalog);
+
+        assert_eq!(
+            catalog
+                .preferred_model_for_provider(&ProviderId::parse("zai").unwrap())
+                .unwrap()
+                .as_string(),
+            "zai/glm-5.2"
+        );
+        assert_eq!(
+            catalog
+                .preferred_model_for_provider(&ProviderId::parse("bigmodel").unwrap())
+                .unwrap()
+                .as_string(),
+            "bigmodel/glm-5.2"
+        );
     }
 
     #[test]
