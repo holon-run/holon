@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
+import { Button } from "../../components/ui/Button";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import type {
   AgentDetail,
@@ -180,9 +182,9 @@ export function AgentPage({
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
             {hasOlderEvents ? (
               <div className="history-loader">
-                <button type="button" disabled={loadingOlderEvents} onClick={handleLoadOlderEvents}>
+                <Button type="button" size="sm" variant="secondary" disabled={loadingOlderEvents} onClick={handleLoadOlderEvents}>
                   {loadingOlderEvents ? "Loading earlier…" : "Load earlier"}
-                </button>
+                </Button>
               </div>
             ) : null}
             {historyError ? (
@@ -233,10 +235,11 @@ export function AgentPage({
               );
             })}
             {timeline.length === 0 ? (
-              <div className="conversation-empty">
-                <strong>No visible messages</strong>
-                <span>Switch to Verbose or Debug to inspect lower-level runtime events.</span>
-              </div>
+              <EmptyState
+                className="conversation-empty"
+                title="No visible messages"
+                description="Switch to Verbose or Debug to inspect lower-level runtime events."
+              />
             ) : null}
           </div>
 
@@ -256,17 +259,17 @@ export function AgentPage({
             ) : null}
             <div className="composer-toolbar">
               <div className="composer-left">
-                <button type="button" aria-label="Attach">
+                <Button type="button" size="icon" variant="ghost" aria-label="Attach">
                   ＋
-                </button>
+                </Button>
               </div>
               <div className="composer-right">
                 <div className="model-picker">
-                  <button className="model-button" type="button" aria-expanded={modelPickerOpen} onClick={toggleModelPicker}>
+                  <Button className="model-button" type="button" variant="secondary" aria-expanded={modelPickerOpen} onClick={toggleModelPicker}>
                     <span>{shortModelLabel(activeAgent.model)}</span>
                     {activeAgent.modelSource === "agent_override" ? <small>override</small> : null}
                     <span aria-hidden="true">⌄</span>
-                  </button>
+                  </Button>
                   {modelPickerOpen ? (
                     <div className="model-menu" role="dialog" aria-label="Switch agent model">
                       <div className="model-menu-header">
@@ -274,9 +277,9 @@ export function AgentPage({
                           <strong>Switch model</strong>
                           <span>Applies immediately when idle; otherwise on the next run.</span>
                         </div>
-                        <button type="button" disabled={modelCatalogLoading} onClick={() => void onRefreshModels()}>
+                        <Button type="button" size="sm" variant="ghost" disabled={modelCatalogLoading} onClick={() => void onRefreshModels()}>
                           {modelCatalogLoading ? "Loading…" : "Refresh"}
-                        </button>
+                        </Button>
                       </div>
                       {modelCatalogError ? (
                         <div className="model-picker-status" role="alert">
@@ -323,9 +326,9 @@ export function AgentPage({
                     </div>
                   ) : null}
                 </div>
-                <button className="send-button" type="submit" aria-label="Send" disabled={!canSendPrompt}>
+                <Button className="send-button" type="submit" size="icon" variant="accent" aria-label="Send" disabled={!canSendPrompt}>
                   {sendingPrompt ? "…" : "↑"}
-                </button>
+                </Button>
               </div>
             </div>
           </form>

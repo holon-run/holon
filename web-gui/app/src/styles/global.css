@@ -12,7 +12,10 @@ body {
   margin: 0;
   min-height: 100%;
   overflow: hidden;
-  background: var(--page);
+  background:
+    radial-gradient(circle at 22% 0%, rgba(8, 126, 164, 0.08), transparent 32rem),
+    radial-gradient(circle at 90% 14%, rgba(22, 131, 79, 0.05), transparent 28rem),
+    var(--page);
   color: var(--text);
   font-size: 15px;
 }
@@ -24,6 +27,11 @@ textarea {
 
 button {
   cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, white);
+  outline-offset: 2px;
 }
 
 .app-shell {
@@ -54,7 +62,10 @@ button {
   min-height: 0;
   overflow: hidden;
   padding: 10px 8px 12px;
-  background: var(--sidebar);
+  border-right: 1px solid color-mix(in srgb, var(--line-strong) 72%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #fff 30%, transparent), transparent 32%),
+    var(--sidebar);
   color: #324354;
 }
 
@@ -117,6 +128,11 @@ button {
   background: transparent;
   color: inherit;
   text-align: left;
+  transition:
+    background 140ms ease,
+    box-shadow 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
 }
 
 .global-nav button {
@@ -129,12 +145,13 @@ button {
 .agent-row:hover,
 .agent-row.is-selected,
 .connection-status:hover {
-  background: color-mix(in srgb, var(--sidebar-soft) 68%, transparent);
+  background: color-mix(in srgb, var(--surface) 50%, var(--sidebar-soft));
 }
 
 .global-nav button.is-active {
   color: #152233;
   font-weight: 720;
+  box-shadow: 0 1px 2px rgba(24, 34, 48, 0.05);
 }
 
 .agent-row,
@@ -163,6 +180,7 @@ button {
   font-size: 12px;
   font-weight: 760;
   letter-spacing: 0.04em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 6px 14px rgba(8, 126, 164, 0.16);
 }
 
 .agent-badge.muted {
@@ -183,6 +201,10 @@ button {
   border-radius: 999px;
   background: var(--accent);
   content: "";
+}
+
+.agent-row.is-selected {
+  box-shadow: 0 1px 2px rgba(24, 34, 48, 0.05);
 }
 
 .agent-row-main {
@@ -367,7 +389,9 @@ button {
   min-width: 0;
   flex-direction: column;
   overflow: hidden;
-  background: var(--page);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.52), transparent 240px),
+    var(--page);
 }
 
 .app-shell[data-nav-collapsed="true"] .sidebar {
@@ -398,8 +422,9 @@ button {
   top: 0;
   z-index: 2;
   border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--page) 92%, transparent);
+  background: color-mix(in srgb, var(--page) 86%, transparent);
   backdrop-filter: blur(18px);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .topbar-primary,
@@ -417,7 +442,8 @@ button {
   min-height: 0;
   padding-block: 10px;
   border-top: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 86%, transparent), color-mix(in srgb, var(--surface) 62%, transparent));
 }
 
 .agent-context-main {
@@ -478,6 +504,17 @@ button {
   background: var(--surface);
   color: inherit;
   text-align: left;
+  box-shadow: var(--shadow-card);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.work-summary:hover {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  box-shadow: var(--shadow-soft);
+  transform: translateY(-1px);
 }
 
 .work-summary-label,
@@ -642,7 +679,10 @@ button {
   padding: 22px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: linear-gradient(135deg, var(--surface), color-mix(in srgb, var(--surface-soft) 74%, #fff));
+  background:
+    radial-gradient(circle at 92% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 16rem),
+    linear-gradient(135deg, var(--surface), color-mix(in srgb, var(--surface-soft) 74%, #fff));
+  box-shadow: var(--shadow-card);
 }
 
 .overview-copy h1 {
@@ -775,6 +815,7 @@ code {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
+  box-shadow: var(--shadow-card);
 }
 
 .metric-card span {
@@ -814,8 +855,10 @@ code {
   padding: 14px;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, var(--surface)), var(--surface));
   color: var(--muted);
+  box-shadow: var(--shadow-card);
 }
 
 .dashboard-state > span {
@@ -886,6 +929,7 @@ code {
   background: var(--surface);
   color: var(--muted);
   text-align: center;
+  box-shadow: var(--shadow-card);
 }
 
 .dashboard-empty span {
@@ -912,7 +956,7 @@ code {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: 0 1px 2px rgba(24, 34, 48, 0.04);
+  box-shadow: var(--shadow-card);
 }
 
 .agent-card {
@@ -927,7 +971,7 @@ code {
 
 .agent-card:hover {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-soft);
   transform: translateY(-1px);
 }
 
@@ -1179,7 +1223,10 @@ code {
   gap: 12px;
   min-height: 0;
   overflow-y: auto;
-  padding: 18px 28px 24px;
+  padding: 20px 30px 24px;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(8, 126, 164, 0.05), transparent 28rem),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.36), transparent 260px);
   overscroll-behavior: contain;
   scroll-behavior: smooth;
 }
@@ -1234,17 +1281,19 @@ code {
 }
 
 .bubble {
-  padding: 13px 15px;
+  padding: 14px 16px;
   border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
-  border-radius: 17px;
+  border-radius: 18px;
   background: var(--bubble);
-  box-shadow: 0 1px 1px rgba(24, 34, 48, 0.03);
+  box-shadow: var(--shadow-card);
 }
 
 .operator .bubble {
   border-top-right-radius: 5px;
-  background: #172033;
+  border-color: color-mix(in srgb, #172033 82%, var(--line));
+  background: linear-gradient(135deg, #172033, #22324a);
   color: #fff;
+  box-shadow: 0 10px 28px rgba(23, 32, 51, 0.15);
 }
 
 .assistant .bubble {
@@ -1257,7 +1306,8 @@ code {
   padding: 10px 12px;
   border-style: dashed;
   border-radius: 13px;
-  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 6%, var(--surface)), var(--surface));
   box-shadow: none;
 }
 
@@ -1483,8 +1533,12 @@ code {
   padding: 24px;
   border: 1px dashed var(--line-strong);
   border-radius: var(--radius);
+  background:
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 18rem),
+    var(--surface);
   color: var(--muted);
   text-align: center;
+  box-shadow: var(--shadow-card);
 }
 
 .conversation-empty strong {
@@ -1500,9 +1554,17 @@ code {
 .composer {
   margin: 0 28px 24px;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 18px;
   background: var(--surface);
   box-shadow: var(--shadow);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  box-shadow: 0 18px 54px rgba(8, 126, 164, 0.12);
 }
 
 .composer textarea {
@@ -1576,6 +1638,7 @@ code {
   border-radius: 14px;
   background: var(--surface);
   box-shadow: var(--shadow);
+  backdrop-filter: blur(16px);
 }
 
 .model-menu-header,
@@ -1685,7 +1748,7 @@ code {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: 0 1px 2px rgba(24, 34, 48, 0.04);
+  box-shadow: var(--shadow-card);
 }
 
 .settings-card-head {
@@ -1769,7 +1832,8 @@ code {
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--surface) 92%, var(--accent));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 4%, var(--surface)), var(--surface));
 }
 
 .provider-card header {

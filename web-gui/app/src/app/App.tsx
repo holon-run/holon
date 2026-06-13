@@ -1,6 +1,10 @@
 import { useEffect, useLayoutEffect } from "react";
 
 import { AgentPage } from "../features/agent/AgentPage";
+import { Button } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
+import { SegmentedControl, SegmentedControlButton } from "../components/ui/SegmentedControl";
+import { StatusChip } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { SearchPage } from "../features/search/SearchPage";
@@ -190,14 +194,16 @@ export function App() {
           <div className="topbar-primary">
             <div className="top-title">
               {route === "agent" ? (
-                <button
+                <Button
                   className="back-button"
                   type="button"
+                  size="icon"
+                  variant="ghost"
                   aria-label="Back to dashboard"
                   onClick={() => navigateRoute("dashboard")}
                 >
                   ←
-                </button>
+                </Button>
               ) : null}
               <div>
                 <strong>{route === "agent" ? (selectedAgent?.id ?? selectedAgentId) || "Agent" : pageTitle(route)}</strong>
@@ -209,14 +215,16 @@ export function App() {
               </div>
             </div>
             <div className="top-actions">
-              <button
+              <Button
                 type="button"
+                size="icon"
+                variant="ghost"
                 aria-label="Toggle object inspector"
                 title="Toggle object inspector"
                 onClick={toggleInspector}
               >
                 ▭
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -239,26 +247,36 @@ export function App() {
               </div>
               <div className="agent-top-controls">
                 <div className="agent-stream-controls" aria-label="Agent stream status">
-                  <span className={`source-chip ${selectedAgentSourceStatus}`}>{selectedAgentSourceStatus}</span>
-                  <span className={`source-chip live-status ${selectedAgentLiveStatus}`} title={selectedAgentLiveTitle}>
+                  <StatusChip
+                    className={`source-chip ${selectedAgentSourceStatus}`}
+                    tone={selectedAgentSourceStatus}
+                  >
+                    {selectedAgentSourceStatus}
+                  </StatusChip>
+                  <StatusChip
+                    className={`source-chip live-status ${selectedAgentLiveStatus}`}
+                    tone={selectedAgentLiveStatus === "stale" ? "error" : selectedAgentLiveStatus}
+                    title={selectedAgentLiveTitle}
+                  >
                     {liveStatusLabel(selectedAgentLiveStatus)}
-                  </span>
-                  <button type="button" disabled={agentDetailLoading} onClick={() => void refreshAgentDetail()}>
+                  </StatusChip>
+                  <Button type="button" size="sm" variant="secondary" disabled={agentDetailLoading} onClick={() => void refreshAgentDetail()}>
                     {agentDetailLoading ? "Refreshing…" : "Refresh"}
-                  </button>
+                  </Button>
                 </div>
-                <div className="display-level" aria-label="Display level">
+                <SegmentedControl className="display-level" label="Display level">
                   {(["info", "verbose", "debug"] as const).map((level) => (
-                    <button
+                    <SegmentedControlButton
+                      active={displayLevel === level}
                       className={displayLevel === level ? "is-active" : ""}
                       key={level}
                       type="button"
                       onClick={() => setDisplayLevel(level)}
                     >
                       {levelLabel(level)}
-                    </button>
+                    </SegmentedControlButton>
                   ))}
-                </div>
+                </SegmentedControl>
               </div>
             </div>
           ) : null}
@@ -320,10 +338,11 @@ function MissingAgentPage({ agentId, loading }: { agentId: string; loading: bool
     <section className="page agent-page" aria-label="Agent conversation">
       <div className="agent-workbench">
         <section className="conversation-pane">
-          <div className="conversation-empty">
-            <strong>{loading ? "Loading agent…" : "Agent not found"}</strong>
-            <span>{agentId ? agentId : "No agent id was provided in the current route."}</span>
-          </div>
+          <EmptyState
+            className="conversation-empty"
+            title={loading ? "Loading agent…" : "Agent not found"}
+            description={agentId ? agentId : "No agent id was provided in the current route."}
+          />
         </section>
       </div>
     </section>

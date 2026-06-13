@@ -1,3 +1,7 @@
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { EmptyState } from "../../components/ui/EmptyState";
+import { StatusChip } from "../../components/ui/StatusChip";
 import type { RuntimeConnection, RuntimeModelCatalog, RuntimeModelOption } from "../../runtime/types";
 
 interface SettingsPageProps {
@@ -22,25 +26,25 @@ export function SettingsPage({
   return (
     <section className="page settings-page" aria-label="Settings">
       <div className="page-inner settings-inner">
-        <section className="summary-panel settings-hero">
+        <Card className="summary-panel settings-hero">
           <span className="eyebrow">Runtime configuration</span>
           <h1>Settings</h1>
           <p>
             Read-only runtime settings and diagnostics for the current Web GUI session. Agent-specific model
             changes still happen from each agent page and apply to the next run when needed.
           </p>
-        </section>
+        </Card>
 
         <div className="settings-grid">
-          <section className="settings-card">
+          <Card className="settings-card">
             <div className="settings-card-head">
               <div>
                 <span className="eyebrow">Connection</span>
                 <h2>Runtime API</h2>
               </div>
-              <span className={`source-chip ${connection.source === "http" ? "live" : "preview"}`}>
+              <StatusChip className={`source-chip ${connection.source === "http" ? "live" : "preview"}`} tone={connection.source === "http" ? "live" : "preview"}>
                 {connection.source === "http" ? "live" : "preview"}
-              </span>
+              </StatusChip>
             </div>
             <dl className="settings-list">
               <div>
@@ -62,9 +66,9 @@ export function SettingsPage({
                 </div>
               ) : null}
             </dl>
-          </section>
+          </Card>
 
-          <section className="settings-card">
+          <Card className="settings-card">
             <div className="settings-card-head">
               <div>
                 <span className="eyebrow">Runtime defaults</span>
@@ -92,28 +96,28 @@ export function SettingsPage({
                 <dd>{unavailableCount}</dd>
               </div>
             </dl>
-          </section>
+          </Card>
         </div>
 
-        <section className="settings-card settings-models">
+        <Card className="settings-card settings-models">
           <div className="settings-card-head">
             <div>
               <span className="eyebrow">Models / Providers</span>
               <h2>Model catalog</h2>
             </div>
-            <button type="button" disabled={modelCatalogLoading} onClick={() => void onRefreshModels()}>
+            <Button type="button" variant="secondary" disabled={modelCatalogLoading} onClick={() => void onRefreshModels()}>
               {modelCatalogLoading ? "Refreshing…" : "Refresh"}
-            </button>
+            </Button>
           </div>
 
           {modelCatalogError ? <div className="settings-error-banner">{modelCatalogError}</div> : null}
           {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
-            <div className="settings-empty">No models returned by the runtime yet.</div>
+            <EmptyState className="settings-empty" title="No models returned" description="The runtime has not returned a model catalog yet." />
           ) : null}
 
           <div className="provider-list">
             {groupedModels.map(([provider, models]) => (
-              <article className="provider-card" key={provider}>
+              <Card className="provider-card" key={provider}>
                 <header>
                   <div>
                     <h3>{provider}</h3>
@@ -130,9 +134,9 @@ export function SettingsPage({
                         <span>{model.model}</span>
                       </div>
                       <div role="cell">
-                        <span className={`settings-status ${model.available ? "available" : "unavailable"}`}>
+                        <StatusChip className={`settings-status ${model.available ? "available" : "unavailable"}`} tone={model.available ? "success" : "error"}>
                           {model.available ? "available" : "unavailable"}
-                        </span>
+                        </StatusChip>
                       </div>
                       <div role="cell">
                         {model.supportsReasoningEffort ? <span className="settings-pill">reasoning</span> : null}
@@ -141,10 +145,10 @@ export function SettingsPage({
                     </div>
                   ))}
                 </div>
-              </article>
+              </Card>
             ))}
           </div>
-        </section>
+        </Card>
       </div>
     </section>
   );

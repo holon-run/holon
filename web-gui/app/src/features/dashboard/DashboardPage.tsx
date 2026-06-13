@@ -1,4 +1,9 @@
 import { MarkdownContent } from "../../components/MarkdownContent";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { EmptyState } from "../../components/ui/EmptyState";
+import { Skeleton } from "../../components/ui/Skeleton";
+import { StatusChip } from "../../components/ui/StatusChip";
 import type { AgentSummary, DashboardMetric, RuntimeConnection } from "../../runtime/types";
 
 interface DashboardPageProps {
@@ -35,9 +40,9 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                 <span className="runtime-dot" />
                 {connectionLabel}
               </span>
-              <button type="button" disabled={loading} onClick={onRefresh}>
+              <Button type="button" variant="secondary" disabled={loading} onClick={onRefresh}>
                 {loading ? "Refreshing…" : "Refresh"}
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -63,38 +68,42 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
           {isBootstrapping ? (
             <div className="agent-roster" aria-label="Loading agents">
               {Array.from({ length: 4 }, (_, index) => (
-                <article className="agent-card skeleton-card" aria-hidden="true" key={index}>
-                  <div className="skeleton-line short" />
-                  <div className="skeleton-line" />
+                <Card className="agent-card skeleton-card" aria-hidden="true" key={index}>
+                  <Skeleton className="skeleton-line short" />
+                  <Skeleton className="skeleton-line" />
                   <div className="skeleton-grid">
-                    <span />
-                    <span />
-                    <span />
-                    <span />
+                    <Skeleton as="span" />
+                    <Skeleton as="span" />
+                    <Skeleton as="span" />
+                    <Skeleton as="span" />
                   </div>
-                </article>
+                </Card>
               ))}
             </div>
           ) : !hasAgents ? (
-            <div className="dashboard-empty" role="status">
-              <strong>{hasConnectionError ? "Runtime data is unavailable" : "No agents are currently visible"}</strong>
-              <span>
-                {hasConnectionError
+            <EmptyState
+              className="dashboard-empty"
+              icon={hasConnectionError ? "!" : "◎"}
+              title={hasConnectionError ? "Runtime data is unavailable" : "No agents are currently visible"}
+              description={
+                hasConnectionError
                   ? "Check the local Holon API connection, then refresh this dashboard."
-                  : "Start or wake an agent and refresh to populate the roster."}
-              </span>
-            </div>
+                  : "Start or wake an agent and refresh to populate the roster."
+              }
+            />
           ) : (
             <div className="agent-roster">
               {agents.map((agent) => (
-                <article className="agent-card" key={agent.id}>
+                <Card className="agent-card" key={agent.id}>
                   <div className="agent-card-head">
                     <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
                     <div>
                       <strong>{agent.id}</strong>
                       <small>{agent.profile}</small>
                     </div>
-                    <span className={`state-chip ${agent.lifecycle}`}>{agent.lifecycle}</span>
+                    <StatusChip className={`state-chip ${agent.lifecycle}`} tone={agent.lifecycle === "stopped" ? "muted" : "success"}>
+                      {agent.lifecycle}
+                    </StatusChip>
                   </div>
                   <p>{agent.focusSummary}</p>
                   <div className="agent-detail-grid">
@@ -127,11 +136,11 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                   </div>
                   <footer>
                     <span>{agent.footer}</span>
-                    <button type="button" aria-label={`Open ${agent.id}`} onClick={() => onOpenAgent(agent.id)}>
+                    <Button size="icon" variant="secondary" aria-label={`Open ${agent.id}`} onClick={() => onOpenAgent(agent.id)}>
                       →
-                    </button>
+                    </Button>
                   </footer>
-                </article>
+                </Card>
               ))}
             </div>
           )}
@@ -188,7 +197,9 @@ function DashboardStateCard({ state, detail }: { state: DashboardState; detail: 
 
   return (
     <aside className={`dashboard-state ${state}`} role="status">
-      <span>{selected.label}</span>
+      <StatusChip tone={state === "disconnected" ? "error" : state === "loading" ? "syncing" : state}>
+        {selected.label}
+      </StatusChip>
       <div>
         <strong>{selected.title}</strong>
         <p>{selected.body}</p>
