@@ -36,8 +36,9 @@ export function App() {
   const toggleInspector = useRuntimeStore((state) => state.toggleInspector);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
+  const activeAgentId = route === "agent" ? selectedAgent?.id ?? selectedAgentId : undefined;
   const selectedAgentSession = useRuntimeStore((state) =>
-    selectedAgent?.id ? state.sessionsByAgentId[selectedAgent.id] : undefined,
+    activeAgentId ? state.sessionsByAgentId[activeAgentId] : undefined,
   );
   const modelCatalog = useRuntimeStore((state) => state.modelCatalog);
   const modelCatalogLoading = useRuntimeStore((state) => state.modelCatalogLoading);
@@ -51,13 +52,14 @@ export function App() {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
     refresh: refreshAgentDetail,
-  } = useAgentDetail(selectedAgent?.id, displayLevel);
+  } = useAgentDetail(activeAgentId, displayLevel);
+  const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
-  const selectedAgentCurrentWork = selectedAgent?.currentWork;
+  const selectedAgentCurrentWork = activeAgent?.currentWork;
   const selectedAgentContext =
-    route === "agent" && selectedAgent
-      ? [selectedAgent.lifecycle, selectedAgent.posture].filter(Boolean).join(" · ")
+    route === "agent" && activeAgent
+      ? [activeAgent.lifecycle, activeAgent.posture].filter(Boolean).join(" · ")
       : "loading agent";
   const selectedAgentSourceStatus =
     agentDetailLoading && !selectedAgentDetail
@@ -294,9 +296,9 @@ export function App() {
             onOpenAgent={navigateAgent}
           />
         ) : null}
-        {route === "agent" && selectedAgent ? (
+        {route === "agent" && activeAgent ? (
           <AgentPage
-            agent={selectedAgent}
+            agent={activeAgent}
             detail={selectedAgentDetail}
             displayLevel={displayLevel}
             sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
@@ -308,14 +310,14 @@ export function App() {
             loadingOlderEvents={selectedAgentSession?.loadingOlder ?? false}
             historyError={selectedAgentSession?.historyError}
             onRefreshModels={refreshModelCatalog}
-            onSetModel={(model, reasoningEffort) => setAgentModel(selectedAgent.id, model, displayLevel, reasoningEffort)}
-            onClearModel={() => clearAgentModel(selectedAgent.id, displayLevel)}
-            onLoadOlderEvents={() => loadOlderAgentEvents(selectedAgent.id, displayLevel)}
-            onSendPrompt={(text) => sendOperatorPrompt(selectedAgent.id, text, displayLevel)}
+            onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, displayLevel, reasoningEffort)}
+            onClearModel={() => clearAgentModel(activeAgent.id, displayLevel)}
+            onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, displayLevel)}
+            onSendPrompt={(text) => sendOperatorPrompt(activeAgent.id, text, displayLevel)}
             onOpenInspector={() => setInspectorOpen(true)}
           />
         ) : null}
-        {route === "agent" && !selectedAgent ? <MissingAgentPage agentId={selectedAgentId} loading={loading} /> : null}
+        {route === "agent" && !activeAgent ? <MissingAgentPage agentId={selectedAgentId} loading={loading} /> : null}
         {route === "search" ? <SearchPage /> : null}
         {route === "settings" ? (
           <SettingsPage

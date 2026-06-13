@@ -200,25 +200,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
     try {
       const detail = await runtimeClient.getAgentDetail(agentId, displayLevel);
-      set((state) => ({
-        bootstrap: detail.source === "http" && !detail.error ? mergeAgentIntoBootstrap(state.bootstrap, detail.agent) : state.bootstrap,
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...emptyAgentSession(),
-            ...state.sessionsByAgentId[agentId],
-            detail,
-            loading: false,
-            liveStatus: detail.error ? "error" : "idle",
-            eventsBySeq: eventsBySeq(detail.events ?? []),
-            eventSeqs: eventSeqs(detail.events ?? []),
-            newestSeq: detail.eventCursorSeq ?? detail.newestEventSeq,
-            oldestSeq: detail.oldestEventSeq,
-            hasOlder: detail.hasOlderEvents,
-            error: detail.error,
-          },
-        },
-      }));
+      set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
     } catch (error) {
       set((state) => ({
         sessionsByAgentId: {
@@ -310,11 +292,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           },
         },
       }));
-      void get()
-        .refreshAgentDetail(agentId, displayLevel)
-        .finally(() => {
-          get().startAgentEventStream(agentId, displayLevel);
-        });
+      void catchUpAgentEvents(get, set, agentId, displayLevel).finally(() => {
+        get().startAgentEventStream(agentId, displayLevel);
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
@@ -390,7 +370,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       error: undefined,
     });
     const subscription = runtimeClient.streamAgentEvents(agentId, {
-      afterSeq: session.newestSeq,
+      afterSeq: highestSeq(session.eventSeqs) ?? session.newestSeq ?? 0,
       limit: 100,
       onOpen: () => {
         markStreamActivity(set, agentId);
@@ -640,6 +620,72 @@ function updateAgentModelInState(
   };
 }
 
+function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, detail: AgentDetail): Partial<RuntimeStoreState> {
+  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  const pageEvents = detail.events ?? [];
+  const eventsBySeq = {
+    ...current.eventsBySeq,
+    ...eventsBySeqFromPage(pageEvents),
+  };
+  const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
+  const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
+  const pageTimeline = reduceAgentSessionTimeline({
+    transcript: [],
+    briefs: [],
+    events: { events: pageEvents },
+    eventDisplayLevel: "debug",
+  });
+  const mergedDetail: AgentDetail = {
+    ...detail,
+    timeline: mergeTimeline(pageTimeline, current.detail?.timeline ?? []),
+    events,
+    newestEventSeq: Math.max(detail.newestEventSeq ?? 0, current.detail?.newestEventSeq ?? 0, highestSeq(eventSeqs) ?? 0),
+    oldestEventSeq: detail.oldestEventSeq ?? current.detail?.oldestEventSeq ?? eventSeqs[0],
+    hasOlderEvents: detail.hasOlderEvents,
+  };
+  const newestSeq = Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0, current.newestSeq ?? 0, highestSeq(eventSeqs) ?? 0);
+
+  return {
+    bootstrap: detail.source === "http" && !detail.error ? mergeAgentIntoBootstrap(state.bootstrap, detail.agent) : state.bootstrap,
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...emptyAgentSession(),
+        ...current,
+        detail: mergedDetail,
+        loading: false,
+        liveStatus: detail.error ? "error" : current.liveStatus,
+        eventsBySeq,
+        eventSeqs,
+        newestSeq: newestSeq || undefined,
+        oldestSeq: detail.oldestEventSeq ?? current.oldestSeq ?? eventSeqs[0],
+        hasOlder: detail.hasOlderEvents,
+        error: detail.error,
+      },
+    },
+  };
+}
+
+async function catchUpAgentEvents(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  _displayLevel: DisplayLevel,
+): Promise<void> {
+  const afterSeq = get().sessionsByAgentId[agentId]?.newestSeq;
+  const page = await runtimeClient.getAgentEvents(agentId, {
+    afterSeq,
+    limit: 100,
+    order: "asc",
+  });
+  set((state) =>
+    mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq, page.has_older, "debug", {
+      newestSeq: page.cursor_seq ?? page.newest_seq,
+      append: true,
+    }),
+  );
+}
+
 function applyStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnvelopeDto): void {
   const seq = event.event_seq;
   if (seq == null) return;
@@ -693,6 +739,7 @@ function mergeEventPageIntoSession(
   pageOldestSeq: number | undefined,
   pageHasOlder: boolean | undefined,
   displayLevel: DisplayLevel,
+  options: { newestSeq?: number; append?: boolean } = {},
 ): Partial<RuntimeStoreState> {
   const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
   const eventsBySeq = {
@@ -700,7 +747,7 @@ function mergeEventPageIntoSession(
     ...eventsBySeqFromPage(pageEvents),
   };
   const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
-  const historyTimeline = reduceAgentSessionTimeline({
+  const pageTimeline = reduceAgentSessionTimeline({
     transcript: [],
     briefs: [],
     events: { events: pageEvents },
@@ -710,8 +757,9 @@ function mergeEventPageIntoSession(
   const detail = current.detail
     ? {
         ...current.detail,
-        timeline: mergeTimeline(historyTimeline, current.detail.timeline),
+        timeline: options.append ? mergeTimeline(current.detail.timeline, pageTimeline) : mergeTimeline(pageTimeline, current.detail.timeline),
         events,
+        newestEventSeq: Math.max(options.newestSeq ?? 0, current.detail.newestEventSeq ?? 0, highestSeq(eventSeqs) ?? 0),
         oldestEventSeq: pageOldestSeq ?? eventSeqs[0] ?? current.detail.oldestEventSeq,
         hasOlderEvents: pageHasOlder,
       }
@@ -725,6 +773,7 @@ function mergeEventPageIntoSession(
         detail,
         eventsBySeq,
         eventSeqs,
+        newestSeq: Math.max(options.newestSeq ?? 0, current.newestSeq ?? 0, highestSeq(eventSeqs) ?? 0) || undefined,
         oldestSeq: pageOldestSeq ?? eventSeqs[0] ?? current.oldestSeq,
         hasOlder: pageHasOlder,
         loadingOlder: false,
@@ -751,6 +800,10 @@ function eventSeqsFromPage(events: StreamEventEnvelopeDto[]): number[] {
     .map((event) => event.event_seq)
     .filter((seq): seq is number => seq != null)
     .sort((left, right) => left - right);
+}
+
+function highestSeq(eventSeqs: number[]): number | undefined {
+  return eventSeqs.length ? eventSeqs[eventSeqs.length - 1] : undefined;
 }
 
 function isStreamEventEnvelope(event: unknown): event is StreamEventEnvelopeDto {

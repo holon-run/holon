@@ -17,18 +17,12 @@ export function useAgentDetail(agentId: string | undefined, displayLevel: Displa
   const stopAgentEventStream = useRuntimeStore((state) => state.stopAgentEventStream);
   const refresh = async () => {
     await refreshAgentDetail(agentId, displayLevel);
-    startAgentEventStream(agentId, displayLevel);
   };
 
   useEffect(() => {
-    let cancelled = false;
-    void refreshAgentDetail(agentId, displayLevel).then(() => {
-      if (!cancelled) {
-        startAgentEventStream(agentId, displayLevel);
-      }
-    });
+    startAgentEventStream(agentId, displayLevel);
+    void refreshAgentDetail(agentId, displayLevel);
     return () => {
-      cancelled = true;
       stopAgentEventStream(agentId);
     };
   }, [agentId, displayLevel, refreshAgentDetail, startAgentEventStream, stopAgentEventStream]);

@@ -27,15 +27,12 @@ function fixtureAgentDetail(agentId: string): AgentDetail {
 
 async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentId: string, displayLevel: DisplayLevel): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
-  const [entry, state, briefs, transcript, events] = await Promise.all([
+  const [entry, state, briefs, events] = await Promise.all([
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS })
       .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
       .catch(() => undefined),
     getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`),
     getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/briefs?limit=5`, {
-      timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS,
-    }).catch(() => []),
-    getJson<TranscriptEntryDto[]>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/transcript?limit=40`, {
       timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS,
     }).catch(() => []),
     fetchAgentEvents(baseUrl, fetchImpl, agentId, { limit: 80, order: "desc", displayLevel }).catch((): EventPageResponseDto => ({
@@ -45,7 +42,7 @@ async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentI
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const agent = projectAgent(fallbackEntry, state, briefs[0]);
-  const timeline = reduceAgentSessionTimeline({ transcript, briefs, events, eventDisplayLevel: displayLevel });
+  const timeline = reduceAgentSessionTimeline({ transcript: [], briefs: [], events, eventDisplayLevel: displayLevel });
 
   return {
     agent,
@@ -124,17 +121,6 @@ interface BriefRecordDto {
   created_at?: string;
   text?: string;
   kind?: string;
-}
-
-interface TranscriptEntryDto {
-  id?: string;
-  created_at?: string;
-  kind?: string;
-  round?: number | null;
-  stop_reason?: string | null;
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  data?: unknown;
 }
 
 export interface EventPageResponseDto {
