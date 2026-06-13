@@ -2,11 +2,16 @@ use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{
+    ffi::ErrorCode, params, Connection, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -23,11 +28,14 @@ const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
 const TASK_PAYLOAD_ARRAY_LIMIT: usize = 64;
 const EVIDENCE_PREVIEW_LIMIT: usize = 2048;
 const CONTEXT_EPISODE_ANCHORS_DOMAIN: &str = "context_episode_anchors";
+const RUNTIME_DB_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
+const RUNTIME_DB_TRANSACTION_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone)]
 pub struct RuntimeDb {
     path: PathBuf,
     lock_path: PathBuf,
+    writer: Arc<Mutex<Connection>>,
 }
 
 pub struct WorkItemRepository<'a> {
@@ -4301,8 +4309,10 @@ impl RuntimeDb {
         path: impl Into<PathBuf>,
         lock_path: impl Into<PathBuf>,
     ) -> Result<Self> {
+        let path = path.into();
         let db = Self {
-            path: path.into(),
+            writer: Arc::new(Mutex::new(open_connection(&path)?)),
+            path,
             lock_path: lock_path.into(),
         };
         db.migrate()?;
@@ -4322,8 +4332,11 @@ impl RuntimeDb {
     }
 
     pub fn transaction<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
+        let connection = self
+            .writer
+            .lock()
+            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+        let transaction = begin_immediate_transaction_with_retry(&connection, &self.path)?;
         match f(&transaction) {
             Ok(value) => {
                 transaction.commit()?;
@@ -4668,7 +4681,11 @@ impl RuntimeDb {
             fs::create_dir_all(parent)
                 .with_context(|| format!("creating runtime db directory {}", parent.display()))?;
         }
-        let mut connection = self.connection()?;
+        let mut connection = self
+            .writer
+            .lock()
+            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+        configure_persistent_database(&connection)?;
         ensure_migration_table(&connection)?;
         let current_version = current_schema_version(&connection)?;
         let max_known_version = max_known_migration_version();
@@ -4739,14 +4756,62 @@ fn open_connection(path: &Path) -> Result<Connection> {
 }
 
 fn configure_connection(connection: &Connection) -> Result<()> {
+    connection.busy_timeout(RUNTIME_DB_BUSY_TIMEOUT)?;
     connection.execute_batch(
         r#"
 PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
-PRAGMA busy_timeout = 5000;
 "#,
     )?;
     Ok(())
+}
+
+fn configure_persistent_database(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+PRAGMA journal_mode = WAL;
+"#,
+    )?;
+    Ok(())
+}
+
+fn begin_immediate_transaction_with_retry<'connection>(
+    connection: &'connection Connection,
+    path: &Path,
+) -> Result<Transaction<'connection>> {
+    let started_at = Instant::now();
+    loop {
+        // The writer mutex prevents concurrent transactions on this connection;
+        // the retry loop absorbs transient locks from external processes or connections.
+        match Transaction::new_unchecked(connection, TransactionBehavior::Immediate) {
+            Ok(transaction) => return Ok(transaction),
+            Err(error)
+                if is_sqlite_locked(&error) && started_at.elapsed() < RUNTIME_DB_BUSY_TIMEOUT =>
+            {
+                thread::sleep(RUNTIME_DB_TRANSACTION_RETRY_DELAY);
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "starting immediate runtime db transaction for {}",
+                        path.display()
+                    )
+                });
+            }
+        }
+    }
+}
+
+fn is_sqlite_locked(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked,
+                ..
+            },
+            _
+        )
+    )
 }
 
 fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -5162,6 +5227,91 @@ INSERT INTO storage_domains (
             current_schema_version(&connection)?,
             max_known_migration_version()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_db_read_connection_opens_while_external_writer_holds_lock() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut external = open_connection(&db_path)?;
+        let _external_write = external.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let read = db.connection()?;
+        let value: i64 = read.query_row("SELECT 1", [], |row| row.get(0))?;
+        assert_eq!(value, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_db_transaction_waits_for_temporarily_locked_writer() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut external = open_connection(&db_path)?;
+        let external_write = external.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        let writer = db.clone();
+        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || -> Result<()> {
+            attempt_tx
+                .send(())
+                .map_err(|_| anyhow!("failed to signal writer attempt"))?;
+            writer.audit_events().append(
+                Some("agent-a"),
+                &AuditEvent::new(
+                    "runtime_db_locked_retry",
+                    serde_json::json!({ "source": "test" }),
+                ),
+            )
+        });
+
+        attempt_rx
+            .recv_timeout(Duration::from_secs(1))
+            .context("writer thread did not start")?;
+        std::thread::sleep(Duration::from_millis(100));
+        drop(external_write);
+
+        handle
+            .join()
+            .map_err(|_| anyhow!("writer thread panicked"))??;
+        let events = db.audit_events().recent(Some("agent-a"), 1)?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "runtime_db_locked_retry");
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_db_clones_serialize_concurrent_writes_through_shared_writer() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut handles = Vec::new();
+
+        for index in 0..8 {
+            let writer = db.clone();
+            handles.push(std::thread::spawn(move || -> Result<()> {
+                writer.audit_events().append(
+                    Some("agent-a"),
+                    &AuditEvent::new(
+                        format!("runtime_db_concurrent_write_{index}"),
+                        serde_json::json!({ "index": index }),
+                    ),
+                )
+            }));
+        }
+
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| anyhow!("writer thread panicked"))??;
+        }
+
+        let connection = db.connection()?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE agent_id = 'agent-a'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 8);
         Ok(())
     }
 
