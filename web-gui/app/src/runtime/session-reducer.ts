@@ -478,6 +478,10 @@ function attachActivitiesToConversationItems(items: AgentTimelineItem[]): AgentT
   }
 
   if (orphanActivities.length) {
+    const minDisplayLevel = orphanActivities.reduce<DisplayLevel>(
+      (level, activity) => (displayLevelRank[activity.minDisplayLevel] < displayLevelRank[level] ? activity.minDisplayLevel : level),
+      "debug",
+    );
     conversationItems.push({
       id: `activity:${orphanActivities[0].id}`,
       kind: "system",
@@ -485,7 +489,7 @@ function attachActivitiesToConversationItems(items: AgentTimelineItem[]): AgentT
       body: summarizeActivityGroup(orphanActivities),
       timestamp: orphanActivities[0].timestamp,
       meta: "activity",
-      minDisplayLevel: "debug",
+      minDisplayLevel,
       sourceIds: orphanActivities.flatMap((activity) => activity.sourceIds),
       activities: orphanActivities,
       debug: debugJson(orphanActivities),
