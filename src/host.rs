@@ -316,6 +316,30 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)
     }
 
+    /// Get an agent for the local control/status API, allowing private child
+    /// agents in addition to public ones. This relies on the current local
+    /// trusted control API boundary rather than hiding `agent_id`.
+    pub async fn get_agent_for_local_status(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
+        let identity = self
+            .agent_identity_record(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .ok_or_else(|| PublicAgentError::NotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        if identity.status != AgentRegistryStatus::Active {
+            return Err(PublicAgentError::Archived {
+                agent_id: agent_id.to_string(),
+            });
+        }
+        // Allow both Public and Private agents through the local status API.
+        self.get_or_create_agent(agent_id)
+            .await
+            .map_err(PublicAgentError::Runtime)
+    }
+
     pub async fn get_public_agent_for_external_ingress(
         &self,
         agent_id: &str,
@@ -607,7 +631,7 @@ impl RuntimeHost {
             .import_legacy(records)
     }
 
-    fn append_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
+    pub(crate) fn append_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
         self.inner.registry.append_agent_identity(record)
     }
 
@@ -1805,6 +1829,16 @@ impl RuntimeHostBridge {
         parent_agent_id: &str,
     ) -> Result<Vec<ChildAgentSummary>> {
         self.host()?.child_agent_summaries(parent_agent_id).await
+    }
+
+    /// Get a full AgentSummary for a given agent_id through the local trusted
+    /// control boundary. This allows private child agent observation.
+    pub(crate) async fn agent_summary_for(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::types::AgentSummary> {
+        let runtime = self.host()?.get_agent_for_local_status(agent_id).await?;
+        runtime.agent_summary().await
     }
 
     pub(crate) async fn child_observability(
@@ -4123,5 +4157,123 @@ mod tests {
             .to_string()
             .contains("no available providers for configured model chain"));
         assert!(err.to_string().contains("anthropic/claude-sonnet-4-6"));
+    }
+
+    #[tokio::test]
+    async fn get_public_agent_rejects_private_child() {
+        let (_home, host) = test_host();
+
+        let child = AgentIdentityRecord::new(
+            "child_private_1",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(host.config().default_agent_id.clone()),
+            Some("task-1".into()),
+        );
+        host.append_agent_identity(&child).unwrap();
+
+        let err = host
+            .get_public_agent("child_private_1")
+            .await
+            .err()
+            .expect("private child should be rejected by get_public_agent");
+        match err {
+            PublicAgentError::Private { agent_id } => {
+                assert_eq!(agent_id, "child_private_1");
+            }
+            other => panic!("expected Private error, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_agent_for_local_status_accepts_private_child() {
+        let (_home, host) = test_host();
+
+        let child = AgentIdentityRecord::new(
+            "child_local_1",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(host.config().default_agent_id.clone()),
+            Some("task-1".into()),
+        );
+        host.append_agent_identity(&child).unwrap();
+
+        let child_storage = host.agent_storage("child_local_1").unwrap();
+        let mut child_state = AgentState::new("child_local_1");
+        child_state.status = AgentStatus::AwakeRunning;
+        child_storage.write_agent(&child_state).unwrap();
+
+        let runtime = host
+            .get_agent_for_local_status("child_local_1")
+            .await
+            .expect("private child should be accessible through local status API");
+        let summary = runtime.agent_summary().await.unwrap();
+        assert_eq!(summary.identity.agent_id, "child_local_1");
+        assert_eq!(summary.identity.visibility, AgentVisibility::Private);
+        assert_eq!(summary.identity.kind, AgentKind::Child);
+    }
+
+    #[tokio::test]
+    async fn get_agent_for_local_status_rejects_archived() {
+        let (_home, host) = test_host();
+
+        let mut child = AgentIdentityRecord::new(
+            "child_archived_1",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(host.config().default_agent_id.clone()),
+            Some("task-1".into()),
+        );
+        child.status = AgentRegistryStatus::Archived;
+        host.append_agent_identity(&child).unwrap();
+
+        let err = host
+            .get_agent_for_local_status("child_archived_1")
+            .await
+            .err()
+            .expect("archived agent should be rejected");
+        match err {
+            PublicAgentError::Archived { agent_id } => {
+                assert_eq!(agent_id, "child_archived_1");
+            }
+            other => panic!("expected Archived error, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_agent_for_local_status_rejects_unknown() {
+        let (_home, host) = test_host();
+
+        let err = host
+            .get_agent_for_local_status("nonexistent_agent")
+            .await
+            .err()
+            .expect("unknown agent should be rejected");
+        match err {
+            PublicAgentError::NotFound { agent_id } => {
+                assert_eq!(agent_id, "nonexistent_agent");
+            }
+            other => panic!("expected NotFound error, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_agent_for_local_status_accepts_public_agent() {
+        let (_home, host) = test_host();
+
+        let default_id = host.config().default_agent_id.clone();
+        let runtime = host
+            .get_agent_for_local_status(&default_id)
+            .await
+            .expect("public agent should be accessible through local status API");
+        let summary = runtime.agent_summary().await.unwrap();
+        assert_eq!(summary.identity.agent_id, default_id);
+        assert_eq!(summary.identity.visibility, AgentVisibility::Public);
     }
 }
