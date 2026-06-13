@@ -65,12 +65,19 @@
       "stability": "stable"
     },
     {
-      "description": "Read the current agent-plane summary, including identity visibility, ownership, profile preset, lifecycle, active work focus, waiting state, and visible child-agent lineage.\n",
+      "description": "Read the current agent-plane summary, including identity visibility, ownership, profile preset, lifecycle, active work focus, waiting state, and visible child-agent lineage.\n\nWhen called without arguments, returns the current agent's summary (unchanged behavior).\nWhen called with `agent_id`, returns the summary of the requested agent through the local trusted control boundary. This allows inspecting private child agents without exposing them to remote/multi-user access.\n\nRemote/multi-user authorization is deferred to future work; the current behavior relies on the local trusted control API boundary.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "required": [],
         "type": "object"
       },
