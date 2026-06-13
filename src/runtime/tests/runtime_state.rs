@@ -1368,6 +1368,81 @@ async fn enqueue_generates_turn_id_for_blank_admitted_turn_id() {
 }
 
 #[tokio::test]
+async fn runtime_error_marks_queue_entry_aborted_and_persists_failed_turn() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(FailingTimelineProvider),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator { actor_id: None },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "trigger runtime failure".into(),
+        },
+    );
+    let message_id = message.id.clone();
+    runtime.enqueue(message).await.unwrap();
+
+    let runner = tokio::spawn(runtime.clone().run());
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let queue_entries = runtime.storage().latest_queue_entries().unwrap();
+            if queue_entries.iter().any(|entry| {
+                entry.message_id == message_id && entry.status == QueueEntryStatus::Aborted
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("runtime error should mark queue entry aborted");
+
+    runtime
+        .control(crate::types::ControlAction::Stop)
+        .await
+        .unwrap();
+    runner.await.unwrap().unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    let terminal = state
+        .last_turn_terminal
+        .as_ref()
+        .expect("runtime error should persist terminal turn");
+    assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
+
+    let briefs = runtime.storage().read_recent_briefs(10).unwrap();
+    let failure_brief = briefs
+        .iter()
+        .find(|brief| brief.kind == BriefKind::Failure)
+        .expect("runtime error should persist failure brief");
+    assert_eq!(failure_brief.turn_index, Some(terminal.turn_index));
+
+    let turns = runtime.storage().read_recent_turns(10).unwrap();
+    let turn = turns
+        .iter()
+        .find(|turn| turn.turn_id == terminal.turn_id)
+        .expect("runtime error should persist turn record");
+    assert_eq!(
+        turn.terminal.as_ref().map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::Aborted)
+    );
+    assert_eq!(turn.produced_brief_ids, vec![failure_brief.id.clone()]);
+}
+
+#[tokio::test]
 async fn enqueue_normalizes_callback_payload_without_operator_elevation() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
