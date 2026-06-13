@@ -1342,7 +1342,7 @@ pub async fn status(
     authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_agent_for_local_status(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let agent = runtime.agent_summary().await.map_err(error_response)?;

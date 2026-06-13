@@ -366,6 +366,23 @@ impl RuntimeHandle {
     }
 
     pub async fn agent_summary(&self) -> Result<AgentSummary> {
+        // Fast path: return current agent summary.
+        self.build_agent_summary().await
+    }
+
+    /// Get a full AgentSummary for a different agent through the host bridge.
+    /// This allows observing private child agents through the local trusted
+    /// control boundary.
+    pub async fn agent_summary_for(&self, agent_id: &str) -> Result<AgentSummary> {
+        let bridge = self
+            .inner
+            .host_bridge
+            .as_ref()
+            .ok_or_else(|| anyhow!("agent_summary_for: no host bridge available"))?;
+        bridge.agent_summary_for(agent_id).await
+    }
+
+    async fn build_agent_summary(&self) -> Result<AgentSummary> {
         let agent = self.agent_state().await?;
         let active_task_count = self.inner.storage.active_task_count_for_agent(&agent.id)?;
         let model = self.model_state_for(&agent);
