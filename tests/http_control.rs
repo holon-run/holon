@@ -28,6 +28,7 @@ http_async_tests!(
     control_wake_rejects_stopped_agent_with_start_guidance,
     control_start_restores_live_runtime_loop_for_stopped_agent,
     daemon_shutdown_restart_preserves_public_agent_http_runnability,
+    control_status_returns_private_child_summary,
     runtime_status_route_reports_runtime_metadata,
     runtime_readiness_route_omits_activity_summary,
     runtime_config_route_reads_and_updates_persisted_runtime_config,

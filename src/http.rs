@@ -211,6 +211,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/list", get(list_agent_entries))
         .route("/agents/{agent_id}/enqueue", post(enqueue))
         .route("/agents/{agent_id}/status", get(status))
+        .route("/control/agents/{agent_id}/status", get(control_status))
         .route("/agents/{agent_id}/briefs", get(briefs))
         .route("/agents/{agent_id}/state", get(agent_state))
         .route("/agents/{agent_id}/events", get(events))
@@ -1345,6 +1346,21 @@ pub async fn status(
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
+    let agent = runtime.agent_summary().await.map_err(error_response)?;
+    Ok(Json(agent))
+}
+
+pub async fn control_status(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_or_create_agent(&agent_id)
+        .await
+        .map_err(error_response)?;
     let agent = runtime.agent_summary().await.map_err(error_response)?;
     Ok(Json(agent))
 }

@@ -365,6 +365,25 @@ impl RuntimeHandle {
         Ok(closure)
     }
 
+    /// Look up the summary of another agent by ID using the host bridge.
+    /// Under the current simplified trust model, local/operator control API
+    /// access is trusted, so this can return summaries for private child agents.
+    pub async fn lookup_agent_summary(
+        &self,
+        target_agent_id: &str,
+    ) -> Result<Option<AgentSummary>> {
+        let bridge = match self.inner.host_bridge.as_ref() {
+            Some(bridge) => bridge,
+            None => return Ok(None),
+        };
+        // Use the host bridge to get the target agent's runtime and summary.
+        let Some(runtime) = bridge.agent_runtime(target_agent_id).await? else {
+            return Ok(None);
+        };
+        let summary = runtime.agent_summary().await?;
+        Ok(Some(summary))
+    }
+
     pub async fn agent_summary(&self) -> Result<AgentSummary> {
         let agent = self.agent_state().await?;
         let active_task_count = self.inner.storage.active_task_count_for_agent(&agent.id)?;

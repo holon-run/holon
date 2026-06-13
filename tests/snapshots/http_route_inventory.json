@@ -400,6 +400,28 @@
   },
   {
     "method": "get",
+    "path": "/control/agents/{agent_id}/status",
+    "handler": "control_status",
+    "operation_id": "controlAgentStatus",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/control/runtime/config",
     "handler": "runtime_config",
     "operation_id": "runtimeConfig",

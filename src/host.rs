@@ -1794,6 +1794,20 @@ impl RuntimeHostBridge {
         self.host()?.child_agent_summaries(parent_agent_id).await
     }
 
+    pub(crate) async fn agent_runtime(&self, agent_id: &str) -> Result<Option<RuntimeHandle>> {
+        let host = self.host()?;
+        let Some(identity) = host.agent_identity_record(agent_id)? else {
+            return Ok(None);
+        };
+        if identity.status != AgentRegistryStatus::Active {
+            return Ok(None);
+        }
+        host.get_or_create_agent(agent_id)
+            .await
+            .map(Some)
+            .map_err(Into::into)
+    }
+
     pub(crate) async fn child_observability(
         &self,
         child_agent_id: &str,

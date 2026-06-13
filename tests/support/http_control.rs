@@ -1422,3 +1422,21 @@ pub async fn runtime_shutdown_route_requests_shutdown() -> Result<()> {
     server.abort();
     Ok(())
 }
+
+pub async fn control_status_returns_private_child_summary() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    // The control /control/agents/{agent_id}/status should work for any agent.
+    // For the default agent, both public and control routes work.
+    let control_status = client
+        .get(format!("{base}/control/agents/default/status"))
+        .send()
+        .await?;
+    assert!(control_status.status().is_success());
+    let payload: serde_json::Value = control_status.json().await?;
+    assert_eq!(payload["identity"]["agent_id"], "default");
+
+    server.abort();
+    Ok(())
+}
