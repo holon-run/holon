@@ -19,6 +19,7 @@ use holon::{
     http::{self, AppState},
     provider::{AgentProvider, StubProvider},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
+    tool::{ToolCall, ToolRegistry},
     types::{
         AdmissionContext, AgentStatus, AuthorityClass, BriefKind, BriefRecord,
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction, MessageBody,
@@ -27,16 +28,17 @@ use holon::{
     },
 };
 use reqwest::Client;
+use std::future::pending;
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio::time::{sleep, Duration, Instant};
 
 use super::{
-    attach_default_workspace, connect_addr, git, init_git_repo, spawn_server,
-    spawn_server_for_host, spawn_server_with_config, spawn_server_with_runtime_config,
-    spawn_unix_server, tempdir, test_config, test_config_with_paths, test_work_item, unix_request,
-    wait_until, RuntimeFailureProvider,
+    attach_default_workspace, connect_addr, git, init_git_repo, parse_tool_result_payload,
+    spawn_server, spawn_server_for_host, spawn_server_with_config,
+    spawn_server_with_runtime_config, spawn_unix_server, tempdir, test_config,
+    test_config_with_paths, test_work_item, unix_request, wait_until, RuntimeFailureProvider,
 };
 
 pub async fn control_prompt_is_open_on_loopback_auto() -> Result<()> {
@@ -1418,6 +1420,87 @@ pub async fn runtime_shutdown_route_requests_shutdown() -> Result<()> {
 
     shutdown.changed().await?;
     assert!(*shutdown.borrow());
+
+    server.abort();
+    Ok(())
+}
+
+/// Test provider whose `complete_turn` never resolves, keeping the spawned
+/// private child in a non-terminal state for the duration of the test. The
+/// child is archived by its monitoring task when it reaches a terminal state,
+/// so a provider that never produces a terminal response is required to
+/// inspect the child through the local control API before the test ends.
+struct BlockingProvider;
+
+#[async_trait::async_trait]
+impl AgentProvider for BlockingProvider {
+    async fn complete_turn(
+        &self,
+        _request: holon::provider::ProviderTurnRequest,
+    ) -> Result<holon::provider::ProviderTurnResponse> {
+        pending().await
+    }
+}
+
+pub async fn agent_status_route_returns_private_child_summary() -> Result<()> {
+    let config = test_config();
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    let host = RuntimeHost::new_with_provider(config.clone(), Arc::new(BlockingProvider))?;
+    attach_default_workspace(&host).await?;
+
+    // Spawn a private child agent through the SpawnAgent tool.
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+    let (spawn_result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &ToolCall {
+                id: "tool-spawn-private-child-status".into(),
+                name: "SpawnAgent".into(),
+                input: serde_json::json!({
+                    "initial_message": "private child work",
+                    "preset": "private_child",
+                }),
+            },
+        )
+        .await?;
+    let spawn_value = parse_tool_result_payload(&spawn_result)?;
+    let child_id = spawn_value["child_agent_id"]
+        .as_str()
+        .expect("child_agent_id present")
+        .to_string();
+
+    // Serve the local control API and GET the child agent's status.
+    let runtime_service = RuntimeServiceHandle::new(&config)?;
+    let router: Router = http::router(AppState::for_tcp_with_runtime_service(
+        host.clone(),
+        Some(runtime_service.clone()),
+    ));
+    let listener = TcpListener::bind(&config.http_addr).await?;
+    let addr = connect_addr(listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await?;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://{addr}/agents/{child_id}/status"))
+        .bearer_auth("secret")
+        .send()
+        .await?;
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "private child should be visible to the local control API",
+    );
+    let payload: serde_json::Value = response.json().await?;
+    assert_eq!(payload["identity"]["kind"], "child");
+    assert_eq!(payload["identity"]["visibility"], "private");
+    assert_eq!(payload["identity"]["agent_id"], child_id);
 
     server.abort();
     Ok(())

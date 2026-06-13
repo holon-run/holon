@@ -538,6 +538,16 @@ impl RuntimeHandle {
         Ok(tasks)
     }
 
+    /// Access the optional host bridge for sibling-agent lookups.
+    ///
+    /// Exposed only to `crate::tool` so built-in tools (for example `AgentGet`)
+    /// can resolve other agents through the host's local-operator trust
+    /// boundary. Returns `None` for the standalone default runtime used in
+    /// `run once` mode, which has no host attached.
+    pub(crate) fn host_bridge(&self) -> Option<&RuntimeHostBridge> {
+        self.inner.host_bridge.as_ref()
+    }
+
     pub(crate) fn agent_home(&self) -> PathBuf {
         self.inner.storage.data_dir().to_path_buf()
     }

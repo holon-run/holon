@@ -1340,9 +1340,15 @@ pub async fn status(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    // Local/operator control API: callers who can reach this surface are treated
+    // as trusted operators and may inspect any active agent, including private
+    // child agents. Visibility-based hiding is not a security boundary here.
+    // If the control API ever becomes remote or multi-user, gate this with an
+    // explicit Subject/authorization layer instead of relying on `agent_id`
+    // secrecy (see issue #1742).
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_active_agent_for_local_operator(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let agent = runtime.agent_summary().await.map_err(error_response)?;

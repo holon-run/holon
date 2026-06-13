@@ -34,6 +34,7 @@ http_async_tests!(
     runtime_status_route_reports_waiting_activity_summary,
     runtime_status_route_reports_last_runtime_failure_summary,
     runtime_shutdown_route_requests_shutdown,
+    agent_status_route_returns_private_child_summary,
 );
 
 #[cfg(unix)]

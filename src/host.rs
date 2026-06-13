@@ -316,6 +316,63 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)
     }
 
+    /// Resolve any active agent (public or private child) under the local/operator
+    /// control API trust boundary.
+    ///
+    /// This deliberately does **not** enforce the public-visibility filter used by
+    /// [`RuntimeHost::get_public_agent`]. The current local control API is treated
+    /// as a trusted operator surface: any caller who can reach the local control
+    /// API may inspect the status of any agent it knows the id of, including
+    /// private child agents. If the control API later becomes remote or
+    /// multi-user, an explicit `Subject` / authorization layer must gate this
+    /// path before it is exposed to non-local callers.
+    pub async fn get_active_agent_for_local_operator(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
+        self.validate_agent_id(agent_id)
+            .map_err(PublicAgentError::Runtime)?;
+        if agent_id == self.config().default_agent_id {
+            self.ensure_default_agent_identity()
+                .map_err(PublicAgentError::Runtime)?;
+            self.ensure_default_agent_home_initialized()
+                .await
+                .map_err(PublicAgentError::Runtime)?;
+        } else {
+            match self
+                .agent_identity_record(agent_id)
+                .map_err(PublicAgentError::Runtime)?
+            {
+                Some(identity) if identity.status == AgentRegistryStatus::Archived => {
+                    return Err(PublicAgentError::Archived {
+                        agent_id: agent_id.to_string(),
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    return Err(PublicAgentError::NotFound {
+                        agent_id: agent_id.to_string(),
+                    });
+                }
+            }
+        }
+        let runtime = self
+            .get_or_create_agent(agent_id)
+            .await
+            .map_err(PublicAgentError::Runtime)?;
+        let status = runtime
+            .agent_state()
+            .await
+            .map_err(PublicAgentError::Runtime)?
+            .status;
+        if status == AgentStatus::Stopped {
+            return Err(PublicAgentError::Stopped {
+                agent_id: agent_id.to_string(),
+            });
+        }
+        Ok(runtime)
+    }
+
     pub async fn get_public_agent_for_external_ingress(
         &self,
         agent_id: &str,
@@ -1785,6 +1842,16 @@ impl RuntimeHostBridge {
         agent_id: &str,
     ) -> Result<Option<AgentIdentityRecord>> {
         self.host()?.agent_identity_record(agent_id)
+    }
+
+    pub(crate) async fn get_active_agent_for_local_operator(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
+        self.host()
+            .map_err(PublicAgentError::Runtime)?
+            .get_active_agent_for_local_operator(agent_id)
+            .await
     }
 
     pub(crate) async fn child_summaries(
@@ -4110,5 +4177,34 @@ mod tests {
             .to_string()
             .contains("no available providers for configured model chain"));
         assert!(err.to_string().contains("anthropic/claude-sonnet-4-6"));
+    }
+
+    #[tokio::test]
+    async fn get_active_agent_for_local_operator_resolves_default_public_and_rejects_unknown() {
+        let (_home, host) = test_host();
+        let default_id = host.config().default_agent_id.clone();
+
+        // Public default agent: resolves through the local operator path.
+        host.get_active_agent_for_local_operator(&default_id)
+            .await
+            .expect("default public agent should resolve");
+
+        // Unknown agent id: structured NotFound.
+        match host
+            .get_active_agent_for_local_operator("does_not_exist_xyz")
+            .await
+        {
+            Ok(_) => panic!("expected NotFound, got Ok(_)"),
+            Err(PublicAgentError::NotFound { agent_id }) => {
+                assert_eq!(agent_id, "does_not_exist_xyz");
+            }
+            Err(other) => panic!("expected NotFound, got Err({other:?})"),
+        }
+
+        // Invalid agent id: validate_agent_id rejects it as a Runtime error.
+        assert!(matches!(
+            host.get_active_agent_for_local_operator("bad/id").await,
+            Err(crate::host::PublicAgentError::Runtime(_))
+        ));
     }
 }
