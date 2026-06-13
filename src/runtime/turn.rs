@@ -1253,6 +1253,41 @@ fn build_turn_local_projection_with_runtime_reminder(
     let minimum_projection_estimated_tokens =
         estimate_projection_tokens(prompt_frame, &minimum_viable_conversation);
     if minimum_projection_estimated_tokens > effective_budget_estimated_tokens {
+        // The last exact round alone exceeds the budget. Before hard-stopping,
+        // try a degraded projection that summarizes *all* rounds (including the
+        // last one) via a deterministic recap so the model still has enough
+        // provenance to understand the last turn was trimmed/summarized.
+        let mut degraded_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        push_runtime_reminder_message(&mut degraded_conversation, runtime_reminder);
+        let degraded_recap_budget =
+            effective_budget_estimated_tokens.saturating_sub(estimated_baseline_tokens);
+        let degraded_recap = build_compacted_round_recap(rounds, degraded_recap_budget);
+        if !degraded_recap.trim().is_empty() {
+            degraded_conversation.push(ConversationMessage::UserText(degraded_recap));
+        }
+        let degraded_projection_estimated_tokens =
+            estimate_projection_tokens(prompt_frame, &degraded_conversation);
+        if degraded_projection_estimated_tokens <= effective_budget_estimated_tokens {
+            return TurnLocalProjectionOutcome::Projection(TurnLocalProjection {
+                conversation: degraded_conversation,
+                compaction: Some(TurnLocalCompactionStats {
+                    compacted_rounds: rounds.len(),
+                    exact_tail_rounds: 0,
+                    projected_estimated_tokens: degraded_projection_estimated_tokens,
+                    effective_budget_estimated_tokens,
+                    tool_overhead_estimated_tokens,
+                    strict_fallback_applied: true,
+                    checkpoint_request_id: None,
+                    checkpoint_mode: None,
+                    checkpoint_anchor_generation: None,
+                    checkpoint_base_round: None,
+                    previous_checkpoint_round: None,
+                    anchor_changed_since_checkpoint: false,
+                }),
+            });
+        }
         return baseline_over_budget(
             "minimum_exact_round_unfit",
             minimum_exact_round_estimated_tokens,
@@ -4328,14 +4363,27 @@ mod tests {
         );
 
         match tight_projection {
-            TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
+            // With the degraded-projection fallback (issue #1725), a budget
+            // that is one token too tight for the minimum exact projection
+            // no longer hard-stops; instead it degrades to a summarized
+            // recap of all rounds.
+            TurnLocalProjectionOutcome::Projection(projection) => {
+                let compaction = projection.compaction.expect("expected compaction stats");
                 assert_eq!(
-                    diagnostics.reason, "minimum_exact_round_unfit",
-                    "tight budget should fail minimum projection"
+                    compaction.exact_tail_rounds, 0,
+                    "degraded fallback should have zero exact tail rounds"
+                );
+                assert!(
+                    compaction.projected_estimated_tokens
+                        <= compaction.effective_budget_estimated_tokens,
+                    "degraded projection must fit the effective budget"
                 );
             }
-            TurnLocalProjectionOutcome::Projection(_) => {
-                panic!("expected baseline over budget at one-token tighter budget");
+            TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
+                panic!(
+                    "expected degraded projection, got baseline over budget: {}",
+                    diagnostics.reason
+                );
             }
         }
     }
@@ -4774,17 +4822,29 @@ mod tests {
     }
 
     #[test]
-    fn build_turn_local_projection_reports_baseline_over_budget_when_min_tail_still_exceeds_budget()
-    {
-        let rounds = vec![fixture_round(1, &"alpha ".repeat(300))];
+    fn build_turn_local_projection_degraded_fallback_when_last_exact_round_exceeds_budget() {
+        // Regression for issue #1725: when the baseline fits but the last
+        // exact round alone exceeds the budget, the projection should
+        // degrade to a summarized recap instead of hard-stopping with
+        // minimum_exact_round_unfit.
+        let rounds = vec![
+            fixture_round(1, &"alpha ".repeat(120)),
+            fixture_round(2, &"beta ".repeat(400)),
+        ];
         let prompt_frame = fixture_prompt_frame();
-        let exact_projection = vec![ConversationMessage::UserBlocks(
+        let minimum_viable_conversation = vec![ConversationMessage::UserBlocks(
             prompt_frame.context_blocks.clone(),
         )]
         .into_iter()
-        .chain(exact_round_messages(&rounds[0]))
+        .chain(exact_round_messages(rounds.last().unwrap()))
         .collect::<Vec<_>>();
-        let exact_estimated_tokens = estimate_projection_tokens(&prompt_frame, &exact_projection);
+        let minimum_projection_estimated_tokens =
+            estimate_projection_tokens(&prompt_frame, &minimum_viable_conversation);
+
+        // Pick a budget where the baseline fits but the last exact round alone
+        // exceeds it. Leave enough room for a compact recap to fit.
+        let prompt_budget =
+            minimum_projection_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS - 50;
 
         let projection = build_turn_local_projection(
             &prompt_frame,
@@ -4792,26 +4852,78 @@ mod tests {
             &[],
             &TurnLocalCheckpointState::default(),
             Some("req-1".into()),
-            320,
+            prompt_budget,
+            120,
+        );
+
+        match projection {
+            TurnLocalProjectionOutcome::Projection(projection) => {
+                let compaction = projection.compaction.expect("expected compaction stats");
+                // All rounds are summarized; no exact tail rounds survive.
+                assert_eq!(
+                    compaction.exact_tail_rounds, 0,
+                    "degraded projection should have zero exact tail rounds"
+                );
+                assert_eq!(
+                    compaction.compacted_rounds, 2,
+                    "degraded projection should compact all rounds"
+                );
+                assert!(
+                    compaction.strict_fallback_applied,
+                    "degraded projection should mark strict fallback"
+                );
+                assert!(
+                    compaction.projected_estimated_tokens
+                        <= compaction.effective_budget_estimated_tokens,
+                    "degraded projection must fit the effective budget"
+                );
+                // The conversation should contain the recap with provenance.
+                assert!(
+                    projection.conversation.iter().any(|msg| matches!(
+                        msg,
+                        ConversationMessage::UserText(text)
+                            if text.contains("runtime-generated deterministic summary")
+                    )),
+                    "degraded projection should include provenance recap"
+                );
+            }
+            TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
+                panic!(
+                    "expected degraded projection, got baseline over budget: {}",
+                    diagnostics.reason
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_turn_local_projection_hard_fails_when_even_degraded_recap_header_exceeds_budget() {
+        // The degraded projection falls back to a recap that always fits when
+        // the baseline fits (empty recap = baseline-only conversation). This
+        // test verifies that the truly-unrecoverable case — baseline itself
+        // exceeding the budget — still produces a clear baseline_unfit failure.
+        let rounds = vec![fixture_round(1, &"alpha ".repeat(300))];
+        let prompt_frame = fixture_prompt_frame();
+
+        let projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            1, // impossibly tight budget
             120,
         );
 
         match projection {
             TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
-                assert!(
-                    diagnostics.reason == "minimum_exact_round_unfit"
-                        || diagnostics.reason == "baseline_unfit"
-                );
-                assert!(
-                    diagnostics.minimum_projection_estimated_tokens > exact_estimated_tokens / 2
-                );
-                assert!(
-                    diagnostics.minimum_projection_estimated_tokens
-                        > diagnostics.effective_budget_estimated_tokens
+                assert_eq!(
+                    diagnostics.reason, "baseline_unfit",
+                    "should fail with baseline_unfit when even baseline cannot fit"
                 );
             }
             TurnLocalProjectionOutcome::Projection(_) => {
-                panic!("expected baseline-over-budget outcome");
+                panic!("expected baseline over budget for impossibly tight budget");
             }
         }
     }
