@@ -4998,28 +4998,22 @@ mod tests {
         ];
         let prompt_frame = fixture_prompt_frame();
 
-        // Compute degraded messages with a budget that ensures trimming works.
-        // We use a generous initial budget to guarantee trimming occurs, then
-        // measure the actual degraded projection to set the prompt budget.
-        // The code will compute its own (larger) degraded_available, which
-        // produces less-trimmed messages that still fit within the budget.
-        let baseline_conversation = vec![ConversationMessage::UserBlocks(
-            prompt_frame.context_blocks.clone(),
-        )];
-        let (degraded_messages, trimmed) = degraded_round_messages(&rounds[1], 2000);
-        assert!(trimmed, "expected content to be trimmed");
+        // Compute the baseline tokens the same way the production code does,
+        // so we can set prompt_budget to produce an exact degraded_available.
+        let estimated_baseline = estimate_prompt_frame_tokens(&prompt_frame)
+            + estimate_prompt_blocks_tokens(&prompt_frame.context_blocks);
 
-        // Build degraded projection and measure it
-        let mut degraded_projection_conversation = baseline_conversation.clone();
-        degraded_projection_conversation.extend(degraded_messages);
-        let degraded_projection_tokens =
-            estimate_projection_tokens(&prompt_frame, &degraded_projection_conversation);
-
-        // Set budget so the degraded version fits but the exact version doesn't.
-        // Use a generous buffer (+500 tokens) to account for the fact that the code
-        // computes a larger degraded_available, which produces less-trimmed messages.
+        // Choose a degraded budget and set prompt_budget so the code computes
+        // exactly the same degraded_available:
+        //   effective_budget = prompt_budget - CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS
+        //   degraded_available = effective_budget - estimated_baseline
+        //   => prompt_budget = degraded_budget + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS + estimated_baseline
+        let degraded_budget = 2000;
         let prompt_budget =
-            degraded_projection_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS + 500;
+            degraded_budget + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS + estimated_baseline;
+
+        let (_degraded_messages, trimmed) = degraded_round_messages(&rounds[1], degraded_budget);
+        assert!(trimmed, "expected content to be trimmed");
 
         let projection = build_turn_local_projection(
             &prompt_frame,
