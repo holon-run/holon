@@ -4998,23 +4998,32 @@ mod tests {
         ];
         let prompt_frame = fixture_prompt_frame();
 
-        // Compute degraded messages with a generous budget to ensure trimming works
-        let degraded_available = 2000;
+        // Compute degraded messages with a budget that ensures trimming works.
+        // We use a generous initial budget to guarantee trimming occurs, then
+        // measure the actual degraded projection to set the prompt budget.
+        // The code will compute its own (larger) degraded_available, which
+        // produces less-trimmed messages that still fit within the budget.
         let baseline_conversation = vec![ConversationMessage::UserBlocks(
             prompt_frame.context_blocks.clone(),
         )];
-        let (degraded_messages, trimmed) = degraded_round_messages(&rounds[1], degraded_available);
+        let (degraded_messages, trimmed) = degraded_round_messages(&rounds[1], 2000);
         assert!(trimmed, "expected content to be trimmed");
 
         // Build degraded projection and measure it
-        let mut degraded_projection = baseline_conversation.clone();
-        degraded_projection.extend(degraded_messages);
+        let mut degraded_projection_conversation = baseline_conversation.clone();
+        degraded_projection_conversation.extend(degraded_messages);
         let degraded_projection_tokens =
-            estimate_projection_tokens(&prompt_frame, &degraded_projection);
+            estimate_projection_tokens(&prompt_frame, &degraded_projection_conversation);
 
-        // Set budget so degraded fits but exact doesn't
+        // Set budget so the degraded version fits but the exact version doesn't.
+        // effective_budget = prompt_budget - SAFETY_MARGIN = degraded_projection_tokens + 10
+        // code's degraded_available = effective_budget - overhead = degraded_projection_tokens + 10 - overhead
+        // Since degraded_projection_tokens = overhead + degraded_msgs_tokens:
+        //   degraded_available_code = degraded_msgs_tokens + 10
+        // This means the code has 10 more tokens than the degraded messages need,
+        // so even with less trimming (larger budget → larger messages), it still fits.
         let prompt_budget =
-            degraded_projection_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS + 50; // small buffer above degraded size
+            degraded_projection_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS + 10;
 
         let projection = build_turn_local_projection(
             &prompt_frame,
