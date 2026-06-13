@@ -1527,6 +1527,35 @@ code {
   white-space: nowrap;
 }
 
+.runtime-event-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.runtime-event-kind {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 780;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.runtime-event-kind.tool {
+  background: color-mix(in srgb, var(--success) 12%, var(--surface));
+}
+
+.runtime-event-kind.system {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
 .message-detail {
   display: grid;
   gap: 6px;

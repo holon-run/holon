@@ -412,13 +412,8 @@ const TimelineMessage = memo(function TimelineMessage({
             {isRuntimeItem ? <span className="message-inline-meta">{formatTimelineMeta(item.meta, displayLevel)}</span> : null}
           </div>
         ) : null}
-        <MarkdownContent text={item.body} compact={isRuntimeItem} />
-        {item.detail ? (
-          <div className={`message-detail ${item.detail.tone ?? "data"}`}>
-            <span>{item.detail.label}</span>
-            <pre>{item.detail.text}</pre>
-          </div>
-        ) : null}
+        <TimelineItemContent item={item} runtimeItem={isRuntimeItem} />
+        <TimelineItemDetail detail={item.detail} />
       </div>
       {displayLevel !== "info" && item.activities?.length ? (
         <ActivityTrail activities={item.activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
@@ -437,6 +432,36 @@ const TimelineMessage = memo(function TimelineMessage({
     </article>
   );
 });
+
+function TimelineItemContent({ item, runtimeItem }: { item: AgentTimelineItem; runtimeItem: boolean }) {
+  if (!runtimeItem) {
+    return <MarkdownContent text={item.body} compact={false} />;
+  }
+
+  return (
+    <div className="runtime-event-body">
+      <span className={`runtime-event-kind ${item.kind}`}>{runtimeKindLabel(item.kind)}</span>
+      <MarkdownContent text={item.body} compact />
+    </div>
+  );
+}
+
+function TimelineItemDetail({ detail }: { detail?: AgentTimelineItem["detail"] }) {
+  if (!detail) return null;
+  return (
+    <div className={`message-detail ${detail.tone ?? "data"}`}>
+      <span>{detail.label}</span>
+      <pre>{detail.text}</pre>
+    </div>
+  );
+}
+
+function runtimeKindLabel(kind: AgentTimelineItem["kind"]): string {
+  if (kind === "tool") return "Tool";
+  if (kind === "event") return "Event";
+  if (kind === "system") return "System";
+  return kind;
+}
 
 function ActivityTrail({
   activities,
@@ -467,12 +492,7 @@ function ActivityTrail({
               </button>
             </div>
           ) : null}
-          {activity.detail ? (
-            <div className={`message-detail activity-detail ${activity.detail.tone ?? "data"}`}>
-              <span>{activity.detail.label}</span>
-              <pre>{activity.detail.text}</pre>
-            </div>
-          ) : null}
+          <TimelineItemDetail detail={activity.detail} />
         </div>
       ))}
       {hiddenCount > 0 ? <div className="activity-more">+{hiddenCount} earlier activities</div> : null}
