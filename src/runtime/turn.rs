@@ -94,6 +94,11 @@ const ROUND_TEXT_PREVIEW_LIMIT: usize = 600;
 const RECAP_TEXT_PREVIEW_LIMIT: usize = 160;
 const MIN_EXACT_TAIL_ROUNDS: usize = 2;
 pub(super) const CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS: usize = 256;
+// Only attempt to degrade an oversized last exact turn when the round overshoots
+// the available tail budget by at least this many tokens. Smaller overshoots
+// usually reflect rounding noise and degrade attempts would risk losing
+// first-class provenance for a single-token win.
+const MIN_LAST_ROUND_DEGRADE_EXCESS_TOKENS: usize = CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
 const WORK_ITEM_STALE_REMINDER_ROUNDS: usize = 10;
 const WORK_ITEM_STALE_REMINDER_COOLDOWN_ROUNDS: usize = 10;
 const WORK_ITEM_STALE_REMINDER_MAX_TOKENS: usize = 512;
@@ -320,6 +325,12 @@ struct TurnLocalCompactionStats {
     checkpoint_base_round: Option<usize>,
     previous_checkpoint_round: Option<usize>,
     anchor_changed_since_checkpoint: bool,
+    // Set when the last exact turn alone did not fit the budget and the
+    // projection had to replace it with a degraded (trimmed/summarized) form
+    // to keep the continuation resumable. See issue #1725.
+    last_round_trimmed: bool,
+    last_round_tokens_before: Option<usize>,
+    last_round_tokens_after: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -533,6 +544,56 @@ fn exact_round_messages(round: &TurnRoundRecord) -> Vec<ConversationMessage> {
             .cloned()
             .map(ConversationMessage::UserText),
     );
+    messages
+}
+
+fn degraded_last_round_messages(round: &TurnRoundRecord) -> Vec<ConversationMessage> {
+    let mut messages = Vec::new();
+    let mut assistant_blocks = Vec::new();
+    for block in &round.assistant_blocks {
+        match block {
+            ModelBlock::Text { text } => assistant_blocks.push(ModelBlock::Text {
+                text: truncate_preview(text, 2_000),
+            }),
+            ModelBlock::ToolUse { .. } => assistant_blocks.push(block.clone()),
+            ModelBlock::Thinking { .. } | ModelBlock::RedactedThinking { .. } => {}
+        }
+    }
+    if assistant_blocks.is_empty() {
+        assistant_blocks.push(ModelBlock::Text {
+            text: "[Runtime projection note: assistant content from this oversized last turn was omitted to fit the continuation prompt budget.]".to_string(),
+        });
+    }
+    messages.push(ConversationMessage::AssistantBlocks(assistant_blocks));
+
+    if !round.tool_results.is_empty() {
+        let summarized_results = round
+            .tool_results
+            .iter()
+            .map(|result| ToolResultBlock {
+                tool_use_id: result.tool_use_id.clone(),
+                content: format!(
+                    "[Runtime projection note: oversized last-turn tool result summarized. Original result preview: {}]",
+                    truncate_preview(&result.content, 800)
+                ),
+                is_error: result.is_error,
+                error: result.error.clone(),
+            })
+            .collect::<Vec<_>>();
+        messages.push(ConversationMessage::UserToolResults(summarized_results));
+    }
+
+    let omitted_follow_ups = round.follow_up_user_texts.len();
+    if omitted_follow_ups > 0 {
+        messages.push(ConversationMessage::UserText(format!(
+            "[Runtime projection note: omitted {omitted_follow_ups} follow-up user message(s) from the oversized last turn to fit the continuation prompt budget.]"
+        )));
+    }
+
+    messages.push(ConversationMessage::UserText(format!(
+        "[Runtime projection note: round {} was degraded because its exact content exceeded the continuation prompt budget. Resume from this trimmed/summarized representation and ask for missing details only if needed.]",
+        round.round
+    )));
     messages
 }
 
@@ -1253,6 +1314,41 @@ fn build_turn_local_projection_with_runtime_reminder(
     let minimum_projection_estimated_tokens =
         estimate_projection_tokens(prompt_frame, &minimum_viable_conversation);
     if minimum_projection_estimated_tokens > effective_budget_estimated_tokens {
+        if let Some(last_round) = rounds.last() {
+            let minimum_excess = minimum_projection_estimated_tokens
+                .saturating_sub(effective_budget_estimated_tokens);
+            if minimum_excess >= MIN_LAST_ROUND_DEGRADE_EXCESS_TOKENS {
+                let mut degraded_conversation = vec![ConversationMessage::UserBlocks(
+                    prompt_frame.context_blocks.clone(),
+                )];
+                push_runtime_reminder_message(&mut degraded_conversation, runtime_reminder);
+                degraded_conversation.extend(degraded_last_round_messages(last_round));
+                let degraded_projection_estimated_tokens =
+                    estimate_projection_tokens(prompt_frame, &degraded_conversation);
+                if degraded_projection_estimated_tokens <= effective_budget_estimated_tokens {
+                    return TurnLocalProjectionOutcome::Projection(TurnLocalProjection {
+                        conversation: degraded_conversation,
+                        compaction: Some(TurnLocalCompactionStats {
+                            compacted_rounds: rounds.len().saturating_sub(1),
+                            exact_tail_rounds: 0,
+                            projected_estimated_tokens: degraded_projection_estimated_tokens,
+                            effective_budget_estimated_tokens,
+                            tool_overhead_estimated_tokens,
+                            strict_fallback_applied: true,
+                            checkpoint_request_id: None,
+                            checkpoint_mode: None,
+                            checkpoint_anchor_generation: None,
+                            checkpoint_base_round: None,
+                            previous_checkpoint_round: None,
+                            anchor_changed_since_checkpoint: false,
+                            last_round_trimmed: true,
+                            last_round_tokens_before: Some(minimum_projection_estimated_tokens),
+                            last_round_tokens_after: Some(degraded_projection_estimated_tokens),
+                        }),
+                    });
+                }
+            }
+        }
         return baseline_over_budget(
             "minimum_exact_round_unfit",
             minimum_exact_round_estimated_tokens,
@@ -1334,6 +1430,9 @@ fn build_turn_local_projection_with_runtime_reminder(
                     anchor_changed_since_checkpoint: checkpoint_request
                         .as_ref()
                         .is_some_and(|checkpoint| checkpoint.anchor_changed_since_checkpoint),
+                    last_round_trimmed: false,
+                    last_round_tokens_before: None,
+                    last_round_tokens_after: None,
                 }),
             });
         }
@@ -1354,6 +1453,9 @@ fn build_turn_local_projection_with_runtime_reminder(
             checkpoint_base_round: None,
             previous_checkpoint_round: None,
             anchor_changed_since_checkpoint: false,
+            last_round_trimmed: false,
+            last_round_tokens_before: None,
+            last_round_tokens_after: None,
         }),
     })
 }
@@ -2366,6 +2468,9 @@ impl TurnExecution<'_> {
                             "checkpoint_base_round": compaction.checkpoint_base_round,
                             "previous_checkpoint_round": compaction.previous_checkpoint_round,
                             "anchor_changed_since_checkpoint": compaction.anchor_changed_since_checkpoint,
+                            "last_round_trimmed": compaction.last_round_trimmed,
+                            "last_round_tokens_before": compaction.last_round_tokens_before,
+                            "last_round_tokens_after": compaction.last_round_tokens_after,
                         }),
                     ))?;
                     if let (Some(request_id), Some(mode), Some(anchor_generation)) = (
@@ -4336,6 +4441,100 @@ mod tests {
             }
             TurnLocalProjectionOutcome::Projection(_) => {
                 panic!("expected baseline over budget at one-token tighter budget");
+            }
+        }
+    }
+
+    #[test]
+    fn build_turn_local_projection_degrades_oversized_last_round_when_trimmed_form_fits() {
+        let rounds = vec![
+            fixture_round_with_follow_up(1, &"alpha ".repeat(120), "continue"),
+            fixture_round_with_follow_up(2, &"beta ".repeat(120), "continue"),
+            fixture_round_with_follow_up(3, &"oversized ".repeat(1_400), "continue"),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let mut degraded_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        degraded_conversation.extend(degraded_last_round_messages(&rounds[2]));
+        let degraded_projection_estimated_tokens =
+            estimate_projection_tokens(&prompt_frame, &degraded_conversation);
+        let prompt_budget =
+            degraded_projection_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS;
+
+        let projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            prompt_budget,
+            120,
+        );
+
+        let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+            panic!("expected degraded projection outcome");
+        };
+        let compaction = projection
+            .compaction
+            .as_ref()
+            .expect("expected degraded compaction stats");
+        assert!(compaction.last_round_trimmed);
+        assert_eq!(
+            compaction.last_round_tokens_after,
+            Some(compaction.projected_estimated_tokens)
+        );
+        assert!(
+            compaction.last_round_tokens_before > compaction.last_round_tokens_after,
+            "expected exact last round to be larger than degraded form"
+        );
+        assert!(
+            projection.conversation.iter().any(|message| matches!(
+                message,
+                ConversationMessage::UserText(text)
+                    if text.contains("was degraded because its exact content exceeded")
+            )),
+            "degraded projection should include provenance note"
+        );
+    }
+
+    #[test]
+    fn build_turn_local_projection_reports_minimum_unfit_when_degraded_last_round_still_unfits() {
+        let rounds = vec![
+            fixture_round_with_follow_up(1, &"alpha ".repeat(120), "continue"),
+            fixture_round_with_follow_up(2, &"beta ".repeat(120), "continue"),
+            fixture_round_with_follow_up(3, &"oversized ".repeat(1_400), "continue"),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+        let mut degraded_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        degraded_conversation.extend(degraded_last_round_messages(&rounds[2]));
+        let degraded_projection_estimated_tokens =
+            estimate_projection_tokens(&prompt_frame, &degraded_conversation);
+        let prompt_budget =
+            degraded_projection_estimated_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS - 1;
+
+        let projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            prompt_budget,
+            120,
+        );
+
+        match projection {
+            TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
+                assert_eq!(diagnostics.reason, "minimum_exact_round_unfit");
+                assert!(
+                    diagnostics.minimum_projection_estimated_tokens
+                        > diagnostics.effective_budget_estimated_tokens
+                );
+            }
+            TurnLocalProjectionOutcome::Projection(_) => {
+                panic!("expected baseline-over-budget outcome");
             }
         }
     }
