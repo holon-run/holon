@@ -96,7 +96,7 @@ export function mergeAgentTimelineItems(
 export function filterTimelineByDisplayLevel(
   items: AgentTimelineItem[],
   displayLevel: DisplayLevel,
-  options: { infoItemLimit?: number } = {},
+  options: { itemLimit?: number } = {},
 ): AgentTimelineItem[] {
   const rank = displayLevelRank[displayLevel];
   const filtered = items
@@ -108,8 +108,7 @@ export function filterTimelineByDisplayLevel(
           ? []
           : (item.activities ?? []).filter((activity) => displayLevelRank[activity.minDisplayLevel] <= rank),
     }));
-  if (displayLevel !== "info") return filtered;
-  const limit = options.infoItemLimit ?? 12;
+  const limit = options.itemLimit ?? (displayLevel === "info" ? 12 : 160);
   return filtered.slice(-limit);
 }
 
@@ -334,7 +333,7 @@ function projectRuntimeEvent(
     const stopReason = stringField(payload, "stop_reason");
     if (!textPreview) {
       return {
-        kind: "event",
+        kind: "assistant",
         label: toolNames.length ? "Assistant requested tools" : "Assistant round",
         body: toolNames.length
           ? toolNames.join(", ")
@@ -347,7 +346,7 @@ function projectRuntimeEvent(
     }
 
     return {
-      kind: "event",
+      kind: "assistant",
       label: "Assistant round",
       body: textPreview,
       minDisplayLevel: "verbose",

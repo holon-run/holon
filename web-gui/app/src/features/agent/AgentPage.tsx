@@ -35,6 +35,8 @@ interface AgentPageProps {
 }
 
 const DEFAULT_INFO_TIMELINE_ITEM_LIMIT = 12;
+const DEFAULT_VERBOSE_TIMELINE_ITEM_LIMIT = 160;
+const DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT = 220;
 const HISTORY_PAGE_VISIBLE_INCREMENT = 80;
 const TOP_SCROLL_THRESHOLD = 16;
 
@@ -60,7 +62,7 @@ export function AgentPage({
   const [prompt, setPrompt] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [changingModel, setChangingModel] = useState<string | null>(null);
-  const [visibleInfoItemLimit, setVisibleInfoItemLimit] = useState(DEFAULT_INFO_TIMELINE_ITEM_LIMIT);
+  const [visibleTimelineItemLimit, setVisibleTimelineItemLimit] = useState(() => defaultTimelineItemLimit("info"));
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
@@ -69,17 +71,18 @@ export function AgentPage({
   const timeline = useMemo(
     () =>
       filterTimelineByDisplayLevel(sourceTimeline, displayLevel, {
-        infoItemLimit: visibleInfoItemLimit,
+        itemLimit: visibleTimelineItemLimit,
       }),
-    [displayLevel, sourceTimeline, visibleInfoItemLimit],
+    [displayLevel, sourceTimeline, visibleTimelineItemLimit],
   );
   const trimmedPrompt = prompt.trim();
   const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
   const newestTimelineItem = timeline[timeline.length - 1];
   const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
+  const hasHiddenTimelineItems = timeline.length >= visibleTimelineItemLimit && sourceTimeline.length > visibleTimelineItemLimit;
 
   useEffect(() => {
-    setVisibleInfoItemLimit(DEFAULT_INFO_TIMELINE_ITEM_LIMIT);
+    setVisibleTimelineItemLimit(defaultTimelineItemLimit(displayLevel));
     setModelPickerOpen(false);
   }, [activeAgent.id, displayLevel]);
 
@@ -133,15 +136,13 @@ export function AgentPage({
         list.scrollTop > TOP_SCROLL_THRESHOLD ? { height: list.scrollHeight, top: list.scrollTop } : null;
       stickToBottomRef.current = false;
     }
-    if (displayLevel === "info") {
-      setVisibleInfoItemLimit((limit) => limit + HISTORY_PAGE_VISIBLE_INCREMENT);
-    }
+    setVisibleTimelineItemLimit((limit) => limit + HISTORY_PAGE_VISIBLE_INCREMENT);
     try {
       await onLoadOlderEvents();
     } catch {
-      if (displayLevel === "info") {
-        setVisibleInfoItemLimit((limit) => Math.max(DEFAULT_INFO_TIMELINE_ITEM_LIMIT, limit - HISTORY_PAGE_VISIBLE_INCREMENT));
-      }
+      setVisibleTimelineItemLimit((limit) =>
+        Math.max(defaultTimelineItemLimit(displayLevel), limit - HISTORY_PAGE_VISIBLE_INCREMENT),
+      );
       preserveScrollRef.current = null;
     }
   }
@@ -185,7 +186,7 @@ export function AgentPage({
       <div className="agent-workbench">
         <section className="conversation-pane">
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
-            {hasOlderEvents ? (
+            {hasOlderEvents || hasHiddenTimelineItems ? (
               <div className="history-loader">
                 <Button type="button" size="sm" variant="secondary" disabled={loadingOlderEvents} onClick={handleLoadOlderEvents}>
                   {loadingOlderEvents ? "Loading earlier…" : "Load earlier"}
@@ -315,6 +316,12 @@ function shortModelLabel(model: string): string {
   return parts[parts.length - 1] || model;
 }
 
+function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
+  if (displayLevel === "debug") return DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT;
+  if (displayLevel === "verbose") return DEFAULT_VERBOSE_TIMELINE_ITEM_LIMIT;
+  return DEFAULT_INFO_TIMELINE_ITEM_LIMIT;
+}
+
 const TimelineMessage = memo(function TimelineMessage({
   item,
   compactAssistant,
@@ -372,7 +379,7 @@ function ActivityTrail({
   displayLevel: DisplayLevel;
   onOpenInspector: () => void;
 }) {
-  const visibleActivities = displayLevel === "debug" ? activities : activities.slice(-4);
+  const visibleActivities = activities;
   const hiddenCount = activities.length - visibleActivities.length;
 
   return (
