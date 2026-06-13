@@ -1411,8 +1411,9 @@ code {
 }
 
 .bubble {
+  position: relative;
   padding: 14px 16px;
-  border: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
   border-radius: 18px;
   background: var(--bubble);
   box-shadow: var(--shadow-card);
@@ -1420,25 +1421,56 @@ code {
 
 .operator .bubble {
   border-top-right-radius: 5px;
-  border-color: color-mix(in srgb, #172033 82%, var(--line));
-  background: linear-gradient(135deg, #172033, #22324a);
-  color: #fff;
-  box-shadow: 0 10px 28px rgba(23, 32, 51, 0.15);
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 13%, transparent), transparent 140px),
+    var(--surface);
+  color: var(--text);
 }
 
 .assistant .bubble {
   border-top-left-radius: 5px;
+  background: var(--surface);
 }
 
 .tool .bubble,
 .event .bubble,
 .system .bubble {
   padding: 10px 12px;
-  border-style: dashed;
   border-radius: 13px;
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent) 6%, var(--surface)), var(--surface));
+    linear-gradient(90deg, color-mix(in srgb, var(--warning) 8%, transparent), transparent 130px),
+    color-mix(in srgb, var(--surface) 92%, var(--surface-soft));
   box-shadow: none;
+}
+
+.operator .bubble::before,
+.assistant .bubble::before,
+.tool .bubble::before,
+.event .bubble::before,
+.system .bubble::before {
+  position: absolute;
+  content: "";
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+
+.operator .bubble::before {
+  background: var(--accent);
+}
+
+.assistant .bubble::before {
+  background: var(--success);
+}
+
+.tool .bubble::before,
+.event .bubble::before,
+.system .bubble::before {
+  background: var(--warning);
 }
 
 .assistant + .assistant {
@@ -1493,10 +1525,6 @@ code {
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.operator .message-label {
-  color: rgba(255, 255, 255, 0.62);
 }
 
 .message-detail {
