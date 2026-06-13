@@ -1715,9 +1715,9 @@ code {
 }
 
 .composer {
-  margin: 0 28px 24px;
+  margin: 0 28px 18px;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 16px;
   background: var(--surface);
   box-shadow: var(--shadow);
   transition:
@@ -1732,12 +1732,14 @@ code {
 
 .composer textarea {
   width: 100%;
-  min-height: 74px;
+  min-height: 48px;
+  max-height: 180px;
   resize: vertical;
   border: 0;
-  border-radius: 16px 16px 0 0;
-  padding: 14px 16px;
+  border-radius: 15px 15px 0 0;
+  padding: 10px 14px 8px;
   outline: none;
+  line-height: 1.45;
 }
 
 .composer textarea:disabled {
@@ -1755,8 +1757,9 @@ code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px;
+  padding: 6px;
   border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface-soft) 46%, transparent);
 }
 
 .composer-left,
@@ -1774,7 +1777,9 @@ code {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 260px;
+  min-height: 30px;
+  max-width: 220px;
+  padding-inline: 10px;
 }
 
 .model-button span:first-child {
