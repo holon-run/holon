@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::{
     config::AppConfig,
     daemon::{RuntimeShutdownResponse, RuntimeStatusResponse},
+    diagnostics::PerformanceDiagnosticsSnapshot,
     http::{
         AttachWorkspaceRequest, ClearAgentModelRequest, ControlPromptRequest, CreateAgentRequest,
         DebugPromptRequest, DetachWorkspaceRequest, ExitWorkspaceRequest,
@@ -387,6 +388,10 @@ impl LocalClient {
 
     pub async fn runtime_config(&self) -> Result<RuntimeConfigReadResponse> {
         self.get_control_json("/control/runtime/config").await
+    }
+
+    pub async fn performance_diagnostics(&self) -> Result<PerformanceDiagnosticsSnapshot> {
+        self.get_control_json("/control/runtime/performance").await
     }
 
     pub async fn update_runtime_config(

@@ -1113,6 +1113,18 @@ mod tests {
     }
 
     #[test]
+    fn debug_performance_command_parses_json_flag() {
+        let cli = Cli::parse_from(["holon", "debug", "performance", "--json"]);
+        let Commands::Debug {
+            command: DebugCommands::Performance { json },
+        } = cli.command
+        else {
+            panic!("expected debug performance command");
+        };
+        assert!(json);
+    }
+
+    #[test]
     fn export_scheduler_fixture_writes_replay_harness_shape() {
         let config = test_config();
         let agent_id = "default";
@@ -1490,6 +1502,7 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
             limit,
             events_limit,
         } => print_latency_diagnostics(&config, agent, limit, events_limit),
+        DebugCommands::Performance { json } => print_performance_diagnostics(&config, json).await,
         DebugCommands::SchedulerFixture { agent, output } => {
             export_scheduler_fixture(&config, agent, &output)
         }
@@ -1775,6 +1788,41 @@ fn print_latency_diagnostics(
         );
     }
     Ok(())
+}
+
+async fn print_performance_diagnostics(config: &AppConfig, json: bool) -> Result<()> {
+    let client = LocalClient::new(config.clone())?;
+    let snapshot = client.performance_diagnostics().await?;
+    if json {
+        return print_json(&serde_json::to_value(snapshot)?);
+    }
+
+    println!(
+        "process uptime {}",
+        format_duration_ms(snapshot.process_uptime_ms)
+    );
+    print_metric_group("http", &snapshot.http);
+    print_metric_group("projections", &snapshot.projections);
+    print_metric_group("db", &snapshot.db);
+    print_metric_group("scheduler", &snapshot.scheduler);
+    Ok(())
+}
+
+fn print_metric_group(group: &str, metrics: &[holon::diagnostics::MetricSnapshot]) {
+    println!("{group}:");
+    for metric in metrics {
+        if metric.count == 0 {
+            continue;
+        }
+        let bytes = metric
+            .avg_bytes
+            .map(|avg| format!(" avg_bytes={avg:.0}"))
+            .unwrap_or_default();
+        println!(
+            "  {:<36} count={} avg_ms={:.1} max_ms={}{}",
+            metric.name, metric.count, metric.avg_ms, metric.max_ms, bytes
+        );
+    }
 }
 
 fn build_latency_diagnostics(events: &[AuditEvent], limit: usize) -> Vec<TurnLatencyDiagnostics> {

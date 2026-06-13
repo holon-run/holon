@@ -4745,6 +4745,7 @@ enum LockMode {
 }
 
 fn open_connection(path: &Path) -> Result<Connection> {
+    let started_at = Instant::now();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating runtime db directory {}", parent.display()))?;
@@ -4752,6 +4753,7 @@ fn open_connection(path: &Path) -> Result<Connection> {
     let connection =
         Connection::open(path).with_context(|| format!("opening runtime db {}", path.display()))?;
     configure_connection(&connection)?;
+    crate::diagnostics::record_runtime_db_connection_open(started_at.elapsed());
     Ok(connection)
 }
 

@@ -416,6 +416,7 @@ impl RuntimeHandle {
     }
 
     async fn build_agent_summary(&self) -> Result<AgentSummary> {
+        let started_at = std::time::Instant::now();
         let agent = self.agent_state().await?;
         let active_task_count = self.inner.storage.active_task_count_for_agent(&agent.id)?;
         let model = self.model_state_for(&agent);
@@ -448,7 +449,7 @@ impl RuntimeHandle {
             last_turn: agent.last_turn_token_usage.clone(),
         };
         let active_external_triggers = self.active_external_trigger_summaries().await?;
-        Ok(AgentSummary {
+        let summary = AgentSummary {
             identity,
             lifecycle: crate::types::AgentLifecycleHint::from_status(
                 &agent.id,
@@ -471,7 +472,9 @@ impl RuntimeHandle {
             recent_operator_notifications: self.recent_operator_notifications(10).await?,
             recent_brief_count: self.inner.storage.read_recent_briefs(50)?.len(),
             recent_event_count: self.inner.storage.read_recent_events(100)?.len(),
-        })
+        };
+        crate::diagnostics::record_agent_summary_projection(started_at.elapsed());
+        Ok(summary)
     }
 
     pub async fn agent_list_entry(&self) -> Result<AgentListEntry> {

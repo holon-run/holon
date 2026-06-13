@@ -10,6 +10,7 @@ pub mod client;
 pub mod config;
 pub mod context;
 pub mod daemon;
+pub mod diagnostics;
 pub mod fd_limit;
 pub mod host;
 mod host_registry;

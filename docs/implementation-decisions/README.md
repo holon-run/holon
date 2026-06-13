@@ -75,3 +75,4 @@ Current decision notes:
 - [055 Prompt Dump Inventory](./055-prompt-dump-inventory.md)
 - [056 Prompt Cache Workspace Guidance Boundary](./056-prompt-cache-workspace-guidance-boundary.md)
 - [057 OpenAI Codex OAuth Refresh Boundary](./057-openai-codex-oauth-refresh-boundary.md)
+- [059 Bounded Performance Diagnostics](./059-bounded-performance-diagnostics.md)
