@@ -1,12 +1,13 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { memo } from "react";
 
 interface MarkdownContentProps {
   text: string;
   compact?: boolean;
 }
 
-export function MarkdownContent({ text, compact = false }: MarkdownContentProps) {
+function MarkdownContentView({ text, compact = false }: MarkdownContentProps) {
   return (
     <div className={`markdown-content${compact ? " compact" : ""}`}>
       <ReactMarkdown
@@ -24,3 +25,5 @@ export function MarkdownContent({ text, compact = false }: MarkdownContentProps)
     </div>
   );
 }
+
+export const MarkdownContent = memo(MarkdownContentView);

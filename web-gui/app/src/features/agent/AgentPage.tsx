@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { Button } from "../../components/ui/Button";
@@ -65,9 +65,14 @@ export function AgentPage({
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
   const activeAgent = detail?.agent ?? agent;
-  const timeline = filterTimelineByDisplayLevel(detail?.timeline ?? fallbackTimeline(activeAgent), displayLevel, {
-    infoItemLimit: visibleInfoItemLimit,
-  });
+  const sourceTimeline = useMemo(() => detail?.timeline ?? fallbackTimeline(activeAgent), [activeAgent, detail?.timeline]);
+  const timeline = useMemo(
+    () =>
+      filterTimelineByDisplayLevel(sourceTimeline, displayLevel, {
+        infoItemLimit: visibleInfoItemLimit,
+      }),
+    [displayLevel, sourceTimeline, visibleInfoItemLimit],
+  );
   const trimmedPrompt = prompt.trim();
   const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
   const newestTimelineItem = timeline[timeline.length - 1];
@@ -192,48 +197,15 @@ export function AgentPage({
                 {historyError}
               </div>
             ) : null}
-            {timeline.map((item, index) => {
-              const compactAssistant = item.kind === "assistant" && timeline[index - 1]?.kind === "assistant";
-              return (
-                <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}`} key={item.id}>
-                  <div className="bubble">
-                    {!compactAssistant ? (
-                      <div className="message-heading">
-                        <span className="message-label">{item.label}</span>
-                        {item.kind === "tool" || item.kind === "event" || item.kind === "system" ? (
-                          <span className="message-inline-meta">
-                            {formatTimelineMeta(item.meta, displayLevel)}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    <MarkdownContent text={item.body} compact={item.kind === "tool" || item.kind === "event" || item.kind === "system"} />
-                    {item.detail ? (
-                      <div className={`message-detail ${item.detail.tone ?? "data"}`}>
-                        <span>{item.detail.label}</span>
-                        <pre>{item.detail.text}</pre>
-                      </div>
-                    ) : null}
-                  </div>
-                  {displayLevel !== "info" && item.activities?.length ? (
-                    <ActivityTrail activities={item.activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
-                  ) : null}
-                  {!compactAssistant ? (
-                    <div className="message-meta">
-                      <time>{formatDisplayTime(item.timestamp)}</time>
-                      {item.kind === "tool" || item.kind === "event" || item.kind === "system" ? null : (
-                        <span>{formatTimelineMeta(item.meta, displayLevel)}</span>
-                      )}
-                      {displayLevel !== "info" ? (
-                        <button className="copy-action" type="button" onClick={onOpenInspector}>
-                          inspect
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </article>
-              );
-            })}
+            {timeline.map((item, index) => (
+              <TimelineMessage
+                compactAssistant={item.kind === "assistant" && timeline[index - 1]?.kind === "assistant"}
+                displayLevel={displayLevel}
+                item={item}
+                key={item.id}
+                onOpenInspector={onOpenInspector}
+              />
+            ))}
             {timeline.length === 0 ? (
               <EmptyState
                 className="conversation-empty"
@@ -342,6 +314,54 @@ function shortModelLabel(model: string): string {
   const parts = model.split("/");
   return parts[parts.length - 1] || model;
 }
+
+const TimelineMessage = memo(function TimelineMessage({
+  item,
+  compactAssistant,
+  displayLevel,
+  onOpenInspector,
+}: {
+  item: AgentTimelineItem;
+  compactAssistant: boolean;
+  displayLevel: DisplayLevel;
+  onOpenInspector: () => void;
+}) {
+  const isRuntimeItem = item.kind === "tool" || item.kind === "event" || item.kind === "system";
+
+  return (
+    <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}`}>
+      <div className="bubble">
+        {!compactAssistant ? (
+          <div className="message-heading">
+            <span className="message-label">{item.label}</span>
+            {isRuntimeItem ? <span className="message-inline-meta">{formatTimelineMeta(item.meta, displayLevel)}</span> : null}
+          </div>
+        ) : null}
+        <MarkdownContent text={item.body} compact={isRuntimeItem} />
+        {item.detail ? (
+          <div className={`message-detail ${item.detail.tone ?? "data"}`}>
+            <span>{item.detail.label}</span>
+            <pre>{item.detail.text}</pre>
+          </div>
+        ) : null}
+      </div>
+      {displayLevel !== "info" && item.activities?.length ? (
+        <ActivityTrail activities={item.activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
+      ) : null}
+      {!compactAssistant ? (
+        <div className="message-meta">
+          <time>{formatDisplayTime(item.timestamp)}</time>
+          {isRuntimeItem ? null : <span>{formatTimelineMeta(item.meta, displayLevel)}</span>}
+          {displayLevel !== "info" ? (
+            <button className="copy-action" type="button" onClick={onOpenInspector}>
+              inspect
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </article>
+  );
+});
 
 function ActivityTrail({
   activities,

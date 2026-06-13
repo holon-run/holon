@@ -692,22 +692,34 @@ function applyStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnve
 
   set((state) => {
     const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+    if (current.eventsBySeq[seq]) {
+      return {
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...current,
+            liveStatus: "streaming",
+            error: undefined,
+          },
+        },
+      };
+    }
     const eventsBySeq = {
       ...current.eventsBySeq,
       [seq]: event,
     };
-    const eventSeqs = Array.from(new Set([...current.eventSeqs, seq])).sort((left, right) => left - right);
-    const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
-    const liveTimeline = reduceAgentSessionTimeline({
+    const eventSeqs = insertSortedSeq(current.eventSeqs, seq);
+    const liveTimelineDelta = reduceAgentSessionTimeline({
       transcript: [],
       briefs: [],
-      events: { events },
+      events: { events: [event] },
       eventDisplayLevel: "debug",
     });
+    const events = [...(current.detail?.events ?? []), event];
     const detail = current.detail
       ? {
           ...current.detail,
-          timeline: mergeTimeline(current.detail.timeline, liveTimeline),
+          timeline: mergeTimeline(current.detail.timeline, liveTimelineDelta),
           events,
           newestEventSeq: Math.max(seq, current.detail.newestEventSeq ?? 0),
           oldestEventSeq: current.detail.oldestEventSeq ?? eventSeqs[0],
@@ -730,6 +742,18 @@ function applyStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnve
       },
     };
   });
+}
+
+function insertSortedSeq(eventSeqs: number[], seq: number): number[] {
+  if (eventSeqs.length === 0) return [seq];
+  const lastSeq = eventSeqs[eventSeqs.length - 1];
+  if (lastSeq === seq) return eventSeqs;
+  if (lastSeq < seq) return [...eventSeqs, seq];
+  const existingIndex = eventSeqs.indexOf(seq);
+  if (existingIndex >= 0) return eventSeqs;
+  const next = [...eventSeqs, seq];
+  next.sort((left, right) => left - right);
+  return next;
 }
 
 function mergeEventPageIntoSession(
