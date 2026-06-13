@@ -1,0 +1,40 @@
+schema_version: 1
+task_id: holon-1764-runtime-performance-diagnostics
+repo:
+  name: holon-run/holon
+  local_path: ../..
+issue:
+  number: 1764
+  title: "Add built-in benchmark and diagnostics for runtime query/interface/core performance"
+base:
+  branch: main
+  sha: 82d8d84396708b6b12da7257391f0b20895007c3
+benchmark:
+  mode: live
+task:
+  kind: implementation
+verification:
+  commands:
+    - "cargo test --quiet performance"
+    - "cargo fmt --all -- --check"
+    - "RUSTFLAGS=\"-D warnings\" cargo check --all-targets"
+evaluation:
+  summary: |
+    Add a bounded first-phase performance diagnostics surface for Holon's
+    expensive query/projection, HTTP/control interface, and core runtime module
+    hotspots. The implementation should expose a running-daemon snapshot that
+    operators can inspect from the CLI, and should preserve a path toward
+    broader metrics/benchmark work without introducing a large observability
+    framework.
+  expected_outcome: change_required
+  scope_policy: soft
+  allowed_paths: []
+  forbidden_paths: []
+budget:
+  max_minutes: 120
+  max_operator_followups: 0
+review:
+  mode: none
+metadata:
+  difficulty: medium
+  benchmark_group: performance-diagnostics-2026-06-13

@@ -531,6 +531,10 @@ pub enum DebugCommands {
         #[arg(long, default_value_t = 5000)]
         events_limit: usize,
     },
+    Performance {
+        #[arg(long)]
+        json: bool,
+    },
     SchedulerFixture {
         #[arg(long)]
         agent: Option<String>,

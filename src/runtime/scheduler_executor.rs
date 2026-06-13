@@ -8,6 +8,17 @@ pub(super) enum RunLoopPoll {
     Idle,
 }
 
+impl RunLoopPoll {
+    fn outcome_name(&self) -> &'static str {
+        match self {
+            RunLoopPoll::Shutdown => "shutdown",
+            RunLoopPoll::Stopped(_, _) => "stopped",
+            RunLoopPoll::Message(_) => "message",
+            RunLoopPoll::Idle => "idle",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ShutdownReason {
     DaemonShutdown,
@@ -283,16 +294,32 @@ impl<'a> SchedulerDecisionExecutor<'a> {
     }
 
     pub(super) async fn poll(&self) -> Result<RunLoopPoll> {
+        let started_at = std::time::Instant::now();
         let candidate = {
             let guard = self.runtime.inner.agent.lock().await;
             if self.runtime.inner.shutdown_requested.load(Ordering::SeqCst) {
-                return self.shutdown(guard);
+                let poll = self.shutdown(guard)?;
+                crate::diagnostics::record_scheduler_poll(
+                    poll.outcome_name(),
+                    started_at.elapsed(),
+                );
+                return Ok(poll);
             }
             if guard.state.status == AgentStatus::Stopped {
-                return Ok(RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len()));
+                let poll = RunLoopPoll::Stopped(guard.state.clone(), guard.queue.len());
+                crate::diagnostics::record_scheduler_poll(
+                    poll.outcome_name(),
+                    started_at.elapsed(),
+                );
+                return Ok(poll);
             }
             let Some(message) = guard.queue.peek().cloned() else {
-                return Ok(RunLoopPoll::Idle);
+                let poll = RunLoopPoll::Idle;
+                crate::diagnostics::record_scheduler_poll(
+                    poll.outcome_name(),
+                    started_at.elapsed(),
+                );
+                return Ok(poll);
             };
             QueueCandidate {
                 message,
@@ -301,7 +328,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
         };
 
-        self.prepare_message(candidate).await
+        let poll = self.prepare_message(candidate).await?;
+        crate::diagnostics::record_scheduler_poll(poll.outcome_name(), started_at.elapsed());
+        Ok(poll)
     }
 
     fn shutdown(

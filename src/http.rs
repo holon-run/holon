@@ -57,6 +57,7 @@ use crate::{
         graceful_runtime_shutdown, runtime_activity_summary, RuntimeConfigSurface,
         RuntimeServiceHandle,
     },
+    diagnostics,
     host::{PublicAgentError, RuntimeHost},
     ingress::{InboundRequest, WakeDisposition, WakeHint},
     operator_event::{
@@ -297,6 +298,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/control/runtime/readiness", get(runtime_readiness))
         .route("/control/runtime/status", get(runtime_status))
+        .route("/control/runtime/performance", get(runtime_performance))
         .route("/control/runtime/config", get(runtime_config))
         .route("/control/runtime/config", patch(runtime_config_update))
         .route("/control/runtime/shutdown", post(runtime_shutdown))
@@ -421,6 +423,7 @@ fn traced_json<T: Serialize>(
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
     let bytes = serde_json::to_vec(&value).map_err(|err| error_response(err.into()))?;
     let build_elapsed = started_at.elapsed();
+    diagnostics::record_http_json_response(route, build_elapsed, bytes.len());
     if build_elapsed >= HTTP_SLOW_RESPONSE_WARN_AFTER
         || bytes.len() >= HTTP_LARGE_RESPONSE_WARN_BYTES
     {
@@ -939,6 +942,14 @@ pub async fn runtime_readiness(
     ))
 }
 
+pub async fn runtime_performance(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    Ok(Json(diagnostics::performance_snapshot()))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeConfigReadResponse {
     pub ok: bool,
@@ -1339,6 +1350,7 @@ pub async fn status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let runtime = state
         .host
@@ -1346,7 +1358,7 @@ pub async fn status(
         .await
         .map_err(agent_access_error)?;
     let agent = runtime.agent_summary().await.map_err(error_response)?;
-    Ok(Json(agent))
+    traced_json("/agents/{agent_id}/status", started_at, agent)
 }
 
 pub async fn state_default(
