@@ -536,6 +536,29 @@ fn exact_round_messages(round: &TurnRoundRecord) -> Vec<ConversationMessage> {
     messages
 }
 
+/// Create a degraded/summarized version of a round for when the exact version
+/// does not fit within the prompt budget.  Preserves enough provenance for the
+/// model to understand the turn was trimmed/summarized.
+fn degraded_round_messages(round: &TurnRoundRecord) -> Vec<ConversationMessage> {
+    let mut messages = Vec::new();
+    let recap = build_round_recap_line(round);
+    let summary = format!(
+        "[Previous turn {} summarized because the full content exceeded the prompt budget]\n{}",
+        round.round, recap
+    );
+    messages.push(ConversationMessage::AssistantBlocks(vec![
+        ModelBlock::Text { text: summary },
+    ]));
+    messages.extend(
+        round
+            .follow_up_user_texts
+            .iter()
+            .cloned()
+            .map(ConversationMessage::UserText),
+    );
+    messages
+}
+
 fn select_exact_tail_start(rounds: &[TurnRoundRecord], keep_recent_budget: usize) -> usize {
     if rounds.len() <= MIN_EXACT_TAIL_ROUNDS {
         return 0;
@@ -1253,6 +1276,35 @@ fn build_turn_local_projection_with_runtime_reminder(
     let minimum_projection_estimated_tokens =
         estimate_projection_tokens(prompt_frame, &minimum_viable_conversation);
     if minimum_projection_estimated_tokens > effective_budget_estimated_tokens {
+        // Try a degraded version of the last round before giving up
+        let mut degraded_conversation = vec![ConversationMessage::UserBlocks(
+            prompt_frame.context_blocks.clone(),
+        )];
+        push_runtime_reminder_message(&mut degraded_conversation, runtime_reminder);
+        if let Some(last_round) = rounds.last() {
+            degraded_conversation.extend(degraded_round_messages(last_round));
+        }
+        let degraded_projection_estimated_tokens =
+            estimate_projection_tokens(prompt_frame, &degraded_conversation);
+        if degraded_projection_estimated_tokens <= effective_budget_estimated_tokens {
+            return TurnLocalProjectionOutcome::Projection(TurnLocalProjection {
+                conversation: degraded_conversation,
+                compaction: Some(TurnLocalCompactionStats {
+                    compacted_rounds: rounds.len().saturating_sub(1),
+                    exact_tail_rounds: 1,
+                    projected_estimated_tokens: degraded_projection_estimated_tokens,
+                    effective_budget_estimated_tokens,
+                    tool_overhead_estimated_tokens,
+                    strict_fallback_applied: true,
+                    checkpoint_request_id: None,
+                    checkpoint_mode: None,
+                    checkpoint_anchor_generation: None,
+                    checkpoint_base_round: None,
+                    previous_checkpoint_round: None,
+                    anchor_changed_since_checkpoint: false,
+                }),
+            });
+        }
         return baseline_over_budget(
             "minimum_exact_round_unfit",
             minimum_exact_round_estimated_tokens,
@@ -4327,6 +4379,9 @@ mod tests {
             120,
         );
 
+        // With degraded round fallback, the tight budget may still produce a
+        // projection when the degraded last round fits.  Verify we get either a
+        // valid projection with the degraded round or a clear baseline-over-budget.
         match tight_projection {
             TurnLocalProjectionOutcome::BaselineOverBudget(diagnostics) => {
                 assert_eq!(
@@ -4334,8 +4389,14 @@ mod tests {
                     "tight budget should fail minimum projection"
                 );
             }
-            TurnLocalProjectionOutcome::Projection(_) => {
-                panic!("expected baseline over budget at one-token tighter budget");
+            TurnLocalProjectionOutcome::Projection(projection) => {
+                let compaction = projection
+                    .compaction
+                    .as_ref()
+                    .expect("expected compaction stats");
+                assert!(compaction.strict_fallback_applied);
+                assert_eq!(compaction.exact_tail_rounds, 1);
+                assert_eq!(compaction.compacted_rounds, 2);
             }
         }
     }
@@ -4814,6 +4875,55 @@ mod tests {
                 panic!("expected baseline-over-budget outcome");
             }
         }
+    }
+
+    #[test]
+    fn build_turn_local_projection_degrades_oversized_last_round_when_exact_does_not_fit() {
+        let rounds = vec![
+            fixture_round(1, &"alpha ".repeat(120)),
+            fixture_round(2, &"beta ".repeat(120)),
+            fixture_round(3, &"gamma ".repeat(3000)),
+        ];
+        let prompt_frame = fixture_prompt_frame();
+
+        let projection = build_turn_local_projection(
+            &prompt_frame,
+            &rounds,
+            &[],
+            &TurnLocalCheckpointState::default(),
+            Some("req-1".into()),
+            400,
+            120,
+        );
+
+        let TurnLocalProjectionOutcome::Projection(projection) = projection else {
+            panic!("expected projection outcome when degraded round fits");
+        };
+
+        let compaction = projection.compaction.expect("expected compaction stats");
+        assert!(compaction.strict_fallback_applied);
+        assert_eq!(compaction.exact_tail_rounds, 1);
+        assert_eq!(compaction.compacted_rounds, 2);
+
+        let last_assistant = projection
+            .conversation
+            .iter()
+            .filter_map(|message| match message {
+                ConversationMessage::AssistantBlocks(blocks) => Some(blocks),
+                _ => None,
+            })
+            .last()
+            .expect("expected at least one assistant block");
+        let has_degradation_notice = last_assistant.iter().any(|block| match block {
+            ModelBlock::Text { text } => {
+                text.contains("summarized because the full content exceeded the prompt budget")
+            }
+            _ => false,
+        });
+        assert!(
+            has_degradation_notice,
+            "degraded round should contain a notice explaining the summarization"
+        );
     }
 
     #[test]
