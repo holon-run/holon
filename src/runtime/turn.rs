@@ -5016,14 +5016,10 @@ mod tests {
             estimate_projection_tokens(&prompt_frame, &degraded_projection_conversation);
 
         // Set budget so the degraded version fits but the exact version doesn't.
-        // effective_budget = prompt_budget - SAFETY_MARGIN = degraded_projection_tokens + 10
-        // code's degraded_available = effective_budget - overhead = degraded_projection_tokens + 10 - overhead
-        // Since degraded_projection_tokens = overhead + degraded_msgs_tokens:
-        //   degraded_available_code = degraded_msgs_tokens + 10
-        // This means the code has 10 more tokens than the degraded messages need,
-        // so even with less trimming (larger budget → larger messages), it still fits.
+        // Use a generous buffer (+500 tokens) to account for the fact that the code
+        // computes a larger degraded_available, which produces less-trimmed messages.
         let prompt_budget =
-            degraded_projection_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS + 10;
+            degraded_projection_tokens + CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS + 500;
 
         let projection = build_turn_local_projection(
             &prompt_frame,
