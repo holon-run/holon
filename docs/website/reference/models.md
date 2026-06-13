@@ -6,7 +6,7 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **49 providers** and **302 models**.
+Holon includes built-in configuration for **49 providers** and **308 models**.
 
 This page is auto-generated from the Holon source code (`src/model_catalog.rs` and `src/config.rs`).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
@@ -96,6 +96,7 @@ and capabilities.
 | `bigmodel` | `glm-5` | `bigmodel/glm-5` | 202800 | 131100 | ✅ | — |
 | `bigmodel` | `glm-5-turbo` | `bigmodel/glm-5-turbo` | 202800 | 131100 | ✅ | — |
 | `bigmodel` | `glm-5.1` | `bigmodel/glm-5.1` | 202800 | 131100 | ✅ | — |
+| `bigmodel` | `glm-5.2` | `bigmodel/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `bigmodel` | `glm-5v-turbo` | `bigmodel/glm-5v-turbo` | 202800 | 131100 | ✅ | ✅ |
 | `bigmodel-anthropic` | `glm-4.5` | `bigmodel-anthropic/glm-4.5` | 131072 | 98304 | ✅ | — |
 | `bigmodel-anthropic` | `glm-4.5-air` | `bigmodel-anthropic/glm-4.5-air` | 131072 | 98304 | ✅ | — |
@@ -109,6 +110,7 @@ and capabilities.
 | `bigmodel-anthropic` | `glm-5` | `bigmodel-anthropic/glm-5` | 202800 | 131100 | ✅ | — |
 | `bigmodel-anthropic` | `glm-5-turbo` | `bigmodel-anthropic/glm-5-turbo` | 202800 | 131100 | ✅ | — |
 | `bigmodel-anthropic` | `glm-5.1` | `bigmodel-anthropic/glm-5.1` | 202800 | 131100 | ✅ | — |
+| `bigmodel-anthropic` | `glm-5.2` | `bigmodel-anthropic/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `bigmodel-anthropic` | `glm-5v-turbo` | `bigmodel-anthropic/glm-5v-turbo` | 202800 | 131100 | ✅ | ✅ |
 | `bigmodel-openai` | `glm-4.5` | `bigmodel-openai/glm-4.5` | 131072 | 98304 | ✅ | — |
 | `bigmodel-openai` | `glm-4.5-air` | `bigmodel-openai/glm-4.5-air` | 131072 | 98304 | ✅ | — |
@@ -122,6 +124,7 @@ and capabilities.
 | `bigmodel-openai` | `glm-5` | `bigmodel-openai/glm-5` | 202800 | 131100 | ✅ | — |
 | `bigmodel-openai` | `glm-5-turbo` | `bigmodel-openai/glm-5-turbo` | 202800 | 131100 | ✅ | — |
 | `bigmodel-openai` | `glm-5.1` | `bigmodel-openai/glm-5.1` | 202800 | 131100 | ✅ | — |
+| `bigmodel-openai` | `glm-5.2` | `bigmodel-openai/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `bigmodel-openai` | `glm-5v-turbo` | `bigmodel-openai/glm-5v-turbo` | 202800 | 131100 | ✅ | ✅ |
 | `byteplus` | `moonshotai/kimi-k2.5` | `byteplus/moonshotai/kimi-k2.5` | 262144 | 32768 | ✅ | ✅ |
 | `byteplus` | `seed-1-8-251228` | `byteplus/seed-1-8-251228` | 256000 | 4096 | — | ✅ |
@@ -350,6 +353,7 @@ and capabilities.
 | `zai` | `glm-5` | `zai/glm-5` | 202800 | 131100 | ✅ | — |
 | `zai` | `glm-5-turbo` | `zai/glm-5-turbo` | 202800 | 131100 | ✅ | — |
 | `zai` | `glm-5.1` | `zai/glm-5.1` | 202800 | 131100 | ✅ | — |
+| `zai` | `glm-5.2` | `zai/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `zai` | `glm-5v-turbo` | `zai/glm-5v-turbo` | 202800 | 131100 | ✅ | ✅ |
 | `zai-anthropic` | `glm-4.5` | `zai-anthropic/glm-4.5` | 131072 | 98304 | ✅ | — |
 | `zai-anthropic` | `glm-4.5-air` | `zai-anthropic/glm-4.5-air` | 131072 | 98304 | ✅ | — |
@@ -363,6 +367,7 @@ and capabilities.
 | `zai-anthropic` | `glm-5` | `zai-anthropic/glm-5` | 202800 | 131100 | ✅ | — |
 | `zai-anthropic` | `glm-5-turbo` | `zai-anthropic/glm-5-turbo` | 202800 | 131100 | ✅ | — |
 | `zai-anthropic` | `glm-5.1` | `zai-anthropic/glm-5.1` | 202800 | 131100 | ✅ | — |
+| `zai-anthropic` | `glm-5.2` | `zai-anthropic/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `zai-anthropic` | `glm-5v-turbo` | `zai-anthropic/glm-5v-turbo` | 202800 | 131100 | ✅ | ✅ |
 | `zai-openai` | `glm-4.5` | `zai-openai/glm-4.5` | 131072 | 98304 | ✅ | — |
 | `zai-openai` | `glm-4.5-air` | `zai-openai/glm-4.5-air` | 131072 | 98304 | ✅ | — |
@@ -376,4 +381,5 @@ and capabilities.
 | `zai-openai` | `glm-5` | `zai-openai/glm-5` | 202800 | 131100 | ✅ | — |
 | `zai-openai` | `glm-5-turbo` | `zai-openai/glm-5-turbo` | 202800 | 131100 | ✅ | — |
 | `zai-openai` | `glm-5.1` | `zai-openai/glm-5.1` | 202800 | 131100 | ✅ | — |
+| `zai-openai` | `glm-5.2` | `zai-openai/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `zai-openai` | `glm-5v-turbo` | `zai-openai/glm-5v-turbo` | 202800 | 131100 | ✅ | ✅ |
