@@ -962,7 +962,7 @@ code {
   gap: 12px;
 }
 
-.agent-card-head > div {
+.agent-card-title {
   flex: 1;
   min-width: 0;
 }
@@ -975,8 +975,16 @@ code {
   white-space: nowrap;
 }
 
-.agent-card p {
-  min-height: 44px;
+.agent-card-status {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 44%;
+}
+
+.agent-card-summary {
   margin: 0;
   color: var(--muted);
   line-height: 1.45;
@@ -1020,38 +1028,58 @@ code {
   color: #64748b;
 }
 
-.agent-detail-grid {
+.agent-card-work {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.agent-detail-grid div {
+  gap: 4px;
   min-width: 0;
-  overflow: hidden;
-  padding: 9px 10px;
-  border-radius: 8px;
-  background: var(--surface-soft);
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line));
+  border-radius: 10px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 70%),
+    var(--surface-soft);
 }
 
-.agent-detail-grid div:last-child {
-  grid-column: 1 / -1;
-}
-
-.agent-detail-grid span,
-.agent-detail-grid strong {
-  display: block;
-}
-
-.agent-detail-grid span {
+.agent-card-work span,
+.agent-detail-list dt {
   color: var(--faint);
   font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
-.agent-detail-grid strong {
+.agent-card-work strong {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-detail-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.agent-detail-list div {
+  min-width: 0;
+  overflow: hidden;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.agent-detail-list dt,
+.agent-detail-list dd {
+  display: block;
+  margin: 0;
+}
+
+.agent-detail-list dd {
   overflow: hidden;
   margin-top: 2px;
+  color: var(--text);
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;

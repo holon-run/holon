@@ -96,35 +96,38 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                 <Card className="agent-card" key={agent.id}>
                   <div className="agent-card-head">
                     <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
-                    <div>
+                    <div className="agent-card-title">
                       <strong>{agent.id}</strong>
                       <small>{agent.profile}</small>
                     </div>
-                    <AgentStateBadge className={`state-chip ${agent.lifecycle}`} lifecycle={agent.lifecycle} posture={agent.posture} />
-                  </div>
-                  <p>{agent.focusSummary}</p>
-                  <div className="agent-detail-grid">
-                    <div title={agent.currentWork?.objective ?? "No active work item"}>
-                      <span>Current work</span>
-                      <strong>{agent.currentWork?.objective ?? "Ready for new operator input"}</strong>
+                    <div className="agent-card-status">
+                      <AgentStateBadge className={`state-chip ${agent.lifecycle}`} lifecycle={agent.lifecycle} posture={agent.posture} />
+                      {agent.attention !== "none" ? (
+                        <StatusBadge className="state-chip" kind="attention" value={agent.attention}>
+                          {agent.attention}
+                        </StatusBadge>
+                      ) : null}
                     </div>
+                  </div>
+                  <p className="agent-card-summary">{agent.focusSummary}</p>
+                  <section className="agent-card-work" title={agent.currentWork?.objective ?? "No active work item"}>
+                    <span>Current work</span>
+                    <strong>{agent.currentWork?.objective ?? "Ready for new operator input"}</strong>
+                  </section>
+                  <dl className="agent-detail-list">
                     <div title={agent.workspace}>
-                      <span>Workspace</span>
-                      <strong>{agent.workspace}</strong>
+                      <dt>Workspace</dt>
+                      <dd>{agent.workspace}</dd>
                     </div>
                     <div>
-                      <span>Attention</span>
-                      <strong>{agent.attention}</strong>
+                      <dt>Posture</dt>
+                      <dd>{agent.posture}</dd>
                     </div>
                     <div title={agent.model}>
-                      <span>Model</span>
-                      <strong>{agent.model}</strong>
+                      <dt>Model</dt>
+                      <dd>{agent.model}</dd>
                     </div>
-                    <div>
-                      <span>Posture</span>
-                      <strong>{agent.posture}</strong>
-                    </div>
-                  </div>
+                  </dl>
                   <footer>
                     <span>{agent.footer}</span>
                     <Button size="icon" variant="secondary" aria-label={`Open ${agent.id}`} onClick={() => onOpenAgent(agent.id)}>
