@@ -1340,9 +1340,12 @@ pub async fn status(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    // Use the operator-level accessor so private child agents are observable
+    // through the local trusted control API. Remote/multi-user authorization
+    // is deferred; see https://github.com/holon-run/holon/issues/1742.
     let runtime = state
         .host
-        .get_public_agent(&agent_id)
+        .get_agent_for_operator(&agent_id)
         .await
         .map_err(agent_access_error)?;
     let agent = runtime.agent_summary().await.map_err(error_response)?;

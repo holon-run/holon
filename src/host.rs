@@ -306,6 +306,32 @@ impl RuntimeHost {
         Ok(identity)
     }
 
+    /// Resolve any active agent runtime for trusted local/operator access.
+    ///
+    /// Unlike [`get_public_agent`], this does not reject private child agents.
+    /// It is intended for the local control API where the operator is trusted
+    /// and observability should not be gated by visibility. Authorization for
+    /// remote/multi-user access is deferred to future work.
+    pub async fn get_agent_for_operator(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
+        let identity = self
+            .agent_identity_record(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .ok_or_else(|| PublicAgentError::NotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        if identity.status != AgentRegistryStatus::Active {
+            return Err(PublicAgentError::Archived {
+                agent_id: agent_id.to_string(),
+            });
+        }
+        self.get_or_create_agent(agent_id)
+            .await
+            .map_err(PublicAgentError::Runtime)
+    }
+
     pub async fn get_public_agent(
         &self,
         agent_id: &str,
@@ -1785,6 +1811,21 @@ impl RuntimeHostBridge {
         agent_id: &str,
     ) -> Result<Option<AgentIdentityRecord>> {
         self.host()?.agent_identity_record(agent_id)
+    }
+
+    /// Fetch the agent summary for any active agent by id, including private
+    /// children. This is used by the `AgentGet` tool when the caller requests
+    /// a specific agent under the current local trusted control assumption.
+    pub(crate) async fn agent_summary_for(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<crate::types::AgentSummary>> {
+        let host = self.host()?;
+        let runtime = match host.get_agent_for_operator(agent_id).await {
+            Ok(runtime) => runtime,
+            Err(_) => return Ok(None),
+        };
+        runtime.agent_summary().await.map(Some)
     }
 
     pub(crate) async fn child_summaries(
@@ -4110,5 +4151,110 @@ mod tests {
             .to_string()
             .contains("no available providers for configured model chain"));
         assert!(err.to_string().contains("anthropic/claude-sonnet-4-6"));
+    }
+
+    #[tokio::test]
+    async fn get_agent_for_operator_returns_public_agent() {
+        let (_home, host) = test_host();
+        host.create_named_agent("release-bot", None).await.unwrap();
+
+        let runtime = host.get_agent_for_operator("release-bot").await.unwrap();
+        let summary = runtime.agent_summary().await.unwrap();
+        assert_eq!(summary.identity.agent_id, "release-bot");
+        assert_eq!(summary.identity.visibility, AgentVisibility::Public);
+    }
+
+    #[tokio::test]
+    async fn get_agent_for_operator_returns_private_child() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+
+        let spawned = parent
+            .spawn_agent(
+                Some("investigate observability".into()),
+                AuthorityClass::OperatorInstruction,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Private child should be rejected by get_public_agent.
+        let public_err = host
+            .get_public_agent(&spawned.agent_id)
+            .await
+            .err()
+            .expect("private child should not be accessible via get_public_agent");
+        assert!(
+            matches!(public_err, PublicAgentError::Private { .. }),
+            "expected Private error, got: {public_err}"
+        );
+
+        // But get_agent_for_operator should succeed.
+        let runtime = host
+            .get_agent_for_operator(&spawned.agent_id)
+            .await
+            .expect("operator should see private child");
+        let summary = runtime.agent_summary().await.unwrap();
+        assert_eq!(summary.identity.agent_id, spawned.agent_id);
+        assert_eq!(summary.identity.visibility, AgentVisibility::Private);
+    }
+
+    #[tokio::test]
+    async fn get_agent_for_operator_returns_not_found_for_missing_agent() {
+        let (_home, host) = test_host();
+        let err = host
+            .get_agent_for_operator("nonexistent-agent")
+            .await
+            .err()
+            .expect("missing agent should return error");
+        assert!(matches!(err, PublicAgentError::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn bridge_agent_summary_for_returns_private_child_summary() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+
+        let spawned = parent
+            .spawn_agent(
+                Some("check bridge observability".into()),
+                AuthorityClass::OperatorInstruction,
+                AgentProfilePreset::PrivateChild,
+                None,
+                false,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // The parent runtime has a host bridge; agent_summary_for should
+        // resolve the private child under the trusted local assumption.
+        let summary = parent
+            .agent_summary_for(&spawned.agent_id)
+            .await
+            .expect("bridge lookup should not fail")
+            .expect("private child summary should be available");
+        assert_eq!(summary.identity.agent_id, spawned.agent_id);
+        assert_eq!(summary.identity.visibility, AgentVisibility::Private);
+    }
+
+    #[tokio::test]
+    async fn bridge_agent_summary_for_returns_none_for_missing_agent() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+
+        let result = parent
+            .agent_summary_for("nonexistent-agent")
+            .await
+            .expect("bridge lookup should not fail");
+        assert!(
+            result.is_none(),
+            "missing agent should return None, not error"
+        );
     }
 }

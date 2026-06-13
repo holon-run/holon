@@ -424,6 +424,19 @@ impl RuntimeHandle {
         })
     }
 
+    /// Fetch the summary of any active agent by id through the host bridge.
+    ///
+    /// Returns `None` when the host bridge is unavailable or the requested
+    /// agent does not exist or is not active. This is used by the `AgentGet`
+    /// tool to support an optional `agent_id` parameter under the current
+    /// local trusted control assumption.
+    pub async fn agent_summary_for(&self, agent_id: &str) -> Result<Option<AgentSummary>> {
+        if let Some(bridge) = self.inner.host_bridge.as_ref() {
+            return bridge.agent_summary_for(agent_id).await;
+        }
+        Ok(None)
+    }
+
     pub async fn agent_list_entry(&self) -> Result<AgentListEntry> {
         let agent = self.agent_state().await?;
         let model = self.model_state_for(&agent);

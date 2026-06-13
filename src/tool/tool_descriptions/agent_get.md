@@ -1,1 +1,1 @@
-Read the current agent-plane summary, including identity visibility, ownership, profile preset, lifecycle, active work focus, waiting state, and visible child-agent lineage.
+Read an agent-plane summary, including identity visibility, ownership, profile preset, lifecycle, active work focus, waiting state, and visible child-agent lineage. By default returns the current agent; pass an optional `agent_id` to inspect another agent (including private child agents) under the current local trusted control boundary.
