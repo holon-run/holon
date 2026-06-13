@@ -4,7 +4,7 @@ import { AgentPage } from "../features/agent/AgentPage";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { SegmentedControl, SegmentedControlButton } from "../components/ui/SegmentedControl";
-import { StatusChip } from "../components/ui/StatusChip";
+import { AgentStateBadge, StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { SearchPage } from "../features/search/SearchPage";
@@ -162,11 +162,11 @@ export function App() {
                   <span className="agent-row-main">
                     <span className="agent-row-title">
                       <strong>{agent.id}</strong>
-                      <em className={`agent-state-dot ${agent.lifecycle}`} aria-label={agent.lifecycle} />
+                      <AgentStateBadge className="agent-row-status" lifecycle={agent.lifecycle} posture={agent.posture} />
                       {status ? (
-                        <span className={`agent-row-status ${status.tone}`} aria-label={status.title} title={status.title}>
+                        <StatusBadge className="agent-row-status" kind="attention" value={status.tone} aria-label={status.title} title={status.title}>
                           {status.label}
-                        </span>
+                        </StatusBadge>
                       ) : null}
                     </span>
                     <span className="agent-row-meta">
@@ -249,19 +249,21 @@ export function App() {
               </div>
               <div className="agent-top-controls">
                 <div className="agent-stream-controls" aria-label="Agent stream status">
-                  <StatusChip
+                  <StatusBadge
+                    kind="connection"
+                    value={selectedAgentSourceStatus}
                     className={`source-chip ${selectedAgentSourceStatus}`}
-                    tone={selectedAgentSourceStatus}
                   >
                     {selectedAgentSourceStatus}
-                  </StatusChip>
-                  <StatusChip
+                  </StatusBadge>
+                  <StatusBadge
+                    kind="stream"
+                    value={selectedAgentLiveStatus}
                     className={`source-chip live-status ${selectedAgentLiveStatus}`}
-                    tone={selectedAgentLiveStatus === "stale" ? "error" : selectedAgentLiveStatus}
                     title={selectedAgentLiveTitle}
                   >
                     {liveStatusLabel(selectedAgentLiveStatus)}
-                  </StatusChip>
+                  </StatusBadge>
                   <Button type="button" size="sm" variant="secondary" disabled={agentDetailLoading} onClick={() => void refreshAgentDetail()}>
                     {agentDetailLoading ? "Refreshing…" : "Refresh"}
                   </Button>

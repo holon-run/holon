@@ -2,7 +2,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { Skeleton } from "../../components/ui/Skeleton";
-import { StatusChip } from "../../components/ui/StatusChip";
+import { AgentStateBadge, StatusBadge } from "../../components/ui/StatusChip";
 import type { AgentSummary, DashboardMetric, RuntimeConnection } from "../../runtime/types";
 
 interface DashboardPageProps {
@@ -35,10 +35,10 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
               <p>{agentCountLabel} · local Holon runtime overview</p>
             </div>
             <div className="dashboard-actions">
-              <span className={`connection-pill ${connection.source}`}>
+              <StatusBadge className={`connection-pill ${connection.source}`} kind="connection" value={connection.source}>
                 <span className="runtime-dot" />
                 {connectionLabel}
-              </span>
+              </StatusBadge>
               <Button type="button" variant="secondary" disabled={loading} onClick={onRefresh}>
                 {loading ? "Refreshing…" : "Refresh"}
               </Button>
@@ -100,9 +100,7 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                       <strong>{agent.id}</strong>
                       <small>{agent.profile}</small>
                     </div>
-                    <StatusChip className={`state-chip ${agent.lifecycle}`} tone={agent.lifecycle === "stopped" ? "muted" : "success"}>
-                      {agent.lifecycle}
-                    </StatusChip>
+                    <AgentStateBadge className={`state-chip ${agent.lifecycle}`} lifecycle={agent.lifecycle} posture={agent.posture} />
                   </div>
                   <p>{agent.focusSummary}</p>
                   <div className="agent-detail-grid">
@@ -190,9 +188,9 @@ function DashboardStateCard({ state, detail }: { state: DashboardState; detail: 
 
   return (
     <aside className={`dashboard-state ${state}`} role="status">
-      <StatusChip tone={state === "disconnected" ? "error" : state === "loading" ? "syncing" : state}>
+      <StatusBadge kind="runtime" value={state}>
         {selected.label}
-      </StatusChip>
+      </StatusBadge>
       <div>
         <strong>{selected.title}</strong>
         <p>{selected.body}</p>

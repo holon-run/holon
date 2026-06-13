@@ -274,28 +274,6 @@ button {
   content: "·";
 }
 
-.agent-state-dot {
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--faint);
-}
-
-.agent-state-dot.asleep,
-.agent-state-dot.completed {
-  background: var(--success);
-}
-
-.agent-state-dot.running,
-.agent-state-dot.in_progress {
-  background: var(--accent);
-}
-
-.agent-state-dot.stopped {
-  background: #94a3b8;
-}
-
 .agent-row-status {
   display: grid;
   flex: 0 0 auto;
