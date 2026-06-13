@@ -17,6 +17,7 @@ implementation and tests.
 ## Runtime And Work Model
 
 - [Agent Control Plane Model](./agent-control-plane-model.md)
+- [Agent Actor And Invocation Model](./agent-actor-invocation-model.md)
 - [Agent Lifecycle Control Posture](./agent-lifecycle-control-posture.md)
 - [Agent State Model And Runtime Projection](./agent-state-model.md)
 - [Agent Profile Model](./agent-profile-model.md)
