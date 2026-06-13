@@ -362,7 +362,7 @@ function pageTitle(route: RouteKey): string {
 function pageSubtitle(route: RouteKey, attentionCount: number, agentCount: number): string {
   if (route === "search") return "cross-agent lookup · messages · briefs · work evidence";
   if (route === "settings") return "local connection · providers · model defaults";
-  return `${agentCount} agents · ${attentionCount} need attention`;
+  return attentionCount > 0 ? `${agentCount} agents · ${attentionCount} need attention` : `${agentCount} agents · all clear`;
 }
 
 function levelLabel(level: DisplayLevel): string {

@@ -589,6 +589,7 @@ button {
   margin-bottom: 16px;
 }
 
+.section-head h1,
 .section-head h2 {
   margin: 2px 0 0;
   font-size: 22px;
@@ -608,11 +609,12 @@ button {
   margin-bottom: 0;
 }
 
-.dashboard-head h1 {
+.dashboard-head h1,
+.dashboard-head h2 {
   margin: 2px 0 4px;
-  font-size: clamp(26px, 3vw, 34px);
-  line-height: 1.05;
-  letter-spacing: -0.04em;
+  font-size: 20px;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
 }
 
 .dashboard-head p {

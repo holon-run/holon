@@ -30,9 +30,9 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
         <section className="dashboard-section dashboard-roster-section">
           <div className="section-head dashboard-head">
             <div>
-              <span className="eyebrow">Agents</span>
-              <h1>Agent roster</h1>
-              <p>{agentCountLabel} · local Holon runtime overview</p>
+              <span className="eyebrow">Roster</span>
+              <h2>Agents</h2>
+              <p>{agentCountLabel} available in the local runtime</p>
             </div>
             <div className="dashboard-actions">
               <StatusBadge className={`connection-pill ${connection.source}`} kind="connection" value={connection.source}>
