@@ -792,10 +792,10 @@ code {
   flex-direction: column;
   justify-content: space-between;
   padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: var(--shadow-card);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
 }
 
 .metric-card span {
@@ -833,12 +833,10 @@ code {
   gap: 12px;
   align-items: flex-start;
   padding: 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
-  border-radius: var(--radius);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, var(--surface)), var(--surface));
   color: var(--muted);
-  box-shadow: var(--shadow-card);
 }
 
 .dashboard-state > span {
@@ -904,12 +902,10 @@ code {
   place-items: center;
   min-height: 220px;
   padding: 32px;
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--radius);
-  background: var(--surface);
+  border-style: dashed;
+  border-color: var(--line-strong);
   color: var(--muted);
   text-align: center;
-  box-shadow: var(--shadow-card);
 }
 
 .dashboard-empty span {
@@ -932,7 +928,10 @@ code {
 
 .agent-card,
 .summary-panel,
-.context-card {
+.context-card,
+.dashboard-state,
+.dashboard-empty,
+.metric-card {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
@@ -949,7 +948,8 @@ code {
     transform 140ms ease;
 }
 
-.agent-card:hover {
+.agent-card:hover,
+.metric-card:hover {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
   box-shadow: var(--shadow-soft);
   transform: translateY(-1px);
