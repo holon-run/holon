@@ -191,7 +191,7 @@ function projectTranscriptEntry(entry: SessionTranscriptEntry): AgentTimelineIte
       body: summarizeToolResults(data?.results),
       timestamp,
       meta: compactJoin(["tool results", roundMeta(entry.round)]),
-      minDisplayLevel: "debug",
+      minDisplayLevel: "verbose",
       sourceIds: [entry.id],
       debug: debugJson(entry),
     });
@@ -330,23 +330,27 @@ function projectRuntimeEvent(
 
   if (eventType === "assistant_round_recorded") {
     const textPreview = cleanStringField(payload, "text_preview");
+    const toolNames = toolNamesFromPayload(payload);
+    const stopReason = stringField(payload, "stop_reason");
     if (!textPreview) {
       return {
         kind: "event",
-        label: "Assistant activity",
-        body: compactJoin([
-          numberField(payload, "tool_call_count") == null ? undefined : `${numberField(payload, "tool_call_count")} tool calls`,
-          stringField(payload, "stop_reason"),
-        ]),
-        minDisplayLevel: "debug",
+        label: toolNames.length ? "Assistant requested tools" : "Assistant round",
+        body: toolNames.length
+          ? toolNames.join(", ")
+          : compactJoin([
+              stopReason ? `Stop reason: ${stopReason}` : undefined,
+              numberField(payload, "tool_call_count") == null ? undefined : `${numberField(payload, "tool_call_count")} tool calls`,
+            ]) || "Assistant round completed.",
+        minDisplayLevel: toolNames.length ? "verbose" : "debug",
       };
     }
 
     return {
       kind: "event",
-      label: "Assistant activity",
+      label: "Assistant round",
       body: textPreview,
-      minDisplayLevel: "debug",
+      minDisplayLevel: "verbose",
     };
   }
 
@@ -839,6 +843,14 @@ function toolNamesFromAssistantBlocks(value: unknown): string[] {
       return record?.type === "tool_use" ? stringField(record, "name") : undefined;
     })
     .filter((name): name is string => Boolean(name?.trim()));
+}
+
+function toolNamesFromPayload(value: Record<string, unknown> | undefined): string[] {
+  const toolNames = arrayField(value, "tool_names");
+  if (!toolNames?.length) return [];
+  return toolNames
+    .map((name) => (typeof name === "string" ? name.trim() : ""))
+    .filter((name): name is string => Boolean(name));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
