@@ -617,6 +617,23 @@
     "aliases": []
   },
   {
+    "path": "debug.performance",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "debug.prompt",
     "positionals": [
       {
