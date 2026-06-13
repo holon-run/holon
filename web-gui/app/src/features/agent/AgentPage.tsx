@@ -210,8 +210,13 @@ export function AgentPage({
             {timeline.length === 0 ? (
               <EmptyState
                 className="conversation-empty"
-                title="No visible messages"
-                description="Switch to Verbose or Debug to inspect lower-level runtime events."
+                icon="↵"
+                title="No conversation activity yet"
+                description={
+                  displayLevel === "info"
+                    ? "Send the first operator message, or switch to Verbose/Debug if you want to inspect low-level runtime events."
+                    : "No runtime events are available for this agent yet. Try refreshing the session or sending an operator message."
+                }
               />
             ) : null}
           </div>
@@ -294,7 +299,12 @@ export function AgentPage({
                         ))}
                       </div>
                       {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
-                        <div className="model-picker-empty">No models returned by the runtime.</div>
+                        <EmptyState
+                          className="model-picker-empty"
+                          icon="⌁"
+                          title="No model catalog yet"
+                          description="Refresh the runtime model list, or keep using the current agent model."
+                        />
                       ) : null}
                     </div>
                   ) : null}
@@ -413,6 +423,8 @@ function ActivityTrail({
 }
 
 function fallbackTimeline(agent: AgentSummary): AgentTimelineItem[] {
+  if (!hasVisibleBrief(agent.lastBrief)) return [];
+
   return [
     {
       id: `${agent.id}-fallback-brief`,
@@ -426,6 +438,11 @@ function fallbackTimeline(agent: AgentSummary): AgentTimelineItem[] {
       debug: JSON.stringify(agent, null, 2),
     },
   ];
+}
+
+function hasVisibleBrief(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return Boolean(normalized) && !normalized.startsWith("no recent brief");
 }
 
 function formatDisplayTime(value: string): string {

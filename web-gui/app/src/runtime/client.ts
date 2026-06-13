@@ -484,7 +484,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     modelSource,
     footer: `${lifecycle} · ${posture}`,
     subtitle: `${status} · ${workspace}`,
-    lastBrief: brief?.text ?? "No recent brief returned by /agents/:id/briefs.",
+    lastBrief: brief?.text ?? "",
     lastTurnTime: formatTime(brief?.created_at ?? state?.agent?.agent?.last_brief_at),
     pending,
     activeTaskCount,

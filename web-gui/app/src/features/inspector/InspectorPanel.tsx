@@ -1,3 +1,5 @@
+import { EmptyState } from "../../components/ui/EmptyState";
+import { StatusBadge } from "../../components/ui/StatusChip";
 import type { AgentSummary } from "../../runtime/types";
 
 interface InspectorPanelProps {
@@ -19,14 +21,23 @@ export function InspectorPanel({ agent, open, onClose }: InspectorPanelProps) {
         </button>
       </div>
       <div className="panel-body">
-        <section className="context-card current-work">
-          <div className="context-head">
-            <span className="eyebrow">Current work item</span>
-            <span className="state-chip completed">{agent.currentWork?.state ?? "none"}</span>
-          </div>
-          <h2>{agent.currentWork?.objective ?? "No current work item"}</h2>
-          <code>{agent.currentWork?.id ?? "ready"}</code>
-        </section>
+        {agent.currentWork ? (
+          <section className="context-card current-work">
+            <div className="context-head">
+              <span className="eyebrow">Current work item</span>
+              <StatusBadge className="state-chip" kind="work" value={agent.currentWork.state} />
+            </div>
+            <h2>{agent.currentWork.objective}</h2>
+            <code>{agent.currentWork.id}</code>
+          </section>
+        ) : (
+          <EmptyState
+            className="inspector-empty"
+            icon="◎"
+            title="No current work item"
+            description="This agent is ready for operator input. WorkItem details will appear here once a task is active."
+          />
+        )}
       </div>
     </aside>
   );

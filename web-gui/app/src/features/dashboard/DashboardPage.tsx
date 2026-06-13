@@ -104,9 +104,9 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
                   </div>
                   <p>{agent.focusSummary}</p>
                   <div className="agent-detail-grid">
-                    <div title={agent.currentWork?.objective ?? "none"}>
+                    <div title={agent.currentWork?.objective ?? "No active work item"}>
                       <span>Current work</span>
-                      <strong>{agent.currentWork?.objective ?? "none"}</strong>
+                      <strong>{agent.currentWork?.objective ?? "Ready for new operator input"}</strong>
                     </div>
                     <div title={agent.workspace}>
                       <span>Workspace</span>
