@@ -109,6 +109,15 @@ As an alternative to the credential store, Holon reads API keys from environment
 
 For a complete, up-to-date list, run `holon config providers list`.
 
+### Credential sources
+
+| Source | Description |
+|--------|-------------|
+| `none` | No credential required (local-only providers) |
+| `env` | Read credential from an environment variable |
+| `credential_profile` | Read credential from `~/.holon/credentials.json` by profile name |
+| `external_cli` | Run an external CLI (e.g., `codex`) to obtain a credential |
+
 ## Provider Configuration
 
 Holon ships with built-in provider definitions for 40+ providers. You can add or override providers in `config.json`.
@@ -145,6 +154,42 @@ Options:
 ```bash
 holon config providers remove my-proxy
 ```
+
+## Provider OAuth and login flows
+
+Some providers use OAuth or browser-based login instead of static API keys.
+Holon supports two OAuth-style flows:
+
+### OpenAI Codex OAuth
+
+Codex uses the `codex` CLI for OAuth authentication. When onboarding with
+Codex as your provider, the wizard:
+
+1. Opens your browser for OAuth login
+2. Captures the resulting credential from the `codex` CLI's auth store
+3. Stores it as a credential profile
+
+This provider uses `credential_source: external_cli` and
+`credential_kind: oauth` in the config.
+
+If your Codex credential expires, run `holon onboard` again — the wizard
+detects the expiry and guides you through re-authentication.
+
+### Vercel AI Gateway OIDC
+
+Vercel AI Gateway uses OpenID Connect (OIDC) for authentication. The
+onboarding wizard supports this flow when Vercel is selected as the
+provider.
+
+For both OAuth and OIDC flows, the recommended setup path is:
+
+```bash
+holon onboard
+```
+
+The wizard handles the entire OAuth browser flow and stores the credential
+securely. You should not attempt to configure OAuth providers manually in
+`config.json` unless you are scripting a headless deployment.
 
 ## Listing Available Models
 

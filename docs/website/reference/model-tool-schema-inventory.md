@@ -30,6 +30,18 @@ Each built-in tool entry records:
 - related HTTP or CLI surfaces when commands wrap tool or runtime APIs
 - model-visible tool description
 
+## Capability families
+
+Each built-in tool belongs to a capability family:
+
+| Family | Description | Example tools |
+|--------|-------------|---------------|
+| `Web` | Public web access | WebFetch, WebSearch |
+| `LocalEnvironment` | Workspace-local operations | ApplyPatch, ExecCommand, ViewImage |
+| `AgentLifecycle` | Agent and work management | SpawnAgent, CreateWorkItem, WaitFor |
+| `ControlPlane` | Configuration and introspection | ListModelProviders, ListProviderModels |
+| `Memory` | Persistent memory | MemorySearch, MemoryGet |
+
 ## Stability levels
 
 | Level | Meaning |

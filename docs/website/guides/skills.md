@@ -47,13 +47,83 @@ Example skills in this repository include:
 
 This keeps skills explicit and avoids loading irrelevant guidance.
 
-## Installing and Listing Skills
+## Managing skills with the CLI
 
-The HTTP control plane exposes skill endpoints:
+Holon provides CLI commands for installing, listing, and removing skills:
+
+### List installed skills
+
+```bash
+holon skills list
+```
+
+Shows all discoverable skills for the current agent, including their name,
+scope (agent, workspace, or user), and source.
+
+### Install a skill
+
+```bash
+# Install from a local directory or SKILL.md file
+holon skills install /path/to/skill-dir
+
+# Install from a remote source
+holon skills install https://github.com/user/repo/tree/main/skills/my-skill --remote
+
+# Install a built-in skill by name
+holon skills install my-skill --builtin
+
+# Copy the skill into the agent instead of referencing it
+holon skills install /path/to/skill --copy
+```
+
+Install a skill for a specific agent:
+
+```bash
+holon skills install my-skill --builtin --agent reviewer
+```
+
+### Uninstall a skill
+
+```bash
+holon skills uninstall my-skill
+```
+
+For a specific agent:
+
+```bash
+holon skills uninstall my-skill --agent reviewer
+```
+
+### Skill source types
+
+| Source | Flag | Example |
+|--------|------|---------|
+| Local path | (default) | `holon skills install ./skills/my-skill` |
+| Remote URL | `--remote` | `holon skills install https://... --remote` |
+| Built-in | `--builtin` | `holon skills install ghx --builtin` |
+
+## Managing skills via HTTP
+
+The HTTP control plane exposes the same operations as API endpoints:
 
 - `GET /agents/:agent_id/skills` — List installed or available skills
 - `POST /control/agents/:agent_id/skills/install` — Install a skill
 - `POST /control/agents/:agent_id/skills/uninstall` — Remove a skill
+
+## TUI integration
+
+The Terminal UI provides skill management alongside the CLI:
+
+- **Slash commands** — Type `/skills` to view installed skills,
+  `/skill-install <source>` to install, and `/skill-uninstall <name>` to
+  remove skills directly from the chat input.
+- **Skill name completion** — The TUI auto-completes skill names when
+  using slash commands.
+- **Agent status sidebar** — The agent detail view under "Skills" shows
+  all discoverable skills with their scope (agent, workspace, user).
+
+These TUI features let you manage skills without leaving the interactive
+session.
 
 ## Writing a Good Skill
 
