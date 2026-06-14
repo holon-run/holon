@@ -587,6 +587,33 @@ pub struct SkillRootView {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+pub enum NoteScope {
+    Agent,
+}
+
+impl NoteScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NoteCatalogEntry {
+    pub name: String,
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    pub scope: NoteScope,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentTemplateSourceKind {
     Builtin,
     UserGlobal,
@@ -846,6 +873,8 @@ pub struct SkillsRuntimeView {
     pub attached_skills: Vec<SkillCatalogEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_skills: Vec<ActiveSkillRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes_catalog: Vec<NoteCatalogEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
