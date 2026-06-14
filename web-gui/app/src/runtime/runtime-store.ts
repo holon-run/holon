@@ -95,6 +95,22 @@ function appendOptimisticOperatorPrompt(detail: AgentDetail | null, agent: Agent
   };
 }
 
+function markOptimisticOperatorPromptsSent(detail: AgentDetail | null): AgentDetail | null {
+  if (!detail) return detail;
+  let changed = false;
+  const timeline = detail.timeline.map((item) => {
+    if (item.kind !== "operator" || item.meta !== "sending" || !item.sourceIds.includes("pending-operator-prompt")) {
+      return item;
+    }
+    changed = true;
+    return {
+      ...item,
+      meta: "Sent",
+    };
+  });
+  return changed ? { ...detail, timeline } : detail;
+}
+
 export interface RuntimeStoreState {
   route: RouteKey;
   selectedAgentId: string;
@@ -486,6 +502,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
             ...state.sessionsByAgentId[agentId],
             sendingPrompt: false,
             promptError: undefined,
+            detail: markOptimisticOperatorPromptsSent(state.sessionsByAgentId[agentId]?.detail ?? null),
           },
         },
       }));
