@@ -365,6 +365,7 @@ function isLiveWorkingActivity(activity: Pick<AgentTimelineActivity, "label" | "
   return (
     eventType === "assistant_round_recorded" ||
     eventType === "text_only_round_observed" ||
+    eventType === "message_processing_started" ||
     eventType === "tool_executed" ||
     eventType === "tool_execution_failed"
   );

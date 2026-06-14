@@ -310,6 +310,16 @@ function projectRuntimeEvent(
     return projectToolExecution(eventType, payload);
   }
 
+  if (eventType === "message_processing_started") {
+    return {
+      kind: "system",
+      label: "Started processing",
+      body: compactJoin([stringField(payload, "origin") === "operator" ? "Operator input" : undefined, stringField(payload, "run_id")]) ||
+        "Agent started processing input.",
+      minDisplayLevel: "verbose",
+    };
+  }
+
   if (
     eventType === "turn_local_checkpoint_resume_requested" ||
     eventType === "turn_local_checkpoint_requested" ||

@@ -20,6 +20,19 @@ function createLiveAgentDetail(agent: AgentSummary | undefined): AgentDetail | n
   };
 }
 
+function preserveLiveAgentRunState(httpAgent: AgentSummary, liveAgent: AgentSummary): AgentSummary {
+  if (!isLiveRunningAgent(liveAgent)) return httpAgent;
+  return {
+    ...httpAgent,
+    currentRunId: liveAgent.currentRunId,
+    lifecycle: liveAgent.lifecycle,
+  };
+}
+
+function isLiveRunningAgent(agent: AgentSummary): boolean {
+  return Boolean(agent.currentRunId) || agent.lifecycle.toLowerCase() === "awake-running";
+}
+
 export interface AgentSessionState {
   loading: boolean;
   loadingOlder: boolean;
@@ -371,9 +384,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           },
         },
       }));
-      void catchUpAgentEvents(get, set, agentId, displayLevel).finally(() => {
-        get().startAgentEventStream(agentId, displayLevel);
-      });
+      void catchUpAgentEvents(get, set, agentId, displayLevel);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
@@ -835,8 +846,11 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     events: { events: pageEvents },
     eventDisplayLevel: "debug",
   });
+  const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
+  const agent = liveDetailIsNewer && current.detail ? preserveLiveAgentRunState(detail.agent, current.detail.agent) : detail.agent;
   const mergedDetail: AgentDetail = {
     ...detail,
+    agent,
     timeline: mergeTimeline(pageTimeline, current.detail?.timeline ?? []),
     events,
     newestEventSeq: Math.max(detail.newestEventSeq ?? 0, current.detail?.newestEventSeq ?? 0, highestSeq(eventSeqs) ?? 0),
@@ -848,7 +862,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
   return {
     bootstrap:
       detail.source === "http" && !detail.error
-        ? sortBootstrapAgents(mergeAgentIntoBootstrap(state.bootstrap, detail.agent), state.rosterActivityByAgentId)
+        ? sortBootstrapAgents(mergeAgentIntoBootstrap(state.bootstrap, agent), state.rosterActivityByAgentId)
         : state.bootstrap,
     sessionsByAgentId: {
       ...state.sessionsByAgentId,
