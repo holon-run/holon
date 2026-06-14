@@ -4,7 +4,7 @@ import { AgentPage } from "../features/agent/AgentPage";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { SegmentedControl, SegmentedControlButton } from "../components/ui/SegmentedControl";
-import { AgentStateBadge, StatusBadge } from "../components/ui/StatusChip";
+import { StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { SearchPage } from "../features/search/SearchPage";
@@ -153,13 +153,14 @@ export function App() {
             </div>
           ) : (
             bootstrap.agents.map((agent) => {
-              const status = agentStatusIndicator(agent);
+              const status = agentDisplayStatus(agent);
+              const secondary = agentSecondaryStatus(agent);
 
               return (
                 <button
                   className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
                   key={agent.id}
-                  title={`${agent.id} · ${agent.focusSummary}${status ? ` · ${status.title}` : ""}`}
+                  title={`${agent.id} · ${agent.focusSummary} · ${status.title}`}
                   type="button"
                   onClick={() => navigateAgent(agent.id)}
                 >
@@ -167,16 +168,14 @@ export function App() {
                   <span className="agent-row-main">
                     <span className="agent-row-title">
                       <strong>{agent.id}</strong>
-                      <AgentStateBadge className="agent-row-status" lifecycle={agent.lifecycle} posture={agent.posture} />
-                      {status ? (
-                        <StatusBadge className="agent-row-status" kind="attention" value={status.tone} aria-label={status.title} title={status.title}>
-                          {status.label}
-                        </StatusBadge>
-                      ) : null}
+                      <StatusBadge className="agent-row-status" kind="agent" value={status.tone} aria-label={status.title} title={status.title}>
+                        {status.label}
+                      </StatusBadge>
                     </span>
                     <span className="agent-row-meta">
-                      <span>{agent.lifecycle}</span>
-                      <span>{agent.currentWork?.state ?? agent.posture}</span>
+                      {secondary.map((item, index) => (
+                        <span key={`${item}-${index}`}>{item}</span>
+                      ))}
                     </span>
                   </span>
                 </button>
@@ -399,26 +398,84 @@ function levelLabel(level: DisplayLevel): string {
   return "Debug";
 }
 
-function agentStatusIndicator(agent: AgentSummary): { label: string; title: string; tone: "input" | "running" | "waiting" } | null {
+function agentDisplayStatus(agent: AgentSummary): { label: string; title: string; tone: string } {
   const details = [
+    agent.posture ? `posture: ${agent.posture}` : undefined,
+    agent.lifecycle ? `lifecycle: ${agent.lifecycle}` : undefined,
     agent.pending > 0 ? `${agent.pending} pending input${agent.pending === 1 ? "" : "s"}` : undefined,
     agent.activeTaskCount > 0
       ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}`
       : undefined,
     agent.waitingCount > 0 ? `${agent.waitingCount} waiting condition${agent.waitingCount === 1 ? "" : "s"}` : undefined,
   ].filter(Boolean);
+  const title = details.join(" · ") || "No status details";
 
-  if (details.length === 0) return null;
+  if (isStoppedOrArchived(agent.lifecycle) || isStoppedOrArchived(agent.posture)) {
+    return { label: "Stopped", title, tone: "stopped" };
+  }
 
   if (agent.pending > 0) {
-    return { label: "Needs input", title: details.join(" · "), tone: "input" };
+    return { label: "Needs input", title, tone: "needs-input" };
   }
 
-  if (agent.activeTaskCount > 0) {
-    return { label: "Running", title: details.join(" · "), tone: "running" };
+  if (agent.activeTaskCount > 0 || agent.currentRunId || isActivePosture(agent.posture)) {
+    return { label: "Running", title, tone: "running" };
   }
 
-  return { label: "Waiting", title: details.join(" · "), tone: "waiting" };
+  if (isRunnablePosture(agent.posture)) {
+    return { label: "Runnable", title, tone: "running" };
+  }
+
+  if (agent.waitingCount > 0 || isWaitingPosture(agent.posture)) {
+    return { label: "Waiting", title, tone: "waiting" };
+  }
+
+  if (isBlockedPosture(agent.posture)) {
+    return { label: "Blocked", title, tone: "stopped" };
+  }
+
+  if (isIdlePosture(agent.posture) || isIdlePosture(agent.lifecycle)) {
+    return { label: "Ready", title, tone: "ready" };
+  }
+
+  return { label: "Unknown", title, tone: "muted" };
+}
+
+function agentSecondaryStatus(agent: AgentSummary): string[] {
+  const items = [agent.lifecycle, agent.currentWork?.state ?? agent.posture].filter(Boolean);
+  return items.length > 0 ? items : ["unknown"];
+}
+
+function normalizeAgentStatus(value?: string | null): string {
+  return (value ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+}
+
+function isStoppedOrArchived(value?: string | null): boolean {
+  const status = normalizeAgentStatus(value);
+  return status === "stopped" || status === "archived";
+}
+
+function isActivePosture(value?: string | null): boolean {
+  const status = normalizeAgentStatus(value);
+  return status === "active-turn" || status === "awake-running" || status === "running";
+}
+
+function isRunnablePosture(value?: string | null): boolean {
+  const status = normalizeAgentStatus(value);
+  return status === "has-queued-input" || status === "has-runnable-work";
+}
+
+function isWaitingPosture(value?: string | null): boolean {
+  return normalizeAgentStatus(value).startsWith("waiting");
+}
+
+function isBlockedPosture(value?: string | null): boolean {
+  return normalizeAgentStatus(value) === "blocked";
+}
+
+function isIdlePosture(value?: string | null): boolean {
+  const status = normalizeAgentStatus(value);
+  return status === "idle" || status === "asleep" || status === "awake-idle" || status === "ready";
 }
 
 function liveStatusLabel(status: string): string {

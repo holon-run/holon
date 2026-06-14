@@ -20,6 +20,7 @@ implementation and tests.
 - [Agent Actor And Invocation Model](./agent-actor-invocation-model.md)
 - [Agent Lifecycle Control Posture](./agent-lifecycle-control-posture.md)
 - [Agent State Model And Runtime Projection](./agent-state-model.md)
+- [Agent Status Display Projection](./agent-status-display-projection.md)
 - [Agent Profile Model](./agent-profile-model.md)
 - [Runtime Scheduler Contract](./runtime-scheduler-contract.md)
 - [Result Closure](./result-closure.md)
