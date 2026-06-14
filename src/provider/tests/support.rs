@@ -288,6 +288,7 @@ pub fn test_config(
         max_relevant_episodes: 3,
         control_token: Some("secret".into()),
         control_auth_mode: ControlAuthMode::Auto,
+        api_cors: Default::default(),
         config_file_path: home_path.join("config.json"),
         stored_config: Default::default(),
         default_model: ModelRef::parse(default_model).unwrap(),

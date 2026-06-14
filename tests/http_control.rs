@@ -31,6 +31,7 @@ http_async_tests!(
     runtime_status_route_reports_runtime_metadata,
     runtime_readiness_route_omits_activity_summary,
     runtime_config_route_reads_and_updates_persisted_runtime_config,
+    cors_preflight_respects_configured_origin,
     runtime_status_route_reports_waiting_activity_summary,
     runtime_status_route_reports_last_runtime_failure_summary,
     runtime_shutdown_route_requests_shutdown,
