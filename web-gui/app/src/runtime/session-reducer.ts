@@ -496,7 +496,7 @@ function activityToTimelineItem(activity: AgentTimelineActivity): AgentTimelineI
 
 function attachActivitiesToConversationItems(items: AgentTimelineItem[]): AgentTimelineItem[] {
   const conversationItems: AgentTimelineItem[] = [];
-  const orphanActivities: AgentTimelineActivity[] = [];
+  const activities: AgentTimelineActivity[] = [];
 
   for (const item of items) {
     const cleanItem: AgentTimelineItem = { ...item, activities: undefined };
@@ -505,8 +505,12 @@ function attachActivitiesToConversationItems(items: AgentTimelineItem[]): AgentT
       continue;
     }
 
-    const activity = timelineItemToActivity(cleanItem);
-    const target = nearestConversationItem(conversationItems, cleanItem);
+    activities.push(timelineItemToActivity(cleanItem));
+  }
+
+  const orphanActivities: AgentTimelineActivity[] = [];
+  for (const activity of activities) {
+    const target = nearestConversationItem(conversationItems, activity);
     if (target) {
       if (!isActivityDuplicateOfTarget(activity, target)) {
         target.activities = mergeTimelineActivities(target.activities ?? [], [activity]);
@@ -538,7 +542,10 @@ function attachActivitiesToConversationItems(items: AgentTimelineItem[]): AgentT
   return conversationItems.sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
 }
 
-function nearestConversationItem(items: AgentTimelineItem[], activity: AgentTimelineItem): AgentTimelineItem | undefined {
+function nearestConversationItem(
+  items: AgentTimelineItem[],
+  activity: Pick<AgentTimelineActivity, "timestamp">,
+): AgentTimelineItem | undefined {
   const activityTime = sortableTime(activity.timestamp);
   const maxDistanceMs = 5 * 60 * 1000;
   let nearest: AgentTimelineItem | undefined;
