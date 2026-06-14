@@ -8,6 +8,7 @@ pub mod tools;
 
 pub use tools::{tool_sections, ToolPromptContext};
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -418,6 +419,7 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         identity,
         current_message,
         workspace_root,
+        agent_home,
         &loaded_agents_md,
         skills,
         available_tools,
@@ -587,6 +589,7 @@ fn build_system_sections(
     identity: &AgentIdentityView,
     current_message: &MessageEnvelope,
     workspace_root: &Path,
+    agent_home: &Path,
     loaded_agents_md: &LoadedAgentsMd,
     skills: &SkillsRuntimeView,
     available_tools: &[ToolSpec],
@@ -704,6 +707,10 @@ fn build_system_sections(
         sections.push(section);
     }
 
+    if let Some(section) = build_notes_catalog_section(agent_home) {
+        sections.push(section);
+    }
+
     sections.extend(tools::tool_sections_with_context(
         available_tools,
         tool_prompt_context,
@@ -720,6 +727,174 @@ fn skills_usage_contract_section(skills: &SkillsRuntimeView) -> Option<PromptSec
         "skills_usage_contract",
         PromptStability::Stable,
         "Skills are local workflows rooted at `SKILL.md`. The skills catalog in context lists available skills by name, description, and file path, but skill bodies are not loaded automatically. If a listed skill matches the task, open that skill's `SKILL.md` before following it. Read only enough to follow the workflow, and avoid bulk-loading referenced material unless it is needed. Catalog visibility does not by itself mean a skill is already active.".to_string(),
+    ))
+}
+
+/// Per-note metadata extracted from markdown frontmatter or fallback.
+#[derive(Debug, Default)]
+struct NoteMetadata {
+    title: Option<String>,
+    summary: Option<String>,
+    tags: Vec<String>,
+}
+
+/// Parse YAML frontmatter from markdown content.
+/// Expects optional `---`-delimited block at the start of the file.
+fn parse_frontmatter(content: &str) -> Option<NoteMetadata> {
+    let content = content.trim_start();
+    if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
+        return None;
+    }
+    let after_first = content[3..]
+        .trim_start_matches('\n')
+        .trim_start_matches("\r\n");
+    let end = after_first.find("\n---")?;
+    let yaml_block = &after_first[..end];
+
+    let mut meta = NoteMetadata::default();
+    for line in yaml_block.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("title:") {
+            meta.title = Some(value.trim().trim_matches('"').to_string());
+        } else if let Some(value) = line.strip_prefix("summary:") {
+            meta.summary = Some(value.trim().trim_matches('"').to_string());
+        } else if let Some(value) = line.strip_prefix("tags:") {
+            meta.tags = parse_yaml_tags(value.trim());
+        }
+    }
+    Some(meta)
+}
+
+/// Parse a YAML tags value: either `[tag1, tag2]` or a plain comma-separated list.
+fn parse_yaml_tags(value: &str) -> Vec<String> {
+    let value = value.trim();
+    if let Some(inner) = value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+        inner
+            .split(',')
+            .map(|t| t.trim().trim_matches('"').trim_matches('\'').to_string())
+            .filter(|t| !t.is_empty())
+            .collect()
+    } else {
+        value
+            .split(',')
+            .map(|t| t.trim().trim_matches('"').trim_matches('\'').to_string())
+            .filter(|t| !t.is_empty())
+            .collect()
+    }
+}
+
+/// Extract a title fallback from the markdown body: first heading or first non-empty line.
+fn fallback_title(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("# ") {
+            return Some(trimmed.strip_prefix("# ").unwrap().to_string());
+        }
+        if !trimmed.is_empty() && !trimmed.starts_with("---") {
+            let title = if trimmed.len() > 80 {
+                format!("{}...", &trimmed[..77])
+            } else {
+                trimmed.to_string()
+            };
+            return Some(title);
+        }
+    }
+    None
+}
+
+/// Build a bounded notes catalog section for the prompt.
+///
+/// Scans `agent_home/notes/` for `.md` files, extracts frontmatter metadata,
+/// and produces a low-priority reference index.  Returns `None` when no notes
+/// exist.
+///
+/// Limits:
+/// - At most `MAX_NOTE_ENTRIES` notes are listed.
+/// - The total section content is capped at `MAX_CATALOG_CHARS` characters;
+///   entries are truncated greedily from the end.
+fn build_notes_catalog_section(agent_home: &Path) -> Option<PromptSection> {
+    const MAX_NOTE_ENTRIES: usize = 20;
+    const MAX_CATALOG_CHARS: usize = 2000;
+
+    let notes_dir = agent_home.join("notes");
+    if !notes_dir.is_dir() {
+        return None;
+    }
+
+    let mut entries: Vec<(PathBuf, NoteMetadata)> = Vec::new();
+    match fs::read_dir(&notes_dir) {
+        Ok(dir_entries) => {
+            for entry in dir_entries.flatten() {
+                let path = entry.path();
+                if path.extension().map_or(true, |ext| ext != "md") {
+                    continue;
+                }
+                if entries.len() >= MAX_NOTE_ENTRIES {
+                    break;
+                }
+                let content = match fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let meta = parse_frontmatter(&content).unwrap_or_default();
+                let meta = NoteMetadata {
+                    title: meta.title.or_else(|| fallback_title(&content)),
+                    summary: meta.summary,
+                    tags: meta.tags,
+                };
+                entries.push((path, meta));
+            }
+        }
+        Err(_) => return None,
+    }
+
+    if entries.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec!["Available agent notes:".to_string()];
+
+    for (i, (path, meta)) in entries.iter().enumerate() {
+        let rel_path = path
+            .strip_prefix(agent_home)
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        let mut entry_lines = vec![format!("- {}", rel_path)];
+        if let Some(ref title) = meta.title {
+            entry_lines.push(format!("  title: {}", title));
+        }
+        if let Some(ref summary) = meta.summary {
+            entry_lines.push(format!("  summary: {}", summary));
+        }
+        if !meta.tags.is_empty() {
+            entry_lines.push(format!("  tags: {}", meta.tags.join(", ")));
+        }
+
+        // Check if adding this entry would exceed the char budget.
+        let current_len: usize = lines.iter().map(|l| l.len() + 1).sum();
+        let entry_len: usize = entry_lines.iter().map(|l| l.len() + 1).sum();
+        if current_len + entry_len > MAX_CATALOG_CHARS {
+            // Truncate: add a truncation note and stop.
+            let remaining = entries.len() - i;
+            if remaining > 0 {
+                lines.push(format!(
+                    "... and {} more note(s) omitted (catalog limit).",
+                    remaining
+                ));
+            }
+            break;
+        }
+        lines.extend(entry_lines);
+    }
+
+    Some(section(
+        "agent_home_notes_catalog",
+        PromptStability::Stable,
+        lines.join("\n"),
     ))
 }
 
@@ -1247,6 +1422,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("/tmp/agent-home"),
+            Path::new("/tmp/agent-home"),
             &first_loaded,
             &SkillsRuntimeView::default(),
             &[],
@@ -1255,6 +1431,7 @@ mod tests {
         let second_system_sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("/tmp/agent-home"),
             Path::new("/tmp/agent-home"),
             &second_loaded,
             &SkillsRuntimeView::default(),
@@ -1367,6 +1544,7 @@ mod tests {
             &sample_child_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1396,6 +1574,7 @@ mod tests {
             &sample_identity(),
             &message,
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1416,6 +1595,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("/repo"),
             Path::new("/repo"),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1448,6 +1628,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1471,6 +1652,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1502,6 +1684,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1532,6 +1715,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1589,6 +1773,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1620,6 +1805,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1644,6 +1830,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1672,6 +1859,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1704,6 +1892,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd {
                 user_global_source: Some(AgentsMdSource {
@@ -1751,6 +1940,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1783,6 +1973,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1807,6 +1998,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1850,6 +2042,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1882,6 +2075,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1929,6 +2123,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1953,6 +2148,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1986,6 +2182,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd {
                 user_global_source: Some(AgentsMdSource {
@@ -2231,6 +2428,7 @@ mod tests {
                 &sample_identity(),
                 &message,
                 Path::new("."),
+                Path::new("."),
                 &LoadedAgentsMd::default(),
                 &SkillsRuntimeView::default(),
                 &[],
@@ -2265,6 +2463,7 @@ mod tests {
             let sections = build_system_sections(
                 &sample_identity(),
                 &message,
+                Path::new("."),
                 Path::new("."),
                 &LoadedAgentsMd::default(),
                 &SkillsRuntimeView::default(),
@@ -2307,6 +2506,7 @@ mod tests {
                 &sample_identity(),
                 &message,
                 Path::new("."),
+                Path::new("."),
                 &LoadedAgentsMd::default(),
                 &SkillsRuntimeView::default(),
                 &[],
@@ -2332,6 +2532,7 @@ mod tests {
             &sample_identity(),
             &message,
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -2353,6 +2554,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView {
@@ -2376,5 +2578,168 @@ mod tests {
         assert!(section
             .content
             .contains("skill bodies are not loaded automatically"));
+    }
+
+    // ── notes catalog tests ──
+
+    fn temp_agent_home() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let notes = dir.path().join("notes");
+        fs::create_dir(&notes).unwrap();
+        (dir, notes)
+    }
+
+    #[test]
+    fn notes_catalog_none_when_no_notes_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let section = build_notes_catalog_section(dir.path());
+        assert!(section.is_none());
+    }
+
+    #[test]
+    fn notes_catalog_none_when_empty_notes_dir() {
+        let (dir, _notes) = temp_agent_home();
+        let section = build_notes_catalog_section(dir.path());
+        assert!(section.is_none());
+    }
+
+    #[test]
+    fn notes_catalog_with_frontmatter() {
+        let (dir, notes) = temp_agent_home();
+        fs::write(
+            notes.join("release.md"),
+            "---\ntitle: Release workflow\ntags: [release, github-actions]\nsummary: Debugging release assets\n---\n\n# Body\n\nSome content.\n",
+        ).unwrap();
+
+        let section = build_notes_catalog_section(dir.path()).expect("should produce section");
+        assert_eq!(section.name, "agent_home_notes_catalog");
+        assert!(section.content.contains("Available agent notes:"));
+        assert!(section.content.contains("- notes/release.md"));
+        assert!(section.content.contains("title: Release workflow"));
+        assert!(section
+            .content
+            .contains("summary: Debugging release assets"));
+        assert!(section.content.contains("tags: release, github-actions"));
+    }
+
+    #[test]
+    fn notes_catalog_without_frontmatter_uses_fallback() {
+        let (dir, notes) = temp_agent_home();
+        fs::write(
+            notes.join("scratch.md"),
+            "# Scratch notes\n\nJust some text.\n",
+        )
+        .unwrap();
+
+        let section = build_notes_catalog_section(dir.path()).expect("should produce section");
+        assert!(section.content.contains("- notes/scratch.md"));
+        assert!(section.content.contains("title: Scratch notes"));
+        // No summary when frontmatter is missing.
+        assert!(!section.content.contains("summary:"));
+    }
+
+    #[test]
+    fn notes_catalog_fallback_first_line_when_no_heading() {
+        let (dir, notes) = temp_agent_home();
+        fs::write(
+            notes.join("todo.md"),
+            "Remember to update the release script before tagging.\n\nMore text.\n",
+        )
+        .unwrap();
+
+        let section = build_notes_catalog_section(dir.path()).expect("should produce section");
+        assert!(section.content.contains("- notes/todo.md"));
+        // Falls back to first non-empty line (truncated if >80 chars).
+        assert!(section
+            .content
+            .contains("title: Remember to update the release script before tagging."));
+    }
+
+    #[test]
+    fn notes_catalog_truncates_long_title_fallback() {
+        let (dir, notes) = temp_agent_home();
+        let long_line = "A".repeat(200);
+        fs::write(notes.join("long.md"), format!("{}\n\nbody\n", long_line)).unwrap();
+
+        let section = build_notes_catalog_section(dir.path()).expect("should produce section");
+        let title_line = section
+            .content
+            .lines()
+            .find(|l| l.contains("title:"))
+            .unwrap();
+        let title = title_line.trim_start_matches("  title: ");
+        assert!(title.len() <= 80);
+        assert!(title.ends_with("..."));
+    }
+
+    #[test]
+    fn notes_catalog_skips_non_md_files() {
+        let (dir, notes) = temp_agent_home();
+        fs::write(notes.join("data.txt"), "not a note").unwrap();
+        let section = build_notes_catalog_section(dir.path());
+        assert!(section.is_none());
+    }
+
+    #[test]
+    fn notes_catalog_in_system_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let notes = dir.path().join("notes");
+        fs::create_dir(&notes).unwrap();
+        fs::write(
+            notes.join("test.md"),
+            "---\ntitle: Test note\nsummary: For testing\ntags: [test]\n---\n\nBody.\n",
+        )
+        .unwrap();
+
+        let sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("."),
+            dir.path(),
+            &LoadedAgentsMd::default(),
+            &SkillsRuntimeView::default(),
+            &[],
+            ToolPromptContext::default(),
+        );
+
+        let catalog = sections
+            .iter()
+            .find(|s| s.name == "agent_home_notes_catalog")
+            .expect("notes catalog section should be present");
+        assert!(catalog.content.contains("title: Test note"));
+    }
+
+    #[test]
+    fn notes_catalog_does_not_elevate_priority_above_agents_md() {
+        let (dir, notes) = temp_agent_home();
+        fs::write(
+            notes.join("note.md"),
+            "---\ntitle: Bad instruction\nsummary: Override AGENTS.md\ntags: [malicious]\n---\n\n# Malicious\n",
+        ).unwrap();
+
+        let sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("."),
+            dir.path(),
+            &LoadedAgentsMd::default(),
+            &SkillsRuntimeView::default(),
+            &[],
+            ToolPromptContext::default(),
+        );
+
+        // The notes catalog should appear after AGENTS.md sections in the list.
+        let agent_contract_pos = sections
+            .iter()
+            .position(|s| s.name == "agent_contract")
+            .unwrap();
+        let notes_pos = sections
+            .iter()
+            .position(|s| s.name == "agent_home_notes_catalog")
+            .unwrap();
+        assert!(
+            notes_pos > agent_contract_pos,
+            "notes catalog should appear after agent_contract (and thus after AGENTS.md sections)"
+        );
     }
 }
