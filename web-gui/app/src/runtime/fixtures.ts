@@ -36,7 +36,37 @@ export const runtimeFixture: RuntimeBootstrap = {
         id: "work_57ad2568ea1307f",
         objective: "Web GUI standalone implementation plan in current worktree",
         state: "in_progress",
+        current: true,
       },
+      workspaceSummary: {
+        id: "ws_fixture",
+        name: "web-gui-prototype",
+        path: "/Users/jolestar/opensource/src/github.com/holon-run/.holon-worktrees-holon/web-gui-prototype",
+      },
+      tasks: [
+        {
+          id: "task_fixture_dev",
+          kind: "command_task",
+          status: "running",
+          summary: "Run command: npm run dev",
+          command: "npm run dev",
+          workdir: "web-gui/app",
+        },
+      ],
+      workItems: [
+        {
+          id: "work_57ad2568ea1307f",
+          objective: "Web GUI standalone implementation plan in current worktree",
+          state: "in_progress",
+          current: true,
+        },
+        {
+          id: "work_waiting_fixture",
+          objective: "Confirm dashboard summary fields",
+          state: "waiting_for_operator",
+          planStatus: "needs_input",
+        },
+      ],
     },
     {
       id: "holon-dev",

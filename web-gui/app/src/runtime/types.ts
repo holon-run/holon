@@ -14,6 +14,23 @@ export interface WorkItemSummary {
   id: string;
   objective: string;
   state: string;
+  planStatus?: string;
+  current?: boolean;
+}
+
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  path: string;
+}
+
+export interface TaskSummary {
+  id: string;
+  kind: string;
+  status: string;
+  summary: string;
+  command?: string;
+  workdir?: string;
 }
 
 export interface DashboardMetric {
@@ -44,6 +61,9 @@ export interface AgentSummary {
   postureReason: string;
   currentRunId?: string | null;
   currentWork?: WorkItemSummary;
+  workspaceSummary?: WorkspaceSummary;
+  tasks?: TaskSummary[];
+  workItems?: WorkItemSummary[];
 }
 
 export interface RuntimeModelOption {

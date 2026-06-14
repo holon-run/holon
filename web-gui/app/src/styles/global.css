@@ -2411,6 +2411,64 @@ code {
   line-height: 1.4;
 }
 
+.inspector-list,
+.inspector-nested-stack {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.inspector-list li,
+.inspector-list-item {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 84%, var(--page));
+}
+
+.inspector-list-item.featured {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.inspector-list-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.inspector-list-head strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.inspector-list small,
+.inspector-list-item small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.inspector-details-list {
+  margin-top: 12px;
+}
+
+.inspector-details-list summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .inspector-detail pre {
   overflow: auto;
   max-height: calc(100vh - 310px);

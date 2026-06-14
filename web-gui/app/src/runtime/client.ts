@@ -8,7 +8,9 @@ import type {
   RuntimeConnection,
   RuntimeModelCatalog,
   RuntimeModelOption,
+  TaskSummary,
   WorkItemSummary,
+  WorkspaceSummary,
   DisplayLevel,
 } from "./types";
 
@@ -77,6 +79,13 @@ interface AgentListEntryDto {
   active_workspace_entry?: {
     workspace_id?: string;
     workspace_alias?: string | null;
+    workspace_anchor?: string;
+    execution_root?: string;
+    cwd?: string;
+    projection_metadata?: {
+      worktree_branch?: string;
+      worktree_path?: string;
+    };
   } | null;
 }
 
@@ -100,19 +109,29 @@ interface AgentStateDto {
     pending_count?: number;
     current_run_id?: string | null;
   };
-  tasks?: unknown[];
+  tasks?: Array<{
+    id?: string;
+    kind?: string;
+    status?: string;
+    summary?: string;
+    detail?: unknown;
+  }>;
   work_items?: Array<{
     id?: string;
     objective?: string;
     state?: string;
+    plan_status?: string;
   }>;
   waiting_intents?: unknown[];
-  workspace?: {
+  workspace?: AgentWorkspaceDto;
+}
+
+interface AgentWorkspaceDto {
     active_workspace_entry?: AgentListEntryDto["active_workspace_entry"];
     worktree_session?: {
       worktree_branch?: string;
+      worktree_path?: string;
     } | null;
-  };
 }
 
 interface BriefRecordDto {
@@ -490,7 +509,10 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const profile = compactJoin([entry.identity?.visibility ?? "public", entry.identity?.ownership, entry.identity?.profile_preset]);
   const workspaceEntry = state?.workspace?.active_workspace_entry ?? entry.active_workspace_entry;
   const workspace = workspaceEntry?.workspace_alias ?? workspaceEntry?.workspace_id ?? state?.workspace?.worktree_session?.worktree_branch ?? "not bound";
+  const workspaceSummary = projectWorkspace(workspaceEntry, state?.workspace?.worktree_session);
   const currentWork = selectCurrentWork(state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
+  const workItems = selectOpenWorkItems(state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
+  const tasks = projectTasks(state?.tasks ?? []);
   const pending = state?.session?.pending_count ?? entry.pending ?? 0;
   const activeTaskCount = state?.tasks?.length ?? state?.agent?.active_task_count ?? 0;
   const waitingCount = state?.waiting_intents?.length ?? state?.agent?.active_waiting_intents?.length ?? (entry.waiting_reason ? 1 : 0);
@@ -522,7 +544,43 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     postureReason,
     currentRunId,
     currentWork,
+    workspaceSummary,
+    tasks,
+    workItems,
   };
+}
+
+function projectWorkspace(
+  workspaceEntry: AgentListEntryDto["active_workspace_entry"],
+  worktreeSession?: AgentWorkspaceDto["worktree_session"],
+): WorkspaceSummary | undefined {
+  if (!workspaceEntry && !worktreeSession) return undefined;
+  const metadata = workspaceEntry?.projection_metadata;
+  const name = workspaceEntry?.workspace_alias ?? metadata?.worktree_branch ?? worktreeSession?.worktree_branch ?? workspaceEntry?.workspace_id ?? "not bound";
+  const path = metadata?.worktree_path ?? worktreeSession?.worktree_path ?? workspaceEntry?.execution_root ?? workspaceEntry?.cwd ?? workspaceEntry?.workspace_anchor ?? "—";
+  return {
+    id: workspaceEntry?.workspace_id ?? "not bound",
+    name,
+    path,
+  };
+}
+
+function projectTasks(tasks: NonNullable<AgentStateDto["tasks"]>): TaskSummary[] {
+  return tasks
+    .filter((task) => task.id)
+    .map((task) => {
+      const detail = asRecord(task.detail);
+      const cmd = stringValue(detail?.cmd);
+      const workdir = stringValue(detail?.workdir);
+      return {
+        id: task.id ?? "unknown-task",
+        kind: task.kind ?? "task",
+        status: task.status ?? "unknown",
+        summary: task.summary ?? cmd ?? task.id ?? "Task",
+        command: cmd,
+        workdir,
+      };
+    });
 }
 
 function newestBriefFromEvents(events: EventEnvelopeDto[]): BriefRecordDto | undefined {
@@ -589,7 +647,35 @@ function selectCurrentWork(
     id: selected.id,
     objective: selected.objective ?? selected.id,
     state: selected.state ?? "unknown",
+    current: true,
   };
+}
+
+function selectOpenWorkItems(
+  workItems: Array<{ id?: string; objective?: string; state?: string; plan_status?: string }>,
+  currentWorkItemId?: string | null,
+): WorkItemSummary[] {
+  return workItems
+    .filter((item) => item.id && item.state !== "completed")
+    .map((item) => ({
+      id: item.id ?? "unknown-work-item",
+      objective: item.objective ?? item.id ?? "Work item",
+      state: item.state ?? "unknown",
+      planStatus: item.plan_status,
+      current: item.id === currentWorkItemId,
+    }))
+    .sort((left, right) => {
+      if (left.current !== right.current) return left.current ? -1 : 1;
+      return left.objective.localeCompare(right.objective);
+    });
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 function withFixtureFallback(baseUrl: string, error: string): RuntimeBootstrap {

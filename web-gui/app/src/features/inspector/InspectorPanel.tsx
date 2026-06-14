@@ -39,6 +39,11 @@ export function InspectorPanel({ agent, selection, open, onClearSelection, onClo
 }
 
 function SessionOverview({ agent }: { agent: AgentSummary }) {
+  const workspace = agent.workspaceSummary;
+  const openWorkItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
+  const currentWorkItems = openWorkItems.filter((item) => item.current);
+  const otherWorkItems = openWorkItems.filter((item) => !item.current);
+
   return (
     <div className="inspector-stack">
       <section className="context-card inspector-card">
@@ -68,15 +73,15 @@ function SessionOverview({ agent }: { agent: AgentSummary }) {
           <span className="eyebrow">Workspace</span>
           <StatusBadge className="state-chip" kind="connection" value={agent.workspace === "not bound" ? "unbound" : "active"} />
         </div>
-        <h2>{agent.workspace}</h2>
+        <h2>{workspace?.name ?? agent.workspace}</h2>
         <dl className="inspector-facts">
           <div>
-            <dt>Source</dt>
-            <dd>{agent.workspace === "not bound" ? "No active workspace" : agent.workspace}</dd>
+            <dt>Name</dt>
+            <dd>{workspace?.name ?? (agent.workspace === "not bound" ? "No active workspace" : agent.workspace)}</dd>
           </div>
           <div>
-            <dt>Runtime</dt>
-            <dd>{agent.currentRunId ? `run ${agent.currentRunId}` : "No active run"}</dd>
+            <dt>Path</dt>
+            <dd>{workspace?.path ?? "—"}</dd>
           </div>
         </dl>
       </section>
@@ -87,30 +92,56 @@ function SessionOverview({ agent }: { agent: AgentSummary }) {
           <StatusBadge className="state-chip" kind="connection" value={agent.activeTaskCount ? "active" : "idle"} />
         </div>
         <h2>{agent.activeTaskCount} active</h2>
-        <dl className="inspector-facts">
-          <div>
-            <dt>Queued</dt>
-            <dd>{agent.pending}</dd>
-          </div>
-          <div>
-            <dt>Waiting</dt>
-            <dd>{agent.waitingCount}</dd>
-          </div>
-          <div>
-            <dt>Attention</dt>
-            <dd>{agent.attention}</dd>
-          </div>
-        </dl>
+        {agent.tasks?.length ? (
+          <ul className="inspector-list">
+            {agent.tasks.map((task) => (
+              <li key={task.id}>
+                <div className="inspector-list-head">
+                  <strong>{task.summary}</strong>
+                  <StatusBadge className="state-chip" kind="connection" value={task.status} />
+                </div>
+                <small>{compactMeta([task.kind, task.command, task.workdir])}</small>
+                <code>{task.id}</code>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <dl className="inspector-facts">
+            <div>
+              <dt>Queued</dt>
+              <dd>{agent.pending}</dd>
+            </div>
+            <div>
+              <dt>Waiting</dt>
+              <dd>{agent.waitingCount}</dd>
+            </div>
+            <div>
+              <dt>Attention</dt>
+              <dd>{agent.attention}</dd>
+            </div>
+          </dl>
+        )}
       </section>
 
-      {agent.currentWork ? (
+      {openWorkItems.length ? (
         <section className="context-card current-work inspector-card">
           <div className="context-head">
-            <span className="eyebrow">Current work item</span>
-            <StatusBadge className="state-chip" kind="work" value={agent.currentWork.state} />
+            <span className="eyebrow">Open work items</span>
+            <StatusBadge className="state-chip" kind="work" value={`${openWorkItems.length} open`} />
           </div>
-          <h2>{agent.currentWork.objective}</h2>
-          <code>{agent.currentWork.id}</code>
+          {currentWorkItems.map((workItem) => (
+            <WorkItemCard key={workItem.id} workItem={workItem} featured />
+          ))}
+          {otherWorkItems.length ? (
+            <details className="inspector-details-list">
+              <summary>{otherWorkItems.length} other open</summary>
+              <div className="inspector-nested-stack">
+                {otherWorkItems.map((workItem) => (
+                  <WorkItemCard key={workItem.id} workItem={workItem} />
+                ))}
+              </div>
+            </details>
+          ) : null}
         </section>
       ) : (
         <EmptyState
@@ -121,6 +152,19 @@ function SessionOverview({ agent }: { agent: AgentSummary }) {
         />
       )}
     </div>
+  );
+}
+
+function WorkItemCard({ workItem, featured = false }: { workItem: NonNullable<AgentSummary["workItems"]>[number]; featured?: boolean }) {
+  return (
+    <article className={`inspector-list-item${featured ? " featured" : ""}`}>
+      <div className="inspector-list-head">
+        <strong>{workItem.objective}</strong>
+        <StatusBadge className="state-chip" kind="work" value={workItem.state} />
+      </div>
+      <small>{compactMeta([workItem.current ? "current" : undefined, workItem.planStatus])}</small>
+      <code>{workItem.id}</code>
+    </article>
   );
 }
 
@@ -193,4 +237,8 @@ function formatInspectorTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value || "—";
   return date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function compactMeta(parts: Array<string | undefined>): string {
+  return parts.filter(Boolean).join(" · ") || "—";
 }
