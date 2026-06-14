@@ -60,6 +60,7 @@ export function SettingsPage({
   const surface = runtimeConfig.surface;
   const [modelDefault, setModelDefault] = useState("");
   const [modelFallbacks, setModelFallbacks] = useState("");
+  const [visionDefault, setVisionDefault] = useState("");
   const [runtimeMaxOutputTokens, setRuntimeMaxOutputTokens] = useState("");
   const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
   const [maxToolOutputTokens, setMaxToolOutputTokens] = useState("");
@@ -74,13 +75,16 @@ export function SettingsPage({
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({});
   const [saveMessage, setSaveMessage] = useState<string | undefined>();
   const [searchSaveMessage, setSearchSaveMessage] = useState<string | undefined>();
+  const [visionSaveMessage, setVisionSaveMessage] = useState<string | undefined>();
   const [providerSaveMessage, setProviderSaveMessage] = useState<string | undefined>();
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
+  const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
 
   useEffect(() => {
     if (!surface) return;
     setModelDefault(surface.modelDefault);
     setModelFallbacks(surface.modelFallbacks.join(", "));
+    setVisionDefault(surface.visionDefault ?? "");
     setRuntimeMaxOutputTokens(String(surface.runtimeMaxOutputTokens));
     setDefaultToolOutputTokens(String(surface.defaultToolOutputTokens));
     setMaxToolOutputTokens(String(surface.maxToolOutputTokens));
@@ -112,12 +116,14 @@ export function SettingsPage({
     );
     setSaveMessage(undefined);
     setSearchSaveMessage(undefined);
+    setVisionSaveMessage(undefined);
     setProviderSaveMessage(undefined);
   }, [surface]);
 
   const rejectedResults = runtimeConfig.results?.filter((result) => result.effect === "rejected") ?? [];
   const configuredProviderCount = surface?.providers.filter((provider) => provider.credentialConfigured).length ?? 0;
   const searchProviderCount = surface?.webSearchProviders.length ?? 0;
+  const visionProviderReady = visionDefault ? surface?.providers.find((provider) => provider.id === visionDefault.split("/")[0])?.credentialConfigured : undefined;
 
   async function saveRuntimeConfig() {
     setSaveMessage(undefined);
@@ -160,6 +166,21 @@ export function SettingsPage({
         : result.changed
           ? "Saved search settings to config.json. Restart the daemon for routing changes to take effect."
           : "No search config changes were persisted.",
+    );
+  }
+
+  async function saveVisionConfig() {
+    setVisionSaveMessage(undefined);
+    const trimmed = visionDefault.trim();
+    const result = await onUpdateRuntimeConfig([trimmed ? { key: "vision.default", value: trimmed } : { key: "vision.default", unset: true }]);
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setVisionSaveMessage(
+      rejected.length
+        ? `${rejected.length} vision setting${rejected.length === 1 ? "" : "s"} rejected.`
+        : result.changed
+          ? "Saved Vision default to config.json. Restart the daemon for ViewImage selection to take effect."
+          : "No Vision config changes were persisted.",
     );
   }
 
@@ -234,6 +255,11 @@ export function SettingsPage({
               <small>
                 {searchProviderCount ? `${searchProviderCount} configured provider${searchProviderCount === 1 ? "" : "s"}` : "Using builtin provider defaults"}
               </small>
+            </div>
+            <div>
+              <span>Vision</span>
+              <strong>{surface?.visionDefault ? "Pinned model" : "Auto-discovery"}</strong>
+              <small>{surface?.visionDefault ?? `${visionModels.length} image-capable model${visionModels.length === 1 ? "" : "s"} ready`}</small>
             </div>
           </div>
         </Card>
@@ -366,6 +392,64 @@ export function SettingsPage({
                 <dd>{configuredProviderCount}</dd>
               </div>
             </dl>
+          </Card>
+
+          <Card className="settings-card">
+            <div className="settings-card-head">
+              <div>
+                <span className="eyebrow">Runtime defaults</span>
+                <h2>Vision / ImageView</h2>
+              </div>
+            </div>
+            {!surface ? (
+              <div className="settings-callout">
+                <strong>Vision config unavailable</strong>
+                <span>Connect to a live runtime and refresh this page to edit ViewImage defaults.</span>
+              </div>
+            ) : (
+              <form
+                className="settings-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveVisionConfig();
+                }}
+              >
+                <p className="settings-muted">
+                  ViewImage uses <code>vision.default</code> when set. Leave it empty to let Holon auto-discover a configured model with image input support.
+                </p>
+                <label>
+                  <span>Vision default model</span>
+                  <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider/model or empty for auto" />
+                </label>
+                <dl className="settings-list compact settings-inline-summary">
+                  <div>
+                    <dt>Selection mode</dt>
+                    <dd>{visionDefault ? "explicit vision.default" : "auto-discover image-capable model"}</dd>
+                  </div>
+                  <div>
+                    <dt>Provider credential</dt>
+                    <dd>{visionDefault ? (visionProviderReady ? "ready" : "missing or unknown") : "checked during auto-discovery"}</dd>
+                  </div>
+                  <div>
+                    <dt>Image-capable models</dt>
+                    <dd>{visionModels.length ? visionModels.map((model) => model.model).join(", ") : "none reported by model catalog"}</dd>
+                  </div>
+                </dl>
+                <div className="settings-actions">
+                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                    {runtimeConfigSaving ? "Saving…" : "Save vision settings"}
+                  </Button>
+                  {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
+                </div>
+                <datalist id="vision-models">
+                  {visionModels.map((model) => (
+                    <option key={model.model} value={model.model}>
+                      {model.displayName}
+                    </option>
+                  ))}
+                </datalist>
+              </form>
+            )}
           </Card>
 
           <Card className="settings-card">

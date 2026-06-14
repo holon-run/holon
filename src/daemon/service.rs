@@ -78,6 +78,7 @@ impl From<ControlAuthMode> for RuntimeControlAuthMode {
 pub struct RuntimeConfigSurface {
     pub model_default: String,
     pub model_fallbacks: Vec<String>,
+    pub vision_default: Option<String>,
     pub model_catalog: Vec<String>,
     pub unknown_model_fallback_configured: bool,
     pub runtime_max_output_tokens: u32,
@@ -136,6 +137,7 @@ impl RuntimeConfigSurface {
                 .iter()
                 .map(|value| value.as_string())
                 .collect(),
+            vision_default: config.vision_model.as_ref().map(|value| value.as_string()),
             model_catalog,
             unknown_model_fallback_configured: config.validated_unknown_model_fallback.is_some(),
             runtime_max_output_tokens: config.runtime_max_output_tokens,

@@ -2290,6 +2290,7 @@ mod tests {
         let runtime_surface = crate::daemon::RuntimeConfigSurface {
             model_default: "anthropic/claude-sonnet-4-6".into(),
             model_fallbacks: Vec::new(),
+            vision_default: None,
             model_catalog: Vec::new(),
             unknown_model_fallback_configured: false,
             runtime_max_output_tokens: 8192,

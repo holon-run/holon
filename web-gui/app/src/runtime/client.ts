@@ -237,6 +237,9 @@ interface ModelAvailabilityDto {
   unavailable_reason?: string;
   policy?: {
     supported_parameters?: string[];
+    capabilities?: {
+      image_input?: boolean;
+    };
   };
 }
 
@@ -261,6 +264,7 @@ interface RuntimeConfigResponseDto {
 interface RuntimeConfigSurfaceDto {
   model_default?: string;
   model_fallbacks?: string[];
+  vision_default?: string | null;
   model_catalog?: string[];
   unknown_model_fallback_configured?: boolean;
   runtime_max_output_tokens?: number;
@@ -658,6 +662,7 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
   return {
     modelDefault: surface.model_default ?? "",
     modelFallbacks: surface.model_fallbacks ?? [],
+    visionDefault: surface.vision_default ?? undefined,
     modelCatalog: surface.model_catalog ?? [],
     unknownModelFallbackConfigured: surface.unknown_model_fallback_configured ?? false,
     runtimeMaxOutputTokens: surface.runtime_max_output_tokens ?? 0,
@@ -838,6 +843,7 @@ function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOption[] {
         displayName: entry.display_name ?? entry.model,
         available: entry.available ?? false,
         unavailableReason: entry.unavailable_reason,
+        supportsImageInput: entry.policy?.capabilities?.image_input ?? false,
         supportsReasoningEffort: entry.policy?.supported_parameters?.includes("reasoning_effort") ?? false,
       }))
       .sort(compareModelOptions);
@@ -849,6 +855,7 @@ function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOption[] {
       provider: model.split("/")[0] ?? "unknown",
       displayName: model,
       available: true,
+      supportsImageInput: false,
       supportsReasoningEffort: false,
     }))
     .sort(compareModelOptions);

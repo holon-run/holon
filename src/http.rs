@@ -1280,6 +1280,7 @@ fn is_runtime_mutable_config_key(key: &str) -> bool {
             | "api.cors.max_age_seconds"
             | "model.default"
             | "model.fallbacks"
+            | "vision.default"
             | "models.catalog"
             | "model.unknown_fallback"
             | "model.unknown_fallback.context_window_tokens"
