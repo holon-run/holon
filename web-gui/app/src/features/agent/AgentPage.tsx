@@ -32,6 +32,8 @@ interface AgentPageProps {
   onLoadOlderEvents: () => Promise<void>;
   onSendPrompt: (text: string) => Promise<void>;
   onOpenInspector: () => void;
+  onInspectActivity: (activity: AgentTimelineActivity) => void;
+  selectedActivityId?: string;
 }
 
 const DEFAULT_INFO_TIMELINE_ITEM_LIMIT = 12;
@@ -58,6 +60,8 @@ export function AgentPage({
   onLoadOlderEvents,
   onSendPrompt,
   onOpenInspector,
+  onInspectActivity,
+  selectedActivityId,
 }: AgentPageProps) {
   const [prompt, setPrompt] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -206,6 +210,8 @@ export function AgentPage({
                 displayLevel={displayLevel}
                 key={turn.id}
                 onOpenInspector={onOpenInspector}
+                onInspectActivity={onInspectActivity}
+                selectedActivityId={selectedActivityId}
                 turn={turn}
               />
             ))}
@@ -436,10 +442,14 @@ const TimelineTurnGroup = memo(function TimelineTurnGroup({
   turn,
   displayLevel,
   onOpenInspector,
+  onInspectActivity,
+  selectedActivityId,
 }: {
   turn: TimelineTurn;
   displayLevel: DisplayLevel;
   onOpenInspector: () => void;
+  onInspectActivity: (activity: AgentTimelineActivity) => void;
+  selectedActivityId?: string;
 }) {
   return (
     <section className="timeline-turn" aria-label={turn.label}>
@@ -456,6 +466,8 @@ const TimelineTurnGroup = memo(function TimelineTurnGroup({
             item={item}
             key={item.id}
             onOpenInspector={onOpenInspector}
+            onInspectActivity={onInspectActivity}
+            selectedActivityId={selectedActivityId}
           />
         ))}
       </div>
@@ -468,11 +480,15 @@ const TimelineMessage = memo(function TimelineMessage({
   compactAssistant,
   displayLevel,
   onOpenInspector,
+  onInspectActivity,
+  selectedActivityId,
 }: {
   item: AgentTimelineItem;
   compactAssistant: boolean;
   displayLevel: DisplayLevel;
   onOpenInspector: () => void;
+  onInspectActivity: (activity: AgentTimelineActivity) => void;
+  selectedActivityId?: string;
 }) {
   const isRuntimeItem = item.kind === "tool" || item.kind === "event" || item.kind === "system";
   const activities =
@@ -485,7 +501,13 @@ const TimelineMessage = memo(function TimelineMessage({
     return (
       <article className="message activity-message">
         {activities.length ? (
-          <ActivityTrail activities={activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
+          <ActivityTrail
+            activities={activities}
+            displayLevel={displayLevel}
+            onOpenInspector={onOpenInspector}
+            onInspectActivity={onInspectActivity}
+            selectedActivityId={selectedActivityId}
+          />
         ) : null}
       </article>
     );
@@ -506,7 +528,13 @@ const TimelineMessage = memo(function TimelineMessage({
         <TimelineItemDetail detail={item.detail} />
       </div>
       {activities.length ? (
-        <ActivityTrail activities={activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
+        <ActivityTrail
+          activities={activities}
+          displayLevel={displayLevel}
+          onOpenInspector={onOpenInspector}
+          onInspectActivity={onInspectActivity}
+          selectedActivityId={selectedActivityId}
+        />
       ) : null}
       {!compactAssistant ? (
         <div className="message-meta">
@@ -621,10 +649,14 @@ function ActivityTrail({
   activities,
   displayLevel,
   onOpenInspector,
+  onInspectActivity,
+  selectedActivityId,
 }: {
   activities: AgentTimelineActivity[];
   displayLevel: DisplayLevel;
   onOpenInspector: () => void;
+  onInspectActivity: (activity: AgentTimelineActivity) => void;
+  selectedActivityId?: string;
 }) {
   const visibleActivities = activities;
   const hiddenCount = activities.length - visibleActivities.length;
@@ -632,26 +664,23 @@ function ActivityTrail({
   return (
     <div className="activity-trail" aria-label="Agent activity">
       {visibleActivities.map((activity) => {
-        const compactDetail = displayLevel !== "debug" && activity.detail;
         const row = (
-          <div className="activity-row">
+          <button
+            className="activity-row"
+            type="button"
+            aria-pressed={selectedActivityId === activity.id}
+            onClick={() => onInspectActivity(activity)}
+          >
             <span className="activity-icon" aria-label={activity.label} title={activity.label}>
               {activityIcon(activity)}
             </span>
             <span className="activity-body">{activity.body}</span>
-          </div>
+          </button>
         );
 
         return (
-          <div className={`activity-item ${activity.kind}`} key={activity.id}>
-            {compactDetail ? (
-              <details className={`activity-detail ${activity.detail?.tone ?? "data"}`}>
-                <summary>{row}</summary>
-                <pre>{activity.detail?.text}</pre>
-              </details>
-            ) : (
-              row
-            )}
+          <div className={`activity-item ${activity.kind}${selectedActivityId === activity.id ? " is-selected" : ""}`} key={activity.id}>
+            {row}
             {displayLevel === "debug" ? (
               <div className="activity-meta">
                 <span>{activity.meta}</span>

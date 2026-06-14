@@ -2,7 +2,17 @@ import { create } from "zustand";
 
 import { createRuntimeClient, type AgentEventStreamSubscription, type StreamEventEnvelopeDto } from "./client";
 import { compactAgentTimelineItems, mergeAgentTimelineItems, reduceAgentSessionTimeline } from "./session-reducer";
-import type { AgentDetail, AgentSummary, AgentTimelineItem, DisplayLevel, RouteKey, RuntimeBootstrap, RuntimeModelCatalog } from "./types";
+import type {
+  AgentDetail,
+  AgentSummary,
+  AgentTimelineActivity,
+  AgentTimelineItem,
+  DisplayLevel,
+  InspectorSelection,
+  RouteKey,
+  RuntimeBootstrap,
+  RuntimeModelCatalog,
+} from "./types";
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
 
@@ -89,6 +99,7 @@ export interface RuntimeStoreState {
   displayLevel: DisplayLevel;
   displayLevelsByAgentId: Record<string, DisplayLevel>;
   inspectorOpen: boolean;
+  inspectorSelection?: InspectorSelection;
   navCollapsed: boolean;
 
   bootstrap: RuntimeBootstrap;
@@ -104,6 +115,8 @@ export interface RuntimeStoreState {
   openAgent: (agentId: string) => void;
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
   setInspectorOpen: (open: boolean) => void;
+  inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
+  clearInspectorSelection: () => void;
   toggleInspector: () => void;
   toggleNavCollapsed: () => void;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
@@ -184,6 +197,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   displayLevel: "info",
   displayLevelsByAgentId: readStoredDisplayLevels(),
   inspectorOpen: false,
+  inspectorSelection: undefined,
   navCollapsed: false,
 
   bootstrap: emptyBootstrap,
@@ -212,6 +226,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       return { displayLevel, displayLevelsByAgentId };
     }),
   setInspectorOpen: (open) => set({ inspectorOpen: open }),
+  inspectActivity: (agentId, activity) =>
+    set({
+      inspectorOpen: true,
+      inspectorSelection: { kind: "activity", agentId, activity },
+    }),
+  clearInspectorSelection: () => set({ inspectorSelection: undefined }),
   toggleInspector: () => set((state) => ({ inspectorOpen: !state.inspectorOpen })),
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
 

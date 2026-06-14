@@ -28,11 +28,14 @@ export function App() {
   const selectedAgentId = useRuntimeStore((state) => state.selectedAgentId);
   const displayLevel = useRuntimeStore((state) => state.displayLevel);
   const inspectorOpen = useRuntimeStore((state) => state.inspectorOpen);
+  const inspectorSelection = useRuntimeStore((state) => state.inspectorSelection);
   const navCollapsed = useRuntimeStore((state) => state.navCollapsed);
   const setRoute = useRuntimeStore((state) => state.setRoute);
   const openAgent = useRuntimeStore((state) => state.openAgent);
   const setDisplayLevel = useRuntimeStore((state) => state.setDisplayLevel);
   const setInspectorOpen = useRuntimeStore((state) => state.setInspectorOpen);
+  const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
+  const clearInspectorSelection = useRuntimeStore((state) => state.clearInspectorSelection);
   const toggleInspector = useRuntimeStore((state) => state.toggleInspector);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
@@ -329,6 +332,12 @@ export function App() {
             onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, displayLevel)}
             onSendPrompt={(text) => sendOperatorPrompt(activeAgent.id, text, displayLevel)}
             onOpenInspector={() => setInspectorOpen(true)}
+            onInspectActivity={(activity) => inspectActivity(activeAgent.id, activity)}
+            selectedActivityId={
+              inspectorSelection?.kind === "activity" && inspectorSelection.agentId === activeAgent.id
+                ? inspectorSelection.activity.id
+                : undefined
+            }
           />
         ) : null}
         {route === "agent" && !activeAgent ? <MissingAgentPage agentId={selectedAgentId} loading={loading} /> : null}
@@ -344,7 +353,15 @@ export function App() {
         ) : null}
       </main>
 
-      {selectedAgent ? <InspectorPanel agent={selectedAgent} open={inspectorOpen} onClose={() => setInspectorOpen(false)} /> : null}
+      {selectedAgent ? (
+        <InspectorPanel
+          agent={selectedAgent}
+          selection={inspectorSelection?.agentId === selectedAgent.id ? inspectorSelection : undefined}
+          open={inspectorOpen}
+          onClearSelection={clearInspectorSelection}
+          onClose={() => setInspectorOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

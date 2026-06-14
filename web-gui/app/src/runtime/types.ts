@@ -82,6 +82,12 @@ export interface AgentTimelineActivity {
   debug?: string;
 }
 
+export interface InspectorSelection {
+  kind: "activity";
+  agentId: string;
+  activity: AgentTimelineActivity;
+}
+
 export interface AgentTimelineItem {
   id: string;
   kind: AgentTimelineItemKind;
