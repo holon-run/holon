@@ -10,7 +10,7 @@ interface SearchPageProps {
   loading: boolean;
   error?: string;
   onSearch: (query: string, options?: { agentIds?: string[]; limit?: number }) => Promise<void>;
-  onOpenAgent: (agentId: string) => void;
+  onOpenAgent: (agentId: string, eventSeq?: number) => void;
 }
 
 const DEFAULT_LIMIT = 20;
@@ -114,13 +114,15 @@ export function SearchPage({ agents, search, loading, error, onSearch, onOpenAge
   );
 }
 
-function SearchResultCard({ result, onOpenAgent }: { result: SearchResultItem; onOpenAgent: (agentId: string) => void }) {
+function SearchResultCard({ result, onOpenAgent }: { result: SearchResultItem; onOpenAgent: (agentId: string, eventSeq?: number) => void }) {
   const locator = [
+    result.locator.eventSeq != null ? `event #${result.locator.eventSeq}` : undefined,
     result.locator.turnId ? `turn ${shortId(result.locator.turnId)}` : undefined,
     result.locator.taskId ? `task ${shortId(result.locator.taskId)}` : undefined,
     result.locator.workItemId ? `work ${shortId(result.locator.workItemId)}` : undefined,
     result.locator.messageId ? `message ${shortId(result.locator.messageId)}` : undefined,
   ].filter(Boolean);
+  const canLocate = result.locator.eventSeq != null;
 
   return (
     <article className="search-result-card">
@@ -129,10 +131,32 @@ function SearchResultCard({ result, onOpenAgent }: { result: SearchResultItem; o
           {result.agentId}
         </button>
         <span>{result.kind}</span>
+        {canLocate ? (
+          <button type="button" onClick={() => onOpenAgent(result.agentId, result.locator.eventSeq)}>
+            Locate event
+          </button>
+        ) : null}
         <time>{formatTimestamp(result.createdAt)}</time>
       </header>
       <p>{result.preview}</p>
       {locator.length > 0 ? <footer>{locator.join(" · ")}</footer> : null}
+      <details className="search-result-details">
+        <summary>Details</summary>
+        <dl>
+          <div>
+            <dt>Result type</dt>
+            <dd>{result.resultType}</dd>
+          </div>
+          <div>
+            <dt>Evidence</dt>
+            <dd>{result.locator.evidenceId ? shortId(result.locator.evidenceId) : "not provided"}</dd>
+          </div>
+          <div>
+            <dt>Locator</dt>
+            <dd>{locator.length > 0 ? locator.join(" · ") : "no locator ids"}</dd>
+          </div>
+        </dl>
+      </details>
     </article>
   );
 }

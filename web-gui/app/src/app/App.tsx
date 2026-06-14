@@ -112,9 +112,9 @@ export function App() {
     pushBrowserRoute(nextRoute, selectedAgentId);
   }
 
-  function navigateAgent(agentId: string) {
+  function navigateAgent(agentId: string, eventSeq?: number) {
     openAgent(agentId);
-    pushBrowserRoute("agent", agentId);
+    pushBrowserRoute("agent", agentId, eventSeq == null ? undefined : { event_seq: eventSeq });
   }
 
   if (isInitialBootstrapping) {

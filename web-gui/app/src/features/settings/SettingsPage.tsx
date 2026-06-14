@@ -574,7 +574,7 @@ export function SettingsPage({
           <div className="settings-card-head">
             <div>
               <span className="eyebrow">Models / Providers</span>
-              <h2>Model catalog</h2>
+              <h2>Model catalog diagnostics</h2>
             </div>
             <Button type="button" variant="secondary" disabled={modelCatalogLoading} onClick={() => void onRefreshModels()}>
               {modelCatalogLoading ? "Refreshing…" : "Refresh"}
@@ -586,39 +586,45 @@ export function SettingsPage({
             <EmptyState className="settings-empty" title="No models returned" description="The runtime has not returned a model catalog yet." />
           ) : null}
 
-          <div className="provider-list">
-            {groupedModels.map(([provider, models]) => (
-              <Card className="provider-card" key={provider}>
-                <header>
-                  <div>
-                    <h3>{provider}</h3>
-                    <span>
-                      {models.filter((model) => model.available).length}/{models.length} available
-                    </span>
-                  </div>
-                </header>
-                <div className="model-table" role="table" aria-label={`${provider} models`}>
-                  {models.map((model) => (
-                    <div className="model-table-row" role="row" key={model.model}>
-                      <div role="cell">
-                        <strong>{model.displayName}</strong>
-                        <span>{model.model}</span>
-                      </div>
-                      <div role="cell">
-                        <StatusChip className={`settings-status ${model.available ? "available" : "unavailable"}`} tone={model.available ? "success" : "error"}>
-                          {model.available ? "available" : "unavailable"}
-                        </StatusChip>
-                      </div>
-                      <div role="cell">
-                        {model.supportsReasoningEffort ? <span className="settings-pill">reasoning</span> : null}
-                        {model.unavailableReason ? <small>{model.unavailableReason}</small> : null}
-                      </div>
+          <p className="settings-muted">The editable provider accounts above are the primary configuration surface. Use this catalog only to inspect runtime model availability.</p>
+          <details className="settings-diagnostics">
+            <summary>
+              Show {modelCatalog.options.length} model{modelCatalog.options.length === 1 ? "" : "s"} across {groupedModels.length} provider{groupedModels.length === 1 ? "" : "s"}
+            </summary>
+            <div className="provider-list">
+              {groupedModels.map(([provider, models]) => (
+                <Card className="provider-card" key={provider}>
+                  <header>
+                    <div>
+                      <h3>{provider}</h3>
+                      <span>
+                        {models.filter((model) => model.available).length}/{models.length} available
+                      </span>
                     </div>
-                  ))}
-                </div>
-              </Card>
-            ))}
-          </div>
+                  </header>
+                  <div className="model-table" role="table" aria-label={`${provider} models`}>
+                    {models.map((model) => (
+                      <div className="model-table-row" role="row" key={model.model}>
+                        <div role="cell">
+                          <strong>{model.displayName}</strong>
+                          <span>{model.model}</span>
+                        </div>
+                        <div role="cell">
+                          <StatusChip className={`settings-status ${model.available ? "available" : "unavailable"}`} tone={model.available ? "success" : "error"}>
+                            {model.available ? "available" : "unavailable"}
+                          </StatusChip>
+                        </div>
+                        <div role="cell">
+                          {model.supportsReasoningEffort ? <span className="settings-pill">reasoning</span> : null}
+                          {model.unavailableReason ? <small>{model.unavailableReason}</small> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </details>
         </Card>
       </div>
     </section>

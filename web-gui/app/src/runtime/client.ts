@@ -323,6 +323,7 @@ interface SearchResultItemDto {
     turn_id?: string;
     task_id?: string;
     work_item_id?: string;
+    event_seq?: number;
   };
   created_at?: string;
   kind?: string;
@@ -707,6 +708,7 @@ function projectSearchResponse(response: SearchResponseDto): SearchResponse {
         turnId: result.locator?.turn_id,
         taskId: result.locator?.task_id,
         workItemId: result.locator?.work_item_id,
+        eventSeq: result.locator?.event_seq,
       },
       createdAt: result.created_at,
       kind: result.kind ?? "message",

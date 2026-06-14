@@ -2291,6 +2291,27 @@ code {
   color: var(--danger);
 }
 
+.settings-diagnostics {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-diagnostics summary {
+  cursor: pointer;
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.settings-diagnostics[open] summary {
+  margin-bottom: 12px;
+}
+
 .provider-list {
   display: grid;
   gap: 12px;
@@ -2697,6 +2718,45 @@ code {
   line-height: 1.55;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.search-result-details {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.search-result-details summary {
+  cursor: pointer;
+  width: fit-content;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.search-result-details dl {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.search-result-details div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.search-result-details dt {
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.search-result-details dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 980px) {

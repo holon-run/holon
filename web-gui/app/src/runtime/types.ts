@@ -151,6 +151,7 @@ export interface SearchResultLocator {
   turnId?: string;
   taskId?: string;
   workItemId?: string;
+  eventSeq?: number;
 }
 
 export interface SearchResultItem {
