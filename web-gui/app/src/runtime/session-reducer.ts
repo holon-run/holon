@@ -648,15 +648,15 @@ function projectToolExecution(
   const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status");
   const durationMs = numberField(payload, "duration_ms") ?? numberField(result, "duration_ms");
   const error = stringField(payload, "error");
+  const toolSummary = projection?.body ?? commandPreview ?? summary;
   const body = compactJoin([
+    toolSummary,
     exitStatus == null ? undefined : `exit ${exitStatus}`,
     durationMs == null ? undefined : formatDuration(durationMs),
-    projection?.body,
-    commandPreview || projection ? undefined : summary,
     error,
   ]);
   const outputPreview = commandOutputPreview(payload);
-  const detail = projection?.detail ?? toolExecutionDetail(toolName, payload, commandPreview, outputPreview);
+  const detail = projection?.detail ?? toolExecutionDetail(toolName, payload, commandPreview, outputPreview, toolSummary);
 
   return {
     kind: "tool",
@@ -733,6 +733,7 @@ function toolExecutionDetail(
   payload: Record<string, unknown> | undefined,
   commandPreview: string | undefined,
   outputPreview: string | undefined,
+  summary: string | undefined,
 ): AgentTimelineItemDetail | undefined {
   if (toolName === "ExecCommandBatch") {
     const batchDetail = commandBatchDetail(payload);
@@ -740,14 +741,16 @@ function toolExecutionDetail(
   }
 
   if (commandPreview && outputPreview) {
-    return { label: "Command + output", text: `${commandPreview}\n\nOutput:\n${outputPreview}`, tone: "command" };
+    return { label: "Output", text: `${commandPreview}\n\nOutput:\n${outputPreview}`, tone: "command" };
   }
   if (commandPreview) {
     return { label: toolName === "ExecCommandBatch" ? "Commands" : "Command", text: commandPreview, tone: "command" };
   }
   if (outputPreview) return { label: "Output", text: outputPreview, tone: "output" };
-  const readable = readableText(payload) || debugJson(payload ?? {});
-  if (readable && readable !== "{}") return { label: "Output", text: readable, tone: "data" };
+  const readable = readableText(payload);
+  const readableDuplicatesSummary = Boolean(readable && summary && normalizeTextKey(readable) === normalizeTextKey(summary));
+  const detailText = readable && !readableDuplicatesSummary ? readable : debugJson(payload ?? {});
+  if (detailText && detailText !== "{}") return { label: "Result", text: detailText, tone: "data" };
   return undefined;
 }
 
