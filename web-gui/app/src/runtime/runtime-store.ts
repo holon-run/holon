@@ -926,18 +926,23 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
     const detailEvents = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
     const baseDetail = current.detail ?? createLiveAgentDetail(state.bootstrap.agents.find((agent) => agent.id === agentId));
     const highestIncomingSeq = highestSeq(eventSeqs) ?? 0;
-    const detail = baseDetail
+    const runPatch = agentRunPatchFromEvents(uniqueEvents);
+    const patchedBaseDetail = baseDetail && runPatch ? patchAgentDetailRunState(baseDetail, runPatch) : baseDetail;
+    const detail = patchedBaseDetail
       ? {
-          ...baseDetail,
-          timeline: mergeTimeline(baseDetail.timeline, liveTimelineDelta),
+          ...patchedBaseDetail,
+          timeline: mergeTimeline(patchedBaseDetail.timeline, liveTimelineDelta),
           events: detailEvents,
-          newestEventSeq: Math.max(highestIncomingSeq, baseDetail.newestEventSeq ?? 0),
-          oldestEventSeq: baseDetail.oldestEventSeq ?? eventSeqs[0],
+          newestEventSeq: Math.max(highestIncomingSeq, patchedBaseDetail.newestEventSeq ?? 0),
+          oldestEventSeq: patchedBaseDetail.oldestEventSeq ?? eventSeqs[0],
         }
-      : baseDetail;
+      : patchedBaseDetail;
 
     return {
-      bootstrap: sortBootstrapAgents(state.bootstrap, rosterActivityByAgentId),
+      bootstrap: sortBootstrapAgents(
+        runPatch ? patchBootstrapAgentRunState(state.bootstrap, agentId, runPatch) : state.bootstrap,
+        rosterActivityByAgentId,
+      ),
       rosterActivityByAgentId,
       sessionsByAgentId: {
         ...state.sessionsByAgentId,
@@ -954,6 +959,60 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
       },
     };
   });
+}
+
+function agentRunPatchFromEvents(events: StreamEventEnvelopeDto[]): Pick<AgentSummary, "currentRunId" | "lifecycle"> | undefined {
+  let patch: Pick<AgentSummary, "currentRunId" | "lifecycle"> | undefined;
+  for (const event of events) {
+    if (event.type === "message_processing_started") {
+      patch = {
+        currentRunId: runIdFromPayload(event.payload) ?? `event:${event.event_seq ?? event.id ?? "message_processing_started"}`,
+        lifecycle: "awake-running",
+      };
+    }
+    if (
+      event.type === "turn_terminal" ||
+      event.type === "turn_terminal_aborted" ||
+      event.type === "message_processing_aborted" ||
+      event.type === "runtime_error"
+    ) {
+      patch = {
+        currentRunId: null,
+        lifecycle: "awake-idle",
+      };
+    }
+  }
+  return patch;
+}
+
+function runIdFromPayload(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const value = (payload as Record<string, unknown>).run_id;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function patchBootstrapAgentRunState(
+  bootstrap: RuntimeBootstrap,
+  agentId: string,
+  patch: Pick<AgentSummary, "currentRunId" | "lifecycle">,
+): RuntimeBootstrap {
+  return {
+    ...bootstrap,
+    agents: bootstrap.agents.map((agent) => (agent.id === agentId ? { ...agent, ...patch } : agent)),
+  };
+}
+
+function patchAgentDetailRunState(
+  detail: AgentDetail,
+  patch: Pick<AgentSummary, "currentRunId" | "lifecycle">,
+): AgentDetail {
+  return {
+    ...detail,
+    agent: {
+      ...detail.agent,
+      ...patch,
+    },
+  };
 }
 
 function mergeEventPageIntoSession(

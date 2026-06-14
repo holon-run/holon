@@ -346,14 +346,43 @@ function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean): boolean {
 function collectWorkingActivities(timeline: AgentTimelineItem[]): AgentTimelineActivity[] {
   const byId = new Map<string, AgentTimelineActivity>();
   for (const item of timeline) {
+    if (isLiveWorkingActivity(item)) {
+      byId.set(item.id, timelineItemToWorkingActivity(item));
+    }
     for (const activity of item.activities ?? []) {
-      if (activity.minDisplayLevel === "info") continue;
+      if (!isLiveWorkingActivity(activity)) continue;
       byId.set(activity.id, activity);
     }
   }
   return Array.from(byId.values())
     .sort((left, right) => sortableActivityTime(left.timestamp) - sortableActivityTime(right.timestamp))
     .slice(-8);
+}
+
+function isLiveWorkingActivity(activity: Pick<AgentTimelineActivity, "label" | "meta" | "minDisplayLevel">): boolean {
+  if (activity.minDisplayLevel === "info") return false;
+  const eventType = activity.meta.split(" · ")[0];
+  return (
+    eventType === "assistant_round_recorded" ||
+    eventType === "text_only_round_observed" ||
+    eventType === "tool_executed" ||
+    eventType === "tool_execution_failed"
+  );
+}
+
+function timelineItemToWorkingActivity(item: AgentTimelineItem): AgentTimelineActivity {
+  return {
+    id: item.id,
+    kind: item.kind,
+    label: item.label,
+    body: item.body,
+    timestamp: item.timestamp,
+    meta: item.meta,
+    minDisplayLevel: item.minDisplayLevel,
+    sourceIds: item.sourceIds,
+    detail: item.detail,
+    debug: item.debug,
+  };
 }
 
 interface TimelineTurn {
@@ -535,14 +564,32 @@ function WorkingActivityPanel({ activities }: { activities: AgentTimelineActivit
         {activities.map((activity) => (
           <div className={`working-activity-item ${activity.kind}`} key={activity.id}>
             <span className="working-activity-dot" aria-hidden="true" />
-            <strong>{activity.label}</strong>
-            <span>{activity.body}</span>
+            <strong>{workingActivityLabel(activity)}</strong>
+            <span>{workingActivityBody(activity)}</span>
             <time>{formatDisplayTime(activity.timestamp)}</time>
           </div>
         ))}
       </div>
     </aside>
   );
+}
+
+function workingActivityLabel(activity: AgentTimelineActivity): string {
+  return activity.kind === "assistant" ? "Assistant" : "Action";
+}
+
+function workingActivityBody(activity: AgentTimelineActivity): string {
+  const detail = activity.detail?.text
+    ?.split("\n")
+    .map((line) => line.trim())
+    .find(Boolean);
+  return trimActivityLine(detail || activity.body || activity.label, 120);
+}
+
+function trimActivityLine(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
 function WorkingStatusMarker({ agent }: { agent: AgentSummary }) {
