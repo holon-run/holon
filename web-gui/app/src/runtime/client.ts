@@ -28,7 +28,7 @@ function fixtureAgentDetail(agentId: string): AgentDetail {
 async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentId: string, displayLevel: DisplayLevel): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
   const eventDisplayLevel = displayLevel === "info" ? "verbose" : displayLevel;
-  const [entry, state, events] = await Promise.all([
+  const [entry, state, events, briefs] = await Promise.all([
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS })
       .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
       .catch(() => undefined),
@@ -37,10 +37,11 @@ async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentI
       events: [],
       has_older: false,
     })),
+    fetchAgentBriefs(baseUrl, fetchImpl, agentId, 5).catch((): BriefRecordDto[] => []),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
-  const agent = projectAgent(fallbackEntry, state);
-  const timeline = reduceAgentSessionTimeline({ transcript: [], briefs: [], events, eventDisplayLevel });
+  const agent = projectAgent(fallbackEntry, state, newestBrief(briefs));
+  const timeline = reduceAgentSessionTimeline({ transcript: [], briefs, events, eventDisplayLevel });
 
   return {
     agent,
@@ -297,6 +298,15 @@ async function fetchAgentEvents(
   return getJson<EventPageResponseDto>(fetchImpl, baseUrl, path);
 }
 
+async function fetchAgentBriefs(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  agentId: string,
+  limit: number,
+): Promise<BriefRecordDto[]> {
+  return getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodeURIComponent(agentId)}/briefs?limit=${limit}`);
+}
+
 function streamAgentEvents(
   baseUrl: string,
   fetchImpl: typeof fetch,
@@ -494,6 +504,18 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     currentRunId,
     currentWork,
   };
+}
+
+function newestBrief(briefs: BriefRecordDto[]): BriefRecordDto | undefined {
+  return briefs
+    .filter((brief) => brief.text)
+    .sort((left, right) => sortableTime(right.created_at) - sortableTime(left.created_at))[0];
+}
+
+function sortableTime(value: string | undefined): number {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOption[] {
