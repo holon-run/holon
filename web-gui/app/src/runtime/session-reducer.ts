@@ -666,7 +666,8 @@ function projectToolExecution(
   const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status");
   const durationMs = numberField(payload, "duration_ms") ?? numberField(result, "duration_ms");
   const error = stringField(payload, "error");
-  const toolSummary = projection?.body ?? commandPreview ?? summary ?? genericToolDescription(toolName, payload);
+  const stringPreview = toolStringPreview(toolName, payload, commandPreview);
+  const toolSummary = projection?.body ?? stringPreview ?? summary ?? genericToolDescription(toolName, payload);
   const body = compactJoin([
     toolSummary,
     exitStatus == null ? undefined : `exit ${exitStatus}`,
@@ -693,12 +694,22 @@ function projectKnownToolExecution(
   return undefined;
 }
 
-function genericToolDescription(toolName: string, payload: Record<string, unknown> | undefined): string {
-  const readable = readableText(payload);
-  if (readable) return readable;
+function toolStringPreview(
+  toolName: string,
+  payload: Record<string, unknown> | undefined,
+  commandPreview: string | undefined,
+): string | undefined {
+  if (commandPreview) return commandPreview;
+  if (toolName === "WaitFor") return stringField(payload, "reason");
+  return readableTextWithoutSummary(payload);
+}
 
+function genericToolDescription(toolName: string, payload: Record<string, unknown> | undefined): string {
   const waitReason = stringField(payload, "reason");
   if (waitReason) return waitReason;
+
+  const readable = readableText(payload);
+  if (readable) return readable;
 
   const objective = stringField(payload, "objective");
   if (objective) return objective;
@@ -842,6 +853,21 @@ function execCommandPreview(payload: Record<string, unknown> | undefined): strin
   }
 
   const result = asRecord(payload?.exec_command_result);
+  const resultItems = arrayField(result, "items");
+  if (resultItems?.length) {
+    const commands = resultItems
+      .map((item) => {
+        const record = asRecord(item);
+        const itemResult = asRecord(record?.result);
+        return (
+          firstStringField(itemResult, ["cmd_display", "cmd", "cmd_preview"]) ??
+          firstStringField(record, ["cmd_display", "cmd", "cmd_preview"])
+        );
+      })
+      .filter((command): command is string => Boolean(command));
+    if (commands.length) return commands.join("\n");
+  }
+
   return (
     firstStringField(result, ["cmd_display", "cmd"]) ??
     firstStringField(payload, ["exec_command_cmd", "cmd", "cmd_preview"]) ??
@@ -948,6 +974,19 @@ function readableText(value: unknown): string {
   if (!record) return "";
 
   for (const key of ["text", "content", "summary", "brief", "message", "reason", "text_preview"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) return candidate;
+  }
+
+  return "";
+}
+
+function readableTextWithoutSummary(value: unknown): string {
+  if (typeof value === "string") return value;
+  const record = asRecord(value);
+  if (!record) return "";
+
+  for (const key of ["text", "content", "brief", "message", "reason", "text_preview"]) {
     const candidate = record[key];
     if (typeof candidate === "string" && candidate.trim()) return candidate;
   }
