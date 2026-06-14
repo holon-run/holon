@@ -1767,6 +1767,9 @@ fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Result<Value>
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null));
     }
+    if rest.contains('.') {
+        return Err(unknown_config_key(key));
+    }
     Ok(config
         .providers
         .get(&ProviderId::parse(rest)?)
