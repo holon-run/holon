@@ -60,9 +60,9 @@ The credential step depends on your provider:
 - **No-credential providers** — Skipped; the provider is configured without
   authentication.
 
-Credentials are stored in the Holon credential store (under
-`~/.holon/credentials/`), not in `config.json`. This keeps secrets out of
-config files and shell history.
+Credentials are stored in the Holon credential store at
+`~/.holon/credentials.json`, not in `config.json`. This keeps secrets out of
+config files and shell history.  The store is a single encrypted JSON file.
 
 ### 3. Model selection
 
@@ -154,7 +154,7 @@ Each section includes a `summary` string, optional `details`, and
 | File | Purpose |
 |------|---------|
 | `~/.holon/config.json` | Provider definitions, model defaults, search settings |
-| `~/.holon/credentials/` | Encrypted credential profiles (API keys, OAuth tokens) |
+| `~/.holon/credentials.json` | Encrypted credential profiles (API keys, OAuth tokens) |
 
 Onboarding writes to both. You should not edit credential files directly;
 use `holon onboard` or `holon config credentials` instead.

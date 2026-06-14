@@ -32,15 +32,17 @@ Each built-in tool entry records:
 
 ## Capability families
 
-Each built-in tool belongs to a capability family:
+Each built-in tool belongs to a capability family.  The runtime defines six
+families in `src/types.rs` (`ToolCapabilityFamily`):
 
 | Family | Description | Example tools |
 |--------|-------------|---------------|
+| `CoreAgent` | Core agent operations (state, memory, work items, scheduling, CLI/config introspection) | MemorySearch, WaitFor, ListWorkItems, ListModelProviders |
+| `LocalEnvironment` | Workspace-local operations | ExecCommand, ApplyPatch, ViewImage, UseWorkspace |
 | `Web` | Public web access | WebFetch, WebSearch |
-| `LocalEnvironment` | Workspace-local operations | ApplyPatch, ExecCommand, ViewImage |
-| `AgentLifecycle` | Agent and work management | SpawnAgent, CreateWorkItem, WaitFor |
-| `ControlPlane` | Configuration and introspection | ListModelProviders, ListProviderModels |
-| `Memory` | Persistent memory | MemorySearch, MemoryGet |
+| `AgentCreation` | Agent spawning and delegation | SpawnAgent |
+| `AuthorityExpanding` | Tools that can expand agent authority | (reserved; no built-in tools) |
+| `ExternalTrigger` | External event ingress | CreateExternalTrigger, CancelExternalTrigger |
 
 ## Stability levels
 
