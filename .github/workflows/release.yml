@@ -111,10 +111,13 @@ jobs:
 
           ## Changes
 
-          - Add GLM-5.2 model catalog support for BigModel and Z.ai provider configurations.
-          - Improve runtime closeout and persistence by serializing SQLite writes and recording terminal turn records for runtime errors.
-          - Expose private child agent status and child token usage through local control and supervised task status surfaces.
-          - Keep the generated docs search bundle outside the content root and add the agent actor invocation RFC.
+          - Add cross-agent in-app message search for indexed agent messages ([#1787](https://github.com/holon-run/holon/pull/1787)).
+          - Complete runtime settings support in the web GUI ([#1786](https://github.com/holon-run/holon/pull/1786)).
+          - Add configurable API CORS settings for runtime HTTP surfaces ([#1785](https://github.com/holon-run/holon/pull/1785)).
+          - Project the agent_home notes catalog into prompt context ([#1777](https://github.com/holon-run/holon/pull/1777)).
+          - Serialize runtime SQLite writes through the single-writer queue ([#1788](https://github.com/holon-run/holon/pull/1788)).
+          - Unify work item wait state projection across runtime views ([#1780](https://github.com/holon-run/holon/pull/1780)).
+          - Add user-facing guides for onboarding, WebFetch/WebSearch, ViewImage, skills CLI, provider OAuth, and external triggers ([#1782](https://github.com/holon-run/holon/pull/1782)).
 
           ## Install
 
