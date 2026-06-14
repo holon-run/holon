@@ -4012,6 +4012,32 @@ fn chat_text_renders_full_long_brief_events() {
 
 #[test]
 fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
+    fn normalize_active_activity_spinners(mut text: Text<'static>) -> Text<'static> {
+        for line in &mut text.lines {
+            let is_active_activity_header = line.spans.len() >= 3
+                && line.spans.get(1).is_some_and(|span| span.content == " ")
+                && line.spans.get(2).is_some_and(|span| {
+                    matches!(
+                        span.content.as_ref(),
+                        "Working"
+                            | "Queued"
+                            | "Continuing"
+                            | "Starting"
+                            | "Waiting task"
+                            | "Waiting external"
+                            | "Waiting"
+                            | "Needs input"
+                            | "Blocked"
+                            | "Delegating"
+                    )
+                });
+            if is_active_activity_header {
+                line.spans[0].content = "*".into();
+            }
+        }
+        text
+    }
+
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
@@ -4038,7 +4064,10 @@ fn chat_text_cache_reuses_unchanged_content_and_replaces_stale_entries() {
 
     let first = chat_text(&app);
     let second = chat_text(&app);
-    assert_eq!(first.lines, second.lines);
+    assert_eq!(
+        normalize_active_activity_spinners(first).lines,
+        normalize_active_activity_spinners(second).lines
+    );
 
     {
         let cache_ref = app.chat_text_cache.borrow();

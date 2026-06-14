@@ -451,6 +451,10 @@ Agent id: default
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
 
+## current_work_item
+Current work item: none.
+No focused WorkItem is attached to this turn.
+
 ## context_contract
 {CONTEXT_CONTRACT}
 
@@ -790,6 +794,10 @@ Agent id: default
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
 
+## current_work_item
+Current work item: none.
+No focused WorkItem is attached to this turn.
+
 ## context_contract
 {CONTEXT_CONTRACT}
 
@@ -864,6 +872,10 @@ Agent id: default
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
 
+## current_work_item
+Current work item: none.
+No focused WorkItem is attached to this turn.
+
 ## context_contract
 {CONTEXT_CONTRACT}
 
@@ -925,6 +937,10 @@ Agent id: default
 
 ## execution_environment
 {EXECUTION_ENVIRONMENT}
+
+## current_work_item
+Current work item: none.
+No focused WorkItem is attached to this turn.
 
 ## context_contract
 {CONTEXT_CONTRACT}

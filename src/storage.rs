@@ -109,16 +109,35 @@ struct ActiveWaitConditionStates {
     operator: bool,
     timer: bool,
     system: bool,
+    last_triggered_at: Option<DateTime<Utc>>,
 }
 
 impl ActiveWaitConditionStates {
-    fn record(&mut self, kind: WaitConditionKind) {
-        match kind {
+    fn record(
+        &mut self,
+        condition: &WaitConditionRecord,
+        trigger_delivery_by_id: &std::collections::BTreeMap<String, DateTime<Utc>>,
+    ) {
+        match condition.kind {
             WaitConditionKind::Task => self.task = true,
             WaitConditionKind::External => self.external = true,
             WaitConditionKind::Operator => self.operator = true,
             WaitConditionKind::Timer => self.timer = true,
             WaitConditionKind::System => self.system = true,
+        }
+        for wake_source in &condition.wake_sources {
+            let WakeSource::ExternalIngress {
+                external_trigger_id: Some(external_trigger_id),
+            } = wake_source
+            else {
+                continue;
+            };
+            if let Some(delivered_at) = trigger_delivery_by_id.get(external_trigger_id) {
+                self.last_triggered_at = Some(
+                    self.last_triggered_at
+                        .map_or(*delivered_at, |current| current.max(*delivered_at)),
+                );
+            }
         }
     }
 
@@ -675,35 +694,16 @@ impl AppStorage {
     }
 
     pub fn append_waiting_intent(&self, record: &WaitingIntentRecord) -> Result<()> {
-        let wait_condition = wait_condition_from_waiting_intent(record);
-        let event = external_wait_recoverability_event(&wait_condition);
         let waiting_intent_bytes = jsonl_bytes(record)?;
-        let wait_condition_bytes = jsonl_bytes(&wait_condition)?;
 
-        // Compatibility migration: keep the legacy waiting-intents ledger as the
-        // first durable write, then mirror the same state into the internal wait
-        // condition ledger while holding the storage append mutex so no other
-        // append can observe or interleave with the ordered pair. A filesystem
-        // failure on the second write can still leave the legacy append present;
-        // callers should treat the returned error as a mirror consistency failure,
-        // not proof that the legacy intent was absent.
+        // Compatibility-only legacy ledger. New wait state is recorded through
+        // `append_wait_condition`; legacy waiting intents must not create or
+        // update scheduler-visible wait conditions.
         let _guard = self
             .append_mutex
             .lock()
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            append_jsonl_bytes(&self.waiting_intents_path, &waiting_intent_bytes)?;
-            runtime_db.wait_conditions().upsert(&wait_condition)?;
-            if let Some(event) = event.as_ref() {
-                self.append_event_with_append_mutex_held(event)?;
-            }
-            return Ok(());
-        }
         append_jsonl_bytes(&self.waiting_intents_path, &waiting_intent_bytes)?;
-        append_jsonl_bytes(&self.wait_conditions_path, &wait_condition_bytes)?;
-        if let Some(event) = event.as_ref() {
-            self.append_event_with_append_mutex_held(event)?;
-        }
         Ok(())
     }
 
@@ -1746,33 +1746,27 @@ impl AppStorage {
             .filter(|item| item.state == WorkItemState::Open)
             .cloned();
 
-        let active_waits = self
-            .latest_waiting_intents()?
+        let trigger_delivery_by_id = self
+            .latest_external_triggers()?
             .into_iter()
-            .filter(|intent| intent.status == WaitingIntentStatus::Active)
-            .filter(|intent| intent.scope == WaitingIntentScope::WorkItem)
-            .filter_map(|intent| intent.work_item_id.map(|id| (id, intent.last_triggered_at)))
-            .fold(
-                std::collections::BTreeMap::<String, Option<DateTime<Utc>>>::new(),
-                |mut acc, (id, triggered_at)| {
-                    let slot = acc.entry(id).or_insert(None);
-                    *slot = match (*slot, triggered_at) {
-                        (Some(left), Some(right)) => Some(left.max(right)),
-                        (None, Some(right)) => Some(right),
-                        (existing, None) => existing,
-                    };
-                    acc
-                },
-            );
+            .filter(|trigger| trigger.status == crate::types::ExternalTriggerStatus::Active)
+            .filter_map(|trigger| {
+                trigger
+                    .last_delivered_at
+                    .map(|delivered_at| (trigger.external_trigger_id, delivered_at))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         let active_wait_conditions = self
             .latest_wait_conditions()?
             .into_iter()
             .filter(|condition| condition.status == WaitConditionStatus::Active)
-            .filter_map(|condition| condition.work_item_id.map(|id| (id, condition.kind)))
+            .filter_map(|condition| condition.work_item_id.clone().map(|id| (id, condition)))
             .fold(
                 std::collections::BTreeMap::<String, ActiveWaitConditionStates>::new(),
-                |mut acc, (id, kind)| {
-                    acc.entry(id).or_default().record(kind);
+                |mut acc, (id, condition)| {
+                    acc.entry(id)
+                        .or_default()
+                        .record(&condition, &trigger_delivery_by_id);
                     acc
                 },
             );
@@ -1795,14 +1789,13 @@ impl AppStorage {
             .map(|item| {
                 let is_current = current_work_item_id.as_deref() == Some(item.id.as_str())
                     && item.state == WorkItemState::Open;
-                let last_triggered_at = active_waits.get(&item.id).copied().flatten();
                 let wait_condition = active_wait_conditions.get(&item.id);
                 let wait_condition_state =
                     wait_condition.and_then(ActiveWaitConditionStates::scheduling_state);
-                let has_active_waits =
-                    active_waits.contains_key(&item.id) || wait_condition_state.is_some();
+                let has_active_waits = wait_condition_state.is_some();
                 let has_active_task_waits = active_task_waits.contains(&item.id)
                     || wait_condition.is_some_and(|states| states.task);
+                let last_triggered_at = wait_condition.and_then(|states| states.last_triggered_at);
                 let has_triggered_waits = last_triggered_at.is_some();
                 let yielded = item.state == WorkItemState::Open
                     && active_continuation_suspended_ids.contains(&item.id);
@@ -1811,11 +1804,7 @@ impl AppStorage {
                 } else if has_active_task_waits {
                     item.scheduling_state(Some(WorkItemSchedulingState::WaitingTask))
                 } else {
-                    item.scheduling_state(wait_condition_state.or_else(|| {
-                        active_waits
-                            .contains_key(&item.id)
-                            .then_some(WorkItemSchedulingState::WaitingExternal)
-                    }))
+                    item.scheduling_state(wait_condition_state)
                 };
                 let readiness = readiness_for_scheduling_state(scheduling_state);
                 let candidate_class =
@@ -2734,44 +2723,6 @@ where
     parse_jsonl_match(&prefix, path, &mut matches)
 }
 
-fn wait_condition_from_waiting_intent(record: &WaitingIntentRecord) -> WaitConditionRecord {
-    let updated_at = record
-        .cancelled_at
-        .or(record.last_triggered_at)
-        .unwrap_or(record.created_at);
-    WaitConditionRecord {
-        id: format!("waiting_intent:{}", record.id),
-        agent_id: record.agent_id.clone(),
-        work_item_id: record.work_item_id.clone(),
-        status: match record.status {
-            WaitingIntentStatus::Active => WaitConditionStatus::Active,
-            WaitingIntentStatus::Cancelled => WaitConditionStatus::Cancelled,
-        },
-        kind: WaitConditionKind::External,
-        source: Some(record.source.clone()),
-        subject_ref: record.resource.clone(),
-        waiting_for: record
-            .condition
-            .clone()
-            .unwrap_or_else(|| record.description.clone()),
-        wake_sources: vec![WakeSource::ExternalIngress {
-            external_trigger_id: Some(record.external_trigger_id.clone()),
-        }],
-        continuation: Some(serde_json::json!({
-            "waiting_intent_id": record.id,
-            "external_trigger_id": record.external_trigger_id,
-            "scope": record.scope,
-            "delivery_mode": record.delivery_mode,
-        })),
-        created_at: record.created_at,
-        updated_at,
-        expires_at: None,
-        resolved_at: None,
-        cancelled_at: record.cancelled_at,
-        turn_id: None,
-    }
-}
-
 fn external_wait_recoverability_event(record: &WaitConditionRecord) -> Option<AuditEvent> {
     match record.external_recoverability()? {
         ExternalWaitRecoverability::Weak => Some(AuditEvent::new(
@@ -3024,7 +2975,7 @@ mod tests {
         EpisodeBoundaryReason, ExternalTriggerScope, ExternalTriggerStatus, MessageBody,
         MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
         TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, TodoItem, TodoItemState,
-        ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, WorkItemPlanStatus,
+        ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, WakeSource, WorkItemPlanStatus,
         WorkItemState,
     };
 
@@ -5063,7 +5014,7 @@ mod tests {
     }
 
     #[test]
-    fn append_waiting_intent_mirrors_internal_wait_condition_ledger() {
+    fn append_waiting_intent_does_not_mirror_internal_wait_condition_ledger() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
         let now = Utc::now();
@@ -5086,44 +5037,17 @@ mod tests {
             correlation_id: None,
             causation_id: None,
         };
-        let cancelled = WaitingIntentRecord {
-            status: WaitingIntentStatus::Cancelled,
-            cancelled_at: Some(now + chrono::Duration::seconds(10)),
-            ..active.clone()
-        };
 
         storage.append_waiting_intent(&active).unwrap();
-        let mirrored = storage.latest_wait_conditions().unwrap();
-        assert_eq!(mirrored.len(), 1);
-        assert_eq!(mirrored[0].id, "waiting_intent:wait-1");
-        assert_eq!(mirrored[0].status, WaitConditionStatus::Active);
-        assert_eq!(mirrored[0].kind, WaitConditionKind::External);
-        assert_eq!(mirrored[0].source.as_deref(), Some("github"));
-        assert_eq!(mirrored[0].subject_ref.as_deref(), Some("pr-1"));
-        assert_eq!(mirrored[0].waiting_for, "ci passed");
-        assert_eq!(
-            mirrored[0].wake_sources,
-            vec![WakeSource::ExternalIngress {
-                external_trigger_id: Some("trigger-1".into()),
-            }]
-        );
-        assert_eq!(
-            mirrored[0]
-                .continuation
-                .as_ref()
-                .and_then(|value| value.get("waiting_intent_id").and_then(|id| id.as_str())),
-            Some("wait-1")
-        );
-
-        storage.append_waiting_intent(&cancelled).unwrap();
+        assert!(storage.latest_wait_conditions().unwrap().is_empty());
         let active_for_work = storage
             .latest_active_wait_conditions_for_work_item("default", "work-1")
             .unwrap();
         assert!(active_for_work.is_empty());
-        let latest = storage.latest_wait_conditions().unwrap();
-        assert_eq!(latest.len(), 1);
-        assert_eq!(latest[0].status, WaitConditionStatus::Cancelled);
-        assert_eq!(latest[0].cancelled_at, cancelled.cancelled_at);
+
+        let waiting_intents = storage.latest_waiting_intents().unwrap();
+        assert_eq!(waiting_intents.len(), 1);
+        assert_eq!(waiting_intents[0].id, "wait-1");
     }
 
     #[test]
@@ -5282,11 +5206,9 @@ mod tests {
             })
             .unwrap();
         let legacy_events = storage.read_recent_events(10).unwrap();
-        let legacy_event = legacy_events
+        assert!(!legacy_events
             .iter()
-            .find(|event| event.data["wait_condition_id"] == "waiting_intent:legacy-weak")
-            .expect("legacy mirror should emit recoverability audit event");
-        assert!(legacy_event.event_seq > emitted[1].event_seq);
+            .any(|event| event.data["wait_condition_id"] == "waiting_intent:legacy-weak"));
     }
 
     #[test]
@@ -5492,24 +5414,26 @@ mod tests {
         external.updated_at = now + chrono::Duration::seconds(1);
         storage.append_work_item(&external).unwrap();
         storage
-            .append_waiting_intent(&WaitingIntentRecord {
-                id: "wait-external".into(),
+            .append_wait_condition(&WaitConditionRecord {
+                id: "external-condition".into(),
                 agent_id: "default".into(),
-                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(external.id.clone()),
-                description: "external callback".into(),
-                source: "github".into(),
-                resource: Some("pull_request:1".into()),
-                condition: Some("merged".into()),
-                delivery_mode: CallbackDeliveryMode::WakeHint,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: "trigger-external".into(),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("github".into()),
+                subject_ref: Some("pull_request:1".into()),
+                waiting_for: "merged".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some("trigger-external".into()),
+                }],
+                continuation: None,
                 created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
                 cancelled_at: None,
-                last_triggered_at: None,
-                trigger_count: 0,
-                correlation_id: None,
-                causation_id: None,
+
+                turn_id: None,
             })
             .unwrap();
         assert_eq!(
@@ -5605,11 +5529,14 @@ mod tests {
             |storage: &AppStorage, work_item_id: &str, kind: WaitConditionKind| {
                 let wait_kind = format!("{kind:?}");
                 let wake_sources = match kind {
+                    WaitConditionKind::External => vec![WakeSource::ExternalIngress {
+                        external_trigger_id: Some("trigger-external".into()),
+                    }],
                     WaitConditionKind::Timer => vec![WakeSource::Timer {
                         wake_at: Utc::now() + chrono::Duration::minutes(5),
                     }],
                     WaitConditionKind::System => vec![WakeSource::SystemTick],
-                    _ => unreachable!("helper is only used for timer/system waits"),
+                    _ => unreachable!("helper is only used for external/timer/system waits"),
                 };
                 storage
                     .append_wait_condition(&WaitConditionRecord {
@@ -5618,8 +5545,8 @@ mod tests {
                         work_item_id: Some(work_item_id.into()),
                         status: WaitConditionStatus::Active,
                         kind,
-                        source: None,
-                        subject_ref: None,
+                        source: (wait_kind == "External").then(|| "github".into()),
+                        subject_ref: (wait_kind == "External").then(|| "pull_request:1".into()),
                         waiting_for: wait_kind,
                         wake_sources,
                         continuation: None,
@@ -5692,27 +5619,7 @@ mod tests {
         let mut external = WorkItemRecord::new("default", "external wait", WorkItemState::Open);
         external.blocked_by = Some("github".into());
         storage.append_work_item(&external).unwrap();
-        storage
-            .append_waiting_intent(&WaitingIntentRecord {
-                id: "wait-external".into(),
-                agent_id: "default".into(),
-                scope: WaitingIntentScope::WorkItem,
-                work_item_id: Some(external.id.clone()),
-                description: "external callback".into(),
-                source: "github".into(),
-                resource: Some("pull_request:1".into()),
-                condition: Some("merged".into()),
-                delivery_mode: CallbackDeliveryMode::WakeHint,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: "trigger-external".into(),
-                created_at: Utc::now(),
-                cancelled_at: None,
-                last_triggered_at: None,
-                trigger_count: 0,
-                correlation_id: None,
-                causation_id: None,
-            })
-            .unwrap();
+        append_wait_condition(&storage, &external.id, WaitConditionKind::External);
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::WaitingForExternal
@@ -6288,24 +6195,41 @@ mod tests {
             storage.append_work_item(item).unwrap();
         }
         storage
-            .append_waiting_intent(&WaitingIntentRecord {
+            .append_wait_condition(&WaitConditionRecord {
                 id: "wait-triggered".into(),
                 agent_id: "default".into(),
-                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(triggered.id.clone()),
-                description: "triggered wait".into(),
-                source: "test".into(),
-                resource: None,
-                condition: None,
-                delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: "trigger-1".into(),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("test".into()),
+                subject_ref: None,
+                waiting_for: "triggered wait".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some("trigger-1".into()),
+                }],
+                continuation: None,
                 created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
                 cancelled_at: None,
-                last_triggered_at: Some(now),
-                trigger_count: 1,
-                correlation_id: None,
-                causation_id: None,
+                turn_id: None,
+            })
+            .unwrap();
+        storage
+            .append_external_trigger(&ExternalTriggerRecord {
+                external_trigger_id: "trigger-1".into(),
+                target_agent_id: "default".into(),
+                waiting_intent_id: None,
+                scope: ExternalTriggerScope::Agent,
+                delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+                trigger_url: None,
+                token_hash: "token-hash".into(),
+                status: ExternalTriggerStatus::Active,
+                created_at: now,
+                revoked_at: None,
+                last_delivered_at: Some(now),
+                delivery_count: 1,
             })
             .unwrap();
         let mut agent = AgentState::new("default");

@@ -41,6 +41,7 @@ struct TaskFixture {
 #[derive(Deserialize)]
 struct WaitingIntentFixture {
     id: String,
+    #[allow(dead_code)]
     scope: WaitingIntentScope,
     work_item_id: Option<String>,
 }
@@ -92,6 +93,36 @@ struct ToolExecutionFixture {
     status: ToolExecutionStatus,
     #[serde(default)]
     work_item_id: Option<String>,
+}
+
+fn append_active_external_wait_condition(
+    storage: &AppStorage,
+    id: &str,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+) {
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            work_item_id: work_item_id.map(ToString::to_string),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: format!("{id} wait"),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some(format!("trigger-{id}")),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+        })
+        .unwrap();
 }
 
 #[derive(Deserialize)]
@@ -277,24 +308,25 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
     }
     for intent in waiting_intents {
         storage
-            .append_waiting_intent(&WaitingIntentRecord {
+            .append_wait_condition(&WaitConditionRecord {
                 id: intent.id.clone(),
                 agent_id: "default".into(),
-                scope: intent.scope,
                 work_item_id: intent.work_item_id,
-                description: format!("fixture waiting intent {}", intent.id),
-                source: "fixture".into(),
-                resource: None,
-                condition: None,
-                delivery_mode: CallbackDeliveryMode::WakeHint,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: format!("trigger-{}", intent.id),
+                kind: WaitConditionKind::External,
+                source: Some("fixture".into()),
+                subject_ref: None,
+                waiting_for: format!("fixture wait condition {}", intent.id),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some(format!("trigger-{}", intent.id)),
+                }],
+                continuation: None,
+                status: WaitConditionStatus::Active,
                 created_at: Utc::now(),
+                updated_at: Utc::now(),
+                expires_at: None,
+                resolved_at: None,
                 cancelled_at: None,
-                last_triggered_at: None,
-                trigger_count: 0,
-                correlation_id: None,
-                causation_id: None,
+                turn_id: None,
             })
             .unwrap();
     }
@@ -581,33 +613,8 @@ fn scheduler_projection_breaks_down_waiting_intent_scopes() {
     let storage = AppStorage::new(dir.path()).unwrap();
     let mut agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
-    let now = Utc::now();
-    for (id, scope, work_item_id) in [
-        ("work-wait", WaitingIntentScope::WorkItem, Some("work-1")),
-        ("agent-wait", WaitingIntentScope::Agent, None),
-    ] {
-        storage
-            .append_waiting_intent(&WaitingIntentRecord {
-                id: id.into(),
-                agent_id: "default".into(),
-                scope,
-                work_item_id: work_item_id.map(ToString::to_string),
-                description: format!("{id} description"),
-                source: "test".into(),
-                resource: None,
-                condition: None,
-                delivery_mode: CallbackDeliveryMode::WakeHint,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: format!("trigger-{id}"),
-                created_at: now,
-                cancelled_at: None,
-                last_triggered_at: None,
-                trigger_count: 0,
-                correlation_id: None,
-                causation_id: None,
-            })
-            .unwrap();
-    }
+    append_active_external_wait_condition(&storage, "work-wait", "default", Some("work-1"));
+    append_active_external_wait_condition(&storage, "agent-wait", "default", None);
     agent.pending_wake_hint = None;
     storage.write_agent(&agent).unwrap();
 
@@ -626,27 +633,7 @@ fn scheduler_projection_filters_tasks_waiting_intents_and_timers_by_agent() {
     let now = Utc::now();
 
     for (id, agent_id) in [("wait-current", "default"), ("wait-other", "other")] {
-        storage
-            .append_waiting_intent(&WaitingIntentRecord {
-                id: id.into(),
-                agent_id: agent_id.into(),
-                scope: WaitingIntentScope::Agent,
-                work_item_id: None,
-                description: format!("{id} description"),
-                source: "test".into(),
-                resource: None,
-                condition: None,
-                delivery_mode: CallbackDeliveryMode::WakeHint,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: format!("trigger-{id}"),
-                created_at: now,
-                cancelled_at: None,
-                last_triggered_at: None,
-                trigger_count: 0,
-                correlation_id: None,
-                causation_id: None,
-            })
-            .unwrap();
+        append_active_external_wait_condition(&storage, id, agent_id, None);
     }
     for (id, agent_id) in [("timer-current", "default"), ("timer-other", "other")] {
         storage
@@ -698,27 +685,7 @@ fn idle_boundary_decision_prefers_controlled_status_over_wait_facts() {
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Stopped;
     storage.write_agent(&agent).unwrap();
-    storage
-        .append_waiting_intent(&WaitingIntentRecord {
-            id: "wait-current".into(),
-            agent_id: "default".into(),
-            scope: WaitingIntentScope::Agent,
-            work_item_id: None,
-            description: "wait".into(),
-            source: "test".into(),
-            resource: None,
-            condition: None,
-            delivery_mode: CallbackDeliveryMode::WakeHint,
-            status: WaitingIntentStatus::Active,
-            external_trigger_id: "trigger-wait-current".into(),
-            created_at: Utc::now(),
-            cancelled_at: None,
-            last_triggered_at: None,
-            trigger_count: 0,
-            correlation_id: None,
-            causation_id: None,
-        })
-        .unwrap();
+    append_active_external_wait_condition(&storage, "wait-current", "default", None);
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let decision = scheduler::idle_boundary_decision(&projection, "fixture");
@@ -733,27 +700,7 @@ fn idle_boundary_decision_inspects_wait_facts_while_asleep() {
     let mut agent = AgentState::new("default");
     agent.status = AgentStatus::Asleep;
     storage.write_agent(&agent).unwrap();
-    storage
-        .append_waiting_intent(&WaitingIntentRecord {
-            id: "wait-current".into(),
-            agent_id: "default".into(),
-            scope: WaitingIntentScope::Agent,
-            work_item_id: None,
-            description: "wait".into(),
-            source: "test".into(),
-            resource: None,
-            condition: None,
-            delivery_mode: CallbackDeliveryMode::WakeHint,
-            status: WaitingIntentStatus::Active,
-            external_trigger_id: "trigger-wait-current".into(),
-            created_at: Utc::now(),
-            cancelled_at: None,
-            last_triggered_at: None,
-            trigger_count: 0,
-            correlation_id: None,
-            causation_id: None,
-        })
-        .unwrap();
+    append_active_external_wait_condition(&storage, "wait-current", "default", None);
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let decision = scheduler::idle_boundary_decision(&projection, "fixture");
@@ -892,27 +839,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
     );
     assert_eq!(wake_decision.reason, "wake_hint");
 
-    storage
-        .append_waiting_intent(&WaitingIntentRecord {
-            id: "wait-current".into(),
-            agent_id: "default".into(),
-            scope: WaitingIntentScope::Agent,
-            work_item_id: None,
-            description: "unrelated wait".into(),
-            source: "test".into(),
-            resource: None,
-            condition: None,
-            delivery_mode: CallbackDeliveryMode::WakeHint,
-            status: WaitingIntentStatus::Active,
-            external_trigger_id: "trigger-wait-current".into(),
-            created_at: Utc::now(),
-            cancelled_at: None,
-            last_triggered_at: None,
-            trigger_count: 0,
-            correlation_id: None,
-            causation_id: None,
-        })
-        .unwrap();
+    append_active_external_wait_condition(&storage, "wait-current", "default", None);
     let blocked_projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     let work_queue_decision = scheduler::decide_next_action(
         &blocked_projection,
@@ -937,33 +864,12 @@ fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
     let storage = AppStorage::new(dir.path()).unwrap();
     let agent = AgentState::new("default");
     storage.write_agent(&agent).unwrap();
-    let now = Utc::now();
 
     let mut work_item = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
     work_item.id = "work-queued".into();
     work_item.revision = 4;
     storage.append_work_item(&work_item).unwrap();
-    storage
-        .append_waiting_intent(&WaitingIntentRecord {
-            id: "agent-wait".into(),
-            agent_id: "default".into(),
-            scope: WaitingIntentScope::Agent,
-            work_item_id: None,
-            description: "unrelated external wait".into(),
-            source: "github".into(),
-            resource: None,
-            condition: None,
-            delivery_mode: CallbackDeliveryMode::WakeHint,
-            status: WaitingIntentStatus::Active,
-            external_trigger_id: "trigger-agent-wait".into(),
-            created_at: now,
-            cancelled_at: None,
-            last_triggered_at: None,
-            trigger_count: 0,
-            correlation_id: None,
-            causation_id: None,
-        })
-        .unwrap();
+    append_active_external_wait_condition(&storage, "agent-wait", "default", None);
 
     let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
     assert_eq!(projection.active_agent_waiting_intents, 1);
@@ -1054,7 +960,6 @@ fn scheduling_diagnostics_detect_idle_posture_with_runnable_work() {
         &projection,
         &posture,
         &work_queue,
-        &[],
         &[],
     );
 
@@ -1223,30 +1128,8 @@ fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
             turn_id: None,
         })
         .unwrap();
-    storage
-        .append_waiting_intent(&WaitingIntentRecord {
-            id: "intent-missing-trigger".into(),
-            agent_id: "default".into(),
-            scope: WaitingIntentScope::Agent,
-            work_item_id: None,
-            description: "fixture waiting intent".into(),
-            source: "github".into(),
-            resource: Some("pr-1".into()),
-            condition: Some("review".into()),
-            delivery_mode: CallbackDeliveryMode::WakeHint,
-            status: WaitingIntentStatus::Active,
-            external_trigger_id: "".into(),
-            created_at: now,
-            cancelled_at: None,
-            last_triggered_at: None,
-            trigger_count: 0,
-            correlation_id: None,
-            causation_id: None,
-        })
-        .unwrap();
-
     let appended = scheduler::append_scheduling_diagnostics(&storage, &agent, 0).unwrap();
-    assert!(appended >= 2);
+    assert_eq!(appended, 1);
     assert_eq!(
         scheduler::append_scheduling_diagnostics(&storage, &agent, 0).unwrap(),
         0
@@ -1260,7 +1143,6 @@ fn scheduler_diagnostic_append_dedupes_interleaved_recent_events() {
         .collect::<Vec<_>>();
     assert_eq!(diagnostic_kinds.len(), appended);
     assert!(diagnostic_kinds.contains(&"external_wait_has_weak_recoverability"));
-    assert!(diagnostic_kinds.contains(&"waiting_intent_without_external_trigger"));
 }
 
 #[test]

@@ -139,8 +139,11 @@ impl RuntimeHandle {
                 queue_len,
                 work_queue_projection.clone(),
             )?;
-        let trigger =
-            idle_tick_trigger_from_state(pending_wake_hint, work_queue_projection, due_rechecks);
+        let trigger = idle_tick_trigger_from_state(
+            pending_wake_hint,
+            work_queue_projection,
+            due_rechecks.clone(),
+        );
 
         let suppress_continue_active = triggering_continuation
             .is_some_and(|continuation| continuation.model_reentry)
@@ -181,11 +184,13 @@ impl RuntimeHandle {
                             }),
                         ))?;
                     }
+                    self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
                 scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                 self.emit_system_tick_from_work_queue(&active, "continue_active")
                     .await?;
+                self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
             Some(IdleTickTrigger::WorkQueueQueued(queued)) => {
@@ -221,11 +226,13 @@ impl RuntimeHandle {
                             }),
                         ))?;
                     }
+                    self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
                 scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
                 self.emit_system_tick_from_work_queue(&queued, "queued_available")
                     .await?;
+                self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
             Some(IdleTickTrigger::WakeHint(pending)) => {
@@ -252,6 +259,8 @@ impl RuntimeHandle {
                         guard.state.pending_wake_hint = None;
                         guard.persist_state(&self.inner.storage)?;
                     }
+                    drop(guard);
+                    self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
                 scheduler::append_scheduler_decision(&self.inner.storage, &decision)?;
@@ -267,6 +276,8 @@ impl RuntimeHandle {
                     guard.state.pending_wake_hint = None;
                     guard.persist_state(&self.inner.storage)?;
                 }
+                drop(guard);
+                self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
             Some(IdleTickTrigger::BlockedRecheck(items)) => {
@@ -294,7 +305,17 @@ impl RuntimeHandle {
             .inner
             .storage
             .due_blocked_work_item_rechecks(agent_id, chrono::Utc::now())?;
-        for item in due_rechecks {
+        self.consume_work_item_rechecks(&due_rechecks).await
+    }
+
+    async fn consume_work_item_rechecks(
+        &self,
+        work_items: &[crate::types::WorkItemRecord],
+    ) -> Result<()> {
+        if work_items.is_empty() {
+            return Ok(());
+        }
+        for item in work_items {
             let _ = self.consume_work_item_recheck(&item.id).await?;
         }
         Ok(())
@@ -1221,6 +1242,38 @@ mod tests {
     }
 
     #[test]
+    fn pending_wake_hint_consumes_due_blocked_recheck_without_recheck_tick() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        set_wake_hint(&test_runtime, "wake-test");
+        let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
+        block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for wake");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(emitted, "wake hint should still emit a system tick");
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(
+            ticks[0].0, "wake_hint",
+            "wake hint should provide the execution opportunity"
+        );
+
+        let latest = latest_work_item(&test_runtime, "wi-blocked");
+        assert!(
+            latest
+                .recheck_consumed_at
+                .zip(latest.recheck_at)
+                .is_some_and(|(consumed_at, recheck_at)| consumed_at >= recheck_at),
+            "due recheck should be consumed because wake hint already woke the agent"
+        );
+    }
+
+    #[test]
     fn current_work_item_takes_precedence_over_queued_notification() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
@@ -1251,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn active_waiting_intent_blocks_work_queue_idle_tick() {
+    fn legacy_waiting_intent_does_not_block_work_queue_idle_tick() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
@@ -1264,29 +1317,17 @@ mod tests {
             .unwrap();
 
         assert!(
-            !emitted,
-            "active waiting intent should block work-queue self reactivation"
+            emitted,
+            "legacy waiting intents should no longer block work-queue self reactivation"
         );
-        assert!(get_emitted_system_ticks(&test_runtime).is_empty());
-        let events = test_runtime
-            .runtime
-            .inner
-            .storage
-            .read_recent_events(10)
-            .unwrap();
-        let decision = events
-            .iter()
-            .find(|event| event.kind == "scheduler_decision")
-            .expect("blocking decision should be recorded");
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].0, "work_queue");
         assert_eq!(
-            decision.data["decision"].as_str(),
-            Some("WaitForExternalChange")
+            ticks[0].1["reason"].as_str(),
+            Some("continue_active"),
+            "current work item should continue when only a legacy waiting intent exists"
         );
-        assert!(decision.data["evidence"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value.as_str() == Some("work_item_scheduling_state=WaitingExternal")));
     }
 
     #[test]
