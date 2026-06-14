@@ -39,6 +39,7 @@ export interface ReduceAgentSessionInput {
     events?: SessionEventEnvelope[];
   };
   eventDisplayLevel?: DisplayLevel;
+  includeDebug?: boolean;
 }
 
 interface SessionItemDraft {
@@ -64,7 +65,9 @@ export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): Agen
   const transcriptItems = input.transcript.map(projectTranscriptEntry);
   const briefItems = input.briefs.map(projectBriefRecord);
   const eventDisplayLevel = input.eventDisplayLevel ?? "debug";
-  const eventItems = (input.events.events ?? []).map((event) => projectEventEnvelope(event, eventDisplayLevel));
+  const eventItems = (input.events.events ?? []).map((event) =>
+    projectEventEnvelope(event, eventDisplayLevel, input.includeDebug ?? false),
+  );
 
   const sorted = mergeAgentTimelineItems([], [...transcriptItems, ...briefItems, ...eventItems])
     .filter((item): item is AgentTimelineItem => Boolean(item))
@@ -239,7 +242,11 @@ function projectBriefRecord(brief: SessionBriefRecord): AgentTimelineItem | unde
   });
 }
 
-function projectEventEnvelope(event: SessionEventEnvelope, eventDisplayLevel: DisplayLevel): AgentTimelineItem | undefined {
+function projectEventEnvelope(
+  event: SessionEventEnvelope,
+  eventDisplayLevel: DisplayLevel,
+  includeDebug: boolean,
+): AgentTimelineItem | undefined {
   if (!event.id && event.event_seq == null) return undefined;
   const id = event.id ?? `event-${event.event_seq}`;
   const payload = asRecord(event.payload);
@@ -256,7 +263,7 @@ function projectEventEnvelope(event: SessionEventEnvelope, eventDisplayLevel: Di
     minDisplayLevel: capDisplayLevel(projection.minDisplayLevel, eventDisplayLevel),
     sourceIds: [id],
     detail: projection.detail,
-    debug: debugJson(event),
+    debug: includeDebug ? debugJson(event) : undefined,
   });
 }
 
