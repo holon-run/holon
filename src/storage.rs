@@ -5206,11 +5206,9 @@ mod tests {
             })
             .unwrap();
         let legacy_events = storage.read_recent_events(10).unwrap();
-        let legacy_event = legacy_events
+        assert!(!legacy_events
             .iter()
-            .find(|event| event.data["wait_condition_id"] == "waiting_intent:legacy-weak")
-            .expect("legacy mirror should emit recoverability audit event");
-        assert!(legacy_event.event_seq > emitted[1].event_seq);
+            .any(|event| event.data["wait_condition_id"] == "waiting_intent:legacy-weak"));
     }
 
     #[test]
@@ -5416,24 +5414,26 @@ mod tests {
         external.updated_at = now + chrono::Duration::seconds(1);
         storage.append_work_item(&external).unwrap();
         storage
-            .append_waiting_intent(&WaitingIntentRecord {
-                id: "wait-external".into(),
+            .append_wait_condition(&WaitConditionRecord {
+                id: "external-condition".into(),
                 agent_id: "default".into(),
-                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(external.id.clone()),
-                description: "external callback".into(),
-                source: "github".into(),
-                resource: Some("pull_request:1".into()),
-                condition: Some("merged".into()),
-                delivery_mode: CallbackDeliveryMode::WakeHint,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: "trigger-external".into(),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("github".into()),
+                subject_ref: Some("pull_request:1".into()),
+                waiting_for: "merged".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some("trigger-external".into()),
+                }],
+                continuation: None,
                 created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
                 cancelled_at: None,
-                last_triggered_at: None,
-                trigger_count: 0,
-                correlation_id: None,
-                causation_id: None,
+
+                turn_id: None,
             })
             .unwrap();
         assert_eq!(
@@ -5529,11 +5529,14 @@ mod tests {
             |storage: &AppStorage, work_item_id: &str, kind: WaitConditionKind| {
                 let wait_kind = format!("{kind:?}");
                 let wake_sources = match kind {
+                    WaitConditionKind::External => vec![WakeSource::ExternalIngress {
+                        external_trigger_id: Some("trigger-external".into()),
+                    }],
                     WaitConditionKind::Timer => vec![WakeSource::Timer {
                         wake_at: Utc::now() + chrono::Duration::minutes(5),
                     }],
                     WaitConditionKind::System => vec![WakeSource::SystemTick],
-                    _ => unreachable!("helper is only used for timer/system waits"),
+                    _ => unreachable!("helper is only used for external/timer/system waits"),
                 };
                 storage
                     .append_wait_condition(&WaitConditionRecord {
@@ -5542,8 +5545,8 @@ mod tests {
                         work_item_id: Some(work_item_id.into()),
                         status: WaitConditionStatus::Active,
                         kind,
-                        source: None,
-                        subject_ref: None,
+                        source: (wait_kind == "External").then(|| "github".into()),
+                        subject_ref: (wait_kind == "External").then(|| "pull_request:1".into()),
                         waiting_for: wait_kind,
                         wake_sources,
                         continuation: None,
@@ -5616,27 +5619,7 @@ mod tests {
         let mut external = WorkItemRecord::new("default", "external wait", WorkItemState::Open);
         external.blocked_by = Some("github".into());
         storage.append_work_item(&external).unwrap();
-        storage
-            .append_waiting_intent(&WaitingIntentRecord {
-                id: "wait-external".into(),
-                agent_id: "default".into(),
-                scope: WaitingIntentScope::WorkItem,
-                work_item_id: Some(external.id.clone()),
-                description: "external callback".into(),
-                source: "github".into(),
-                resource: Some("pull_request:1".into()),
-                condition: Some("merged".into()),
-                delivery_mode: CallbackDeliveryMode::WakeHint,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: "trigger-external".into(),
-                created_at: Utc::now(),
-                cancelled_at: None,
-                last_triggered_at: None,
-                trigger_count: 0,
-                correlation_id: None,
-                causation_id: None,
-            })
-            .unwrap();
+        append_wait_condition(&storage, &external.id, WaitConditionKind::External);
         assert_eq!(
             posture_for(&storage, &agent),
             AgentSchedulingPosture::WaitingForExternal
