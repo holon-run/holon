@@ -27,19 +27,20 @@ function fixtureAgentDetail(agentId: string): AgentDetail {
 
 async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentId: string, displayLevel: DisplayLevel): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
+  const eventDisplayLevel = displayLevel === "info" ? "verbose" : displayLevel;
   const [entry, state, events] = await Promise.all([
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS })
       .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
       .catch(() => undefined),
     getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`),
-    fetchAgentEvents(baseUrl, fetchImpl, agentId, { limit: 80, order: "desc", displayLevel }).catch((): EventPageResponseDto => ({
+    fetchAgentEvents(baseUrl, fetchImpl, agentId, { limit: 80, order: "desc", displayLevel: eventDisplayLevel }).catch((): EventPageResponseDto => ({
       events: [],
       has_older: false,
     })),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const agent = projectAgent(fallbackEntry, state);
-  const timeline = reduceAgentSessionTimeline({ transcript: [], briefs: [], events, eventDisplayLevel: displayLevel });
+  const timeline = reduceAgentSessionTimeline({ transcript: [], briefs: [], events, eventDisplayLevel });
 
   return {
     agent,

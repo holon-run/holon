@@ -33,6 +33,10 @@ function isLiveRunningAgent(agent: AgentSummary): boolean {
   return Boolean(agent.currentRunId) || agent.lifecycle.toLowerCase() === "awake-running";
 }
 
+function isAgentEventStreamActive(agentId: string, liveStatus: AgentLiveStatus | undefined): boolean {
+  return activeEventStreams.has(agentId) && (liveStatus === "streaming" || liveStatus === "recovering");
+}
+
 export interface AgentSessionState {
   loading: boolean;
   loadingOlder: boolean;
@@ -384,7 +388,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           },
         },
       }));
-      void catchUpAgentEvents(get, set, agentId, displayLevel);
+      if (!isAgentEventStreamActive(agentId, get().sessionsByAgentId[agentId]?.liveStatus)) {
+        void catchUpAgentEvents(get, set, agentId, displayLevel);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
