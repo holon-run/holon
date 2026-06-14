@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
+use axum::http::{HeaderName, HeaderValue, Method};
 use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Value};
 
@@ -121,6 +122,7 @@ pub struct AppConfig {
     pub max_relevant_episodes: usize,
     pub control_token: Option<String>,
     pub control_auth_mode: ControlAuthMode,
+    pub api_cors: ApiCorsConfigFile,
     pub config_file_path: PathBuf,
     pub stored_config: HolonConfigFile,
     pub web_config: crate::web::WebConfig,
@@ -227,6 +229,8 @@ impl Default for AnthropicCacheStrategy {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HolonConfigFile {
+    #[serde(default, skip_serializing_if = "ApiConfigFile::is_empty")]
+    pub api: ApiConfigFile,
     #[serde(default, skip_serializing_if = "ModelConfigFile::is_empty")]
     pub model: ModelConfigFile,
     #[serde(default, skip_serializing_if = "ModelsConfigFile::is_empty")]
@@ -241,6 +245,84 @@ pub struct HolonConfigFile {
     pub tui: TuiConfigFile,
     #[serde(default, skip_serializing_if = "WebConfigFile::is_empty")]
     pub web: WebConfigFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ApiConfigFile {
+    #[serde(default, skip_serializing_if = "ApiCorsConfigFile::is_empty")]
+    pub cors: ApiCorsConfigFile,
+}
+
+impl ApiConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.cors.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApiCorsConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_origins: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_methods: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_headers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_credentials: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_seconds: Option<u64>,
+}
+
+impl Default for ApiCorsConfigFile {
+    fn default() -> Self {
+        Self {
+            enabled: None,
+            allowed_origins: vec![],
+            allowed_methods: default_api_cors_allowed_methods(),
+            allowed_headers: default_api_cors_allowed_headers(),
+            allow_credentials: None,
+            max_age_seconds: Some(600),
+        }
+    }
+}
+
+impl ApiCorsConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.allowed_origins.is_empty()
+            && self.allowed_methods == default_api_cors_allowed_methods()
+            && self.allowed_headers == default_api_cors_allowed_headers()
+            && self.allow_credentials.is_none()
+            && self.max_age_seconds == Some(600)
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+
+    pub fn allow_credentials(&self) -> bool {
+        self.allow_credentials.unwrap_or(false)
+    }
+
+    pub fn max_age_seconds(&self) -> u64 {
+        self.max_age_seconds.unwrap_or(600)
+    }
+}
+
+fn default_api_cors_allowed_methods() -> Vec<String> {
+    ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn default_api_cors_allowed_headers() -> Vec<String> {
+    ["content-type", "authorization"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -569,6 +651,7 @@ impl AppConfig {
         });
         let config_file_path = persisted_config_path(&home_dir);
         let stored_config = load_persisted_config_at(&config_file_path)?;
+        validate_api_cors_config(&stored_config.api.cors)?;
         let credential_store_path = credential_store_path(&home_dir);
         let credential_store =
             if config_uses_credential_profiles(&stored_config) || credential_store_path.exists() {
@@ -721,6 +804,7 @@ impl AppConfig {
             max_relevant_episodes,
             control_token,
             control_auth_mode,
+            api_cors: stored_config.api.cors.clone(),
             config_file_path,
             stored_config,
             web_config,
@@ -1679,6 +1763,48 @@ pub fn provider_config_view(
 pub fn config_schema() -> Vec<ConfigSchemaEntry> {
     vec![
         ConfigSchemaEntry {
+            key: "api.cors.enabled",
+            kind: "boolean",
+            description: "Enable CORS responses on the HTTP/control API. Disabled by default.",
+            default: json!(false),
+            allowed_values: vec!["true", "false"],
+        },
+        ConfigSchemaEntry {
+            key: "api.cors.allowed_origins",
+            kind: "string_list",
+            description: "Allowed browser origins for HTTP/control API CORS. Use explicit origins for LAN Web UI access; wildcard is rejected when credentials are enabled.",
+            default: json!([]),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "api.cors.allowed_methods",
+            kind: "string_list",
+            description: "HTTP methods allowed by CORS preflight responses.",
+            default: json!(default_api_cors_allowed_methods()),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "api.cors.allowed_headers",
+            kind: "string_list",
+            description: "HTTP request headers allowed by CORS preflight responses.",
+            default: json!(default_api_cors_allowed_headers()),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "api.cors.allow_credentials",
+            kind: "boolean",
+            description: "Allow credentialed browser CORS requests. Cannot be combined with wildcard origins.",
+            default: json!(false),
+            allowed_values: vec!["true", "false"],
+        },
+        ConfigSchemaEntry {
+            key: "api.cors.max_age_seconds",
+            kind: "positive_integer",
+            description: "Seconds browsers may cache successful CORS preflight responses.",
+            default: json!(600),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "model.default",
             kind: "model_ref",
             description: "Explicit default provider/model ref. When unset, the runtime derives one from authenticated providers.",
@@ -2014,6 +2140,27 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
 
 pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
     match key {
+        "api.cors.enabled" => Ok(config
+            .api
+            .cors
+            .enabled
+            .map(Value::Bool)
+            .unwrap_or(Value::Null)),
+        "api.cors.allowed_origins" => Ok(json!(config.api.cors.allowed_origins)),
+        "api.cors.allowed_methods" => Ok(json!(config.api.cors.allowed_methods)),
+        "api.cors.allowed_headers" => Ok(json!(config.api.cors.allowed_headers)),
+        "api.cors.allow_credentials" => Ok(config
+            .api
+            .cors
+            .allow_credentials
+            .map(Value::Bool)
+            .unwrap_or(Value::Null)),
+        "api.cors.max_age_seconds" => Ok(config
+            .api
+            .cors
+            .max_age_seconds
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "model.default" => Ok(config
             .model
             .default
@@ -2278,6 +2425,28 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
 
 pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) -> Result<()> {
     match key {
+        "api.cors.enabled" => {
+            config.api.cors.enabled = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
+        "api.cors.allowed_origins" => {
+            config.api.cors.allowed_origins = parse_string_list(raw_value)?;
+        }
+        "api.cors.allowed_methods" => {
+            config.api.cors.allowed_methods = parse_string_list(raw_value)?;
+        }
+        "api.cors.allowed_headers" => {
+            config.api.cors.allowed_headers = parse_string_list(raw_value)?;
+        }
+        "api.cors.allow_credentials" => {
+            config.api.cors.allow_credentials = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
+        "api.cors.max_age_seconds" => {
+            config.api.cors.max_age_seconds = Some(parse_positive_u64_key(key, raw_value)?);
+        }
         "model.default" => {
             let parsed = ModelRef::parse(raw_value)?;
             config.model.default = Some(parsed.as_string());
@@ -2508,11 +2677,22 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         }
         _ => return Err(unknown_config_key(key)),
     }
+    validate_api_cors_config(&config.api.cors)?;
     Ok(())
 }
 
 pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
     match key {
+        "api.cors.enabled" => config.api.cors.enabled = None,
+        "api.cors.allowed_origins" => config.api.cors.allowed_origins.clear(),
+        "api.cors.allowed_methods" => {
+            config.api.cors.allowed_methods = default_api_cors_allowed_methods()
+        }
+        "api.cors.allowed_headers" => {
+            config.api.cors.allowed_headers = default_api_cors_allowed_headers()
+        }
+        "api.cors.allow_credentials" => config.api.cors.allow_credentials = None,
+        "api.cors.max_age_seconds" => config.api.cors.max_age_seconds = Some(600),
         "model.default" => config.model.default = None,
         "model.fallbacks" => config.model.fallbacks.clear(),
         "vision.default" => config.vision.default = None,
@@ -2639,6 +2819,33 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
             return Ok(());
         }
         _ => return Err(unknown_config_key(key)),
+    }
+    validate_api_cors_config(&config.api.cors)?;
+    Ok(())
+}
+
+pub fn validate_api_cors_config(cors: &ApiCorsConfigFile) -> Result<()> {
+    if cors.allow_credentials() && cors.allowed_origins.iter().any(|origin| origin == "*") {
+        return Err(anyhow!(
+            "api.cors.allow_credentials cannot be true when api.cors.allowed_origins contains wildcard *"
+        ));
+    }
+    for origin in &cors.allowed_origins {
+        if origin != "*" {
+            origin
+                .parse::<HeaderValue>()
+                .with_context(|| format!("invalid api.cors.allowed_origins entry {origin:?}"))?;
+        }
+    }
+    for method in &cors.allowed_methods {
+        method
+            .parse::<Method>()
+            .with_context(|| format!("invalid api.cors.allowed_methods entry {method:?}"))?;
+    }
+    for header in &cors.allowed_headers {
+        header
+            .parse::<HeaderName>()
+            .with_context(|| format!("invalid api.cors.allowed_headers entry {header:?}"))?;
     }
     Ok(())
 }
@@ -4429,8 +4636,9 @@ mod tests {
 
     use super::{
         built_in_provider_doc_entries, built_in_provider_registry_with_settings, config_schema,
-        credential_store_path, default_holon_home, get_config_key, get_config_value,
-        list_credential_profiles_at, load_persisted_config_at, parse_anthropic_cache_strategy,
+        credential_store_path, default_api_cors_allowed_headers, default_api_cors_allowed_methods,
+        default_holon_home, get_config_key, get_config_value, list_credential_profiles_at,
+        load_persisted_config_at, parse_anthropic_cache_strategy,
         parse_anthropic_cache_strategy_env, parse_comma_separated_values, parse_url_value,
         persisted_config_path, provider_registry_for_tests,
         resolve_anthropic_context_management_config, save_persisted_config_at, set_config_key,
@@ -4559,6 +4767,7 @@ mod tests {
             max_relevant_episodes: 3,
             control_token: Some("control-value".into()),
             control_auth_mode: ControlAuthMode::Auto,
+            api_cors: Default::default(),
             config_file_path: home_path.join("config.json"),
             stored_config: Default::default(),
             default_model: ModelRef::parse(default_model).unwrap(),
@@ -4886,6 +5095,97 @@ mod tests {
         assert_eq!(
             get_config_key(&config, "runtime.disable_provider_fallback").unwrap(),
             Value::Null
+        );
+    }
+
+    #[test]
+    fn set_get_and_unset_round_trip_api_cors_config() {
+        let mut config = HolonConfigFile::default();
+        set_config_key(&mut config, "api.cors.enabled", "true").unwrap();
+        set_config_key(
+            &mut config,
+            "api.cors.allowed_origins",
+            r#"["http://192.168.1.10:5173"]"#,
+        )
+        .unwrap();
+        set_config_key(&mut config, "api.cors.allowed_methods", r#"["GET","POST"]"#).unwrap();
+        set_config_key(
+            &mut config,
+            "api.cors.allowed_headers",
+            r#"["content-type","authorization"]"#,
+        )
+        .unwrap();
+        set_config_key(&mut config, "api.cors.allow_credentials", "false").unwrap();
+        set_config_key(&mut config, "api.cors.max_age_seconds", "120").unwrap();
+
+        assert_eq!(
+            get_config_key(&config, "api.cors.enabled").unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            get_config_key(&config, "api.cors.allowed_origins").unwrap(),
+            json!(["http://192.168.1.10:5173"])
+        );
+        assert_eq!(
+            get_config_key(&config, "api.cors.allowed_methods").unwrap(),
+            json!(["GET", "POST"])
+        );
+        assert_eq!(
+            get_config_key(&config, "api.cors.allowed_headers").unwrap(),
+            json!(["content-type", "authorization"])
+        );
+        assert_eq!(
+            get_config_key(&config, "api.cors.allow_credentials").unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            get_config_key(&config, "api.cors.max_age_seconds").unwrap(),
+            json!(120)
+        );
+
+        unset_config_key(&mut config, "api.cors.enabled").unwrap();
+        unset_config_key(&mut config, "api.cors.allowed_origins").unwrap();
+        unset_config_key(&mut config, "api.cors.allowed_methods").unwrap();
+        unset_config_key(&mut config, "api.cors.allowed_headers").unwrap();
+        unset_config_key(&mut config, "api.cors.allow_credentials").unwrap();
+        unset_config_key(&mut config, "api.cors.max_age_seconds").unwrap();
+        assert_eq!(
+            get_config_key(&config, "api.cors.enabled").unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            get_config_key(&config, "api.cors.allowed_origins").unwrap(),
+            json!([])
+        );
+        assert_eq!(
+            get_config_key(&config, "api.cors.allowed_methods").unwrap(),
+            json!(default_api_cors_allowed_methods())
+        );
+        assert_eq!(
+            get_config_key(&config, "api.cors.allowed_headers").unwrap(),
+            json!(default_api_cors_allowed_headers())
+        );
+        assert_eq!(
+            get_config_key(&config, "api.cors.allow_credentials").unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            get_config_key(&config, "api.cors.max_age_seconds").unwrap(),
+            json!(600)
+        );
+    }
+
+    #[test]
+    fn api_cors_rejects_credentials_with_wildcard_origin() {
+        let mut config = HolonConfigFile::default();
+        set_config_key(&mut config, "api.cors.allowed_origins", r#"["*"]"#).unwrap();
+
+        let error = set_config_key(&mut config, "api.cors.allow_credentials", "true")
+            .expect_err("credentials plus wildcard origin should be rejected");
+
+        assert!(
+            error.to_string().contains("allow_credentials"),
+            "unexpected error: {error:?}"
         );
     }
 

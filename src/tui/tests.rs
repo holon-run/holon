@@ -63,6 +63,7 @@ fn test_config() -> AppConfig {
         max_relevant_episodes: 3,
         control_token: Some("secret".into()),
         control_auth_mode: crate::config::ControlAuthMode::Auto,
+        api_cors: Default::default(),
         config_file_path: temp.join("config.json"),
         stored_config: Default::default(),
         default_model: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),

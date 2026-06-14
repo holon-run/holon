@@ -10,7 +10,7 @@ use axum::{
     extract::{DefaultBodyLimit, MatchedPath, Path, Query, State},
     http::{
         header::{AUTHORIZATION, CONTENT_TYPE},
-        HeaderMap, Request as AxumRequest, Response, StatusCode,
+        HeaderMap, HeaderName, HeaderValue, Method, Request as AxumRequest, Response, StatusCode,
     },
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -27,7 +27,10 @@ use serde_json::{json, Map, Value};
 use tokio::time::{sleep, Duration};
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::{
-    classify::ServerErrorsFailureClass, compression::CompressionLayer, trace::TraceLayer,
+    classify::ServerErrorsFailureClass,
+    compression::CompressionLayer,
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
 };
 use tracing::{error, info, warn, Span};
 
@@ -50,8 +53,8 @@ use tower::ServiceExt;
 use crate::{
     config::{
         credential_store_path, load_credential_store_at, load_persisted_config_at,
-        save_persisted_config_at, set_config_key, unset_config_key, ControlTransportKind,
-        HolonConfigFile, ModelRef,
+        save_persisted_config_at, set_config_key, unset_config_key, ApiCorsConfigFile,
+        ControlTransportKind, HolonConfigFile, ModelRef,
     },
     daemon::{
         graceful_runtime_shutdown, runtime_activity_summary, RuntimeConfigSurface,
@@ -332,6 +335,7 @@ pub fn router(state: AppState) -> Router {
         .route("/transcript", get(transcript_default))
         .route("/worktree-summary", get(worktree_summary_default))
         .fallback(not_found_handler)
+        .layer(api_cors_layer(&state.host.config().api_cors))
         .layer(CompressionLayer::new())
         .layer(
             TraceLayer::new_for_http()
@@ -414,6 +418,46 @@ pub fn router(state: AppState) -> Router {
                 ),
         )
         .with_state(Arc::new(state))
+}
+
+fn api_cors_layer(config: &ApiCorsConfigFile) -> CorsLayer {
+    if !config.enabled() {
+        return CorsLayer::new();
+    }
+
+    let methods = config
+        .allowed_methods
+        .iter()
+        .filter_map(|method| method.parse::<Method>().ok())
+        .collect::<Vec<_>>();
+    let headers = config
+        .allowed_headers
+        .iter()
+        .filter_map(|header| header.parse::<HeaderName>().ok())
+        .collect::<Vec<_>>();
+
+    let allow_origin = if config.allowed_origins.iter().any(|origin| origin == "*") {
+        AllowOrigin::any()
+    } else {
+        AllowOrigin::list(
+            config
+                .allowed_origins
+                .iter()
+                .filter_map(|origin| origin.parse::<HeaderValue>().ok()),
+        )
+    };
+
+    let mut layer = CorsLayer::new()
+        .allow_origin(allow_origin)
+        .allow_methods(methods)
+        .allow_headers(headers)
+        .max_age(Duration::from_secs(config.max_age_seconds()));
+
+    if config.allow_credentials() {
+        layer = layer.allow_credentials(true);
+    }
+
+    layer
 }
 
 fn traced_json<T: Serialize>(

@@ -157,6 +157,7 @@ impl TestConfigBuilder {
             max_relevant_episodes: 3,
             control_token: Some("secret".into()),
             control_auth_mode: self.control_auth_mode,
+            api_cors: Default::default(),
             config_file_path: data_dir.join("config.json"),
             stored_config: Default::default(),
             default_model: holon::config::ModelRef::parse("anthropic/claude-sonnet-4-6").unwrap(),

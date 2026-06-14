@@ -13,7 +13,7 @@ use anyhow::Result;
 use axum::Router;
 use holon::{
     client::LocalClient,
-    config::{load_persisted_config_at, AppConfig, ControlAuthMode},
+    config::{load_persisted_config_at, ApiCorsConfigFile, AppConfig, ControlAuthMode},
     daemon::RuntimeServiceHandle,
     host::RuntimeHost,
     http::{self, AppState},
@@ -1246,6 +1246,73 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
             .map(|provider| provider.kind.as_str()),
         Some("command")
     );
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn cors_preflight_respects_configured_origin() -> Result<()> {
+    let mut config = test_config();
+    config.api_cors = ApiCorsConfigFile {
+        enabled: Some(true),
+        allowed_origins: vec!["http://192.168.1.10:5173".to_string()],
+        allowed_methods: vec!["GET".to_string(), "POST".to_string()],
+        allowed_headers: vec!["content-type".to_string(), "authorization".to_string()],
+        allow_credentials: Some(false),
+        max_age_seconds: Some(600),
+    };
+    std::fs::create_dir_all(&config.workspace_dir)?;
+    init_git_repo(&config.workspace_dir)?;
+    let host = RuntimeHost::new_with_provider(config.clone(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    let router: Router = http::router(AppState::for_tcp(host));
+    let listener = TcpListener::bind(&config.http_addr).await?;
+    let addr = connect_addr(listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await?;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let client = reqwest::Client::new();
+    let allowed = client
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("http://{addr}/control/runtime/status"),
+        )
+        .header("origin", "http://192.168.1.10:5173")
+        .header("access-control-request-method", "GET")
+        .header("access-control-request-headers", "authorization")
+        .send()
+        .await?;
+    assert!(allowed.status().is_success());
+    assert_eq!(
+        allowed
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("http://192.168.1.10:5173")
+    );
+    assert_eq!(
+        allowed
+            .headers()
+            .get("access-control-max-age")
+            .and_then(|value| value.to_str().ok()),
+        Some("600")
+    );
+
+    let denied = client
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("http://{addr}/control/runtime/status"),
+        )
+        .header("origin", "http://evil.example")
+        .header("access-control-request-method", "GET")
+        .send()
+        .await?;
+    assert!(denied
+        .headers()
+        .get("access-control-allow-origin")
+        .is_none());
 
     server.abort();
     Ok(())

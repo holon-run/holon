@@ -56,6 +56,25 @@ holon config unset model.fallbacks
 
 The `models.catalog` key lets you override runtime metadata for specific provider/model refs. Keys under `model.unknown_fallback.*` control policy for models without built-in metadata.
 
+### HTTP API CORS
+
+CORS is disabled by default. Enable it only for browser-based Web UI origins
+that should call the Holon HTTP/control API. For LAN access, the API must also
+bind to a reachable address such as `0.0.0.0:7878` or a specific LAN IP; a
+`127.0.0.1` bind is not reachable from other devices.
+
+```bash
+holon config set api.cors.enabled true
+holon config set api.cors.allowed_origins '["http://192.168.1.10:5173"]'
+holon config set api.cors.allowed_methods '["GET","POST","PATCH","DELETE","OPTIONS"]'
+holon config set api.cors.allowed_headers '["content-type","authorization"]'
+holon config set api.cors.allow_credentials false
+holon config set api.cors.max_age_seconds 600
+```
+
+Do not combine `api.cors.allow_credentials=true` with
+`api.cors.allowed_origins=["*"]`; Holon rejects that unsafe combination.
+
 ## Credential Management
 
 Credentials are stored securely in `~/.holon/credentials.json`. Use `config credentials` subcommands — **never edit this file directly**.
@@ -202,6 +221,12 @@ TUI debug instrumentation is controlled by environment variables:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `api.cors.enabled` | boolean | `false` | Enable CORS responses on the HTTP/control API |
+| `api.cors.allowed_origins` | string_list | `[]` | Explicit browser origins allowed to call the API |
+| `api.cors.allowed_methods` | string_list | `["GET","POST","PATCH","DELETE","OPTIONS"]` | HTTP methods allowed by CORS preflight |
+| `api.cors.allowed_headers` | string_list | `["content-type","authorization"]` | Request headers allowed by CORS preflight |
+| `api.cors.allow_credentials` | boolean | `false` | Allow credentialed CORS requests; incompatible with wildcard origins |
+| `api.cors.max_age_seconds` | integer | `600` | Browser cache lifetime for preflight responses |
 | `web.fetch.enabled` | boolean | `true` | Enable WebFetch tool |
 | `web.fetch.max_chars` | integer | `20000` | Max characters returned to model |
 | `web.fetch.max_response_bytes` | integer | `750000` | Max response bytes before truncation |

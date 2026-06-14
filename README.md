@@ -141,6 +141,22 @@ disconnects, the agent continues running in the daemon.
 For more operations, see the [TUI command reference](docs/website/reference/cli.md#terminal-ui)
 and [Daemon management](docs/website/reference/cli.md#daemon-management).
 
+### Remote Web UI access
+
+Browser-based Web UIs that run on another host or port must be allowed by the
+HTTP API CORS configuration. For LAN access, start the daemon on a reachable
+bind address and list the Web UI origin explicitly:
+
+```bash
+holon daemon start --access lan --host 0.0.0.0 --port 7878 --token-file ~/.config/holon/remote.token
+holon config set api.cors.enabled true
+holon config set api.cors.allowed_origins '["http://192.168.1.10:5173"]'
+```
+
+Holon does not enable wildcard browser access by default. If
+`api.cors.allow_credentials` is true, `api.cors.allowed_origins` must list
+specific origins rather than `"*"`.
+
 ## Core concepts
 
 Holon breaks agent work into a few explicit runtime objects:
