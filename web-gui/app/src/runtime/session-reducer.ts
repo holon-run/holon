@@ -104,14 +104,14 @@ export function filterTimelineByDisplayLevel(
 ): AgentTimelineItem[] {
   const rank = displayLevelRank[displayLevel];
   const filtered = items
-    .filter((item) => displayLevelRank[item.minDisplayLevel] <= rank)
     .map((item) => ({
       ...item,
       activities:
         displayLevel === "info"
           ? (item.activities ?? []).filter(isInfoActivity)
           : (item.activities ?? []).filter((activity) => displayLevelRank[activity.minDisplayLevel] <= rank),
-    }));
+    }))
+    .filter((item) => displayLevelRank[item.minDisplayLevel] <= rank || Boolean(item.activities?.length));
   const limit = options.itemLimit ?? (displayLevel === "info" ? 12 : 160);
   return filtered.slice(-limit);
 }
@@ -546,9 +546,7 @@ function isCompactActivityItem(item: AgentTimelineItem): boolean {
 
 function isInfoActivity(activity: AgentTimelineActivity): boolean {
   if (activity.kind !== "tool") return false;
-  if (/failed|error|exit\s+[1-9]/i.test(`${activity.label} ${activity.body} ${activity.meta}`)) return true;
-  if (activity.detail?.tone === "command" || activity.detail?.tone === "diff" || activity.detail?.tone === "output") return true;
-  return /command|patch|wait/i.test(`${activity.label} ${activity.meta}`);
+  return true;
 }
 
 function isActivityDuplicateOfTarget(activity: AgentTimelineActivity, target: AgentTimelineItem): boolean {
@@ -579,11 +577,11 @@ function timelineItemToActivity(item: AgentTimelineItem): AgentTimelineActivity 
 function summarizeActivityGroup(activities: AgentTimelineActivity[]): string {
   const toolCount = activities.filter((activity) => activity.kind === "tool").length;
   const eventCount = activities.length - toolCount;
-  if (toolCount && !eventCount) return `执行了 ${toolCount} 个工具。`;
-  if (!toolCount && eventCount) return `收到 ${eventCount} 个运行信号。`;
+  if (toolCount && !eventCount) return `${toolCount} tool activity${toolCount === 1 ? "" : " activities"}.`;
+  if (!toolCount && eventCount) return `${eventCount} runtime signal${eventCount === 1 ? "" : "s"}.`;
   return compactJoin([
-    toolCount ? `执行了 ${toolCount} 个工具` : undefined,
-    eventCount ? `收到 ${eventCount} 个运行信号` : undefined,
+    toolCount ? `${toolCount} tool activity${toolCount === 1 ? "" : " activities"}` : undefined,
+    eventCount ? `${eventCount} runtime signal${eventCount === 1 ? "" : "s"}` : undefined,
   ]);
 }
 
@@ -748,6 +746,8 @@ function toolExecutionDetail(
     return { label: toolName === "ExecCommandBatch" ? "Commands" : "Command", text: commandPreview, tone: "command" };
   }
   if (outputPreview) return { label: "Output", text: outputPreview, tone: "output" };
+  const readable = readableText(payload) || debugJson(payload ?? {});
+  if (readable && readable !== "{}") return { label: "Output", text: readable, tone: "data" };
   return undefined;
 }
 

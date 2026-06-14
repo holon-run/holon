@@ -445,8 +445,8 @@ const TimelineTurnGroup = memo(function TimelineTurnGroup({
     <section className="timeline-turn" aria-label={turn.label}>
       <div className="timeline-turn-rail" aria-hidden="true" />
       <div className="timeline-turn-body">
-        <div className="timeline-turn-header sr-only">
-          <span>{turn.label}</span>
+        <div className="timeline-turn-header">
+          <span className="sr-only">{turn.label}</span>
           <time>{formatDisplayTime(turn.timestamp)}</time>
         </div>
         {turn.items.map((item, index) => (
@@ -475,28 +475,42 @@ const TimelineMessage = memo(function TimelineMessage({
   onOpenInspector: () => void;
 }) {
   const isRuntimeItem = item.kind === "tool" || item.kind === "event" || item.kind === "system";
+  const activities =
+    isRuntimeItem && item.meta === "activity"
+      ? (item.activities ?? [])
+      : isRuntimeItem
+        ? [timelineItemToWorkingActivity(item), ...(item.activities ?? [])]
+        : (item.activities ?? []);
+  if (isRuntimeItem) {
+    return (
+      <article className="message activity-message">
+        {activities.length ? (
+          <ActivityTrail activities={activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
+        ) : null}
+      </article>
+    );
+  }
+
   const presentation = timelineItemPresentation(item);
-  const showHeading = isRuntimeItem || (item.kind === "assistant" && item.label === "Assistant requested tools");
+  const showHeading = item.kind === "assistant" && item.label === "Assistant requested tools";
 
   return (
-    <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}${isRuntimeItem ? " is-runtime-compact" : ""}`}>
+    <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}`}>
       <div className="bubble">
         {!compactAssistant && showHeading ? (
           <div className="message-heading">
             <span className="message-label">{presentation.title}</span>
-            {isRuntimeItem ? <span className="message-inline-meta">{formatTimelineMeta(item.meta, displayLevel)}</span> : null}
           </div>
         ) : null}
-        <TimelineItemContent item={item} presentation={presentation} runtimeItem={isRuntimeItem} />
-        <TimelineItemDetail detail={item.detail} compact={isRuntimeItem && displayLevel !== "debug"} />
+        <TimelineItemContent item={item} presentation={presentation} runtimeItem={false} />
+        <TimelineItemDetail detail={item.detail} />
       </div>
-      {displayLevel !== "info" && item.activities?.length ? (
-        <ActivityTrail activities={item.activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
+      {activities.length ? (
+        <ActivityTrail activities={activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
       ) : null}
       {!compactAssistant ? (
         <div className="message-meta">
-          <time>{formatDisplayTime(item.timestamp)}</time>
-          {isRuntimeItem ? null : <span>{formatTimelineMeta(item.meta, displayLevel)}</span>}
+          <span>{formatTimelineMeta(item.meta, displayLevel)}</span>
           {displayLevel !== "info" ? (
             <button className="copy-action" type="button" onClick={onOpenInspector}>
               inspect
@@ -624,7 +638,6 @@ function ActivityTrail({
               {activityIcon(activity)}
             </span>
             <span className="activity-body">{activity.body}</span>
-            <time>{formatDisplayTime(activity.timestamp)}</time>
           </div>
           {displayLevel === "debug" ? (
             <div className="activity-meta">
