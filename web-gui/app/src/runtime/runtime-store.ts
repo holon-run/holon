@@ -410,9 +410,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         });
         scheduleStaleWatchdog(get, set, agentId, displayLevel);
         if (reconnectAttempt > 0) {
-          void get().refreshAgentDetail(agentId, displayLevel).finally(() => {
-            if (activeEventStreams.has(agentId)) setAgentLiveStatus(set, agentId, "streaming");
-          });
+          setAgentLiveStatus(set, agentId, "streaming");
         }
       },
       onActivity: () => {
@@ -582,7 +580,6 @@ function scheduleStreamReconnect(
     reconnectAttempt: attempt,
     error: reason,
   });
-  void get().refreshAgentDetail(agentId, displayLevel).catch(() => undefined);
   const timer = window.setTimeout(() => {
     reconnectTimers.delete(agentId);
     get().startAgentEventStream(agentId, displayLevel);
