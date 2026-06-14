@@ -400,7 +400,8 @@ async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): 
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list"),
   ]);
 
-  const agents = agentEntries.map((entry) => projectAgent(entry));
+  const statesByAgentId = await fetchAgentStates(baseUrl, fetchImpl, agentEntries);
+  const agents = agentEntries.map((entry) => projectAgent(entry, statesByAgentId[agentIdFromEntry(entry)]));
   const attentionCount = agents.filter((agent) => agent.pending > 0 || agent.waitingCount > 0).length;
   const activeTaskCount = agents.reduce((sum, agent) => sum + agent.activeTaskCount, 0);
   const currentWorkCount = agents.filter((agent) => agent.currentWork).length;
@@ -417,6 +418,32 @@ async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): 
     metrics: buildMetrics(agents.length, attentionCount, activeTaskCount, currentWorkCount),
     agents,
   };
+}
+
+async function fetchAgentStates(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  agentEntries: AgentListEntryDto[],
+): Promise<Record<string, AgentStateDto | undefined>> {
+  const stateEntries = await Promise.all(
+    agentEntries.map(async (entry): Promise<[string, AgentStateDto | undefined]> => {
+      const agentId = agentIdFromEntry(entry);
+      if (!agentId) return [agentId, undefined];
+      try {
+        const state = await getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodeURIComponent(agentId)}/state`, {
+          timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS,
+        });
+        return [agentId, state];
+      } catch {
+        return [agentId, undefined];
+      }
+    }),
+  );
+  return Object.fromEntries(stateEntries);
+}
+
+function agentIdFromEntry(entry: AgentListEntryDto): string {
+  return entry.identity?.agent_id ?? "unknown-agent";
 }
 
 async function getJson<T>(

@@ -234,8 +234,21 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
               bootstrapError: bootstrap.connection.error,
             };
           }
+          const liveAgentsById = Object.fromEntries(state.bootstrap.agents.map((agent) => [agent.id, agent]));
+          const agents = bootstrap.agents.map((agent) => {
+            const liveAgent = liveAgentsById[agent.id];
+            return liveAgent ? preserveLiveAgentRunState(agent, liveAgent) : agent;
+          });
           return {
-            bootstrap: sortBootstrapAgents(bootstrap, state.rosterActivityByAgentId),
+            bootstrap: sortBootstrapAgents(
+              {
+                ...bootstrap,
+                agents,
+                attentionCount: countAgentsNeedingAttention(agents),
+                metrics: buildBootstrapMetrics(agents),
+              },
+              state.rosterActivityByAgentId,
+            ),
             bootstrapLoading: false,
             bootstrapError: bootstrap.connection.error,
           };
