@@ -155,7 +155,6 @@ export interface AgentEventStreamSubscription {
 export interface AgentEventStreamOptions {
   afterSeq?: number;
   limit?: number;
-  displayLevel?: DisplayLevel;
   onOpen?: () => void;
   onActivity?: () => void;
   onEvent: (event: StreamEventEnvelopeDto) => void;
@@ -311,7 +310,6 @@ function streamAgentEvents(
   const query = new URLSearchParams();
   if (options.limit != null) query.set("limit", String(options.limit));
   if (options.afterSeq != null) query.set("after_seq", String(options.afterSeq));
-  if (options.displayLevel) query.set("max_level", options.displayLevel);
   const queryString = query.toString();
   const path = `/agents/${encodedAgentId}/events/stream${queryString ? `?${queryString}` : ""}`;
 

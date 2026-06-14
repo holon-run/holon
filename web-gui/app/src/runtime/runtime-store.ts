@@ -468,7 +468,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     const subscription = runtimeClient.streamAgentEvents(agentId, {
       afterSeq: highestSeq(session.eventSeqs) ?? session.newestSeq ?? 0,
       limit: 100,
-      displayLevel: "verbose",
       onOpen: () => {
         markStreamActivity(set, agentId);
         setStreamState(set, agentId, reconnectAttempt > 0 ? "recovering" : "streaming", {
