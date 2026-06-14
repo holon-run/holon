@@ -1389,14 +1389,13 @@ impl MessageRepository<'_> {
         if query.limit == 0 {
             return Ok(Vec::new());
         }
-        let search_terms = query.query.trim();
-        if search_terms.is_empty() {
+        let Some(search_terms) = message_search_match_query(&query.query) else {
             return Ok(Vec::new());
-        }
+        };
 
         let mut clauses = vec!["message_search_index MATCH ?".to_string()];
         let mut values = Vec::<String>::new();
-        values.push(search_terms.to_string());
+        values.push(search_terms);
         if !query.agent_ids.is_empty() {
             let placeholders = std::iter::repeat("?")
                 .take(query.agent_ids.len())
@@ -2444,6 +2443,19 @@ fn message_body_search_text(body: &crate::types::MessageBody) -> String {
             }
             fields.join("\n")
         }
+    }
+}
+
+fn message_search_match_query(query: &str) -> Option<String> {
+    let terms = query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .map(|term| format!("\"{}\"", term))
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" AND "))
     }
 }
 
@@ -4442,6 +4454,22 @@ DELETE FROM storage_domains WHERE domain = 'working_memory_deltas';
         version: 15,
         name: "message_search_index",
         sql: r#"
+CREATE TABLE IF NOT EXISTS messages (
+  evidence_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  message_id TEXT,
+  message_seq INTEGER,
+  task_id TEXT,
+  work_item_id TEXT,
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_ref TEXT,
+  content_hash TEXT,
+  preview TEXT,
+  payload_json TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS message_search_index USING fts5(
   evidence_id UNINDEXED,
   agent_id UNINDEXED,
@@ -5657,7 +5685,9 @@ CREATE TABLE working_memory_deltas (
             crate::types::AuthorityClass::OperatorInstruction,
             crate::types::Priority::Normal,
             crate::types::MessageBody::Text {
-                text: "find the kestrel runtime note".into(),
+                text:
+                    "find the kestrel runtime note for PR #1786 on feature/issue-1783 with foo-bar"
+                        .into(),
             },
         );
         first.id = "msg-search-a".into();
@@ -5692,6 +5722,16 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].agent_id, "agent-b");
         assert_eq!(filtered[0].message_id, "msg-search-b");
+
+        for query in ["PR #1786", "feature/issue-1783", "foo-bar"] {
+            let results = db.messages().search(MessageSearchQuery {
+                query: query.into(),
+                agent_ids: Vec::new(),
+                limit: 10,
+            })?;
+            assert_eq!(results.len(), 1, "query {query:?}");
+            assert_eq!(results[0].message_id, "msg-search-a");
+        }
         Ok(())
     }
 
