@@ -1700,6 +1700,58 @@ code {
   grid-template-columns: 18px minmax(0, 1fr) auto;
 }
 
+.activity-detail {
+  display: block;
+}
+
+.activity-detail summary {
+  display: block;
+  cursor: pointer;
+  list-style: none;
+}
+
+.activity-detail summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-detail summary .activity-icon::before {
+  content: "›";
+  margin-right: 2px;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.activity-detail[open] summary .activity-icon::before {
+  content: "⌄";
+}
+
+.activity-detail pre {
+  overflow: auto;
+  max-height: 280px;
+  margin: 6px 0 2px 26px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f172a;
+  color: #dbeafe;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.activity-detail.command pre {
+  background: color-mix(in srgb, #0f172a 94%, var(--accent));
+  color: #e0f2fe;
+}
+
+.activity-detail.output pre {
+  background: color-mix(in srgb, #0f172a 94%, var(--success));
+}
+
+.activity-detail.diff pre {
+  background: color-mix(in srgb, #0f172a 94%, var(--warning));
+  color: #fef3c7;
+}
+
 .activity-icon {
   display: inline-grid;
   width: 18px;

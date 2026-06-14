@@ -631,25 +631,39 @@ function ActivityTrail({
 
   return (
     <div className="activity-trail" aria-label="Agent activity">
-      {visibleActivities.map((activity) => (
-        <div className={`activity-item ${activity.kind}`} key={activity.id}>
+      {visibleActivities.map((activity) => {
+        const compactDetail = displayLevel !== "debug" && activity.detail;
+        const row = (
           <div className="activity-row">
             <span className="activity-icon" aria-label={activity.label} title={activity.label}>
               {activityIcon(activity)}
             </span>
             <span className="activity-body">{activity.body}</span>
           </div>
-          {displayLevel === "debug" ? (
-            <div className="activity-meta">
-              <span>{activity.meta}</span>
-              <button className="copy-action" type="button" onClick={onOpenInspector}>
-                inspect
-              </button>
-            </div>
-          ) : null}
-          <TimelineItemDetail detail={activity.detail} compact={displayLevel !== "debug"} />
-        </div>
-      ))}
+        );
+
+        return (
+          <div className={`activity-item ${activity.kind}`} key={activity.id}>
+            {compactDetail ? (
+              <details className={`activity-detail ${activity.detail?.tone ?? "data"}`}>
+                <summary>{row}</summary>
+                <pre>{activity.detail?.text}</pre>
+              </details>
+            ) : (
+              row
+            )}
+            {displayLevel === "debug" ? (
+              <div className="activity-meta">
+                <span>{activity.meta}</span>
+                <button className="copy-action" type="button" onClick={onOpenInspector}>
+                  inspect
+                </button>
+              </div>
+            ) : null}
+            {displayLevel === "debug" ? <TimelineItemDetail detail={activity.detail} /> : null}
+          </div>
+        );
+      })}
       {hiddenCount > 0 ? <div className="activity-more">+{hiddenCount} earlier activities</div> : null}
     </div>
   );
