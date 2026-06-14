@@ -902,6 +902,7 @@ impl RuntimeHost {
             std::env::var_os("HOME").map(PathBuf::from).as_deref(),
             agent_home.as_path(),
         );
+        skills.notes_catalog = crate::notes::load_notes_catalog(agent_home.as_path())?;
         let model_catalog = RuntimeModelCatalog::from_config(self.config());
         let model_ref = model_catalog
             .provider_chain_for_turn(

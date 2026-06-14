@@ -85,6 +85,7 @@ pub fn load_skills_runtime_view(
         discoverable_skills,
         attached_skills,
         active_skills,
+        notes_catalog: Vec::new(),
     })
 }
 
