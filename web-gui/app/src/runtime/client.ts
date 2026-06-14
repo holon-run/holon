@@ -27,8 +27,8 @@ function fixtureAgentDetail(agentId: string): AgentDetail {
 
 async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentId: string, displayLevel: DisplayLevel): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
-  const eventDisplayLevel = displayLevel === "info" ? "verbose" : displayLevel;
-  const [entry, state, events, briefs] = await Promise.all([
+  const eventDisplayLevel = displayLevel;
+  const [entry, state, events] = await Promise.all([
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS })
       .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
       .catch(() => undefined),
@@ -37,11 +37,10 @@ async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentI
       events: [],
       has_older: false,
     })),
-    fetchAgentBriefs(baseUrl, fetchImpl, agentId, 5).catch((): BriefRecordDto[] => []),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
-  const agent = projectAgent(fallbackEntry, state, newestBrief(briefs));
-  const timeline = reduceAgentSessionTimeline({ transcript: [], briefs, events, eventDisplayLevel });
+  const agent = projectAgent(fallbackEntry, state, newestBriefFromEvents(events.events ?? []));
+  const timeline = reduceAgentSessionTimeline({ transcript: [], briefs: [], events, eventDisplayLevel });
 
   return {
     agent,
@@ -124,17 +123,19 @@ interface BriefRecordDto {
 }
 
 export interface EventPageResponseDto {
-  events?: Array<{
-    id?: string;
-    event_seq?: number;
-    ts?: string;
-    type?: string;
-    payload?: unknown;
-  }>;
+  events?: EventEnvelopeDto[];
   oldest_seq?: number;
   newest_seq?: number;
   cursor_seq?: number;
   has_older?: boolean;
+}
+
+interface EventEnvelopeDto {
+  id?: string;
+  event_seq?: number;
+  ts?: string;
+  type?: string;
+  payload?: unknown;
 }
 
 export interface StreamEventEnvelopeDto {
@@ -154,6 +155,7 @@ export interface AgentEventStreamSubscription {
 export interface AgentEventStreamOptions {
   afterSeq?: number;
   limit?: number;
+  displayLevel?: DisplayLevel;
   onOpen?: () => void;
   onActivity?: () => void;
   onEvent: (event: StreamEventEnvelopeDto) => void;
@@ -298,15 +300,6 @@ async function fetchAgentEvents(
   return getJson<EventPageResponseDto>(fetchImpl, baseUrl, path);
 }
 
-async function fetchAgentBriefs(
-  baseUrl: string,
-  fetchImpl: typeof fetch,
-  agentId: string,
-  limit: number,
-): Promise<BriefRecordDto[]> {
-  return getJson<BriefRecordDto[]>(fetchImpl, baseUrl, `/agents/${encodeURIComponent(agentId)}/briefs?limit=${limit}`);
-}
-
 function streamAgentEvents(
   baseUrl: string,
   fetchImpl: typeof fetch,
@@ -318,6 +311,7 @@ function streamAgentEvents(
   const query = new URLSearchParams();
   if (options.limit != null) query.set("limit", String(options.limit));
   if (options.afterSeq != null) query.set("after_seq", String(options.afterSeq));
+  if (options.displayLevel) query.set("max_level", options.displayLevel);
   const queryString = query.toString();
   const path = `/agents/${encodedAgentId}/events/stream${queryString ? `?${queryString}` : ""}`;
 
@@ -506,8 +500,16 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   };
 }
 
-function newestBrief(briefs: BriefRecordDto[]): BriefRecordDto | undefined {
-  return briefs
+function newestBriefFromEvents(events: EventEnvelopeDto[]): BriefRecordDto | undefined {
+  return events
+    .filter((event) => event.type === "brief_created")
+    .map((event) => {
+      const payload = event.payload && typeof event.payload === "object" ? (event.payload as Record<string, unknown>) : {};
+      const text = typeof payload.text === "string" ? payload.text : undefined;
+      const createdAt = typeof payload.created_at === "string" ? payload.created_at : event.ts;
+      const kind = typeof payload.kind === "string" ? payload.kind : undefined;
+      return { id: event.id, created_at: createdAt, text, kind };
+    })
     .filter((brief) => brief.text)
     .sort((left, right) => sortableTime(right.created_at) - sortableTime(left.created_at))[0];
 }
