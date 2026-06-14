@@ -10,6 +10,7 @@ pub use tools::{tool_sections, ToolPromptContext};
 
 use std::path::{Path, PathBuf};
 
+use crate::agent_notes::{render_notes_catalog, scan_agent_notes};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -423,7 +424,19 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         available_tools,
         tool_prompt_context,
     );
-    let context_sections = built_context.sections;
+    let mut context_sections = built_context.sections;
+    // Inject agent home notes catalog as a low-priority reference section.
+    // It must not override operator instructions, system/developer guidance,
+    // AGENTS.md, or current WorkItem context.
+    let notes_entries = scan_agent_notes(agent_home);
+    if let Some(notes_content) = render_notes_catalog(&notes_entries) {
+        let notes_section = section(
+            "agent_home_notes_catalog",
+            PromptStability::AgentScoped,
+            notes_content,
+        );
+        inject_notes_catalog_before_context_contract(&mut context_sections, notes_section);
+    }
     let rendered_system_prompt = render_sections(&system_sections);
     let rendered_context_attachment = render_sections(&context_sections);
     let context_fingerprint = prompt_context_fingerprint(
@@ -892,6 +905,20 @@ pub(crate) fn section(
         content,
         stability,
     }
+}
+
+/// Insert the notes catalog section before the `context_contract` section so
+/// that it appears after skills/active_skills but before the interpretation
+/// priority guide and turn-scoped content.
+fn inject_notes_catalog_before_context_contract(
+    sections: &mut Vec<PromptSection>,
+    notes_section: PromptSection,
+) {
+    let insert_pos = sections
+        .iter()
+        .position(|s| s.name == "context_contract")
+        .unwrap_or(sections.len());
+    sections.insert(insert_pos, notes_section);
 }
 
 pub fn context_sections_from_built_context(built: BuiltContext) -> Vec<PromptSection> {

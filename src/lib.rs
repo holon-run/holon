@@ -1,3 +1,4 @@
+pub mod agent_notes;
 pub mod agent_template;
 pub mod agents_md;
 mod auth;
