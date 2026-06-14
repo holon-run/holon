@@ -5632,6 +5632,7 @@ mod tests {
                 compaction_keep_recent_messages: 4,
                 ..ContextConfig::default()
             },
+            dir.path(),
         )
         .unwrap();
 
