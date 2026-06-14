@@ -316,7 +316,7 @@ function projectRuntimeEvent(
       label: "Started processing",
       body: compactJoin([stringField(payload, "origin") === "operator" ? "Operator input" : undefined, stringField(payload, "run_id")]) ||
         "Agent started processing input.",
-      minDisplayLevel: "verbose",
+      minDisplayLevel: "debug",
     };
   }
 
@@ -572,9 +572,11 @@ function timelineItemToActivity(item: AgentTimelineItem): AgentTimelineActivity 
 function summarizeActivityGroup(activities: AgentTimelineActivity[]): string {
   const toolCount = activities.filter((activity) => activity.kind === "tool").length;
   const eventCount = activities.length - toolCount;
+  if (toolCount && !eventCount) return `执行了 ${toolCount} 个工具。`;
+  if (!toolCount && eventCount) return `收到 ${eventCount} 个运行信号。`;
   return compactJoin([
-    toolCount ? `${toolCount} tool ${toolCount === 1 ? "activity" : "activities"}` : undefined,
-    eventCount ? `${eventCount} runtime ${eventCount === 1 ? "signal" : "signals"}` : undefined,
+    toolCount ? `执行了 ${toolCount} 个工具` : undefined,
+    eventCount ? `收到 ${eventCount} 个运行信号` : undefined,
   ]);
 }
 

@@ -445,7 +445,7 @@ const TimelineTurnGroup = memo(function TimelineTurnGroup({
     <section className="timeline-turn" aria-label={turn.label}>
       <div className="timeline-turn-rail" aria-hidden="true" />
       <div className="timeline-turn-body">
-        <div className="timeline-turn-header">
+        <div className="timeline-turn-header sr-only">
           <span>{turn.label}</span>
           <time>{formatDisplayTime(turn.timestamp)}</time>
         </div>
@@ -476,11 +476,12 @@ const TimelineMessage = memo(function TimelineMessage({
 }) {
   const isRuntimeItem = item.kind === "tool" || item.kind === "event" || item.kind === "system";
   const presentation = timelineItemPresentation(item);
+  const showHeading = isRuntimeItem || (item.kind === "assistant" && item.label === "Assistant requested tools");
 
   return (
     <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}${isRuntimeItem ? " is-runtime-compact" : ""}`}>
       <div className="bubble">
-        {!compactAssistant ? (
+        {!compactAssistant && showHeading ? (
           <div className="message-heading">
             <span className="message-label">{presentation.title}</span>
             {isRuntimeItem ? <span className="message-inline-meta">{formatTimelineMeta(item.meta, displayLevel)}</span> : null}
@@ -573,7 +574,7 @@ function timelineItemPresentation(item: AgentTimelineItem): TimelineItemPresenta
       return { title: "运行提醒", body: firstLine(item.body) || item.label, tone: "error" };
     }
     if (/activity/i.test(item.label)) {
-      return { title: "状态更新", body: firstLine(item.body) || "Agent 活动已更新。", tone: "progress" };
+      return { title: firstLine(item.body) || "状态已更新", body: "", tone: "progress" };
     }
     return { title: "系统事件", body: firstLine(item.body) || item.label, tone: "debug" };
   }
