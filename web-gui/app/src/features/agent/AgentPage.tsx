@@ -76,7 +76,7 @@ export function AgentPage({
     [displayLevel, sourceTimeline, visibleTimelineItemLimit],
   );
   const isWorking = isAgentWorking(activeAgent, sendingPrompt);
-  const workingActivities = useMemo(() => (isWorking ? collectWorkingActivities(sourceTimeline) : []), [isWorking, sourceTimeline]);
+  const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
   const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
   const trimmedPrompt = prompt.trim();
   const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
@@ -341,6 +341,17 @@ function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
 function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean): boolean {
   const lifecycle = agent.lifecycle.toLowerCase();
   return sendingPrompt || Boolean(agent.currentRunId) || lifecycle === "awake-running";
+}
+
+function collectWorkingActivitiesForCurrentTurn(timeline: AgentTimelineItem[]): AgentTimelineActivity[] {
+  let currentTurnStart = -1;
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    if (timeline[index]?.kind === "operator") {
+      currentTurnStart = index;
+      break;
+    }
+  }
+  return collectWorkingActivities(currentTurnStart >= 0 ? timeline.slice(currentTurnStart + 1) : timeline);
 }
 
 function collectWorkingActivities(timeline: AgentTimelineItem[]): AgentTimelineActivity[] {
