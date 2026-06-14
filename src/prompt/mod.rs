@@ -412,6 +412,7 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         current_message,
         continuation,
         config,
+        agent_home,
         default_external_ingress,
     )?;
     let system_sections = build_system_sections(
