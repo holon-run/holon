@@ -556,13 +556,24 @@ function projectWorkspace(
 ): WorkspaceSummary | undefined {
   if (!workspaceEntry && !worktreeSession) return undefined;
   const metadata = workspaceEntry?.projection_metadata;
-  const name = workspaceEntry?.workspace_alias ?? metadata?.worktree_branch ?? worktreeSession?.worktree_branch ?? workspaceEntry?.workspace_id ?? "not bound";
-  const path = metadata?.worktree_path ?? worktreeSession?.worktree_path ?? workspaceEntry?.execution_root ?? workspaceEntry?.cwd ?? workspaceEntry?.workspace_anchor ?? "—";
+  const anchor = workspaceEntry?.workspace_anchor ?? workspaceEntry?.execution_root ?? workspaceEntry?.cwd ?? "—";
+  const name = workspaceEntry?.workspace_alias ?? basename(anchor) ?? workspaceEntry?.workspace_id ?? "not bound";
+  const worktreeBranch = metadata?.worktree_branch ?? worktreeSession?.worktree_branch;
+  const worktreePath = metadata?.worktree_path ?? worktreeSession?.worktree_path;
   return {
     id: workspaceEntry?.workspace_id ?? "not bound",
     name,
-    path,
+    anchor,
+    executionRoot: workspaceEntry?.execution_root,
+    cwd: workspaceEntry?.cwd,
+    worktree: worktreeBranch || worktreePath ? { branch: worktreeBranch, path: worktreePath } : undefined,
   };
+}
+
+function basename(path: string): string | undefined {
+  const normalized = path.replace(/\/+$/, "");
+  if (!normalized || normalized === "—") return undefined;
+  return normalized.split("/").pop();
 }
 
 function projectTasks(tasks: NonNullable<AgentStateDto["tasks"]>): TaskSummary[] {

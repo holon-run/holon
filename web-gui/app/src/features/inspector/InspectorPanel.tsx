@@ -80,8 +80,42 @@ function SessionOverview({ agent }: { agent: AgentSummary }) {
             <dd>{workspace?.name ?? (agent.workspace === "not bound" ? "No active workspace" : agent.workspace)}</dd>
           </div>
           <div>
-            <dt>Path</dt>
-            <dd>{workspace?.path ?? "—"}</dd>
+            <dt>Anchor</dt>
+            <dd>{workspace?.anchor ?? "—"}</dd>
+          </div>
+          <div>
+            <dt>ID</dt>
+            <dd>{workspace?.id ?? "—"}</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section className="context-card inspector-card">
+        <div className="context-head">
+          <span className="eyebrow">{workspace?.worktree ? "Worktree / Execution" : "Execution"}</span>
+          <StatusBadge className="state-chip" kind="connection" value={workspace?.worktree ? "worktree" : "root"} />
+        </div>
+        <h2>{workspace?.worktree?.branch ?? "Current root"}</h2>
+        <dl className="inspector-facts">
+          {workspace?.worktree ? (
+            <>
+              <div>
+                <dt>Branch</dt>
+                <dd>{workspace.worktree.branch ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>Worktree</dt>
+                <dd>{workspace.worktree.path ?? "—"}</dd>
+              </div>
+            </>
+          ) : null}
+          <div>
+            <dt>Root</dt>
+            <dd>{workspace?.executionRoot ?? workspace?.anchor ?? "—"}</dd>
+          </div>
+          <div>
+            <dt>Cwd</dt>
+            <dd>{workspace?.cwd ?? "—"}</dd>
           </div>
         </dl>
       </section>

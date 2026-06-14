@@ -21,7 +21,13 @@ export interface WorkItemSummary {
 export interface WorkspaceSummary {
   id: string;
   name: string;
-  path: string;
+  anchor: string;
+  executionRoot?: string;
+  cwd?: string;
+  worktree?: {
+    branch?: string;
+    path?: string;
+  };
 }
 
 export interface TaskSummary {
