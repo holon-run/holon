@@ -1332,6 +1332,131 @@
         "title": "RuntimeConfigUpdateResponse",
         "type": "object"
       },
+      "SearchRequest": {
+        "properties": {
+          "agent_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "types": {
+            "default": [],
+            "items": {
+              "enum": [
+                "message"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchRequest",
+        "type": "object"
+      },
+      "SearchResponse": {
+        "properties": {
+          "limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "properties": {
+                "agent_id": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "locator": {
+                  "properties": {
+                    "evidence_id": {
+                      "type": "string"
+                    },
+                    "message_id": {
+                      "type": "string"
+                    },
+                    "task_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "turn_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "evidence_id",
+                    "message_id"
+                  ],
+                  "type": "object"
+                },
+                "preview": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "enum": [
+                    "message"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "agent_id",
+                "locator",
+                "created_at",
+                "kind"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "query",
+          "limit",
+          "results"
+        ],
+        "title": "SearchResponse",
+        "type": "object"
+      },
       "SetAgentModelRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -6952,6 +7077,64 @@
         ]
       }
     },
+    "/search": {
+      "post": {
+        "description": "Search indexed runtime history across visible agents. First version indexes message bodies and returns message result locators.",
+        "operationId": "runtimeSearch",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Search runtime history",
+        "tags": [
+          "search"
+        ]
+      }
+    },
     "/state": {
       "get": {
         "description": "Compatibility alias for the default agent state route.",
@@ -7244,6 +7427,9 @@
     },
     {
       "name": "skills"
+    },
+    {
+      "name": "search"
     },
     {
       "description": "Capability-token callback ingress. Never publish real callback_token values.",

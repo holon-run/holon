@@ -68,6 +68,7 @@ use crate::{
     },
     policy::{default_authority_for_origin, validate_message_kind_for_origin},
     runtime::{CurrentRunAbortError, CurrentRunAbortMode, CurrentRunAbortRequest},
+    runtime_db::{MessageSearchQuery, MessageSearchRow},
     storage::{EventLogPageOrder, FileActivityMarker},
     system::{ExecutionScopeKind, ExecutionSnapshot, HostLocalBoundary},
     types::{
@@ -212,6 +213,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(root))
         .route("/handshake", get(handshake))
         .route("/models", get(models_handler))
+        .route("/search", post(search))
         .route("/agents/list", get(list_agent_entries))
         .route("/agents/{agent_id}/enqueue", post(enqueue))
         .route("/agents/{agent_id}/status", get(status))
@@ -479,6 +481,55 @@ fn traced_json<T: Serialize>(
         );
     }
     Ok(([(CONTENT_TYPE, "application/json")], bytes).into_response())
+}
+
+const SEARCH_DEFAULT_LIMIT: usize = 20;
+const SEARCH_MAX_LIMIT: usize = 100;
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchItemType {
+    Message,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+pub struct SearchRequest {
+    pub query: String,
+    #[serde(default)]
+    pub agent_ids: Vec<String>,
+    #[serde(default)]
+    pub types: Vec<SearchItemType>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SearchResponse {
+    pub query: String,
+    pub limit: usize,
+    pub results: Vec<SearchResultItem>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SearchResultItem {
+    #[serde(rename = "type")]
+    pub result_type: SearchItemType,
+    pub agent_id: String,
+    pub locator: SearchResultLocator,
+    pub created_at: String,
+    pub kind: String,
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SearchResultLocator {
+    pub evidence_id: String,
+    pub message_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -893,6 +944,66 @@ pub async fn models_handler(
             "model_availability": model_availability,
         }),
     )
+}
+
+pub async fn search(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<SearchRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let started_at = std::time::Instant::now();
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let query = request.query.trim().to_string();
+    if query.is_empty() {
+        return Err(bad_request("query must not be empty"));
+    }
+    if request
+        .types
+        .iter()
+        .any(|result_type| *result_type != SearchItemType::Message)
+    {
+        return Err(bad_request("only message search is currently supported"));
+    }
+    let limit = request
+        .limit
+        .unwrap_or(SEARCH_DEFAULT_LIMIT)
+        .clamp(1, SEARCH_MAX_LIMIT);
+    let rows = state
+        .host
+        .runtime_db()
+        .messages()
+        .search(MessageSearchQuery {
+            query: query.clone(),
+            agent_ids: request.agent_ids,
+            limit,
+        })
+        .map_err(error_response)?;
+    traced_json(
+        "/search",
+        started_at,
+        SearchResponse {
+            query,
+            limit,
+            results: rows.into_iter().map(search_result_from_message).collect(),
+        },
+    )
+}
+
+fn search_result_from_message(row: MessageSearchRow) -> SearchResultItem {
+    SearchResultItem {
+        result_type: SearchItemType::Message,
+        agent_id: row.agent_id,
+        locator: SearchResultLocator {
+            evidence_id: row.evidence_id,
+            message_id: row.message_id,
+            turn_id: row.turn_id,
+            task_id: row.task_id,
+            work_item_id: row.work_item_id,
+        },
+        created_at: row.created_at,
+        kind: row.kind,
+        preview: row.preview,
+    }
 }
 
 pub async fn handshake(

@@ -10,7 +10,7 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{
-    ffi::ErrorCode, params, Connection, OptionalExtension, Transaction, TransactionBehavior,
+    ffi::ErrorCode, params, Connection, OptionalExtension, ToSql, Transaction, TransactionBehavior,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -199,6 +199,26 @@ pub struct EvidenceRow {
 #[derive(Debug, Clone)]
 pub struct EvidencePayloadRow {
     pub payload_json: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MessageSearchQuery {
+    pub query: String,
+    pub agent_ids: Vec<String>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageSearchRow {
+    pub evidence_id: String,
+    pub agent_id: String,
+    pub turn_id: Option<String>,
+    pub message_id: String,
+    pub task_id: Option<String>,
+    pub work_item_id: Option<String>,
+    pub created_at: String,
+    pub kind: String,
+    pub preview: Option<String>,
 }
 
 impl WorkItemRepository<'_> {
@@ -1365,6 +1385,67 @@ impl MessageRepository<'_> {
             .collect()
     }
 
+    pub fn search(&self, query: MessageSearchQuery) -> Result<Vec<MessageSearchRow>> {
+        if query.limit == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(search_terms) = message_search_match_query(&query.query) else {
+            return Ok(Vec::new());
+        };
+
+        let mut clauses = vec!["message_search_index MATCH ?".to_string()];
+        let mut values = Vec::<String>::new();
+        values.push(search_terms);
+        if !query.agent_ids.is_empty() {
+            let placeholders = std::iter::repeat("?")
+                .take(query.agent_ids.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            clauses.push(format!("messages.agent_id IN ({placeholders})"));
+            values.extend(query.agent_ids);
+        }
+
+        let limit = i64::try_from(query.limit).unwrap_or(i64::MAX);
+        let sql = format!(
+            "SELECT messages.evidence_id,
+                    messages.agent_id,
+                    messages.turn_id,
+                    messages.message_id,
+                    messages.task_id,
+                    messages.work_item_id,
+                    messages.created_at,
+                    messages.kind,
+                    messages.preview
+             FROM message_search_index
+             JOIN messages ON messages.evidence_id = message_search_index.evidence_id
+             WHERE {}
+             ORDER BY bm25(message_search_index), messages.created_at DESC, messages.evidence_id ASC
+             LIMIT {}",
+            clauses.join(" AND "),
+            limit
+        );
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(&sql)?;
+        let params = values
+            .iter()
+            .map(|value| value as &dyn ToSql)
+            .collect::<Vec<_>>();
+        let rows = statement.query_map(params.as_slice(), |row| {
+            Ok(MessageSearchRow {
+                evidence_id: row.get(0)?,
+                agent_id: row.get(1)?,
+                turn_id: row.get(2)?,
+                message_id: row.get(3)?,
+                task_id: row.get(4)?,
+                work_item_id: row.get(5)?,
+                created_at: row.get(6)?,
+                kind: row.get(7)?,
+                preview: row.get(8)?,
+            })
+        })?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
     pub fn by_id(
         &self,
         agent_id: Option<&str>,
@@ -2274,6 +2355,7 @@ fn upsert_message_tx(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<
     let payload_json = serde_json::to_string(message)?;
     let content_hash = content_hash(&payload_json);
     let kind = enum_string(&message.kind)?;
+    let preview = evidence_preview(&message.body);
     tx.execute(
         "INSERT INTO messages (
             evidence_id, agent_id, turn_id, message_id, message_seq, task_id, work_item_id,
@@ -2304,11 +2386,77 @@ fn upsert_message_tx(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<
             kind,
             Option::<String>::None,
             content_hash,
-            evidence_preview(&message.body),
+            preview,
+            payload_json,
+        ],
+    )?;
+    upsert_message_search_index_tx(tx, message, &kind, &payload_json)?;
+    Ok(())
+}
+
+fn upsert_message_search_index_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+    kind: &str,
+    payload_json: &str,
+) -> Result<()> {
+    tx.execute(
+        "DELETE FROM message_search_index WHERE evidence_id = ?1",
+        params![message.id],
+    )?;
+    tx.execute(
+        "INSERT INTO message_search_index (
+            evidence_id, agent_id, turn_id, message_id, task_id, work_item_id,
+            kind, body_text, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            message.id,
+            message.agent_id,
+            message.turn_id,
+            message.id,
+            message.task_id,
+            message.work_item_id,
+            kind,
+            message_body_search_text(&message.body),
             payload_json,
         ],
     )?;
     Ok(())
+}
+
+fn message_body_search_text(body: &crate::types::MessageBody) -> String {
+    match body {
+        crate::types::MessageBody::Text { text } => text.clone(),
+        crate::types::MessageBody::Json { value } => value.to_string(),
+        crate::types::MessageBody::Brief {
+            title,
+            text,
+            attachments,
+        } => {
+            let mut fields = Vec::new();
+            if let Some(title) = title {
+                fields.push(title.clone());
+            }
+            fields.push(text.clone());
+            if let Some(attachments) = attachments {
+                fields.push(serde_json::to_string(attachments).unwrap_or_default());
+            }
+            fields.join("\n")
+        }
+    }
+}
+
+fn message_search_match_query(query: &str) -> Option<String> {
+    let terms = query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .map(|term| format!("\"{}\"", term))
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" AND "))
+    }
 }
 
 fn upsert_transcript_entry_tx(tx: &Transaction<'_>, entry: &TranscriptEntry) -> Result<()> {
@@ -4302,6 +4450,60 @@ DROP TABLE IF EXISTS working_memory_deltas;
 DELETE FROM storage_domains WHERE domain = 'working_memory_deltas';
 "#,
     },
+    Migration {
+        version: 15,
+        name: "message_search_index",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS messages (
+  evidence_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  message_id TEXT,
+  message_seq INTEGER,
+  task_id TEXT,
+  work_item_id TEXT,
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_ref TEXT,
+  content_hash TEXT,
+  preview TEXT,
+  payload_json TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS message_search_index USING fts5(
+  evidence_id UNINDEXED,
+  agent_id UNINDEXED,
+  turn_id UNINDEXED,
+  message_id UNINDEXED,
+  task_id UNINDEXED,
+  work_item_id UNINDEXED,
+  kind,
+  body_text,
+  payload_json
+);
+
+INSERT INTO message_search_index (
+  evidence_id, agent_id, turn_id, message_id, task_id, work_item_id,
+  kind, body_text, payload_json
+)
+SELECT
+  messages.evidence_id,
+  messages.agent_id,
+  messages.turn_id,
+  messages.message_id,
+  messages.task_id,
+  messages.work_item_id,
+  messages.kind,
+  COALESCE(messages.preview, ''),
+  messages.payload_json
+FROM messages
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM message_search_index
+  WHERE message_search_index.evidence_id = messages.evidence_id
+);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -5467,6 +5669,69 @@ CREATE TABLE working_memory_deltas (
                 .collect::<Vec<_>>(),
             vec!["brief-a", "brief-b"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn message_search_indexes_messages_across_agents() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut first = MessageEnvelope::new(
+            "agent-a",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text {
+                text:
+                    "find the kestrel runtime note for PR #1786 on feature/issue-1783 with foo-bar"
+                        .into(),
+            },
+        );
+        first.id = "msg-search-a".into();
+        let mut second = MessageEnvelope::new(
+            "agent-b",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator {
+                actor_id: Some("operator:test".into()),
+            },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "another kestrel message".into(),
+            },
+        );
+        second.id = "msg-search-b".into();
+        db.messages().upsert(&first)?;
+        db.messages().upsert(&second)?;
+
+        let all = db.messages().search(MessageSearchQuery {
+            query: "kestrel".into(),
+            agent_ids: Vec::new(),
+            limit: 10,
+        })?;
+        assert_eq!(all.len(), 2);
+
+        let filtered = db.messages().search(MessageSearchQuery {
+            query: "kestrel".into(),
+            agent_ids: vec!["agent-b".into()],
+            limit: 10,
+        })?;
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].agent_id, "agent-b");
+        assert_eq!(filtered[0].message_id, "msg-search-b");
+
+        for query in ["PR #1786", "feature/issue-1783", "foo-bar"] {
+            let results = db.messages().search(MessageSearchQuery {
+                query: query.into(),
+                agent_ids: Vec::new(),
+                limit: 10,
+            })?;
+            assert_eq!(results.len(), 1, "query {query:?}");
+            assert_eq!(results[0].message_id, "msg-search-a");
+        }
         Ok(())
     }
 

@@ -1232,6 +1232,22 @@
   },
   {
     "method": "post",
+    "path": "/search",
+    "handler": "search",
+    "operation_id": "runtimeSearch",
+    "tag": "search",
+    "parameters": [],
+    "request_schema": "SearchRequest",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/webhooks/generic/{agent_id}",
     "handler": "generic_webhook",
     "operation_id": "genericWebhook",

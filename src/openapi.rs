@@ -10,7 +10,7 @@ use crate::{
     http::{
         CancelTimerRequest, CompleteWorkItemRequest, CreateTimerRequest, PickWorkItemRequest,
         PickWorkItemResponse, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
-        RuntimeConfigUpdateResponse, UpdateWorkItemRequest,
+        RuntimeConfigUpdateResponse, SearchRequest, SearchResponse, UpdateWorkItemRequest,
     },
     types::{
         TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult, TimerRecord,
@@ -82,6 +82,7 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/agents/{agent_id}/timers", "agentTimers", "timers", "List timers", "Return recent timer records. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/timers/{timer_id}", "agentTimer", "timers", "Timer detail", "Return a timer record by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/skills", "agentSkills", "skills", "List skills", "Return installed skills for an agent.", None, AuthKind::RemoteAccess),
+    route_with_response("post", "/search", "runtimeSearch", "search", "Search runtime history", "Search indexed runtime history across visible agents. First version indexes message bodies and returns message result locators.", Some("SearchRequest"), "SearchResponse", AuthKind::RemoteAccess),
     route("post", "/enqueue", "enqueueDefault", "ingress", "Enqueue default agent message", "Enqueue a public channel/webhook message for the default agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),
     route("post", "/agents/{agent_id}/enqueue", "enqueueAgent", "ingress", "Enqueue agent message", "Enqueue a public channel/webhook message for the named agent.", Some("EnqueueRequest"), AuthKind::RemoteAccess),
     route("post", "/webhooks/generic/{agent_id}", "genericWebhook", "ingress", "Generic webhook", "Convert an arbitrary JSON webhook body into a trusted integration message.", Some("GenericJsonPayload"), AuthKind::None),
@@ -259,6 +260,7 @@ fn openapi_value() -> Value {
             { "name": "work-items" },
             { "name": "timers" },
             { "name": "skills" },
+            { "name": "search" },
             { "name": "callbacks", "description": "Capability-token callback ingress. Never publish real callback_token values." },
             { "name": "compat" }
         ],
@@ -525,6 +527,11 @@ fn component_schemas() -> Value {
     schemas.insert(
         "CancelTimerRequest".into(),
         component_schema::<CancelTimerRequest>(),
+    );
+    schemas.insert("SearchRequest".into(), component_schema::<SearchRequest>());
+    schemas.insert(
+        "SearchResponse".into(),
+        component_schema::<SearchResponse>(),
     );
     for name in [
         "EnqueueRequest",
