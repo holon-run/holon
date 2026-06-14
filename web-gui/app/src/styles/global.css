@@ -1696,6 +1696,99 @@ code {
   font-size: 11px;
 }
 
+.working-activity-panel,
+.working-status-marker {
+  width: min(760px, 72%);
+  margin-left: 22px;
+  border: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+  border-radius: 14px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 9%, transparent), transparent 150px),
+    color-mix(in srgb, var(--surface) 94%, var(--surface-soft));
+}
+
+.working-activity-panel {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.working-activity-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--faint);
+}
+
+.working-activity-header span {
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.working-activity-header small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.working-activity-list {
+  display: grid;
+  gap: 7px;
+}
+
+.working-activity-item,
+.working-status-marker {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.working-activity-item {
+  padding: 7px 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
+}
+
+.working-status-marker {
+  grid-template-columns: auto auto minmax(0, 1fr);
+  padding: 10px 12px;
+}
+
+.working-activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.working-activity-item strong,
+.working-status-marker strong {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.working-activity-item span:not(.working-activity-dot),
+.working-status-marker span:not(.working-activity-dot) {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.working-activity-item time {
+  color: var(--faint);
+  font-size: 11px;
+}
+
 .message-meta {
   display: flex;
   align-items: center;

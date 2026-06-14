@@ -75,6 +75,8 @@ export function AgentPage({
       }),
     [displayLevel, sourceTimeline, visibleTimelineItemLimit],
   );
+  const workingActivities = useMemo(() => collectWorkingActivities(sourceTimeline), [sourceTimeline]);
+  const isWorking = isAgentWorking(activeAgent);
   const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
   const trimmedPrompt = prompt.trim();
   const canSendPrompt = trimmedPrompt.length > 0 && !sendingPrompt;
@@ -207,6 +209,10 @@ export function AgentPage({
                 turn={turn}
               />
             ))}
+            {displayLevel === "info" && workingActivities.length > 0 ? (
+              <WorkingActivityPanel activities={workingActivities} />
+            ) : null}
+            {displayLevel !== "info" && isWorking ? <WorkingStatusMarker agent={activeAgent} /> : null}
             {timeline.length === 0 ? (
               <EmptyState
                 className="conversation-empty"
@@ -330,6 +336,24 @@ function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
   if (displayLevel === "debug") return DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT;
   if (displayLevel === "verbose") return DEFAULT_VERBOSE_TIMELINE_ITEM_LIMIT;
   return DEFAULT_INFO_TIMELINE_ITEM_LIMIT;
+}
+
+function isAgentWorking(agent: AgentSummary): boolean {
+  const currentWorkState = agent.currentWork?.state.toLowerCase();
+  return agent.pending > 0 || agent.activeTaskCount > 0 || currentWorkState === "open" || currentWorkState === "in_progress";
+}
+
+function collectWorkingActivities(timeline: AgentTimelineItem[]): AgentTimelineActivity[] {
+  const byId = new Map<string, AgentTimelineActivity>();
+  for (const item of timeline) {
+    for (const activity of item.activities ?? []) {
+      if (activity.minDisplayLevel === "info") continue;
+      byId.set(activity.id, activity);
+    }
+  }
+  return Array.from(byId.values())
+    .sort((left, right) => sortableActivityTime(left.timestamp) - sortableActivityTime(right.timestamp))
+    .slice(-8);
 }
 
 interface TimelineTurn {
@@ -500,6 +524,43 @@ function ActivityTrail({
   );
 }
 
+function WorkingActivityPanel({ activities }: { activities: AgentTimelineActivity[] }) {
+  return (
+    <aside className="working-activity-panel" aria-label="Working activity">
+      <div className="working-activity-header">
+        <span>Working activity</span>
+        <small>Runtime signals not shown in Info timeline</small>
+      </div>
+      <div className="working-activity-list">
+        {activities.map((activity) => (
+          <div className={`working-activity-item ${activity.kind}`} key={activity.id}>
+            <span className="working-activity-dot" aria-hidden="true" />
+            <strong>{activity.label}</strong>
+            <span>{activity.body}</span>
+            <time>{formatDisplayTime(activity.timestamp)}</time>
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function WorkingStatusMarker({ agent }: { agent: AgentSummary }) {
+  const parts = [
+    agent.currentWork?.objective,
+    agent.activeTaskCount ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}` : undefined,
+    agent.pending ? `${agent.pending} queued` : undefined,
+  ].filter(Boolean);
+
+  return (
+    <div className="working-status-marker" role="status">
+      <span className="working-activity-dot" aria-hidden="true" />
+      <strong>Working</strong>
+      {parts.length ? <span>{parts.join(" · ")}</span> : null}
+    </div>
+  );
+}
+
 function fallbackTimeline(agent: AgentSummary): AgentTimelineItem[] {
   if (!hasVisibleBrief(agent.lastBrief)) return [];
 
@@ -531,6 +592,11 @@ function formatDisplayTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(parsed);
+}
+
+function sortableActivityTime(value: string): number {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function formatTimelineMeta(meta: string, displayLevel: DisplayLevel): string {
