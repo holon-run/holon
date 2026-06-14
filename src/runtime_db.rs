@@ -1,8 +1,9 @@
 use std::{
     collections::BTreeMap,
+    fmt,
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Condvar, Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -30,12 +31,57 @@ const EVIDENCE_PREVIEW_LIMIT: usize = 2048;
 const CONTEXT_EPISODE_ANCHORS_DOMAIN: &str = "context_episode_anchors";
 const RUNTIME_DB_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const RUNTIME_DB_TRANSACTION_RETRY_DELAY: Duration = Duration::from_millis(25);
+const RUNTIME_DB_WRITE_QUEUE_CAPACITY: usize = 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RuntimeDb {
     path: PathBuf,
     lock_path: PathBuf,
-    writer: Arc<Mutex<Connection>>,
+    writer: RuntimeDbWriter,
+}
+
+impl fmt::Debug for RuntimeDb {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeDb")
+            .field("path", &self.path)
+            .field("lock_path", &self.lock_path)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
+struct RuntimeDbWriter {
+    state: Arc<RuntimeDbWriterState>,
+    append_tx: mpsc::SyncSender<RuntimeDbWriteRequest>,
+}
+
+struct RuntimeDbWriterState {
+    path: PathBuf,
+    connection: Mutex<Connection>,
+    queue: Arc<RuntimeDbWriteQueue>,
+}
+
+struct RuntimeDbWriteQueue {
+    state: Mutex<RuntimeDbWriteQueueState>,
+    available: Condvar,
+}
+
+#[derive(Default)]
+struct RuntimeDbWriteQueueState {
+    next_ticket: u64,
+    serving_ticket: u64,
+}
+
+struct RuntimeDbWriteTurn {
+    queue: Arc<RuntimeDbWriteQueue>,
+}
+
+type RuntimeDbWriteJob =
+    Box<dyn for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<()> + Send + 'static>;
+
+struct RuntimeDbWriteRequest {
+    job: RuntimeDbWriteJob,
 }
 
 pub struct WorkItemRepository<'a> {
@@ -171,6 +217,134 @@ impl EvidenceKind {
             Self::DeliverySummary => "delivery_summaries",
             Self::ArtifactMetadata => "artifact_metadata",
         }
+    }
+}
+
+static RUNTIME_DB_WRITE_QUEUES: OnceLock<Mutex<BTreeMap<PathBuf, Arc<RuntimeDbWriteQueue>>>> =
+    OnceLock::new();
+
+impl RuntimeDbWriter {
+    fn open(path: PathBuf, connection: Connection) -> Result<Self> {
+        let queue = runtime_db_write_queue(&path)?;
+        let state = Arc::new(RuntimeDbWriterState {
+            path,
+            connection: Mutex::new(connection),
+            queue,
+        });
+        let (append_tx, append_rx) =
+            mpsc::sync_channel::<RuntimeDbWriteRequest>(RUNTIME_DB_WRITE_QUEUE_CAPACITY);
+        let thread_state = Arc::clone(&state);
+        thread::Builder::new()
+            .name("holon-runtime-db-writer".to_string())
+            .spawn(move || {
+                while let Ok(request) = append_rx.recv() {
+                    if let Err(error) = thread_state.append_wait(|tx| (request.job)(tx)) {
+                        tracing::warn!(
+                            error = %error,
+                            path = %thread_state.path.display(),
+                            "runtime db queued write failed"
+                        );
+                    }
+                }
+            })
+            .context("spawning runtime db writer thread")?;
+        Ok(Self { state, append_tx })
+    }
+
+    fn append(
+        &self,
+        f: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<()> + Send + 'static,
+    ) -> Result<()> {
+        let request = RuntimeDbWriteRequest { job: Box::new(f) };
+        match self.append_tx.try_send(request) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(_)) => bail!("runtime db write queue is full"),
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                bail!("runtime db write queue is disconnected")
+            }
+        }
+    }
+
+    fn append_wait<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        self.state.append_wait(f)
+    }
+}
+
+impl RuntimeDbWriterState {
+    fn append_wait<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        let _turn = self.queue.wait_turn()?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+        run_transaction_on_connection(&connection, &self.path, f)
+    }
+}
+
+impl RuntimeDbWriteQueue {
+    fn wait_turn(self: &Arc<Self>) -> Result<RuntimeDbWriteTurn> {
+        let ticket = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow!("runtime db write queue mutex poisoned"))?;
+            let ticket = state.next_ticket;
+            state.next_ticket = state
+                .next_ticket
+                .checked_add(1)
+                .context("runtime db write queue ticket overflow")?;
+            ticket
+        };
+
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("runtime db write queue mutex poisoned"))?;
+        while state.serving_ticket != ticket {
+            state = self
+                .available
+                .wait(state)
+                .map_err(|_| anyhow!("runtime db write queue mutex poisoned"))?;
+        }
+        Ok(RuntimeDbWriteTurn {
+            queue: Arc::clone(self),
+        })
+    }
+}
+
+impl Drop for RuntimeDbWriteTurn {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.queue.state.lock() {
+            state.serving_ticket = state.serving_ticket.saturating_add(1);
+            self.queue.available.notify_all();
+        }
+    }
+}
+
+fn runtime_db_write_queue(path: &Path) -> Result<Arc<RuntimeDbWriteQueue>> {
+    let key = runtime_db_write_queue_key(path);
+    let queues = RUNTIME_DB_WRITE_QUEUES.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut queues = queues
+        .lock()
+        .map_err(|_| anyhow!("runtime db write queues mutex poisoned"))?;
+    Ok(Arc::clone(queues.entry(key).or_insert_with(|| {
+        Arc::new(RuntimeDbWriteQueue {
+            state: Mutex::new(RuntimeDbWriteQueueState::default()),
+            available: Condvar::new(),
+        })
+    })))
+}
+
+fn runtime_db_write_queue_key(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(file_name)) => parent
+            .canonicalize()
+            .map(|parent| parent.join(file_name))
+            .unwrap_or_else(|_| path.to_path_buf()),
+        _ => path.to_path_buf(),
     }
 }
 
@@ -4512,8 +4686,9 @@ impl RuntimeDb {
         lock_path: impl Into<PathBuf>,
     ) -> Result<Self> {
         let path = path.into();
+        let writer = RuntimeDbWriter::open(path.clone(), open_connection(&path)?)?;
         let db = Self {
-            writer: Arc::new(Mutex::new(open_connection(&path)?)),
+            writer,
             path,
             lock_path: lock_path.into(),
         };
@@ -4534,21 +4709,14 @@ impl RuntimeDb {
     }
 
     pub fn transaction<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
-        let connection = self
-            .writer
-            .lock()
-            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
-        let transaction = begin_immediate_transaction_with_retry(&connection, &self.path)?;
-        match f(&transaction) {
-            Ok(value) => {
-                transaction.commit()?;
-                Ok(value)
-            }
-            Err(error) => {
-                let _ = transaction.rollback();
-                Err(error)
-            }
-        }
+        self.writer.append_wait(f)
+    }
+
+    pub fn append(
+        &self,
+        f: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<()> + Send + 'static,
+    ) -> Result<()> {
+        self.writer.append(f)
     }
 
     pub fn current_schema_version(&self) -> Result<i64> {
@@ -4883,8 +5051,11 @@ impl RuntimeDb {
             fs::create_dir_all(parent)
                 .with_context(|| format!("creating runtime db directory {}", parent.display()))?;
         }
+        let _turn = self.writer.state.queue.wait_turn()?;
         let mut connection = self
             .writer
+            .state
+            .connection
             .lock()
             .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
         configure_persistent_database(&connection)?;
@@ -4976,6 +5147,24 @@ PRAGMA journal_mode = WAL;
 "#,
     )?;
     Ok(())
+}
+
+fn run_transaction_on_connection<T>(
+    connection: &Connection,
+    path: &Path,
+    f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+) -> Result<T> {
+    let transaction = begin_immediate_transaction_with_retry(connection, path)?;
+    match f(&transaction) {
+        Ok(value) => {
+            transaction.commit()?;
+            Ok(value)
+        }
+        Err(error) => {
+            let _ = transaction.rollback();
+            Err(error)
+        }
+    }
 }
 
 fn begin_immediate_transaction_with_retry<'connection>(
@@ -5517,6 +5706,139 @@ INSERT INTO storage_domains (
         )?;
         assert_eq!(count, 8);
         Ok(())
+    }
+
+    #[test]
+    fn runtime_db_transactions_are_queued_across_db_instances() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let first = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let second = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first_writer = first.clone();
+        let first_handle = std::thread::spawn(move || -> Result<()> {
+            first_writer.transaction(|tx| {
+                entered_tx
+                    .send(())
+                    .map_err(|_| anyhow!("failed to signal first write"))?;
+                release_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .context("release signal not received")?;
+                insert_audit_event_tx(
+                    tx,
+                    Some("agent-a"),
+                    &AuditEvent::new("runtime_db_queue_first", serde_json::json!({})),
+                )
+            })
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .context("first write did not enter transaction")?;
+
+        let second_writer = second.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let second_handle = std::thread::spawn(move || -> Result<()> {
+            second_writer.audit_events().append(
+                Some("agent-a"),
+                &AuditEvent::new("runtime_db_queue_second", serde_json::json!({})),
+            )?;
+            done_tx
+                .send(())
+                .map_err(|_| anyhow!("failed to signal second write"))?;
+            Ok(())
+        });
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "second write committed before the first queued write completed"
+        );
+        release_tx
+            .send(())
+            .map_err(|_| anyhow!("failed to release first write"))?;
+
+        first_handle
+            .join()
+            .map_err(|_| anyhow!("first writer thread panicked"))??;
+        second_handle
+            .join()
+            .map_err(|_| anyhow!("second writer thread panicked"))??;
+
+        let events = second.audit_events().recent(Some("agent-a"), 2)?;
+        let kinds = events
+            .iter()
+            .map(|event| event.kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec!["runtime_db_queue_second", "runtime_db_queue_first"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_db_append_accepts_without_waiting_for_commit() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = db.clone();
+        let handle = std::thread::spawn(move || -> Result<()> {
+            blocker.transaction(|tx| {
+                entered_tx
+                    .send(())
+                    .map_err(|_| anyhow!("failed to signal blocking write"))?;
+                release_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .context("release signal not received")?;
+                insert_audit_event_tx(
+                    tx,
+                    Some("agent-a"),
+                    &AuditEvent::new("runtime_db_append_blocker", serde_json::json!({})),
+                )
+            })
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .context("blocking write did not enter transaction")?;
+
+        db.append(|tx| {
+            insert_audit_event_tx(
+                tx,
+                Some("agent-a"),
+                &AuditEvent::new("runtime_db_append_async", serde_json::json!({})),
+            )
+        })?;
+        assert_eq!(db.audit_events().recent(Some("agent-a"), 10)?.len(), 0);
+
+        release_tx
+            .send(())
+            .map_err(|_| anyhow!("failed to release blocking write"))?;
+        handle
+            .join()
+            .map_err(|_| anyhow!("blocking writer thread panicked"))??;
+
+        let started_at = Instant::now();
+        loop {
+            let events = db.audit_events().recent(Some("agent-a"), 10)?;
+            if events.len() == 2 {
+                let kinds = events
+                    .iter()
+                    .map(|event| event.kind.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    kinds,
+                    vec!["runtime_db_append_blocker", "runtime_db_append_async"]
+                );
+                return Ok(());
+            }
+            if started_at.elapsed() > Duration::from_secs(2) {
+                bail!("queued append did not commit");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
