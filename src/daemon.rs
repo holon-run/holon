@@ -13,7 +13,7 @@ pub(crate) use service::runtime_activity_message;
 pub use service::{
     runtime_activity_summary, RuntimeActivityState, RuntimeActivitySummary, RuntimeConfigSurface,
     RuntimeControlAuthMode, RuntimeServiceHandle, RuntimeServiceMetadata, RuntimeShutdownResponse,
-    RuntimeStartupSurface, RuntimeStatusResponse,
+    RuntimeStartupSurface, RuntimeStatusResponse, RuntimeWebSearchSummary,
 };
 pub use state::{
     cleanup_daemon_state, config_fingerprint, daemon_logs, daemon_paths, load_daemon_metadata,

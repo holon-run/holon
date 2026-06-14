@@ -5,6 +5,8 @@ import type {
   AgentSummary,
   DashboardMetric,
   RuntimeBootstrap,
+  RuntimeConfigState,
+  RuntimeConfigSurface,
   RuntimeConnection,
   RuntimeModelCatalog,
   RuntimeModelOption,
@@ -70,6 +72,7 @@ interface AgentListEntryDto {
   };
   lifecycle?: string | Record<string, unknown>;
   pending?: number;
+  current_run_id?: string | null;
   waiting_reason?: unknown;
   model?: {
     source?: "runtime_default" | "agent_override";
@@ -215,6 +218,69 @@ interface AgentModelResponseDto {
   model?: AgentModelStateDto;
 }
 
+interface RuntimeConfigResponseDto {
+  ok?: boolean;
+  changed?: boolean;
+  config_file_path?: string;
+  runtime_surface?: RuntimeConfigSurfaceDto;
+  results?: RuntimeConfigUpdateResultDto[];
+}
+
+interface RuntimeConfigSurfaceDto {
+  model_default?: string;
+  model_fallbacks?: string[];
+  model_catalog?: string[];
+  unknown_model_fallback_configured?: boolean;
+  runtime_max_output_tokens?: number;
+  default_tool_output_tokens?: number;
+  max_tool_output_tokens?: number;
+  disable_provider_fallback?: boolean;
+  providers?: RuntimeProviderSummaryDto[];
+  web_search?: RuntimeWebSearchSummaryDto;
+  web_search_providers?: RuntimeWebSearchProviderSummaryDto[];
+}
+
+interface RuntimeProviderSummaryDto {
+  id?: string;
+  transport?: string;
+  base_url?: string;
+  credential_source?: string;
+  credential_kind?: string;
+  credential_env?: string;
+  credential_profile?: string;
+  credential_external?: string;
+  credential_configured?: boolean;
+}
+
+interface RuntimeConfigUpdateResultDto {
+  key?: string;
+  effect?: "accepted_requires_restart" | "rejected";
+  reason?: string;
+}
+
+interface RuntimeWebSearchSummaryDto {
+  enabled?: boolean;
+  builtin_provider_enabled?: boolean;
+  provider?: string;
+  mode?: "single" | "fallback" | "aggregate";
+  providers?: string[];
+  max_results?: number;
+  max_provider_attempts?: number;
+}
+
+interface RuntimeWebSearchProviderSummaryDto {
+  id?: string;
+  kind?: string;
+  base_url?: string;
+  credential_profile?: string;
+}
+
+export interface RuntimeConfigUpdateEntry {
+  key: string;
+  value?: unknown;
+  unset?: boolean;
+}
+
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const defaultBaseUrl = import.meta.env.DEV ? DEFAULT_DEV_API_BASE : undefined;
   const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
@@ -263,6 +329,20 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         source: "http",
         options: projectModelOptions(response),
       };
+    },
+    async getRuntimeConfig(): Promise<RuntimeConfigState> {
+      if (!baseUrl) {
+        return { source: "fixture" };
+      }
+      const response = await getJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config");
+      return projectRuntimeConfigState(response);
+    },
+    async updateRuntimeConfig(updates: RuntimeConfigUpdateEntry[]): Promise<RuntimeConfigState> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await patchJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { updates });
+      return projectRuntimeConfigState(response);
     },
     streamAgentEvents(agentId: string, options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
       if (!baseUrl) return undefined;
@@ -419,8 +499,7 @@ async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): 
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list"),
   ]);
 
-  const statesByAgentId = await fetchAgentStates(baseUrl, fetchImpl, agentEntries);
-  const agents = agentEntries.map((entry) => projectAgent(entry, statesByAgentId[agentIdFromEntry(entry)]));
+  const agents = agentEntries.map((entry) => projectAgent(entry));
   const attentionCount = agents.filter((agent) => agent.pending > 0 || agent.waitingCount > 0).length;
   const activeTaskCount = agents.reduce((sum, agent) => sum + agent.activeTaskCount, 0);
   const currentWorkCount = agents.filter((agent) => agent.currentWork).length;
@@ -437,32 +516,6 @@ async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): 
     metrics: buildMetrics(agents.length, attentionCount, activeTaskCount, currentWorkCount),
     agents,
   };
-}
-
-async function fetchAgentStates(
-  baseUrl: string,
-  fetchImpl: typeof fetch,
-  agentEntries: AgentListEntryDto[],
-): Promise<Record<string, AgentStateDto | undefined>> {
-  const stateEntries = await Promise.all(
-    agentEntries.map(async (entry): Promise<[string, AgentStateDto | undefined]> => {
-      const agentId = agentIdFromEntry(entry);
-      if (!agentId) return [agentId, undefined];
-      try {
-        const state = await getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodeURIComponent(agentId)}/state`, {
-          timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS,
-        });
-        return [agentId, state];
-      } catch {
-        return [agentId, undefined];
-      }
-    }),
-  );
-  return Object.fromEntries(stateEntries);
-}
-
-function agentIdFromEntry(entry: AgentListEntryDto): string {
-  return entry.identity?.agent_id ?? "unknown-agent";
 }
 
 async function getJson<T>(
@@ -503,6 +556,81 @@ async function postJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: strin
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+async function patchJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: string, body: unknown): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const response = await fetchImpl(`${baseUrl}${path}`, {
+    method: "PATCH",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: controller.signal,
+  }).finally(() => window.clearTimeout(timeout));
+  if (!response.ok) {
+    throw new Error(`PATCH ${path} failed with ${response.status}`);
+  }
+
+  const text = await response.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+function projectRuntimeConfigState(response: RuntimeConfigResponseDto): RuntimeConfigState {
+  return {
+    source: "http",
+    configFilePath: response.config_file_path,
+    changed: response.changed,
+    surface: response.runtime_surface ? projectRuntimeConfigSurface(response.runtime_surface) : undefined,
+    results: response.results?.map((result) => ({
+      key: result.key ?? "unknown",
+      effect: result.effect ?? "rejected",
+      reason: result.reason ?? "",
+    })),
+  };
+}
+
+function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeConfigSurface {
+  return {
+    modelDefault: surface.model_default ?? "",
+    modelFallbacks: surface.model_fallbacks ?? [],
+    modelCatalog: surface.model_catalog ?? [],
+    unknownModelFallbackConfigured: surface.unknown_model_fallback_configured ?? false,
+    runtimeMaxOutputTokens: surface.runtime_max_output_tokens ?? 0,
+    defaultToolOutputTokens: surface.default_tool_output_tokens ?? 0,
+    maxToolOutputTokens: surface.max_tool_output_tokens ?? 0,
+    disableProviderFallback: surface.disable_provider_fallback ?? false,
+    providers: (surface.providers ?? []).map((provider) => ({
+      id: provider.id ?? "unknown",
+      transport: provider.transport ?? "unknown",
+      baseUrl: provider.base_url ?? "",
+      credentialSource: provider.credential_source ?? "unknown",
+      credentialKind: provider.credential_kind ?? "unknown",
+      credentialEnv: provider.credential_env,
+      credentialProfile: provider.credential_profile,
+      credentialExternal: provider.credential_external,
+      credentialConfigured: provider.credential_configured ?? false,
+    })),
+    webSearch: surface.web_search
+      ? {
+          enabled: surface.web_search.enabled ?? true,
+          builtinProviderEnabled: surface.web_search.builtin_provider_enabled ?? true,
+          provider: surface.web_search.provider ?? "auto",
+          mode: surface.web_search.mode ?? "fallback",
+          providers: surface.web_search.providers ?? [],
+          maxResults: surface.web_search.max_results ?? 5,
+          maxProviderAttempts: surface.web_search.max_provider_attempts ?? 3,
+        }
+      : undefined,
+    webSearchProviders: (surface.web_search_providers ?? []).map((provider) => ({
+      id: provider.id ?? "unknown",
+      kind: provider.kind ?? "unknown",
+      baseUrl: provider.base_url,
+      credentialProfile: provider.credential_profile,
+    })),
+  };
+}
+
 function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: BriefRecordDto): AgentSummary {
   const id = entry.identity?.agent_id ?? state?.agent?.agent?.id ?? "unknown-agent";
   const status = state?.agent?.agent?.status ?? entry.status ?? "unknown";
@@ -521,7 +649,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const model = state?.agent?.model?.active_model ?? state?.agent?.model?.effective_model ?? entry.model?.active_model ?? entry.model?.effective_model ?? "runtime default";
   const modelSource = state?.agent?.model?.source ?? entry.model?.source;
   const lifecycle = stringifyLifecycle(state?.agent?.lifecycle ?? entry.lifecycle ?? status);
-  const currentRunId = state?.session?.current_run_id ?? null;
+  const currentRunId = state?.session?.current_run_id ?? entry.current_run_id ?? null;
 
   return {
     id,

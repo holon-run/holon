@@ -1,27 +1,207 @@
+import { useEffect, useMemo, useState } from "react";
+
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusChip } from "../../components/ui/StatusChip";
-import type { RuntimeConnection, RuntimeModelCatalog, RuntimeModelOption } from "../../runtime/types";
+import type { RuntimeConfigState, RuntimeConnection, RuntimeModelCatalog, RuntimeModelOption, RuntimeProviderSummary } from "../../runtime/types";
 
 interface SettingsPageProps {
   connection: RuntimeConnection;
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;
   modelCatalogError?: string;
+  runtimeConfig: RuntimeConfigState;
+  runtimeConfigLoading: boolean;
+  runtimeConfigSaving: boolean;
+  runtimeConfigError?: string;
   onRefreshModels: () => Promise<void>;
+  onRefreshRuntimeConfig: () => Promise<void>;
+  onUpdateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
 }
+
+function splitCsv(value: string): string[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function numberFromInput(value: string): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+type ProviderDraft = Pick<
+  RuntimeProviderSummary,
+  "transport" | "baseUrl" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
+>;
+
+const providerTransports = ["openai_codex_responses", "openai_responses", "openai_chat_completions", "anthropic_messages", "gemini_generate_content"];
+const credentialSources = ["env", "credential_profile", "external_cli", "credential_process", "none"];
+const credentialKinds = ["api_key", "bearer_token", "oauth", "session_token", "aws_sdk", "none"];
 
 export function SettingsPage({
   connection,
   modelCatalog,
   modelCatalogLoading,
   modelCatalogError,
+  runtimeConfig,
+  runtimeConfigLoading,
+  runtimeConfigSaving,
+  runtimeConfigError,
   onRefreshModels,
+  onRefreshRuntimeConfig,
+  onUpdateRuntimeConfig,
 }: SettingsPageProps) {
   const groupedModels = groupModelsByProvider(modelCatalog.options);
   const availableCount = modelCatalog.options.filter((model) => model.available).length;
   const unavailableCount = modelCatalog.options.length - availableCount;
+  const surface = runtimeConfig.surface;
+  const [modelDefault, setModelDefault] = useState("");
+  const [modelFallbacks, setModelFallbacks] = useState("");
+  const [runtimeMaxOutputTokens, setRuntimeMaxOutputTokens] = useState("");
+  const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
+  const [maxToolOutputTokens, setMaxToolOutputTokens] = useState("");
+  const [disableProviderFallback, setDisableProviderFallback] = useState(false);
+  const [searchEnabled, setSearchEnabled] = useState(true);
+  const [searchBuiltinProviderEnabled, setSearchBuiltinProviderEnabled] = useState(true);
+  const [searchProvider, setSearchProvider] = useState("auto");
+  const [searchMode, setSearchMode] = useState<"single" | "fallback" | "aggregate">("fallback");
+  const [searchProviders, setSearchProviders] = useState("");
+  const [searchMaxResults, setSearchMaxResults] = useState("");
+  const [searchMaxProviderAttempts, setSearchMaxProviderAttempts] = useState("");
+  const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({});
+  const [saveMessage, setSaveMessage] = useState<string | undefined>();
+  const [searchSaveMessage, setSearchSaveMessage] = useState<string | undefined>();
+  const [providerSaveMessage, setProviderSaveMessage] = useState<string | undefined>();
+  const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
+
+  useEffect(() => {
+    if (!surface) return;
+    setModelDefault(surface.modelDefault);
+    setModelFallbacks(surface.modelFallbacks.join(", "));
+    setRuntimeMaxOutputTokens(String(surface.runtimeMaxOutputTokens));
+    setDefaultToolOutputTokens(String(surface.defaultToolOutputTokens));
+    setMaxToolOutputTokens(String(surface.maxToolOutputTokens));
+    setDisableProviderFallback(surface.disableProviderFallback);
+    if (surface.webSearch) {
+      setSearchEnabled(surface.webSearch.enabled);
+      setSearchBuiltinProviderEnabled(surface.webSearch.builtinProviderEnabled);
+      setSearchProvider(surface.webSearch.provider);
+      setSearchMode(surface.webSearch.mode);
+      setSearchProviders(surface.webSearch.providers.join(", "));
+      setSearchMaxResults(String(surface.webSearch.maxResults));
+      setSearchMaxProviderAttempts(String(surface.webSearch.maxProviderAttempts));
+    }
+    setProviderDrafts(
+      Object.fromEntries(
+        surface.providers.map((provider) => [
+          provider.id,
+          {
+            transport: provider.transport,
+            baseUrl: provider.baseUrl,
+            credentialSource: provider.credentialSource,
+            credentialKind: provider.credentialKind,
+            credentialEnv: provider.credentialEnv ?? "",
+            credentialProfile: provider.credentialProfile ?? "",
+            credentialExternal: provider.credentialExternal ?? "",
+          },
+        ]),
+      ),
+    );
+    setSaveMessage(undefined);
+    setSearchSaveMessage(undefined);
+    setProviderSaveMessage(undefined);
+  }, [surface]);
+
+  const rejectedResults = runtimeConfig.results?.filter((result) => result.effect === "rejected") ?? [];
+
+  async function saveRuntimeConfig() {
+    setSaveMessage(undefined);
+    const updates = [
+      { key: "model.default", value: modelDefault.trim() },
+      { key: "model.fallbacks", value: splitCsv(modelFallbacks) },
+      { key: "runtime.max_output_tokens", value: numberFromInput(runtimeMaxOutputTokens) },
+      { key: "runtime.default_tool_output_tokens", value: numberFromInput(defaultToolOutputTokens) },
+      { key: "runtime.max_tool_output_tokens", value: numberFromInput(maxToolOutputTokens) },
+      { key: "runtime.disable_provider_fallback", value: disableProviderFallback },
+    ];
+    const result = await onUpdateRuntimeConfig(updates);
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setSaveMessage(
+      rejected.length
+        ? `${rejected.length} setting${rejected.length === 1 ? "" : "s"} rejected.`
+        : result.changed
+          ? "Saved to config.json. Restart the daemon for these runtime defaults to take effect."
+          : "No runtime config changes were persisted.",
+    );
+  }
+
+  async function saveSearchConfig() {
+    setSearchSaveMessage(undefined);
+    const result = await onUpdateRuntimeConfig([
+      { key: "web.search.enabled", value: searchEnabled },
+      { key: "web.search.builtin_provider.enabled", value: searchBuiltinProviderEnabled },
+      { key: "web.search.provider", value: searchProvider.trim() || "auto" },
+      { key: "web.search.mode", value: searchMode },
+      { key: "web.search.providers", value: splitCsv(searchProviders) },
+      { key: "web.search.max_results", value: numberFromInput(searchMaxResults) },
+      { key: "web.search.max_provider_attempts", value: numberFromInput(searchMaxProviderAttempts) },
+    ]);
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setSearchSaveMessage(
+      rejected.length
+        ? `${rejected.length} search setting${rejected.length === 1 ? "" : "s"} rejected.`
+        : result.changed
+          ? "Saved search settings to config.json. Restart the daemon for routing changes to take effect."
+          : "No search config changes were persisted.",
+    );
+  }
+
+  function updateProviderDraft(providerId: string, patch: Partial<ProviderDraft>) {
+    setProviderDrafts((drafts) => ({
+      ...drafts,
+      [providerId]: {
+        ...(drafts[providerId] ?? {
+          transport: "openai_responses",
+          baseUrl: "",
+          credentialSource: "env",
+          credentialKind: "api_key",
+          credentialEnv: "",
+          credentialProfile: "",
+          credentialExternal: "",
+        }),
+        ...patch,
+      },
+    }));
+  }
+
+  async function saveProviderConfig(providerId: string) {
+    const draft = providerDrafts[providerId];
+    if (!draft) return;
+    setProviderSaveMessage(undefined);
+    const result = await onUpdateRuntimeConfig([
+      { key: `providers.${providerId}.transport`, value: draft.transport },
+      { key: `providers.${providerId}.base_url`, value: draft.baseUrl.trim() },
+      { key: `providers.${providerId}.auth.source`, value: draft.credentialSource },
+      { key: `providers.${providerId}.auth.kind`, value: draft.credentialKind },
+      { key: `providers.${providerId}.auth.env`, value: draft.credentialEnv?.trim() ?? "" },
+      { key: `providers.${providerId}.auth.profile`, value: draft.credentialProfile?.trim() ?? "" },
+      { key: `providers.${providerId}.auth.external`, value: draft.credentialExternal?.trim() ?? "" },
+    ]);
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setProviderSaveMessage(
+      rejected.length
+        ? `${rejected.length} provider setting${rejected.length === 1 ? "" : "s"} rejected.`
+        : result.changed
+          ? `Saved ${providerId} provider settings to config.json. Restart the daemon for transport or credential changes to take effect.`
+          : "No provider config changes were persisted.",
+    );
+  }
 
   return (
     <section className="page settings-page" aria-label="Settings">
@@ -30,8 +210,8 @@ export function SettingsPage({
           <span className="eyebrow">Runtime configuration</span>
           <h1>Settings</h1>
           <p>
-            Read-only runtime settings and diagnostics for the current Web GUI session. Agent-specific model
-            changes still happen from each agent page and apply to the next run when needed.
+            Configure common runtime defaults from the Web GUI. Saved model defaults are persisted to config.json
+            and take effect after the daemon is restarted.
           </p>
         </Card>
 
@@ -74,28 +254,273 @@ export function SettingsPage({
                 <span className="eyebrow">Runtime defaults</span>
                 <h2>Model posture</h2>
               </div>
+              <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
+                {runtimeConfigLoading ? "Refreshing…" : "Refresh"}
+              </Button>
             </div>
-            <div className="settings-callout">
-              <strong>Read-only in this page</strong>
-              <span>
-                Provider availability and runtime defaults are reported by the backend. Use the model picker on an
-                agent page to set or clear that agent's override.
-              </span>
-            </div>
+            {runtimeConfigError ? <div className="settings-error-banner">{runtimeConfigError}</div> : null}
+            {!surface ? (
+              <div className="settings-callout">
+                <strong>Runtime config unavailable</strong>
+                <span>Connect to a live runtime and refresh this page to edit model defaults.</span>
+              </div>
+            ) : (
+              <form
+                className="settings-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveRuntimeConfig();
+                }}
+              >
+                <label>
+                  <span>Default model</span>
+                  <input list="available-models" value={modelDefault} onChange={(event) => setModelDefault(event.target.value)} />
+                </label>
+                <label>
+                  <span>Fallback models</span>
+                  <input value={modelFallbacks} onChange={(event) => setModelFallbacks(event.target.value)} placeholder="provider/model, provider/model" />
+                </label>
+                <div className="settings-form-row">
+                  <label>
+                    <span>Max output tokens</span>
+                    <input inputMode="numeric" value={runtimeMaxOutputTokens} onChange={(event) => setRuntimeMaxOutputTokens(event.target.value)} />
+                  </label>
+                  <label>
+                    <span>Default tool output tokens</span>
+                    <input inputMode="numeric" value={defaultToolOutputTokens} onChange={(event) => setDefaultToolOutputTokens(event.target.value)} />
+                  </label>
+                  <label>
+                    <span>Max tool output tokens</span>
+                    <input inputMode="numeric" value={maxToolOutputTokens} onChange={(event) => setMaxToolOutputTokens(event.target.value)} />
+                  </label>
+                </div>
+                <label className="settings-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={disableProviderFallback}
+                    onChange={(event) => setDisableProviderFallback(event.target.checked)}
+                  />
+                  <span>Disable provider fallback</span>
+                </label>
+                <div className="settings-actions">
+                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                    {runtimeConfigSaving ? "Saving…" : "Save runtime defaults"}
+                  </Button>
+                  {saveMessage ? <span>{saveMessage}</span> : null}
+                </div>
+                {rejectedResults.length ? (
+                  <div className="settings-error-banner">
+                    {rejectedResults.map((result) => (
+                      <div key={result.key}>
+                        <strong>{result.key}</strong>: {result.reason}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <datalist id="available-models">
+                  {availableModels.map((model) => (
+                    <option key={model.model} value={model.model}>
+                      {model.displayName}
+                    </option>
+                  ))}
+                </datalist>
+              </form>
+            )}
             <dl className="settings-list compact">
               <div>
-                <dt>Catalog source</dt>
-                <dd>{modelCatalog.source}</dd>
+                <dt>Config file</dt>
+                <dd>{runtimeConfig.configFilePath ?? "not reported"}</dd>
               </div>
               <div>
-                <dt>Available models</dt>
-                <dd>{availableCount}</dd>
+                <dt>Provider fallback</dt>
+                <dd>{surface?.disableProviderFallback ? "disabled" : "enabled"}</dd>
               </div>
               <div>
-                <dt>Unavailable models</dt>
-                <dd>{unavailableCount}</dd>
+                <dt>Providers configured</dt>
+                <dd>{surface?.providers.filter((provider) => provider.credentialConfigured).length ?? 0}</dd>
               </div>
             </dl>
+          </Card>
+
+          <Card className="settings-card">
+            <div className="settings-card-head">
+              <div>
+                <span className="eyebrow">Runtime defaults</span>
+                <h2>Web search</h2>
+              </div>
+            </div>
+            {!surface?.webSearch ? (
+              <div className="settings-callout">
+                <strong>Search config unavailable</strong>
+                <span>Refresh runtime config after connecting to a live daemon.</span>
+              </div>
+            ) : (
+              <form
+                className="settings-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveSearchConfig();
+                }}
+              >
+                <label className="settings-checkbox">
+                  <input type="checkbox" checked={searchEnabled} onChange={(event) => setSearchEnabled(event.target.checked)} />
+                  <span>Enable WebSearch</span>
+                </label>
+                <label className="settings-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={searchBuiltinProviderEnabled}
+                    onChange={(event) => setSearchBuiltinProviderEnabled(event.target.checked)}
+                  />
+                  <span>Allow provider-native search when available</span>
+                </label>
+                <div className="settings-form-row">
+                  <label>
+                    <span>Default provider</span>
+                    <input list="web-search-providers" value={searchProvider} onChange={(event) => setSearchProvider(event.target.value)} />
+                  </label>
+                  <label>
+                    <span>Mode</span>
+                    <select value={searchMode} onChange={(event) => setSearchMode(event.target.value as "single" | "fallback" | "aggregate")}>
+                      <option value="single">single</option>
+                      <option value="fallback">fallback</option>
+                      <option value="aggregate">aggregate</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Provider order</span>
+                    <input value={searchProviders} onChange={(event) => setSearchProviders(event.target.value)} placeholder="duckduckgo, brave" />
+                  </label>
+                </div>
+                <div className="settings-form-row">
+                  <label>
+                    <span>Max results</span>
+                    <input inputMode="numeric" value={searchMaxResults} onChange={(event) => setSearchMaxResults(event.target.value)} />
+                  </label>
+                  <label>
+                    <span>Max provider attempts</span>
+                    <input inputMode="numeric" value={searchMaxProviderAttempts} onChange={(event) => setSearchMaxProviderAttempts(event.target.value)} />
+                  </label>
+                  <label>
+                    <span>Configured providers</span>
+                    <input readOnly value={surface.webSearchProviders.map((provider) => provider.id).join(", ") || "duckduckgo builtin"} />
+                  </label>
+                </div>
+                <div className="settings-actions">
+                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                    {runtimeConfigSaving ? "Saving…" : "Save search settings"}
+                  </Button>
+                  {searchSaveMessage ? <span>{searchSaveMessage}</span> : null}
+                </div>
+                <datalist id="web-search-providers">
+                  <option value="auto">auto</option>
+                  <option value="duckduckgo">duckduckgo</option>
+                  {surface.webSearchProviders.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.kind}
+                    </option>
+                  ))}
+                </datalist>
+              </form>
+            )}
+          </Card>
+
+          <Card className="settings-card">
+            <div className="settings-card-head">
+              <div>
+                <span className="eyebrow">Provider accounts</span>
+                <h2>Model providers</h2>
+              </div>
+            </div>
+            {!surface ? (
+              <div className="settings-callout">
+                <strong>Provider config unavailable</strong>
+                <span>Connect to a live runtime and refresh this page to edit model provider transports and credentials.</span>
+              </div>
+            ) : (
+              <div className="settings-provider-list">
+                <p className="settings-muted">
+                  Configure one provider account/profile, then choose the transport under it. The same credential profile can be reused across transports.
+                </p>
+                {surface.providers.map((provider) => {
+                  const draft = providerDrafts[provider.id];
+                  if (!draft) return null;
+                  return (
+                    <form
+                      className="settings-provider-editor"
+                      key={provider.id}
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void saveProviderConfig(provider.id);
+                      }}
+                    >
+                      <header>
+                        <strong>{provider.id}</strong>
+                        <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"}>
+                          {provider.credentialConfigured ? "credential ready" : "credential missing"}
+                        </StatusChip>
+                      </header>
+                      <div className="settings-form-row">
+                        <label>
+                          <span>Transport</span>
+                          <select value={draft.transport} onChange={(event) => updateProviderDraft(provider.id, { transport: event.target.value })}>
+                            {providerTransports.map((transport) => (
+                              <option key={transport} value={transport}>
+                                {transport}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Base URL</span>
+                          <input value={draft.baseUrl} onChange={(event) => updateProviderDraft(provider.id, { baseUrl: event.target.value })} />
+                        </label>
+                        <label>
+                          <span>Credential source</span>
+                          <select value={draft.credentialSource} onChange={(event) => updateProviderDraft(provider.id, { credentialSource: event.target.value })}>
+                            {credentialSources.map((source) => (
+                              <option key={source} value={source}>
+                                {source}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <div className="settings-form-row">
+                        <label>
+                          <span>Credential kind</span>
+                          <select value={draft.credentialKind} onChange={(event) => updateProviderDraft(provider.id, { credentialKind: event.target.value })}>
+                            {credentialKinds.map((kind) => (
+                              <option key={kind} value={kind}>
+                                {kind}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          <span>Env variable</span>
+                          <input value={draft.credentialEnv ?? ""} onChange={(event) => updateProviderDraft(provider.id, { credentialEnv: event.target.value })} />
+                        </label>
+                        <label>
+                          <span>Credential profile</span>
+                          <input value={draft.credentialProfile ?? ""} onChange={(event) => updateProviderDraft(provider.id, { credentialProfile: event.target.value })} />
+                        </label>
+                      </div>
+                      <label>
+                        <span>External credential provider</span>
+                        <input value={draft.credentialExternal ?? ""} onChange={(event) => updateProviderDraft(provider.id, { credentialExternal: event.target.value })} />
+                      </label>
+                      <div className="settings-actions">
+                        <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                          {runtimeConfigSaving ? "Saving…" : `Save ${provider.id}`}
+                        </Button>
+                      </div>
+                    </form>
+                  );
+                })}
+                {providerSaveMessage ? <span className="settings-save-message">{providerSaveMessage}</span> : null}
+              </div>
+            )}
           </Card>
         </div>
 

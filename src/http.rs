@@ -1181,7 +1181,8 @@ fn is_runtime_mutable_config_key(key: &str) -> bool {
             | "runtime.default_tool_output_tokens"
             | "runtime.max_tool_output_tokens"
             | "runtime.disable_provider_fallback"
-    ) || key.starts_with("web.")
+    ) || key.starts_with("providers.")
+        || key.starts_with("web.")
 }
 
 fn config_value_as_raw(value: Value) -> String {

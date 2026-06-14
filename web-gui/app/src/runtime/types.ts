@@ -87,6 +87,64 @@ export interface RuntimeModelCatalog {
   error?: string;
 }
 
+export interface RuntimeProviderSummary {
+  id: string;
+  transport: string;
+  baseUrl: string;
+  credentialSource: string;
+  credentialKind: string;
+  credentialEnv?: string;
+  credentialProfile?: string;
+  credentialExternal?: string;
+  credentialConfigured: boolean;
+}
+
+export interface RuntimeConfigSurface {
+  modelDefault: string;
+  modelFallbacks: string[];
+  modelCatalog: string[];
+  unknownModelFallbackConfigured: boolean;
+  runtimeMaxOutputTokens: number;
+  defaultToolOutputTokens: number;
+  maxToolOutputTokens: number;
+  disableProviderFallback: boolean;
+  providers: RuntimeProviderSummary[];
+  webSearch?: RuntimeWebSearchSummary;
+  webSearchProviders: RuntimeWebSearchProviderSummary[];
+}
+
+export interface RuntimeWebSearchSummary {
+  enabled: boolean;
+  builtinProviderEnabled: boolean;
+  provider: string;
+  mode: "single" | "fallback" | "aggregate";
+  providers: string[];
+  maxResults: number;
+  maxProviderAttempts: number;
+}
+
+export interface RuntimeWebSearchProviderSummary {
+  id: string;
+  kind: string;
+  baseUrl?: string;
+  credentialProfile?: string;
+}
+
+export interface RuntimeConfigUpdateResult {
+  key: string;
+  effect: "accepted_requires_restart" | "rejected";
+  reason: string;
+}
+
+export interface RuntimeConfigState {
+  source: "http" | "fixture";
+  configFilePath?: string;
+  surface?: RuntimeConfigSurface;
+  changed?: boolean;
+  results?: RuntimeConfigUpdateResult[];
+  error?: string;
+}
+
 export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event" | "system";
 
 export interface AgentTimelineItemDetail {

@@ -46,7 +46,13 @@ export function App() {
   const modelCatalog = useRuntimeStore((state) => state.modelCatalog);
   const modelCatalogLoading = useRuntimeStore((state) => state.modelCatalogLoading);
   const modelCatalogError = useRuntimeStore((state) => state.modelCatalogError);
+  const runtimeConfig = useRuntimeStore((state) => state.runtimeConfig);
+  const runtimeConfigLoading = useRuntimeStore((state) => state.runtimeConfigLoading);
+  const runtimeConfigSaving = useRuntimeStore((state) => state.runtimeConfigSaving);
+  const runtimeConfigError = useRuntimeStore((state) => state.runtimeConfigError);
   const refreshModelCatalog = useRuntimeStore((state) => state.refreshModelCatalog);
+  const refreshRuntimeConfig = useRuntimeStore((state) => state.refreshRuntimeConfig);
+  const updateRuntimeConfig = useRuntimeStore((state) => state.updateRuntimeConfig);
   const sendOperatorPrompt = useRuntimeStore((state) => state.sendOperatorPrompt);
   const setAgentModel = useRuntimeStore((state) => state.setAgentModel);
   const clearAgentModel = useRuntimeStore((state) => state.clearAgentModel);
@@ -91,6 +97,11 @@ export function App() {
     if ((route !== "agent" && route !== "settings") || modelCatalogLoading || modelCatalog.options.length > 0) return;
     void refreshModelCatalog();
   }, [modelCatalog.options.length, modelCatalogLoading, refreshModelCatalog, route]);
+
+  useEffect(() => {
+    if (route !== "settings" || runtimeConfigLoading || runtimeConfig.surface) return;
+    void refreshRuntimeConfig();
+  }, [refreshRuntimeConfig, route, runtimeConfig.surface, runtimeConfigLoading]);
 
   function navigateRoute(nextRoute: RouteKey) {
     setRoute(nextRoute);
@@ -348,7 +359,13 @@ export function App() {
             modelCatalog={modelCatalog}
             modelCatalogLoading={modelCatalogLoading}
             modelCatalogError={modelCatalogError}
+            runtimeConfig={runtimeConfig}
+            runtimeConfigLoading={runtimeConfigLoading}
+            runtimeConfigSaving={runtimeConfigSaving}
+            runtimeConfigError={runtimeConfigError}
             onRefreshModels={refreshModelCatalog}
+            onRefreshRuntimeConfig={refreshRuntimeConfig}
+            onUpdateRuntimeConfig={updateRuntimeConfig}
           />
         ) : null}
       </main>

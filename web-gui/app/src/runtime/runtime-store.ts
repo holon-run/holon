@@ -11,6 +11,7 @@ import type {
   InspectorSelection,
   RouteKey,
   RuntimeBootstrap,
+  RuntimeConfigState,
   RuntimeModelCatalog,
 } from "./types";
 
@@ -108,6 +109,10 @@ export interface RuntimeStoreState {
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;
   modelCatalogError?: string;
+  runtimeConfig: RuntimeConfigState;
+  runtimeConfigLoading: boolean;
+  runtimeConfigSaving: boolean;
+  runtimeConfigError?: string;
   rosterActivityByAgentId: Record<string, AgentRosterActivity>;
   sessionsByAgentId: Record<string, AgentSessionState>;
 
@@ -121,6 +126,8 @@ export interface RuntimeStoreState {
   toggleNavCollapsed: () => void;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
   refreshModelCatalog: () => Promise<void>;
+  refreshRuntimeConfig: () => Promise<void>;
+  updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
@@ -191,6 +198,10 @@ const emptyModelCatalog: RuntimeModelCatalog = {
   options: [],
 };
 
+const emptyRuntimeConfig: RuntimeConfigState = {
+  source: "fixture",
+};
+
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   route: "dashboard",
   selectedAgentId: "",
@@ -204,6 +215,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   bootstrapLoading: true,
   modelCatalog: emptyModelCatalog,
   modelCatalogLoading: false,
+  runtimeConfig: emptyRuntimeConfig,
+  runtimeConfigLoading: false,
+  runtimeConfigSaving: false,
   rosterActivityByAgentId: {},
   sessionsByAgentId: {},
 
@@ -298,6 +312,38 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         modelCatalogLoading: false,
         modelCatalogError: message,
       }));
+    }
+  },
+
+  refreshRuntimeConfig: async () => {
+    set({ runtimeConfigLoading: true, runtimeConfigError: undefined });
+    try {
+      const runtimeConfig = await runtimeClient.getRuntimeConfig();
+      set({ runtimeConfig, runtimeConfigLoading: false, runtimeConfigError: runtimeConfig.error });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        runtimeConfig: { ...state.runtimeConfig, error: message },
+        runtimeConfigLoading: false,
+        runtimeConfigError: message,
+      }));
+    }
+  },
+
+  updateRuntimeConfig: async (updates) => {
+    set({ runtimeConfigSaving: true, runtimeConfigError: undefined });
+    try {
+      const runtimeConfig = await runtimeClient.updateRuntimeConfig(updates);
+      set({ runtimeConfig, runtimeConfigSaving: false, runtimeConfigError: runtimeConfig.error });
+      return runtimeConfig;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        runtimeConfig: { ...state.runtimeConfig, error: message },
+        runtimeConfigSaving: false,
+        runtimeConfigError: message,
+      }));
+      return undefined;
     }
   },
 

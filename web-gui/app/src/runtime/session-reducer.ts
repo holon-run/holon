@@ -270,6 +270,7 @@ function projectEventEnvelope(
   const id = event.id ?? `event-${event.event_seq}`;
   const payload = asRecord(event.payload);
   const eventType = event.type ?? "runtime_event";
+  if (eventType === "assistant_round_recorded") return undefined;
   const projection = projectRuntimeEvent(eventType, payload);
 
   return item({
@@ -363,32 +364,6 @@ function projectRuntimeEvent(
     };
   }
 
-  if (eventType === "assistant_round_recorded") {
-    const textPreview = cleanStringField(payload, "text_preview");
-    const toolNames = toolNamesFromPayload(payload);
-    const stopReason = stringField(payload, "stop_reason");
-    if (!textPreview) {
-      return {
-        kind: toolNames.length ? "tool" : "assistant",
-        label: toolNames.length ? "Assistant requested tools" : "Assistant round",
-        body: toolNames.length
-          ? toolNames.join(", ")
-          : compactJoin([
-              stopReason ? `Stop reason: ${stopReason}` : undefined,
-              numberField(payload, "tool_call_count") == null ? undefined : `${numberField(payload, "tool_call_count")} tool calls`,
-            ]) || "Assistant round completed.",
-        minDisplayLevel: toolNames.length ? "verbose" : "debug",
-      };
-    }
-
-    return {
-      kind: "assistant",
-      label: "Assistant round",
-      body: textPreview,
-      minDisplayLevel: "verbose",
-    };
-  }
-
   if (eventType === "wait_condition_registered" || eventType === "agent_waiting") {
     return {
       kind: "system",
@@ -448,7 +423,7 @@ function item(draft: SessionItemDraft): AgentTimelineItem {
 export function compactAgentTimelineItems(items: AgentTimelineItem[]): AgentTimelineItem[] {
   const flattened = flattenTimelineActivities(items);
   const deduped = flattened.filter((candidate, index) => !isAssistantPreviewDuplicate(candidate, flattened, index));
-  return attachActivitiesToConversationItems(deduped);
+  return deduped.sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
 }
 
 function isAssistantPreviewDuplicate(candidate: AgentTimelineItem, items: AgentTimelineItem[], candidateIndex: number): boolean {
@@ -494,120 +469,9 @@ function activityToTimelineItem(activity: AgentTimelineActivity): AgentTimelineI
   };
 }
 
-function attachActivitiesToConversationItems(items: AgentTimelineItem[]): AgentTimelineItem[] {
-  const conversationItems: AgentTimelineItem[] = [];
-  const activities: AgentTimelineActivity[] = [];
-
-  for (const item of items) {
-    const cleanItem: AgentTimelineItem = { ...item, activities: undefined };
-    if (!isCompactActivityItem(cleanItem)) {
-      conversationItems.push(cleanItem);
-      continue;
-    }
-
-    activities.push(timelineItemToActivity(cleanItem));
-  }
-
-  const orphanActivities: AgentTimelineActivity[] = [];
-  for (const activity of activities) {
-    const target = nearestConversationItem(conversationItems, activity);
-    if (target) {
-      if (!isActivityDuplicateOfTarget(activity, target)) {
-        target.activities = mergeTimelineActivities(target.activities ?? [], [activity]);
-      }
-    } else {
-      orphanActivities.push(activity);
-    }
-  }
-
-  if (orphanActivities.length) {
-    const minDisplayLevel = orphanActivities.reduce<DisplayLevel>(
-      (level, activity) => (displayLevelRank[activity.minDisplayLevel] < displayLevelRank[level] ? activity.minDisplayLevel : level),
-      "debug",
-    );
-    conversationItems.push({
-      id: `activity:${orphanActivities[0].id}`,
-      kind: "system",
-      label: "Agent activity",
-      body: summarizeActivityGroup(orphanActivities),
-      timestamp: orphanActivities[0].timestamp,
-      meta: "activity",
-      minDisplayLevel: minDisplayLevel === "info" ? "verbose" : minDisplayLevel,
-      sourceIds: mergeSourceIds(orphanActivities.flatMap((activity) => activity.sourceIds)),
-      activities: orphanActivities,
-      debug: debugJson(orphanActivities),
-    });
-  }
-
-  return conversationItems.sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
-}
-
-function nearestConversationItem(
-  items: AgentTimelineItem[],
-  activity: Pick<AgentTimelineActivity, "timestamp">,
-): AgentTimelineItem | undefined {
-  const activityTime = sortableTime(activity.timestamp);
-  const maxDistanceMs = 5 * 60 * 1000;
-  let nearest: AgentTimelineItem | undefined;
-  let nearestDistance = Number.POSITIVE_INFINITY;
-
-  for (const item of items) {
-    if (item.kind === "operator") continue;
-    const distance = Math.abs(sortableTime(item.timestamp) - activityTime);
-    if (distance <= maxDistanceMs && distance < nearestDistance) {
-      nearest = item;
-      nearestDistance = distance;
-    }
-  }
-
-  return nearest;
-}
-
-function isCompactActivityItem(item: AgentTimelineItem): boolean {
-  if (item.meta === "activity") return false;
-  if (item.kind === "tool" || item.kind === "event") return true;
-  return item.kind === "system" && item.minDisplayLevel !== "info";
-}
-
 function isInfoActivity(activity: AgentTimelineActivity): boolean {
   if (activity.kind !== "tool") return false;
   return true;
-}
-
-function isActivityDuplicateOfTarget(activity: AgentTimelineActivity, target: AgentTimelineItem): boolean {
-  const activityText = normalizeTextKey(activity.body);
-  const targetText = normalizeTextKey(target.body);
-  if (!activityText || !targetText) return false;
-  if (activityText === targetText) return true;
-  if (activityText.length > 120 && targetText.startsWith(activityText)) return true;
-  if (targetText.length > 120 && activityText.startsWith(targetText)) return true;
-  return false;
-}
-
-function timelineItemToActivity(item: AgentTimelineItem): AgentTimelineActivity {
-  return {
-    id: item.id,
-    kind: item.kind,
-    label: item.label,
-    body: item.body,
-    timestamp: item.timestamp,
-    meta: item.meta,
-    minDisplayLevel: item.minDisplayLevel,
-    sourceIds: item.sourceIds,
-    detail: item.detail,
-    debug: item.debug,
-  };
-}
-
-function summarizeActivityGroup(activities: AgentTimelineActivity[]): string {
-  const toolCount = activities.filter((activity) => activity.kind === "tool").length;
-  const eventCount = activities.length - toolCount;
-  if (toolCount && !eventCount) return `${toolCount} tool activity${toolCount === 1 ? "" : " activities"}.`;
-  if (!toolCount && eventCount) return `${eventCount} runtime signal${eventCount === 1 ? "" : "s"}.`;
-  return compactJoin([
-    toolCount ? `${toolCount} tool activity${toolCount === 1 ? "" : " activities"}` : undefined,
-    eventCount ? `${eventCount} runtime signal${eventCount === 1 ? "" : "s"}` : undefined,
-  ]);
 }
 
 function mergeTimelineItemActivities(preferred: AgentTimelineItem, fallback: AgentTimelineItem): AgentTimelineItem {
