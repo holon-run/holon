@@ -648,7 +648,7 @@ function projectToolExecution(
   const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status");
   const durationMs = numberField(payload, "duration_ms") ?? numberField(result, "duration_ms");
   const error = stringField(payload, "error");
-  const toolSummary = projection?.body ?? commandPreview ?? summary;
+  const toolSummary = projection?.body ?? commandPreview ?? summary ?? genericToolDescription(toolName, payload);
   const body = compactJoin([
     toolSummary,
     exitStatus == null ? undefined : `exit ${exitStatus}`,
@@ -673,6 +673,25 @@ function projectKnownToolExecution(
 ): Pick<SessionItemDraft, "body" | "detail"> | undefined {
   if (toolName === "ApplyPatch") return projectApplyPatchTool(payload);
   return undefined;
+}
+
+function genericToolDescription(toolName: string, payload: Record<string, unknown> | undefined): string {
+  const readable = readableText(payload);
+  if (readable) return readable;
+
+  const waitReason = stringField(payload, "reason");
+  if (waitReason) return waitReason;
+
+  const objective = stringField(payload, "objective");
+  if (objective) return objective;
+
+  const workItemId = stringField(payload, "work_item_id");
+  if (workItemId) return workItemId;
+
+  const resource = stringField(payload, "resource");
+  if (resource) return resource;
+
+  return toolName;
 }
 
 function projectApplyPatchTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
@@ -740,9 +759,7 @@ function toolExecutionDetail(
     if (batchDetail) return { label: "Commands", text: batchDetail, tone: "command" };
   }
 
-  if (commandPreview && outputPreview) {
-    return { label: "Output", text: `${commandPreview}\n\nOutput:\n${outputPreview}`, tone: "command" };
-  }
+  if (commandPreview && outputPreview) return { label: "Output", text: outputPreview, tone: "command" };
   if (commandPreview) {
     return { label: toolName === "ExecCommandBatch" ? "Commands" : "Command", text: commandPreview, tone: "command" };
   }

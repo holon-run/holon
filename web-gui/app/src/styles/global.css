@@ -1714,17 +1714,6 @@ code {
   display: none;
 }
 
-.activity-detail summary .activity-icon::before {
-  content: "›";
-  margin-right: 2px;
-  color: var(--faint);
-  font-size: 10px;
-}
-
-.activity-detail[open] summary .activity-icon::before {
-  content: "⌄";
-}
-
 .activity-detail pre {
   overflow: auto;
   max-height: 280px;
