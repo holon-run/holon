@@ -288,7 +288,7 @@ export function App() {
                       className={displayLevel === level ? "is-active" : ""}
                       key={level}
                       type="button"
-                      onClick={() => setDisplayLevel(level)}
+                      onClick={() => setDisplayLevel(level, activeAgentId)}
                     >
                       {levelLabel(level)}
                     </SegmentedControlButton>

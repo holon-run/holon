@@ -70,6 +70,7 @@ export interface RuntimeStoreState {
   route: RouteKey;
   selectedAgentId: string;
   displayLevel: DisplayLevel;
+  displayLevelsByAgentId: Record<string, DisplayLevel>;
   inspectorOpen: boolean;
   navCollapsed: boolean;
 
@@ -84,7 +85,7 @@ export interface RuntimeStoreState {
 
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string) => void;
-  setDisplayLevel: (displayLevel: DisplayLevel) => void;
+  setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
   setInspectorOpen: (open: boolean) => void;
   toggleInspector: () => void;
   toggleNavCollapsed: () => void;
@@ -111,6 +112,38 @@ const STREAM_FLUSH_INTERVAL_MS = 100;
 const STREAM_STALE_TIMEOUT_MS = 45_000;
 const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
+const DISPLAY_LEVEL_STORAGE_KEY = "holon.webGui.displayLevelsByAgentId.v1";
+
+function readStoredDisplayLevels(): Record<string, DisplayLevel> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(DISPLAY_LEVEL_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, DisplayLevel] => {
+        const [agentId, level] = entry;
+        return typeof agentId === "string" && isDisplayLevel(level);
+      }),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredDisplayLevels(displayLevelsByAgentId: Record<string, DisplayLevel>): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(DISPLAY_LEVEL_STORAGE_KEY, JSON.stringify(displayLevelsByAgentId));
+  } catch {
+    // Ignore storage failures; the in-memory selection still applies.
+  }
+}
+
+function isDisplayLevel(value: unknown): value is DisplayLevel {
+  return value === "info" || value === "verbose" || value === "debug";
+}
 
 const emptyBootstrap: RuntimeBootstrap = {
   attentionCount: 0,
@@ -132,6 +165,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   route: "dashboard",
   selectedAgentId: "",
   displayLevel: "info",
+  displayLevelsByAgentId: readStoredDisplayLevels(),
   inspectorOpen: false,
   navCollapsed: false,
 
@@ -143,8 +177,23 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   sessionsByAgentId: {},
 
   setRoute: (route) => set({ route }),
-  openAgent: (agentId) => set({ selectedAgentId: agentId, route: "agent" }),
-  setDisplayLevel: (displayLevel) => set({ displayLevel }),
+  openAgent: (agentId) =>
+    set((state) => ({
+      selectedAgentId: agentId,
+      route: "agent",
+      displayLevel: state.displayLevelsByAgentId[agentId] ?? "info",
+    })),
+  setDisplayLevel: (displayLevel, agentId) =>
+    set((state) => {
+      const targetAgentId = agentId ?? state.selectedAgentId;
+      if (!targetAgentId) return { displayLevel };
+      const displayLevelsByAgentId = {
+        ...state.displayLevelsByAgentId,
+        [targetAgentId]: displayLevel,
+      };
+      writeStoredDisplayLevels(displayLevelsByAgentId);
+      return { displayLevel, displayLevelsByAgentId };
+    }),
   setInspectorOpen: (open) => set({ inspectorOpen: open }),
   toggleInspector: () => set((state) => ({ inspectorOpen: !state.inspectorOpen })),
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
