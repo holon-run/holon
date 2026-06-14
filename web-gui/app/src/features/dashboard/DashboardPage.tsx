@@ -178,8 +178,8 @@ function DashboardStateCard({ state, detail }: { state: DashboardState; detail: 
     },
     disconnected: {
       label: "Disconnected",
-      title: "Using the last available preview surface",
-      body: "The local runtime request failed. Live data will resume after the API is reachable.",
+      title: "Runtime API is not reachable",
+      body: "No bundled preview data is shown while disconnected. Check the API base URL or restart the Holon daemon.",
     },
     preview: {
       label: "Preview",

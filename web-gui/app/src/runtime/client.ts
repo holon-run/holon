@@ -1,4 +1,4 @@
-import { agentDetailFixtures, runtimeFixture } from "./fixtures";
+import { agentDetailFixtures } from "./fixtures";
 import { reduceAgentSessionTimeline } from "./session-reducer";
 import type {
   AgentDetail,
@@ -27,6 +27,37 @@ const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
 
 function fixtureAgentDetail(agentId: string): AgentDetail {
   return agentDetailFixtures[agentId] ?? agentDetailFixtures[Object.keys(agentDetailFixtures)[0]];
+}
+
+function disconnectedAgentDetail(agentId: string, error: string): AgentDetail {
+  return {
+    agent: {
+      id: agentId,
+      badge: "!",
+      badgeTone: "muted",
+      profile: "unavailable",
+      lifecycle: "unknown",
+      focusSummary: "Runtime API unavailable",
+      workspace: "unavailable",
+      attention: "API disconnected",
+      model: "unavailable",
+      footer: "disconnected",
+      subtitle: "Runtime API unavailable",
+      lastBrief: "",
+      lastTurnTime: "",
+      pending: 0,
+      activeTaskCount: 0,
+      waitingCount: 0,
+      posture: "disconnected",
+      postureReason: error,
+      tasks: [],
+      workItems: [],
+    },
+    source: "fixture",
+    timeline: [],
+    events: [],
+    error,
+  };
 }
 
 async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentId: string, displayLevel: DisplayLevel): Promise<AgentDetail> {
@@ -289,29 +320,26 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   return {
     async getBootstrap(): Promise<RuntimeBootstrap> {
       if (!baseUrl) {
-        return runtimeFixture;
+        return buildDisconnectedBootstrap(undefined, "Holon API base URL is not configured.");
       }
 
       try {
         return await fetchRuntimeBootstrap(baseUrl, fetchImpl);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return withFixtureFallback(baseUrl, message);
+        return buildDisconnectedBootstrap(baseUrl, message);
       }
     },
     async getAgentDetail(agentId: string, displayLevel: DisplayLevel = "info"): Promise<AgentDetail> {
       if (!baseUrl) {
-        return fixtureAgentDetail(agentId);
+        return disconnectedAgentDetail(agentId, "Holon API base URL is not configured.");
       }
 
       try {
         return await fetchAgentDetail(baseUrl, fetchImpl, agentId, displayLevel);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return {
-          ...fixtureAgentDetail(agentId),
-          error: message,
-        };
+        return disconnectedAgentDetail(agentId, message);
       }
     },
     async getAgentEvents(agentId: string, options: AgentEventPageOptions = {}): Promise<EventPageResponseDto> {
@@ -817,16 +845,18 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function withFixtureFallback(baseUrl: string, error: string): RuntimeBootstrap {
+function buildDisconnectedBootstrap(baseUrl: string | undefined, error: string): RuntimeBootstrap {
   return {
-    ...runtimeFixture,
+    attentionCount: 0,
     connection: {
-      ...runtimeFixture.connection,
       source: "fixture",
+      mode: "local",
       baseUrl,
       error,
-      summary: `${baseUrl} unavailable · using preview data`,
+      summary: baseUrl ? `${baseUrl} unavailable` : "Holon API unavailable",
     },
+    metrics: buildMetrics(0, 0, 0, 0),
+    agents: [],
   };
 }
 
