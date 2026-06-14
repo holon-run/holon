@@ -1413,9 +1413,7 @@ code {
   align-self: flex-end;
 }
 
-.message.tool,
-.message.event,
-.message.system {
+.message.activity-message {
   align-self: flex-start;
   width: min(760px, 88%);
   max-width: min(760px, 88%);
@@ -1445,21 +1443,8 @@ code {
   background: var(--surface);
 }
 
-.tool .bubble,
-.event .bubble,
-.system .bubble {
-  padding: 7px 10px;
-  border-color: color-mix(in srgb, var(--line) 42%, transparent);
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--surface) 84%, var(--surface-soft));
-  box-shadow: none;
-}
-
 .operator .bubble::before,
-.assistant .bubble::before,
-.tool .bubble::before,
-.event .bubble::before,
-.system .bubble::before {
+.assistant .bubble::before {
   position: absolute;
   content: "";
   top: 12px;
@@ -1478,12 +1463,6 @@ code {
   background: var(--success);
 }
 
-.tool .bubble::before,
-.event .bubble::before,
-.system .bubble::before {
-  display: none;
-}
-
 .assistant + .assistant {
   margin-top: -9px;
 }
@@ -1497,18 +1476,8 @@ code {
   border-top-left-radius: 17px;
 }
 
-.assistant + .tool,
-.assistant + .event,
-.assistant + .system,
-.tool + .tool,
-.tool + .event,
-.tool + .system,
-.event + .tool,
-.event + .event,
-.event + .system,
-.system + .tool,
-.system + .event,
-.system + .system {
+.assistant + .activity-message,
+.activity-message + .activity-message {
   margin-top: -8px;
 }
 
@@ -1538,75 +1507,13 @@ code {
   white-space: nowrap;
 }
 
-.runtime-event-body {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  align-items: baseline;
-  gap: 8px;
-}
-
-.runtime-event-kind {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 780;
-}
-
-.runtime-event-kind.tool,
-.runtime-event-kind.success {
-  background: color-mix(in srgb, var(--success) 12%, var(--surface));
-  color: var(--success);
-}
-
-.runtime-event-kind.progress,
-.runtime-event-kind.waiting {
-  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
-  color: var(--accent);
-}
-
-.runtime-event-kind.error {
-  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
-  color: var(--danger);
-}
-
-.runtime-event-kind.debug {
-  background: color-mix(in srgb, var(--muted) 10%, var(--surface));
-}
-
-.is-runtime-compact .message-heading {
-  margin-bottom: 3px;
-}
-
-.is-runtime-compact .message-label {
-  color: var(--muted);
-  letter-spacing: normal;
-  text-transform: none;
-}
-
-.is-runtime-compact .runtime-event-body .markdown {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.is-runtime-compact .runtime-event-body .markdown p {
-  margin: 0;
-}
-
 .message-detail {
   display: grid;
   gap: 6px;
   margin-top: 12px;
 }
 
-.tool .message-detail,
-.event .message-detail,
-.system .message-detail {
+.activity-message .message-detail {
   margin-top: 8px;
 }
 
@@ -1925,9 +1832,7 @@ code {
   justify-content: flex-end;
 }
 
-.message.tool .message-meta,
-.message.event .message-meta,
-.message.system .message-meta {
+.message.activity-message .message-meta {
   margin-left: 12px;
   font-size: 11px;
 }

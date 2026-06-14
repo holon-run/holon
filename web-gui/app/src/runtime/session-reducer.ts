@@ -168,6 +168,24 @@ function projectTranscriptEntry(entry: SessionTranscriptEntry): AgentTimelineIte
   if (kind === "assistant_round") {
     const text = textFromAssistantBlocks(data?.blocks);
     const toolNames = toolNamesFromAssistantBlocks(data?.blocks);
+    if (!text && toolNames.length) {
+      return item({
+        id: entry.id,
+        kind: "tool",
+        label: "Assistant requested tools",
+        body: toolNames.join(", "),
+        timestamp,
+        meta: compactJoin([
+          "assistant round",
+          roundMeta(entry.round),
+          entry.stop_reason ?? undefined,
+          `tools: ${toolNames.join(", ")}`,
+        ]),
+        minDisplayLevel: "verbose",
+        sourceIds: [entry.id],
+        debug: debugJson(entry),
+      });
+    }
     return item({
       id: entry.id,
       kind: "assistant",
@@ -351,7 +369,7 @@ function projectRuntimeEvent(
     const stopReason = stringField(payload, "stop_reason");
     if (!textPreview) {
       return {
-        kind: "assistant",
+        kind: toolNames.length ? "tool" : "assistant",
         label: toolNames.length ? "Assistant requested tools" : "Assistant round",
         body: toolNames.length
           ? toolNames.join(", ")

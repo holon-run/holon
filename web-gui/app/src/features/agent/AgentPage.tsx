@@ -490,7 +490,7 @@ const TimelineMessage = memo(function TimelineMessage({
   onInspectActivity: (activity: AgentTimelineActivity) => void;
   selectedActivityId?: string;
 }) {
-  const isRuntimeItem = item.kind === "tool" || item.kind === "event" || item.kind === "system";
+  const isRuntimeItem = isRuntimeActivityItem(item);
   const activities =
     isRuntimeItem && item.meta === "activity"
       ? (item.activities ?? [])
@@ -513,18 +513,10 @@ const TimelineMessage = memo(function TimelineMessage({
     );
   }
 
-  const presentation = timelineItemPresentation(item);
-  const showHeading = item.kind === "assistant" && item.label === "Assistant requested tools";
-
   return (
     <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}`}>
       <div className="bubble">
-        {!compactAssistant && showHeading ? (
-          <div className="message-heading">
-            <span className="message-label">{presentation.title}</span>
-          </div>
-        ) : null}
-        <TimelineItemContent item={item} presentation={presentation} runtimeItem={false} />
+        <TimelineItemContent item={item} />
         <TimelineItemDetail detail={item.detail} />
       </div>
       {activities.length ? (
@@ -550,31 +542,8 @@ const TimelineMessage = memo(function TimelineMessage({
   );
 });
 
-interface TimelineItemPresentation {
-  title: string;
-  body: string;
-  tone: "message" | "tool" | "progress" | "waiting" | "success" | "error" | "debug";
-}
-
-function TimelineItemContent({
-  item,
-  presentation,
-  runtimeItem,
-}: {
-  item: AgentTimelineItem;
-  presentation: TimelineItemPresentation;
-  runtimeItem: boolean;
-}) {
-  if (!runtimeItem) {
-    return <MarkdownContent text={item.body} compact={false} />;
-  }
-
-  return (
-    <div className="runtime-event-body">
-      <span className={`runtime-event-kind ${presentation.tone}`}>{runtimeKindIcon(presentation.tone)}</span>
-      <MarkdownContent text={presentation.body} compact />
-    </div>
-  );
+function TimelineItemContent({ item }: { item: AgentTimelineItem }) {
+  return <MarkdownContent text={item.body} compact={false} />;
 }
 
 function TimelineItemDetail({ detail, compact = false }: { detail?: AgentTimelineItem["detail"]; compact?: boolean }) {
@@ -595,54 +564,8 @@ function TimelineItemDetail({ detail, compact = false }: { detail?: AgentTimelin
   );
 }
 
-function timelineItemPresentation(item: AgentTimelineItem): TimelineItemPresentation {
-  if (item.kind === "tool") {
-    const failed = /failed|error|exit\s+[1-9]/i.test(`${item.label} ${item.body} ${item.meta}`);
-    return {
-      title: failed ? "工具失败" : "工具执行",
-      body: firstLine(item.body) || item.label,
-      tone: failed ? "error" : "tool",
-    };
-  }
-
-  if (item.kind === "system") {
-    if (/waiting/i.test(item.label)) {
-      return { title: "等待", body: firstLine(item.body) || "Agent 正在等待下一步。", tone: "waiting" };
-    }
-    if (/work item/i.test(item.label)) {
-      return { title: "任务进展", body: firstLine(item.body) || "WorkItem 状态已更新。", tone: "progress" };
-    }
-    if (/failed|alert|error/i.test(item.label)) {
-      return { title: "运行提醒", body: firstLine(item.body) || item.label, tone: "error" };
-    }
-    if (/activity/i.test(item.label)) {
-      return { title: firstLine(item.body) || "状态已更新", body: "", tone: "progress" };
-    }
-    return { title: "系统事件", body: firstLine(item.body) || item.label, tone: "debug" };
-  }
-
-  if (item.kind === "event") {
-    return { title: "运行事件", body: firstLine(item.body) || item.label, tone: "debug" };
-  }
-
-  if (item.kind === "assistant" && item.label === "Assistant requested tools") {
-    return { title: "执行工具", body: firstLine(item.body) || "Assistant 请求执行工具。", tone: "tool" };
-  }
-
-  return { title: item.label, body: item.body, tone: "message" };
-}
-
-function firstLine(text: string): string {
-  return text.split(/\n+/).map((line) => line.trim()).find(Boolean) ?? "";
-}
-
-function runtimeKindIcon(tone: TimelineItemPresentation["tone"]): string {
-  if (tone === "tool") return "⌁";
-  if (tone === "progress") return "↻";
-  if (tone === "waiting") return "…";
-  if (tone === "success") return "✓";
-  if (tone === "error") return "!";
-  return "·";
+function isRuntimeActivityItem(item: Pick<AgentTimelineItem, "kind">): boolean {
+  return item.kind === "tool" || item.kind === "event" || item.kind === "system";
 }
 
 function ActivityTrail({
