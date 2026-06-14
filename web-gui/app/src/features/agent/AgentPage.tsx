@@ -209,7 +209,7 @@ export function AgentPage({
                 turn={turn}
               />
             ))}
-            {displayLevel === "info" && workingActivities.length > 0 ? (
+            {displayLevel === "info" && isWorking && workingActivities.length > 0 ? (
               <WorkingActivityPanel activities={workingActivities} />
             ) : null}
             {displayLevel !== "info" && isWorking ? <WorkingStatusMarker agent={activeAgent} /> : null}
@@ -341,7 +341,7 @@ function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
 function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean): boolean {
   const posture = agent.posture.toLowerCase();
   const lifecycle = agent.lifecycle.toLowerCase();
-  return sendingPrompt || agent.pending > 0 || agent.activeTaskCount > 0 || posture.includes("running") || lifecycle.includes("running");
+  return sendingPrompt || agent.pending > 0 || posture.includes("running") || lifecycle.includes("running");
 }
 
 function collectWorkingActivities(timeline: AgentTimelineItem[]): AgentTimelineActivity[] {
