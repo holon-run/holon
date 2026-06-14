@@ -418,6 +418,7 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         identity,
         current_message,
         workspace_root,
+        agent_home,
         &loaded_agents_md,
         skills,
         available_tools,
@@ -587,6 +588,7 @@ fn build_system_sections(
     identity: &AgentIdentityView,
     current_message: &MessageEnvelope,
     workspace_root: &Path,
+    agent_home: &Path,
     loaded_agents_md: &LoadedAgentsMd,
     skills: &SkillsRuntimeView,
     available_tools: &[ToolSpec],
@@ -703,12 +705,26 @@ fn build_system_sections(
     if let Some(section) = skills_usage_contract_section(skills) {
         sections.push(section);
     }
+    if let Some(section) = notes_catalog_section(agent_home) {
+        sections.push(section);
+    }
 
     sections.extend(tools::tool_sections_with_context(
         available_tools,
         tool_prompt_context,
     ));
     sections
+}
+
+fn notes_catalog_section(agent_home: &std::path::Path) -> Option<crate::prompt::PromptSection> {
+    match crate::notes::build_notes_catalog(agent_home) {
+        Ok(Some(catalog)) if !catalog.is_empty() => Some(section(
+            "agent_home notes catalog",
+            crate::prompt::PromptStability::Stable,
+            catalog,
+        )),
+        _ => None,
+    }
 }
 
 fn skills_usage_contract_section(skills: &SkillsRuntimeView) -> Option<PromptSection> {
@@ -1247,6 +1263,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("/tmp/agent-home"),
+            Path::new("/tmp/agent-home"),
             &first_loaded,
             &SkillsRuntimeView::default(),
             &[],
@@ -1255,6 +1272,7 @@ mod tests {
         let second_system_sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("/tmp/agent-home"),
             Path::new("/tmp/agent-home"),
             &second_loaded,
             &SkillsRuntimeView::default(),
@@ -1367,6 +1385,7 @@ mod tests {
             &sample_child_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1396,6 +1415,7 @@ mod tests {
             &sample_identity(),
             &message,
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1417,6 +1437,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("/repo"),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1448,6 +1469,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1471,6 +1493,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1502,6 +1525,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1532,6 +1556,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1589,6 +1614,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1620,6 +1646,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1644,6 +1671,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1672,6 +1700,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1704,6 +1733,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd {
                 user_global_source: Some(AgentsMdSource {
@@ -1751,6 +1781,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1783,6 +1814,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1807,6 +1839,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1850,6 +1883,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1882,6 +1916,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1929,6 +1964,7 @@ mod tests {
             &sample_identity(),
             &sample_message(),
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -1953,6 +1989,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
@@ -1986,6 +2023,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd {
                 user_global_source: Some(AgentsMdSource {
@@ -2231,6 +2269,7 @@ mod tests {
                 &sample_identity(),
                 &message,
                 Path::new("."),
+                Path::new("."),
                 &LoadedAgentsMd::default(),
                 &SkillsRuntimeView::default(),
                 &[],
@@ -2265,6 +2304,7 @@ mod tests {
             let sections = build_system_sections(
                 &sample_identity(),
                 &message,
+                Path::new("."),
                 Path::new("."),
                 &LoadedAgentsMd::default(),
                 &SkillsRuntimeView::default(),
@@ -2307,6 +2347,7 @@ mod tests {
                 &sample_identity(),
                 &message,
                 Path::new("."),
+                Path::new("."),
                 &LoadedAgentsMd::default(),
                 &SkillsRuntimeView::default(),
                 &[],
@@ -2332,6 +2373,7 @@ mod tests {
             &sample_identity(),
             &message,
             Path::new("."),
+            Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView::default(),
             &[],
@@ -2353,6 +2395,7 @@ mod tests {
         let sections = build_system_sections(
             &sample_identity(),
             &sample_message(),
+            Path::new("."),
             Path::new("."),
             &LoadedAgentsMd::default(),
             &SkillsRuntimeView {

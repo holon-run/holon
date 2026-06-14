@@ -19,6 +19,7 @@ pub mod ingress;
 pub mod memory;
 pub mod model_catalog;
 pub mod model_discovery;
+pub mod notes;
 pub mod onboarding;
 pub mod onboarding_tui;
 pub mod openapi;
