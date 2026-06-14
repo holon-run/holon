@@ -1991,6 +1991,65 @@ code {
   margin-top: 6px;
 }
 
+.model-picker-section {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.model-picker-section > span {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.model-provider-list,
+.reasoning-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.model-provider-option,
+.reasoning-options button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+}
+
+.model-provider-option {
+  display: inline-grid;
+  gap: 1px;
+  min-width: 96px;
+  padding: 7px 10px;
+  text-align: left;
+}
+
+.model-provider-option strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.model-provider-option small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.reasoning-options button {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.model-provider-option.is-active,
+.reasoning-options button.is-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-soft));
+}
+
 .model-option {
   width: 100%;
   min-height: 48px;

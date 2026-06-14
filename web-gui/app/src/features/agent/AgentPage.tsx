@@ -66,6 +66,8 @@ export function AgentPage({
   const [prompt, setPrompt] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [changingModel, setChangingModel] = useState<string | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("auto");
   const [visibleTimelineItemLimit, setVisibleTimelineItemLimit] = useState(() => defaultTimelineItemLimit("info"));
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
@@ -87,10 +89,15 @@ export function AgentPage({
   const newestTimelineItem = timeline[timeline.length - 1];
   const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
   const hasHiddenTimelineItems = timeline.length >= visibleTimelineItemLimit && sourceTimeline.length > visibleTimelineItemLimit;
+  const groupedModelOptions = useMemo(() => groupModelOptionsByProvider(modelCatalog.options), [modelCatalog.options]);
+  const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.model === activeAgent.model), [activeAgent.model, modelCatalog.options]);
+  const currentProvider = selectedProvider ?? activeModelOption?.provider ?? groupedModelOptions[0]?.provider ?? "runtime";
+  const currentProviderModels = groupedModelOptions.find((group) => group.provider === currentProvider)?.models ?? [];
 
   useEffect(() => {
     setVisibleTimelineItemLimit(defaultTimelineItemLimit(displayLevel));
     setModelPickerOpen(false);
+    setSelectedProvider(null);
   }, [activeAgent.id, displayLevel]);
 
   useLayoutEffect(() => {
@@ -162,11 +169,11 @@ export function AgentPage({
     }
   }
 
-  async function handleSelectModel(option: RuntimeModelOption) {
+  async function handleSelectModel(option: RuntimeModelOption, reasoningEffort = selectedReasoningEffort) {
     if (!option.available || changingModel) return;
     setChangingModel(option.model);
     try {
-      await onSetModel(option.model);
+      await onSetModel(option.model, option.supportsReasoningEffort && reasoningEffort !== "auto" ? reasoningEffort : undefined);
       setModelPickerOpen(false);
     } catch {
       // Store exposes the user-facing error.
@@ -288,8 +295,26 @@ export function AgentPage({
                         </span>
                         {changingModel === "runtime-default" ? <em>Saving…</em> : null}
                       </button>
+                      <div className="model-picker-section" aria-label="Providers">
+                        <span>Provider</span>
+                        <div className="model-provider-list">
+                          {groupedModelOptions.map((group) => (
+                            <button
+                              className={`model-provider-option ${group.provider === currentProvider ? "is-active" : ""}`}
+                              key={group.provider}
+                              type="button"
+                              onClick={() => setSelectedProvider(group.provider)}
+                            >
+                              <strong>{group.provider}</strong>
+                              <small>
+                                {group.availableCount}/{group.models.length} available
+                              </small>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       <div className="model-options" role="listbox" aria-label="Available models">
-                        {modelCatalog.options.map((option) => (
+                        {currentProviderModels.map((option) => (
                           <button
                             className={`model-option ${option.model === activeAgent.model ? "is-active" : ""}`}
                             key={option.model}
@@ -310,6 +335,23 @@ export function AgentPage({
                           </button>
                         ))}
                       </div>
+                      {activeModelOption?.supportsReasoningEffort || currentProviderModels.some((option) => option.supportsReasoningEffort) ? (
+                        <div className="model-picker-section" aria-label="Thinking level">
+                          <span>Thinking</span>
+                          <div className="reasoning-options">
+                            {["auto", "low", "medium", "high"].map((effort) => (
+                              <button
+                                className={selectedReasoningEffort === effort ? "is-active" : ""}
+                                key={effort}
+                                type="button"
+                                onClick={() => setSelectedReasoningEffort(effort)}
+                              >
+                                {titleCase(effort)}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                       {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
                         <EmptyState
                           className="model-picker-empty"
@@ -336,6 +378,26 @@ export function AgentPage({
 function shortModelLabel(model: string): string {
   const parts = model.split("/");
   return parts[parts.length - 1] || model;
+}
+
+function groupModelOptionsByProvider(options: RuntimeModelOption[]): Array<{ provider: string; availableCount: number; models: RuntimeModelOption[] }> {
+  const groups = new Map<string, RuntimeModelOption[]>();
+  for (const option of options) {
+    const models = groups.get(option.provider) ?? [];
+    models.push(option);
+    groups.set(option.provider, models);
+  }
+  return Array.from(groups.entries())
+    .map(([provider, models]) => ({
+      provider,
+      availableCount: models.filter((model) => model.available).length,
+      models: models.sort((left, right) => Number(right.available) - Number(left.available) || left.displayName.localeCompare(right.displayName)),
+    }))
+    .sort((left, right) => Number(right.availableCount > 0) - Number(left.availableCount > 0) || left.provider.localeCompare(right.provider));
+}
+
+function titleCase(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
