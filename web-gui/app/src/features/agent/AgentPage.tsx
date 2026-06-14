@@ -365,9 +365,17 @@ function collectWorkingActivities(timeline: AgentTimelineItem[]): AgentTimelineA
       byId.set(activity.id, activity);
     }
   }
-  return Array.from(byId.values())
-    .sort((left, right) => sortableActivityTime(left.timestamp) - sortableActivityTime(right.timestamp))
-    .slice(-8);
+  const latestBySlot = new Map<"assistant" | "action", AgentTimelineActivity>();
+  for (const activity of byId.values()) {
+    const slot = activity.kind === "assistant" ? "assistant" : "action";
+    const current = latestBySlot.get(slot);
+    if (!current || sortableActivityTime(activity.timestamp) >= sortableActivityTime(current.timestamp)) {
+      latestBySlot.set(slot, activity);
+    }
+  }
+  return Array.from(latestBySlot.values()).sort(
+    (left, right) => sortableActivityTime(left.timestamp) - sortableActivityTime(right.timestamp),
+  );
 }
 
 function isLiveWorkingActivity(activity: Pick<AgentTimelineActivity, "label" | "meta" | "minDisplayLevel">): boolean {
