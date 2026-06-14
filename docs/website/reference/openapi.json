@@ -3558,7 +3558,7 @@
   "info": {
     "description": "Generated baseline for Holon's current HTTP control-plane surface. It is intentionally conservative: many response bodies remain JSON placeholders until the success/error envelope contracts stabilize.",
     "title": "Holon HTTP control-plane API",
-    "version": "0.18.2"
+    "version": "0.18.3"
   },
   "openapi": "3.1.0",
   "paths": {
