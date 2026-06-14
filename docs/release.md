@@ -30,7 +30,9 @@ formula is available as a workflow artifact.
 Before pushing the tag, verify:
 
 - `Cargo.toml` and `Cargo.lock` are aligned with the tag version
-- release notes include a concise overview and links to the relevant merged PRs
+- release notes include a concise overview, then list notable features/fixes
+  with the related feature or fix PR link on each item; do not use only the
+  release-prep PR as the PR reference
 - supported binary assets are Linux amd64, macOS amd64, and macOS arm64
 - `checksums.txt` will be included with the release assets
 - `Formula/holon.rb` will be generated, and either pushed to
