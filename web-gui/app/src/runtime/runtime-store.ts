@@ -196,7 +196,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   selectedAgentId: "",
   displayLevel: "info",
   displayLevelsByAgentId: readStoredDisplayLevels(),
-  inspectorOpen: false,
+  inspectorOpen: true,
   inspectorSelection: undefined,
   navCollapsed: false,
 

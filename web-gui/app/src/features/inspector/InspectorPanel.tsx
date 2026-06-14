@@ -60,11 +60,45 @@ function SessionOverview({ agent }: { agent: AgentSummary }) {
             <dt>Focus</dt>
             <dd>{agent.focusSummary}</dd>
           </div>
+        </dl>
+      </section>
+
+      <section className="context-card inspector-card">
+        <div className="context-head">
+          <span className="eyebrow">Workspace</span>
+          <StatusBadge className="state-chip" kind="connection" value={agent.workspace === "not bound" ? "unbound" : "active"} />
+        </div>
+        <h2>{agent.workspace}</h2>
+        <dl className="inspector-facts">
           <div>
-            <dt>Tasks</dt>
-            <dd>
-              {agent.activeTaskCount} active · {agent.pending} queued · {agent.waitingCount} waiting
-            </dd>
+            <dt>Source</dt>
+            <dd>{agent.workspace === "not bound" ? "No active workspace" : agent.workspace}</dd>
+          </div>
+          <div>
+            <dt>Runtime</dt>
+            <dd>{agent.currentRunId ? `run ${agent.currentRunId}` : "No active run"}</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section className="context-card inspector-card">
+        <div className="context-head">
+          <span className="eyebrow">Tasks</span>
+          <StatusBadge className="state-chip" kind="connection" value={agent.activeTaskCount ? "active" : "idle"} />
+        </div>
+        <h2>{agent.activeTaskCount} active</h2>
+        <dl className="inspector-facts">
+          <div>
+            <dt>Queued</dt>
+            <dd>{agent.pending}</dd>
+          </div>
+          <div>
+            <dt>Waiting</dt>
+            <dd>{agent.waitingCount}</dd>
+          </div>
+          <div>
+            <dt>Attention</dt>
+            <dd>{agent.attention}</dd>
           </div>
         </dl>
       </section>
