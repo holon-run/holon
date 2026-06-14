@@ -60,6 +60,7 @@ const displayLevelRank: Record<DisplayLevel, number> = {
   verbose: 1,
   debug: 2,
 };
+const maxTimelineSourceIds = 200;
 
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
   const transcriptItems = input.transcript.map(projectTranscriptEntry);
@@ -500,7 +501,7 @@ function attachActivitiesToConversationItems(items: AgentTimelineItem[]): AgentT
       timestamp: orphanActivities[0].timestamp,
       meta: "activity",
       minDisplayLevel,
-      sourceIds: orphanActivities.flatMap((activity) => activity.sourceIds),
+      sourceIds: mergeSourceIds(orphanActivities.flatMap((activity) => activity.sourceIds)),
       activities: orphanActivities,
       debug: debugJson(orphanActivities),
     });
@@ -528,6 +529,7 @@ function nearestConversationItem(items: AgentTimelineItem[], activity: AgentTime
 }
 
 function isCompactActivityItem(item: AgentTimelineItem): boolean {
+  if (item.meta === "activity") return false;
   if (item.kind === "tool" || item.kind === "event") return true;
   return item.kind === "system" && item.minDisplayLevel !== "info";
 }
@@ -569,7 +571,7 @@ function summarizeActivityGroup(activities: AgentTimelineActivity[]): string {
 function mergeTimelineItemActivities(preferred: AgentTimelineItem, fallback: AgentTimelineItem): AgentTimelineItem {
   return {
     ...preferred,
-    sourceIds: Array.from(new Set([...fallback.sourceIds, ...preferred.sourceIds])),
+    sourceIds: mergeSourceIds([...fallback.sourceIds, ...preferred.sourceIds]),
     activities: mergeTimelineActivities(fallback.activities ?? [], preferred.activities ?? []),
   };
 }
@@ -583,6 +585,10 @@ function mergeTimelineActivities(
     byId.set(activity.id, activity);
   }
   return Array.from(byId.values()).sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
+}
+
+function mergeSourceIds(sourceIds: string[]): string[] {
+  return Array.from(new Set(sourceIds)).slice(0, maxTimelineSourceIds);
 }
 
 function labelForTranscriptKind(kind: string): string {
