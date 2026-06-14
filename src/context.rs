@@ -16,8 +16,8 @@ use crate::{
         ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TaskRecord, TodoItemState,
         ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnRecord,
-        WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WorkItemRecord,
-        WorkItemRefStatus, WorkingMemorySnapshot,
+        WaitConditionRecord, WaitConditionStatus, WorkItemRecord, WorkItemRefStatus,
+        WorkingMemorySnapshot,
     },
 };
 
@@ -133,12 +133,12 @@ pub fn build_context_with_default_external_ingress(
         &mut tools,
     )?;
     let transcript = storage.read_recent_transcript(config.recent_messages)?;
-    let active_waiting_intents = storage
-        .latest_waiting_intents()?
+    let active_wait_conditions = storage
+        .latest_wait_conditions()?
         .into_iter()
-        .filter(|intent| intent.agent_id == agent.id)
-        .filter(|intent| intent.scope == WaitingIntentScope::WorkItem)
-        .filter(|intent| intent.status == WaitingIntentStatus::Active)
+        .filter(|condition| condition.agent_id == agent.id)
+        .filter(|condition| condition.work_item_id.is_some())
+        .filter(|condition| condition.status == WaitConditionStatus::Active)
         .collect::<Vec<_>>();
     let episodes = storage.read_recent_context_episodes(config.recent_episode_candidates)?;
     let work_queue_projection = storage.work_queue_prompt_projection()?;
@@ -215,7 +215,7 @@ pub fn build_context_with_default_external_ingress(
             &mut remaining_budget,
             turn_section(
                 "current_work_item",
-                render_current_work_item(work_item, storage.data_dir(), &active_waiting_intents),
+                render_current_work_item(work_item, storage.data_dir(), &active_wait_conditions),
             ),
         );
         if let Some(content) = render_current_work_refs(work_item) {
@@ -225,6 +225,12 @@ pub fn build_context_with_default_external_ingress(
                 turn_section("current_work_refs", content),
             );
         }
+    } else {
+        push_budgeted_section(
+            &mut sections,
+            &mut remaining_budget,
+            turn_section("current_work_item", render_empty_current_work_item()),
+        );
     }
 
     let recent_turn_window_start = recent_turn_window_start(&turn_records);
@@ -1002,7 +1008,7 @@ fn render_message(message: &MessageEnvelope) -> String {
 fn render_current_work_item(
     work_item: &WorkItemRecord,
     agent_home: &std::path::Path,
-    active_waiting_intents: &[WaitingIntentRecord],
+    active_wait_conditions: &[WaitConditionRecord],
 ) -> String {
     let mut lines = vec![
         "Current work item:".to_string(),
@@ -1032,26 +1038,26 @@ fn render_current_work_item(
     if let Some(blocked_by) = work_item.blocked_by.as_deref() {
         lines.push(format!("- Blocked by: {blocked_by}"));
     }
-    let waits = active_waiting_intents
+    let waits = active_wait_conditions
         .iter()
-        .filter(|intent| intent.work_item_id.as_deref() == Some(work_item.id.as_str()))
+        .filter(|condition| condition.work_item_id.as_deref() == Some(work_item.id.as_str()))
         .collect::<Vec<_>>();
     if !waits.is_empty() {
         lines.push("- Active waits:".to_string());
-        lines.extend(waits.into_iter().take(4).map(|intent| {
-            let triggered = intent
-                .last_triggered_at
-                .map(|at| format!(" :: last_triggered_at={at}"))
-                .unwrap_or_default();
-            let resource = intent
-                .resource
+        lines.extend(waits.into_iter().take(4).map(|condition| {
+            let subject = condition
+                .subject_ref
                 .as_deref()
-                .map(|resource| format!(" :: resource={resource}"))
+                .map(|subject| format!(" :: subject_ref={subject}"))
                 .unwrap_or_default();
-            format!("  - {}{resource}{triggered}", intent.description)
+            format!("  - {}{subject}", condition.waiting_for)
         }));
     }
     lines.join("\n")
+}
+
+fn render_empty_current_work_item() -> String {
+    "Current work item: none.\nNo focused WorkItem is attached to this turn.".to_string()
 }
 
 fn render_current_work_refs(work_item: &WorkItemRecord) -> Option<String> {
@@ -3162,8 +3168,8 @@ mod tests {
             ContextEpisodeRecord, ContinuationTriggerKind, EpisodeBoundaryReason,
             ExternalTriggerScope, LoadedAgentsMd, MessageKind, MessageOrigin, Priority, TaskKind,
             TaskStatus, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
-            TranscriptEntry, TranscriptEntryKind, WaitingIntentRecord, WaitingIntentScope,
-            WaitingIntentStatus, WorkItemRef, WorkItemRefKind, WorkItemRefStatus, WorkItemState,
+            TranscriptEntry, TranscriptEntryKind, WaitConditionKind, WakeSource, WorkItemRef,
+            WorkItemRefKind, WorkItemRefStatus, WorkItemState,
         },
     };
 
@@ -5369,46 +5375,49 @@ mod tests {
             },
         ];
         storage.append_work_item(&active).unwrap();
+        let now = chrono::Utc::now();
         storage
-            .append_waiting_intent(&WaitingIntentRecord {
+            .append_wait_condition(&WaitConditionRecord {
                 id: "wait-current".into(),
                 agent_id: "default".into(),
-                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
-                description: "wait for CI webhook".into(),
-                source: "github".into(),
-                resource: Some("pull/1099".into()),
-                condition: Some("ci completed".into()),
-                delivery_mode: CallbackDeliveryMode::EnqueueMessage,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: "cb-current".into(),
-                created_at: chrono::Utc::now(),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("github".into()),
+                subject_ref: Some("pull/1099".into()),
+                waiting_for: "wait for CI webhook".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some("cb-current".into()),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
                 cancelled_at: None,
-                last_triggered_at: Some(chrono::Utc::now()),
-                trigger_count: 1,
-                correlation_id: None,
-                causation_id: None,
+                turn_id: None,
             })
             .unwrap();
         storage
-            .append_waiting_intent(&WaitingIntentRecord {
+            .append_wait_condition(&WaitConditionRecord {
                 id: "wait-other-agent".into(),
                 agent_id: "other-agent".into(),
-                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(active.id.clone()),
-                description: "other agent wait must not leak".into(),
-                source: "github".into(),
-                resource: Some("pull/other".into()),
-                condition: Some("ci completed".into()),
-                delivery_mode: CallbackDeliveryMode::EnqueueMessage,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: "cb-other".into(),
-                created_at: chrono::Utc::now(),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("github".into()),
+                subject_ref: Some("pull/other".into()),
+                waiting_for: "other agent wait must not leak".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some("cb-other".into()),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
                 cancelled_at: None,
-                last_triggered_at: Some(chrono::Utc::now()),
-                trigger_count: 1,
-                correlation_id: None,
-                causation_id: None,
+                turn_id: None,
             })
             .unwrap();
         storage
@@ -5592,6 +5601,52 @@ mod tests {
     }
 
     #[test]
+    fn build_context_includes_empty_current_work_item_section_when_unfocused() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Continue".to_string(),
+            },
+        );
+        let agent = AgentState::new("default");
+        storage.write_agent(&agent).unwrap();
+
+        let built = build_context(
+            &storage,
+            &agent,
+            &execution_snapshot_for(&agent),
+            &crate::types::SkillsRuntimeView::default(),
+            &current_message,
+            None,
+            &ContextConfig {
+                recent_messages: 4,
+                recent_briefs: 4,
+                compaction_trigger_messages: 10,
+                compaction_keep_recent_messages: 4,
+                ..ContextConfig::default()
+            },
+        )
+        .unwrap();
+
+        let section = built
+            .sections
+            .iter()
+            .find(|section| section.name == "current_work_item")
+            .expect("empty current_work_item section should be present");
+        assert!(section.content.contains("Current work item: none."));
+        assert!(section
+            .content
+            .contains("No focused WorkItem is attached to this turn."));
+    }
+
+    #[test]
     fn build_context_includes_ranked_work_item_candidates_and_completion_reports() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new(dir.path()).unwrap();
@@ -5670,25 +5725,43 @@ mod tests {
         storage.append_work_item(&waiting).unwrap();
         storage.append_work_item(&completed).unwrap();
         storage.append_brief(&completion_brief).unwrap();
+        let now = chrono::Utc::now();
         storage
-            .append_waiting_intent(&WaitingIntentRecord {
+            .append_wait_condition(&WaitConditionRecord {
                 id: "wait-triggered".into(),
                 agent_id: "default".into(),
-                scope: WaitingIntentScope::WorkItem,
                 work_item_id: Some(triggered.id.clone()),
-                description: "CI completed".into(),
-                source: "github".into(),
-                resource: Some("pull/1099".into()),
-                condition: Some("ci completed".into()),
-                delivery_mode: CallbackDeliveryMode::EnqueueMessage,
-                status: WaitingIntentStatus::Active,
-                external_trigger_id: "cb-triggered".into(),
-                created_at: chrono::Utc::now(),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::External,
+                source: Some("github".into()),
+                subject_ref: Some("pull/1099".into()),
+                waiting_for: "ci completed".into(),
+                wake_sources: vec![WakeSource::ExternalIngress {
+                    external_trigger_id: Some("cb-triggered".into()),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
                 cancelled_at: None,
-                last_triggered_at: Some(chrono::Utc::now()),
-                trigger_count: 1,
-                correlation_id: None,
-                causation_id: None,
+                turn_id: None,
+            })
+            .unwrap();
+        storage
+            .append_external_trigger(&ExternalTriggerRecord {
+                external_trigger_id: "cb-triggered".into(),
+                target_agent_id: "default".into(),
+                waiting_intent_id: None,
+                scope: ExternalTriggerScope::Agent,
+                delivery_mode: CallbackDeliveryMode::WakeHint,
+                trigger_url: None,
+                token_hash: "token-hash".into(),
+                status: ExternalTriggerStatus::Active,
+                created_at: now,
+                revoked_at: None,
+                last_delivered_at: Some(now),
+                delivery_count: 1,
             })
             .unwrap();
 

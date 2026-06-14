@@ -376,24 +376,25 @@ async fn work_queue_projection_derives_scheduling_state_per_work_item() {
     let now = Utc::now();
     runtime
         .storage()
-        .append_waiting_intent(&WaitingIntentRecord {
+        .append_wait_condition(&WaitConditionRecord {
             id: "wait-external".into(),
             agent_id: "default".into(),
-            scope: WaitingIntentScope::WorkItem,
             work_item_id: Some(external.id.clone()),
-            description: "external callback".into(),
-            source: "github".into(),
-            resource: Some("pull_request:1".into()),
-            condition: Some("checks".into()),
-            delivery_mode: CallbackDeliveryMode::WakeHint,
-            status: WaitingIntentStatus::Active,
-            external_trigger_id: "trigger-external".into(),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("pull_request:1".into()),
+            waiting_for: "checks".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-external".into()),
+            }],
+            continuation: None,
             created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
             cancelled_at: None,
-            last_triggered_at: None,
-            trigger_count: 0,
-            correlation_id: None,
-            causation_id: None,
+            turn_id: None,
         })
         .unwrap();
     runtime
@@ -3523,28 +3524,29 @@ async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
         .await
         .unwrap();
     runtime.pick_work_item(work.id.clone()).await.unwrap();
-    let waiting_id = "wait-ci".to_string();
+    let wait_condition_id = "wait-ci".to_string();
     let trigger_id = "trigger-ci".to_string();
     runtime
         .storage()
-        .append_waiting_intent(&WaitingIntentRecord {
-            id: waiting_id.clone(),
+        .append_wait_condition(&WaitConditionRecord {
+            id: wait_condition_id.clone(),
             agent_id: "default".into(),
-            scope: WaitingIntentScope::WorkItem,
             work_item_id: Some(work.id.clone()),
-            description: "wait for CI".into(),
-            source: "github".into(),
-            resource: Some("holon-run/holon#1292".into()),
-            condition: Some("checks complete".into()),
-            delivery_mode: CallbackDeliveryMode::WakeHint,
-            status: WaitingIntentStatus::Active,
-            external_trigger_id: trigger_id.clone(),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("holon-run/holon#1292".into()),
+            waiting_for: "checks complete".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some(trigger_id.clone()),
+            }],
+            continuation: None,
             created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
             cancelled_at: None,
-            last_triggered_at: None,
-            trigger_count: 0,
-            correlation_id: None,
-            causation_id: None,
+            turn_id: None,
         })
         .unwrap();
     runtime
@@ -3554,7 +3556,7 @@ async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
         .upsert(&ExternalTriggerRecord {
             external_trigger_id: trigger_id.clone(),
             target_agent_id: "default".into(),
-            waiting_intent_id: Some(waiting_id.clone()),
+            waiting_intent_id: None,
             scope: ExternalTriggerScope::Agent,
             delivery_mode: CallbackDeliveryMode::WakeHint,
             trigger_url: Some("http://127.0.0.1:7878/callbacks/wake/ci".into()),
@@ -3605,7 +3607,7 @@ async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
         .iter()
         .find(|event| {
             event.kind == "wait_reconciliation_requested"
-                && event.data["wait_condition_id"] == format!("waiting_intent:{waiting_id}")
+                && event.data["wait_condition_id"] == wait_condition_id
         })
         .expect("external wake should request wait reconciliation");
     assert_eq!(
@@ -3619,13 +3621,12 @@ async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
     );
     assert_eq!(signal.data["waiting_for"].as_str(), Some("checks complete"));
 
-    let waiting = runtime.latest_waiting_intents().await.unwrap();
-    let active = waiting
-        .iter()
-        .find(|record| record.id == waiting_id)
-        .expect("waiting intent should remain visible after wake firing");
-    assert_eq!(active.status, WaitingIntentStatus::Active);
-    assert_eq!(active.trigger_count, 1);
+    let active = runtime
+        .storage()
+        .latest_active_wait_conditions_for_work_item("default", &work.id)
+        .unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].id, wait_condition_id);
 }
 
 #[tokio::test]
@@ -4361,25 +4362,27 @@ async fn current_external_wait_does_not_suppress_queued_runnable_work_item() {
     let queued = WorkItemRecord::new("default", "queued follow-up work", WorkItemState::Open);
     let queued_id = queued.id.clone();
     storage.append_work_item(&queued).unwrap();
+    let now = Utc::now();
     storage
-        .append_waiting_intent(&WaitingIntentRecord {
+        .append_wait_condition(&WaitConditionRecord {
             id: "wait-current".into(),
             agent_id: "default".into(),
-            scope: WaitingIntentScope::WorkItem,
             work_item_id: Some(current_id.clone()),
-            description: "wait for current review".into(),
-            source: "github".into(),
-            resource: Some("pull_request:1".into()),
-            condition: None,
-            delivery_mode: CallbackDeliveryMode::WakeHint,
-            status: WaitingIntentStatus::Active,
-            external_trigger_id: "trigger-current".into(),
-            created_at: Utc::now(),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("pull_request:1".into()),
+            waiting_for: "wait for current review".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-current".into()),
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
             cancelled_at: None,
-            last_triggered_at: None,
-            trigger_count: 0,
-            correlation_id: None,
-            causation_id: None,
+            turn_id: None,
         })
         .unwrap();
     let mut agent = AgentState::new("default");
@@ -4802,30 +4805,6 @@ async fn pick_blocked_work_item_with_clear_blocker_resumes_runnable_focus() {
         WorkItemReadiness::Blocked
     );
 
-    let waiting_intent_id = "legacy-wait-clear-on-pick".to_string();
-    runtime
-        .storage()
-        .append_waiting_intent(&WaitingIntentRecord {
-            id: waiting_intent_id.clone(),
-            agent_id: "default".into(),
-            scope: WaitingIntentScope::WorkItem,
-            work_item_id: Some(work.id.clone()),
-            description: "legacy external wait".into(),
-            source: "github".into(),
-            resource: Some("holon-run/holon#1684".into()),
-            condition: Some("old wait".into()),
-            delivery_mode: CallbackDeliveryMode::WakeHint,
-            status: WaitingIntentStatus::Active,
-            external_trigger_id: "legacy-trigger-clear-on-pick".into(),
-            created_at: Utc::now(),
-            cancelled_at: None,
-            last_triggered_at: None,
-            trigger_count: 0,
-            correlation_id: None,
-            causation_id: None,
-        })
-        .unwrap();
-
     let picked = runtime
         .pick_work_item_with_reason_and_clear_blocker(
             work.id.clone(),
@@ -4852,14 +4831,7 @@ async fn pick_blocked_work_item_with_clear_blocker_resumes_runnable_focus() {
         .transition
         .cancelled_wait_condition_ids
         .contains(&wait.condition.id));
-    assert!(picked
-        .transition
-        .cancelled_wait_condition_ids
-        .contains(&format!("waiting_intent:{waiting_intent_id}")));
-    assert_eq!(
-        picked.transition.cancelled_waiting_intent_ids,
-        vec![waiting_intent_id]
-    );
+    assert!(picked.transition.cancelled_waiting_intent_ids.is_empty());
     assert!(runtime
         .storage()
         .latest_active_wait_conditions_for_work_item("default", &work.id)

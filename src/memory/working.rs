@@ -3,8 +3,7 @@ use anyhow::Result;
 use crate::{
     storage::AppStorage,
     types::{
-        AgentState, ClosureDecision, TodoItemState, WaitingIntentScope, WaitingIntentStatus,
-        WorkingMemorySnapshot,
+        AgentState, ClosureDecision, TodoItemState, WaitConditionStatus, WorkingMemorySnapshot,
     },
 };
 
@@ -61,20 +60,20 @@ pub fn derive_working_memory_snapshot(
     let projection = storage.work_queue_prompt_projection()?;
     let current_work_item = projection.current.as_ref();
     let active_waiting = storage
-        .latest_waiting_intents()?
+        .latest_wait_conditions()?
         .into_iter()
-        .filter(|record| record.status == WaitingIntentStatus::Active)
-        .filter(|record| record.scope == WaitingIntentScope::WorkItem)
+        .filter(|record| record.status == WaitConditionStatus::Active)
+        .filter(|record| record.work_item_id.is_some())
         .collect::<Vec<_>>();
     let current_work_item_id = current_work_item.map(|item| item.id.as_str());
     let waiting_on = active_waiting
         .iter()
         .filter(|record| record.work_item_id.as_deref() == current_work_item_id)
         .map(|record| {
-            if let Some(resource) = record.resource.as_deref() {
-                format!("{} on {}", record.description, resource)
+            if let Some(subject_ref) = record.subject_ref.as_deref() {
+                format!("{} on {}", record.waiting_for, subject_ref)
             } else {
-                record.description.clone()
+                record.waiting_for.clone()
             }
         })
         .chain(current_closure.waiting_reason.map(|reason| {

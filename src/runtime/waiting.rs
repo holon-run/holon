@@ -483,7 +483,10 @@ impl RuntimeHandle {
             created_at: Utc::now(),
         };
         let work_item_id = self
-            .waiting_intent_work_item_id(hint.waiting_intent_id.as_deref())
+            .wake_hint_work_item_id(
+                hint.waiting_intent_id.as_deref(),
+                hint.external_trigger_id.as_deref(),
+            )
             .await?;
 
         let mut trigger_now = false;
@@ -780,6 +783,46 @@ impl RuntimeHandle {
             .storage
             .latest_waiting_intent(&self.agent_id().await?, waiting_intent_id)?
             .and_then(|record| record.work_item_id))
+    }
+
+    async fn wake_hint_work_item_id(
+        &self,
+        waiting_intent_id: Option<&str>,
+        external_trigger_id: Option<&str>,
+    ) -> Result<Option<String>> {
+        if let Some(work_item_id) = self
+            .wait_condition_work_item_id_for_external_trigger(external_trigger_id)
+            .await?
+        {
+            return Ok(Some(work_item_id));
+        }
+        self.waiting_intent_work_item_id(waiting_intent_id).await
+    }
+
+    async fn wait_condition_work_item_id_for_external_trigger(
+        &self,
+        external_trigger_id: Option<&str>,
+    ) -> Result<Option<String>> {
+        let Some(external_trigger_id) = external_trigger_id else {
+            return Ok(None);
+        };
+        let agent_id = self.agent_id().await?;
+        Ok(self
+            .inner
+            .storage
+            .latest_active_wait_conditions_for_agent(&agent_id)?
+            .into_iter()
+            .find(|condition| {
+                condition.wake_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        WakeSource::ExternalIngress {
+                            external_trigger_id: Some(id)
+                        } if id == external_trigger_id
+                    )
+                })
+            })
+            .and_then(|condition| condition.work_item_id))
     }
 
     pub async fn cancel_waiting(&self, waiting_intent_id: &str) -> Result<CancelWaitingResult> {

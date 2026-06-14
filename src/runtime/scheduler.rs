@@ -4,9 +4,9 @@ use crate::storage::{AppStorage, WorkQueuePromptProjection};
 use crate::types::{
     AgentPostureProjection, AgentSchedulingPosture, AgentStatus, AuthorityClass,
     ExternalWaitRecoverability, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
-    Priority, TaskRecord, TaskStatus, TimerStatus, TurnTerminalKind, WaitConditionRecord,
-    WaitConditionStatus, WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus,
-    WorkItemRecord, WorkItemSchedulingState, WorkReactivationMode, WorkReactivationSignal,
+    Priority, TaskRecord, TaskStatus, TimerStatus, TurnTerminalKind, WaitConditionKind,
+    WaitConditionRecord, WaitConditionStatus, WorkItemRecord, WorkItemSchedulingState,
+    WorkReactivationMode, WorkReactivationSignal,
 };
 use chrono::{DateTime, Utc};
 
@@ -130,20 +130,29 @@ impl SchedulerProjection {
         let waiting_work_item = waiting_work_item_projection.map(|item| item.work_item.clone());
         let waiting_work_item_scheduling_state =
             waiting_work_item_projection.map(|item| item.scheduling_state);
-        let active_waiting_intents = storage
-            .latest_waiting_intents()?
+        let active_wait_conditions = storage
+            .latest_wait_conditions()?
             .into_iter()
-            .filter(|intent| {
-                intent.agent_id == snapshot.id && intent.status == WaitingIntentStatus::Active
+            .filter(|condition| {
+                condition.agent_id == snapshot.id && condition.status == WaitConditionStatus::Active
             })
             .collect::<Vec<_>>();
-        let active_work_item_waiting_intents = active_waiting_intents
+        let active_work_item_waiting_intents = active_wait_conditions
             .iter()
-            .filter(|intent| intent.scope == WaitingIntentScope::WorkItem)
+            .filter(|condition| condition.work_item_id.is_some())
             .count();
-        let active_agent_waiting_intents = active_waiting_intents
+        let active_agent_waiting_intents = active_wait_conditions
             .iter()
-            .filter(|intent| intent.scope == WaitingIntentScope::Agent)
+            .filter(|condition| condition.work_item_id.is_none())
+            .filter(|condition| {
+                matches!(
+                    condition.kind,
+                    WaitConditionKind::External
+                        | WaitConditionKind::Timer
+                        | WaitConditionKind::System
+                        | WaitConditionKind::Operator
+                )
+            })
             .count();
         let active_timers = storage
             .latest_timer_records()?
@@ -161,7 +170,7 @@ impl SchedulerProjection {
             queued_work_items: queued_runnable_work_items.len(),
             queued_runnable_work_items,
             pending_wake_hint: snapshot.pending_wake_hint,
-            active_waiting_intents: active_waiting_intents.len(),
+            active_waiting_intents: active_wait_conditions.len(),
             active_work_item_waiting_intents,
             active_agent_waiting_intents,
             active_timers,
@@ -232,11 +241,6 @@ impl SchedulerDiagnostic {
         self
     }
 
-    fn waiting_intent_id(mut self, waiting_intent_id: impl Into<String>) -> Self {
-        self.waiting_intent_id = Some(waiting_intent_id.into());
-        self
-    }
-
     fn wait_condition_id(mut self, wait_condition_id: impl Into<String>) -> Self {
         self.wait_condition_id = Some(wait_condition_id.into());
         self
@@ -283,7 +287,6 @@ pub(crate) fn scheduling_diagnostics_with_queue_len(
     let posture = storage.agent_posture_projection(agent)?;
     let work_queue = storage.work_queue_prompt_projection()?;
     let wait_conditions = storage.latest_wait_conditions()?;
-    let waiting_intents = storage.latest_waiting_intents()?;
 
     Ok(scheduling_diagnostics_for_facts(
         agent,
@@ -291,7 +294,6 @@ pub(crate) fn scheduling_diagnostics_with_queue_len(
         &posture,
         &work_queue,
         &wait_conditions,
-        &waiting_intents,
     ))
 }
 
@@ -301,7 +303,6 @@ pub(crate) fn scheduling_diagnostics_for_facts(
     posture: &AgentPostureProjection,
     work_queue: &WorkQueuePromptProjection,
     wait_conditions: &[WaitConditionRecord],
-    waiting_intents: &[WaitingIntentRecord],
 ) -> Vec<SchedulerDiagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -380,23 +381,6 @@ pub(crate) fn scheduling_diagnostics_for_facts(
             .evidence("blocked_by_present=true")
             .evidence("recheck_at=None")
             .evidence("has_active_waits=false"),
-        );
-    }
-
-    for intent in waiting_intents.iter().filter(|intent| {
-        intent.agent_id == agent.id
-            && intent.status == WaitingIntentStatus::Active
-            && intent.external_trigger_id.trim().is_empty()
-    }) {
-        diagnostics.push(
-            SchedulerDiagnostic::warning(
-                "waiting_intent_without_external_trigger",
-                "active waiting intent has no external trigger id",
-            )
-            .waiting_intent_id(intent.id.clone())
-            .maybe_work_item_id(intent.work_item_id.clone())
-            .evidence(format!("scope={:?}", intent.scope))
-            .evidence("external_trigger_id_empty=true"),
         );
     }
 
