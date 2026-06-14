@@ -32,12 +32,23 @@ function createLiveAgentDetail(agent: AgentSummary | undefined): AgentDetail | n
   };
 }
 
-function preserveLiveAgentRunState(httpAgent: AgentSummary, liveAgent: AgentSummary): AgentSummary {
-  if (!isLiveRunningAgent(liveAgent)) return httpAgent;
-  return {
+function mergeCachedAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummary): AgentSummary {
+  const merged: AgentSummary = {
     ...httpAgent,
-    currentRunId: liveAgent.currentRunId,
-    lifecycle: liveAgent.lifecycle,
+    currentWork: cachedAgent.currentWork ?? httpAgent.currentWork,
+    workItems: cachedAgent.workItems?.length ? cachedAgent.workItems : httpAgent.workItems,
+    tasks: cachedAgent.tasks?.length ? cachedAgent.tasks : httpAgent.tasks,
+    activeTaskCount: Math.max(httpAgent.activeTaskCount, cachedAgent.activeTaskCount),
+    waitingCount: Math.max(httpAgent.waitingCount, cachedAgent.waitingCount),
+    pending: Math.max(httpAgent.pending, cachedAgent.pending),
+    workspaceSummary: cachedAgent.workspaceSummary ?? httpAgent.workspaceSummary,
+  };
+
+  if (!isLiveRunningAgent(cachedAgent)) return merged;
+  return {
+    ...merged,
+    currentRunId: cachedAgent.currentRunId,
+    lifecycle: cachedAgent.lifecycle,
   };
 }
 
@@ -47,6 +58,16 @@ function isLiveRunningAgent(agent: AgentSummary): boolean {
 
 function isAgentEventStreamActive(agentId: string, liveStatus: AgentLiveStatus | undefined): boolean {
   return activeEventStreams.has(agentId) && (liveStatus === "streaming" || liveStatus === "recovering");
+}
+
+function cachedAgentsByIdFromState(state: RuntimeStoreState): Record<string, AgentSummary> {
+  const agentsById: Record<string, AgentSummary> = Object.fromEntries(state.bootstrap.agents.map((agent) => [agent.id, agent]));
+  for (const session of Object.values(state.sessionsByAgentId)) {
+    const agent = session.detail?.agent;
+    if (!agent) continue;
+    agentsById[agent.id] = agentsById[agent.id] ? mergeCachedAgentState(agentsById[agent.id], agent) : agent;
+  }
+  return agentsById;
 }
 
 export interface AgentSessionState {
@@ -291,10 +312,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
               bootstrapError: bootstrap.connection.error,
             };
           }
-          const liveAgentsById = Object.fromEntries(state.bootstrap.agents.map((agent) => [agent.id, agent]));
+          const cachedAgentsById = cachedAgentsByIdFromState(state);
           const agents = bootstrap.agents.map((agent) => {
-            const liveAgent = liveAgentsById[agent.id];
-            return liveAgent ? preserveLiveAgentRunState(agent, liveAgent) : agent;
+            const cachedAgent = cachedAgentsById[agent.id];
+            return cachedAgent ? mergeCachedAgentState(agent, cachedAgent) : agent;
           });
           return {
             bootstrap: sortBootstrapAgents(
@@ -971,7 +992,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     eventDisplayLevel: "debug",
   });
   const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
-  const agent = liveDetailIsNewer && current.detail ? preserveLiveAgentRunState(detail.agent, current.detail.agent) : detail.agent;
+  const agent = liveDetailIsNewer && current.detail ? mergeCachedAgentState(detail.agent, current.detail.agent) : detail.agent;
   const mergedDetail: AgentDetail = {
     ...detail,
     agent,
