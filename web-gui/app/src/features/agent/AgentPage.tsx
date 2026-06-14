@@ -339,9 +339,8 @@ function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
 }
 
 function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean): boolean {
-  const posture = agent.posture.toLowerCase();
   const lifecycle = agent.lifecycle.toLowerCase();
-  return sendingPrompt || agent.pending > 0 || posture.includes("running") || lifecycle.includes("running");
+  return sendingPrompt || Boolean(agent.currentRunId) || lifecycle === "awake-running";
 }
 
 function collectWorkingActivities(timeline: AgentTimelineItem[]): AgentTimelineActivity[] {

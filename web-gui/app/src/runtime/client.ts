@@ -97,6 +97,7 @@ interface AgentStateDto {
   };
   session?: {
     pending_count?: number;
+    current_run_id?: string | null;
   };
   tasks?: unknown[];
   work_items?: Array<{
@@ -468,6 +469,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const model = state?.agent?.model?.active_model ?? state?.agent?.model?.effective_model ?? entry.model?.active_model ?? entry.model?.effective_model ?? "runtime default";
   const modelSource = state?.agent?.model?.source ?? entry.model?.source;
   const lifecycle = stringifyLifecycle(state?.agent?.lifecycle ?? entry.lifecycle ?? status);
+  const currentRunId = state?.session?.current_run_id ?? null;
 
   return {
     id,
@@ -488,6 +490,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     waitingCount,
     posture,
     postureReason,
+    currentRunId,
     currentWork,
   };
 }

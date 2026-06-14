@@ -42,6 +42,7 @@ export interface AgentSummary {
   waitingCount: number;
   posture: string;
   postureReason: string;
+  currentRunId?: string | null;
   currentWork?: WorkItemSummary;
 }
 
