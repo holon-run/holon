@@ -145,6 +145,29 @@ export interface RuntimeConfigState {
   error?: string;
 }
 
+export interface SearchResultLocator {
+  evidenceId?: string;
+  messageId?: string;
+  turnId?: string;
+  taskId?: string;
+  workItemId?: string;
+}
+
+export interface SearchResultItem {
+  resultType: "message";
+  agentId: string;
+  locator: SearchResultLocator;
+  createdAt?: string;
+  kind: string;
+  preview: string;
+}
+
+export interface SearchResponse {
+  query: string;
+  limit: number;
+  results: SearchResultItem[];
+}
+
 export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event" | "system";
 
 export interface AgentTimelineItemDetail {

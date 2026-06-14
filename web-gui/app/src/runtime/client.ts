@@ -10,6 +10,7 @@ import type {
   RuntimeConnection,
   RuntimeModelCatalog,
   RuntimeModelOption,
+  SearchResponse,
   TaskSummary,
   WorkItemSummary,
   WorkspaceSummary,
@@ -306,6 +307,28 @@ interface RuntimeWebSearchProviderSummaryDto {
   credential_profile?: string;
 }
 
+interface SearchResponseDto {
+  query?: string;
+  limit?: number;
+  results?: SearchResultItemDto[];
+}
+
+interface SearchResultItemDto {
+  type?: "message";
+  result_type?: "message";
+  agent_id?: string;
+  locator?: {
+    evidence_id?: string;
+    message_id?: string;
+    turn_id?: string;
+    task_id?: string;
+    work_item_id?: string;
+  };
+  created_at?: string;
+  kind?: string;
+  preview?: string;
+}
+
 export interface RuntimeConfigUpdateEntry {
   key: string;
   value?: unknown;
@@ -371,6 +394,18 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       const response = await patchJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { updates });
       return projectRuntimeConfigState(response);
+    },
+    async search(query: string, options: { agentIds?: string[]; limit?: number } = {}): Promise<SearchResponse> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await postJson<SearchResponseDto>(fetchImpl, baseUrl, "/search", {
+        query,
+        agent_ids: options.agentIds,
+        limit: options.limit,
+        types: ["message"],
+      });
+      return projectSearchResponse(response);
     },
     streamAgentEvents(agentId: string, options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
       if (!baseUrl) return undefined;
@@ -655,6 +690,27 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
       kind: provider.kind ?? "unknown",
       baseUrl: provider.base_url,
       credentialProfile: provider.credential_profile,
+    })),
+  };
+}
+
+function projectSearchResponse(response: SearchResponseDto): SearchResponse {
+  return {
+    query: response.query ?? "",
+    limit: response.limit ?? 0,
+    results: (response.results ?? []).map((result) => ({
+      resultType: result.result_type ?? result.type ?? "message",
+      agentId: result.agent_id ?? "unknown-agent",
+      locator: {
+        evidenceId: result.locator?.evidence_id,
+        messageId: result.locator?.message_id,
+        turnId: result.locator?.turn_id,
+        taskId: result.locator?.task_id,
+        workItemId: result.locator?.work_item_id,
+      },
+      createdAt: result.created_at,
+      kind: result.kind ?? "message",
+      preview: result.preview ?? "",
     })),
   };
 }

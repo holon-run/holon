@@ -513,6 +513,9 @@ const TimelineMessage = memo(function TimelineMessage({
     );
   }
 
+  const timelineMeta = formatTimelineMeta(item.meta, displayLevel);
+  const canInspect = displayLevel !== "info" && canInspectTimelineItem(item);
+
   return (
     <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}`}>
       <div className="bubble">
@@ -528,10 +531,10 @@ const TimelineMessage = memo(function TimelineMessage({
           selectedActivityId={selectedActivityId}
         />
       ) : null}
-      {!compactAssistant ? (
+      {!compactAssistant && (timelineMeta || canInspect) ? (
         <div className="message-meta">
-          <span>{formatTimelineMeta(item.meta, displayLevel)}</span>
-          {displayLevel !== "info" ? (
+          {timelineMeta ? <span>{timelineMeta}</span> : null}
+          {canInspect ? (
             <button className="copy-action" type="button" onClick={onOpenInspector}>
               inspect
             </button>
@@ -566,6 +569,11 @@ function TimelineItemDetail({ detail, compact = false }: { detail?: AgentTimelin
 
 function isRuntimeActivityItem(item: Pick<AgentTimelineItem, "kind">): boolean {
   return item.kind === "tool" || item.kind === "event" || item.kind === "system";
+}
+
+function canInspectTimelineItem(item: AgentTimelineItem): boolean {
+  if (item.kind === "operator" && isSentMessageMeta(item.meta)) return false;
+  return !(item.kind === "assistant" && isLowValueAssistantEventMeta(item.meta));
 }
 
 function ActivityTrail({
@@ -727,6 +735,7 @@ function sortableActivityTime(value: string): number {
 }
 
 function formatTimelineMeta(meta: string, displayLevel: DisplayLevel): string {
+  if (isLowValueAssistantEventMeta(meta)) return "";
   if (displayLevel === "debug") return `${meta} · debug`;
   const parts = meta
     .split(" · ")
@@ -734,4 +743,12 @@ function formatTimelineMeta(meta: string, displayLevel: DisplayLevel): string {
     .filter((part) => part && !/^event #\d+$/i.test(part));
   if (displayLevel === "verbose") return parts.join(" · ") || meta.split(" · ")[0] || meta;
   return parts[0] || meta;
+}
+
+function isSentMessageMeta(meta: string): boolean {
+  return meta === "Sent" || meta.startsWith("Sent · ");
+}
+
+function isLowValueAssistantEventMeta(meta: string): boolean {
+  return meta.startsWith("assistant_round_recorded") || meta.startsWith("brief_created");
 }

@@ -116,6 +116,8 @@ export function SettingsPage({
   }, [surface]);
 
   const rejectedResults = runtimeConfig.results?.filter((result) => result.effect === "rejected") ?? [];
+  const configuredProviderCount = surface?.providers.filter((provider) => provider.credentialConfigured).length ?? 0;
+  const searchProviderCount = surface?.webSearchProviders.length ?? 0;
 
   async function saveRuntimeConfig() {
     setSaveMessage(undefined);
@@ -213,6 +215,27 @@ export function SettingsPage({
             Configure common runtime defaults from the Web GUI. Saved model defaults are persisted to config.json
             and take effect after the daemon is restarted.
           </p>
+          <div className="settings-quickstart" aria-label="Settings overview">
+            <div>
+              <span>Connection</span>
+              <strong>{connection.source === "http" ? "Live runtime" : "Preview data"}</strong>
+              <small>{connection.baseUrl ?? "No API base configured"}</small>
+            </div>
+            <div>
+              <span>Model providers</span>
+              <strong>
+                {configuredProviderCount}/{surface?.providers.length ?? 0} ready
+              </strong>
+              <small>Credentials and transports may require daemon restart.</small>
+            </div>
+            <div>
+              <span>Web search</span>
+              <strong>{surface?.webSearch?.enabled ? "Enabled" : "Disabled"}</strong>
+              <small>
+                {searchProviderCount ? `${searchProviderCount} configured provider${searchProviderCount === 1 ? "" : "s"}` : "Using builtin provider defaults"}
+              </small>
+            </div>
+          </div>
         </Card>
 
         <div className="settings-grid">
@@ -272,6 +295,9 @@ export function SettingsPage({
                   void saveRuntimeConfig();
                 }}
               >
+                <p className="settings-muted">
+                  These defaults are written to config.json. Active agents keep their current runtime state until the daemon is restarted or an agent-level override is changed.
+                </p>
                 <label>
                   <span>Default model</span>
                   <input list="available-models" value={modelDefault} onChange={(event) => setModelDefault(event.target.value)} />
@@ -337,7 +363,7 @@ export function SettingsPage({
               </div>
               <div>
                 <dt>Providers configured</dt>
-                <dd>{surface?.providers.filter((provider) => provider.credentialConfigured).length ?? 0}</dd>
+                <dd>{configuredProviderCount}</dd>
               </div>
             </dl>
           </Card>
@@ -362,6 +388,9 @@ export function SettingsPage({
                   void saveSearchConfig();
                 }}
               >
+                <p className="settings-muted">
+                  Search routing controls whether Holon can call provider-native search and which external search providers are attempted first.
+                </p>
                 <label className="settings-checkbox">
                   <input type="checkbox" checked={searchEnabled} onChange={(event) => setSearchEnabled(event.target.checked)} />
                   <span>Enable WebSearch</span>
@@ -412,6 +441,18 @@ export function SettingsPage({
                   </Button>
                   {searchSaveMessage ? <span>{searchSaveMessage}</span> : null}
                 </div>
+                <dl className="settings-list compact settings-inline-summary">
+                  <div>
+                    <dt>Current route</dt>
+                    <dd>
+                      {searchProvider || "auto"} · {searchMode}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Provider list</dt>
+                    <dd>{searchProviders || "runtime default"}</dd>
+                  </div>
+                </dl>
                 <datalist id="web-search-providers">
                   <option value="auto">auto</option>
                   <option value="duckduckgo">duckduckgo</option>
@@ -455,7 +496,12 @@ export function SettingsPage({
                       }}
                     >
                       <header>
-                        <strong>{provider.id}</strong>
+                        <div>
+                          <strong>{provider.id}</strong>
+                          <small>
+                            {provider.transport} · {provider.credentialSource}/{provider.credentialKind}
+                          </small>
+                        </div>
                         <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"}>
                           {provider.credentialConfigured ? "credential ready" : "credential missing"}
                         </StatusChip>

@@ -13,6 +13,7 @@ import type {
   RuntimeBootstrap,
   RuntimeConfigState,
   RuntimeModelCatalog,
+  SearchResponse,
 } from "./types";
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
@@ -113,6 +114,9 @@ export interface RuntimeStoreState {
   runtimeConfigLoading: boolean;
   runtimeConfigSaving: boolean;
   runtimeConfigError?: string;
+  search: SearchResponse | null;
+  searchLoading: boolean;
+  searchError?: string;
   rosterActivityByAgentId: Record<string, AgentRosterActivity>;
   sessionsByAgentId: Record<string, AgentSessionState>;
 
@@ -128,6 +132,7 @@ export interface RuntimeStoreState {
   refreshModelCatalog: () => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
+  runSearch: (query: string, options?: { agentIds?: string[]; limit?: number }) => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
@@ -218,6 +223,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   runtimeConfig: emptyRuntimeConfig,
   runtimeConfigLoading: false,
   runtimeConfigSaving: false,
+  search: null,
+  searchLoading: false,
   rosterActivityByAgentId: {},
   sessionsByAgentId: {},
 
@@ -344,6 +351,21 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         runtimeConfigError: message,
       }));
       return undefined;
+    }
+  },
+
+  runSearch: async (query, options = {}) => {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      set({ search: null, searchLoading: false, searchError: undefined });
+      return;
+    }
+    set({ searchLoading: true, searchError: undefined });
+    try {
+      const search = await runtimeClient.search(trimmed, options);
+      set({ search, searchLoading: false });
+    } catch (error) {
+      set({ searchLoading: false, searchError: error instanceof Error ? error.message : String(error) });
     }
   },
 
