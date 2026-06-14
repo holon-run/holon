@@ -1192,6 +1192,50 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     let persisted = load_persisted_config_at(&config.config_file_path)?;
     assert_eq!(persisted.model.default.as_deref(), Some("openai/gpt-4.1"));
 
+    let valid_cors_response = client
+        .patch(format!("http://{addr}/control/runtime/config"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "updates": [
+                { "key": "api.cors.enabled", "value": true },
+                { "key": "api.cors.allowed_origins", "value": ["http://192.168.1.10:5173"] },
+                { "key": "api.cors.allowed_methods", "value": ["GET", "POST"] },
+                { "key": "api.cors.allowed_headers", "value": ["content-type", "authorization"] },
+                { "key": "api.cors.allow_credentials", "value": false },
+                { "key": "api.cors.max_age_seconds", "value": 120 }
+            ]
+        }))
+        .send()
+        .await?;
+    assert!(
+        valid_cors_response.status().is_success(),
+        "valid api.cors update failed: {:?}",
+        valid_cors_response.text().await?
+    );
+    let valid_cors_payload: serde_json::Value = valid_cors_response.json().await?;
+    assert_eq!(valid_cors_payload["changed"], true);
+    assert_eq!(
+        valid_cors_payload["results"][0]["effect"],
+        "accepted_requires_restart"
+    );
+
+    let persisted = load_persisted_config_at(&config.config_file_path)?;
+    assert_eq!(persisted.api.cors.enabled, Some(true));
+    assert_eq!(
+        persisted.api.cors.allowed_origins,
+        vec!["http://192.168.1.10:5173".to_string()]
+    );
+    assert_eq!(
+        persisted.api.cors.allowed_methods,
+        vec!["GET".to_string(), "POST".to_string()]
+    );
+    assert_eq!(
+        persisted.api.cors.allowed_headers,
+        vec!["content-type".to_string(), "authorization".to_string()]
+    );
+    assert_eq!(persisted.api.cors.allow_credentials, Some(false));
+    assert_eq!(persisted.api.cors.max_age_seconds, Some(120));
+
     let valid_web_response = client
         .patch(format!("http://{addr}/control/runtime/config"))
         .bearer_auth("secret")

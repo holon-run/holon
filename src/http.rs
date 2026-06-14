@@ -1161,7 +1161,13 @@ fn validate_runtime_config_candidate(
 fn is_runtime_mutable_config_key(key: &str) -> bool {
     matches!(
         key,
-        "model.default"
+        "api.cors.enabled"
+            | "api.cors.allowed_origins"
+            | "api.cors.allowed_methods"
+            | "api.cors.allowed_headers"
+            | "api.cors.allow_credentials"
+            | "api.cors.max_age_seconds"
+            | "model.default"
             | "model.fallbacks"
             | "models.catalog"
             | "model.unknown_fallback"
