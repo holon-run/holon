@@ -475,18 +475,19 @@ const TimelineMessage = memo(function TimelineMessage({
   onOpenInspector: () => void;
 }) {
   const isRuntimeItem = item.kind === "tool" || item.kind === "event" || item.kind === "system";
+  const presentation = timelineItemPresentation(item);
 
   return (
-    <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}`}>
+    <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}${isRuntimeItem ? " is-runtime-compact" : ""}`}>
       <div className="bubble">
         {!compactAssistant ? (
           <div className="message-heading">
-            <span className="message-label">{item.label}</span>
+            <span className="message-label">{presentation.title}</span>
             {isRuntimeItem ? <span className="message-inline-meta">{formatTimelineMeta(item.meta, displayLevel)}</span> : null}
           </div>
         ) : null}
-        <TimelineItemContent item={item} runtimeItem={isRuntimeItem} />
-        <TimelineItemDetail detail={item.detail} />
+        <TimelineItemContent item={item} presentation={presentation} runtimeItem={isRuntimeItem} />
+        <TimelineItemDetail detail={item.detail} compact={isRuntimeItem && displayLevel !== "debug"} />
       </div>
       {displayLevel !== "info" && item.activities?.length ? (
         <ActivityTrail activities={item.activities} displayLevel={displayLevel} onOpenInspector={onOpenInspector} />
@@ -506,21 +507,43 @@ const TimelineMessage = memo(function TimelineMessage({
   );
 });
 
-function TimelineItemContent({ item, runtimeItem }: { item: AgentTimelineItem; runtimeItem: boolean }) {
+interface TimelineItemPresentation {
+  title: string;
+  body: string;
+  tone: "message" | "tool" | "progress" | "waiting" | "success" | "error" | "debug";
+}
+
+function TimelineItemContent({
+  item,
+  presentation,
+  runtimeItem,
+}: {
+  item: AgentTimelineItem;
+  presentation: TimelineItemPresentation;
+  runtimeItem: boolean;
+}) {
   if (!runtimeItem) {
     return <MarkdownContent text={item.body} compact={false} />;
   }
 
   return (
     <div className="runtime-event-body">
-      <span className={`runtime-event-kind ${item.kind}`}>{runtimeKindLabel(item.kind)}</span>
-      <MarkdownContent text={item.body} compact />
+      <span className={`runtime-event-kind ${presentation.tone}`}>{runtimeKindIcon(presentation.tone)}</span>
+      <MarkdownContent text={presentation.body} compact />
     </div>
   );
 }
 
-function TimelineItemDetail({ detail }: { detail?: AgentTimelineItem["detail"] }) {
+function TimelineItemDetail({ detail, compact = false }: { detail?: AgentTimelineItem["detail"]; compact?: boolean }) {
   if (!detail) return null;
+  if (compact) {
+    return (
+      <details className={`message-detail ${detail.tone ?? "data"} is-collapsed`}>
+        <summary>{detail.label}</summary>
+        <pre>{detail.text}</pre>
+      </details>
+    );
+  }
   return (
     <div className={`message-detail ${detail.tone ?? "data"}`}>
       <span>{detail.label}</span>
@@ -529,11 +552,54 @@ function TimelineItemDetail({ detail }: { detail?: AgentTimelineItem["detail"] }
   );
 }
 
-function runtimeKindLabel(kind: AgentTimelineItem["kind"]): string {
-  if (kind === "tool") return "Tool";
-  if (kind === "event") return "Event";
-  if (kind === "system") return "System";
-  return kind;
+function timelineItemPresentation(item: AgentTimelineItem): TimelineItemPresentation {
+  if (item.kind === "tool") {
+    const failed = /failed|error|exit\s+[1-9]/i.test(`${item.label} ${item.body} ${item.meta}`);
+    return {
+      title: failed ? "工具失败" : "工具执行",
+      body: firstLine(item.body) || item.label,
+      tone: failed ? "error" : "tool",
+    };
+  }
+
+  if (item.kind === "system") {
+    if (/waiting/i.test(item.label)) {
+      return { title: "等待", body: firstLine(item.body) || "Agent 正在等待下一步。", tone: "waiting" };
+    }
+    if (/work item/i.test(item.label)) {
+      return { title: "任务进展", body: firstLine(item.body) || "WorkItem 状态已更新。", tone: "progress" };
+    }
+    if (/failed|alert|error/i.test(item.label)) {
+      return { title: "运行提醒", body: firstLine(item.body) || item.label, tone: "error" };
+    }
+    if (/activity/i.test(item.label)) {
+      return { title: "状态更新", body: firstLine(item.body) || "Agent 活动已更新。", tone: "progress" };
+    }
+    return { title: "系统事件", body: firstLine(item.body) || item.label, tone: "debug" };
+  }
+
+  if (item.kind === "event") {
+    return { title: "运行事件", body: firstLine(item.body) || item.label, tone: "debug" };
+  }
+
+  if (item.kind === "assistant" && item.label === "Assistant requested tools") {
+    return { title: "执行工具", body: firstLine(item.body) || "Assistant 请求执行工具。", tone: "tool" };
+  }
+
+  return { title: item.label, body: item.body, tone: "message" };
+}
+
+function firstLine(text: string): string {
+  return text.split(/\n+/).map((line) => line.trim()).find(Boolean) ?? "";
+}
+
+function runtimeKindIcon(tone: TimelineItemPresentation["tone"]): string {
+  if (tone === "tool") return "⌁";
+  if (tone === "progress") return "↻";
+  if (tone === "waiting") return "…";
+  if (tone === "success") return "✓";
+  if (tone === "error") return "!";
+  return "·";
 }
 
 function ActivityTrail({

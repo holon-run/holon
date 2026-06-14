@@ -1405,9 +1405,9 @@ code {
 .message.event,
 .message.system {
   align-self: flex-start;
-  width: min(760px, 72%);
-  max-width: min(760px, 72%);
-  margin-left: 22px;
+  width: min(760px, 88%);
+  max-width: min(760px, 88%);
+  margin-left: 14px;
 }
 
 .bubble {
@@ -1436,11 +1436,10 @@ code {
 .tool .bubble,
 .event .bubble,
 .system .bubble {
-  padding: 10px 12px;
-  border-radius: 13px;
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--warning) 8%, transparent), transparent 130px),
-    color-mix(in srgb, var(--surface) 92%, var(--surface-soft));
+  padding: 7px 10px;
+  border-color: color-mix(in srgb, var(--line) 42%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--surface) 84%, var(--surface-soft));
   box-shadow: none;
 }
 
@@ -1470,7 +1469,7 @@ code {
 .tool .bubble::before,
 .event .bubble::before,
 .system .bubble::before {
-  background: var(--warning);
+  display: none;
 }
 
 .assistant + .assistant {
@@ -1529,31 +1528,62 @@ code {
 
 .runtime-event-body {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: baseline;
   gap: 8px;
 }
 
 .runtime-event-kind {
   display: inline-flex;
   align-items: center;
-  min-height: 20px;
-  padding: 0 7px;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 780;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
-.runtime-event-kind.tool {
+.runtime-event-kind.tool,
+.runtime-event-kind.success {
   background: color-mix(in srgb, var(--success) 12%, var(--surface));
+  color: var(--success);
 }
 
-.runtime-event-kind.system {
+.runtime-event-kind.progress,
+.runtime-event-kind.waiting {
   background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  color: var(--accent);
+}
+
+.runtime-event-kind.error {
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  color: var(--danger);
+}
+
+.runtime-event-kind.debug {
+  background: color-mix(in srgb, var(--muted) 10%, var(--surface));
+}
+
+.is-runtime-compact .message-heading {
+  margin-bottom: 3px;
+}
+
+.is-runtime-compact .message-label {
+  color: var(--muted);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.is-runtime-compact .runtime-event-body .markdown {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.is-runtime-compact .runtime-event-body .markdown p {
+  margin: 0;
 }
 
 .message-detail {
@@ -1566,6 +1596,22 @@ code {
 .event .message-detail,
 .system .message-detail {
   margin-top: 8px;
+}
+
+.message-detail.is-collapsed {
+  display: block;
+  margin-top: 6px;
+}
+
+.message-detail.is-collapsed summary {
+  cursor: pointer;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.message-detail.is-collapsed pre {
+  margin-top: 6px;
 }
 
 .message-detail span {
