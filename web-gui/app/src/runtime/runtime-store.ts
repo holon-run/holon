@@ -690,6 +690,8 @@ function sortAgentsByRosterActivity(
   rosterActivityByAgentId: Record<string, AgentRosterActivity>,
 ): AgentSummary[] {
   return [...agents].sort((left, right) => {
+    const lifecycle = compareStoppedLast(left, right);
+    if (lifecycle !== 0) return lifecycle;
     const leftActivity = rosterActivityByAgentId[left.id];
     const rightActivity = rosterActivityByAgentId[right.id];
     const operator = compareIsoDesc(leftActivity?.operatorAt, rightActivity?.operatorAt);
@@ -698,6 +700,17 @@ function sortAgentsByRosterActivity(
     if (brief !== 0) return brief;
     return left.id.localeCompare(right.id);
   });
+}
+
+function compareStoppedLast(left: AgentSummary, right: AgentSummary): number {
+  const leftStopped = isStoppedAgent(left);
+  const rightStopped = isStoppedAgent(right);
+  if (leftStopped === rightStopped) return 0;
+  return leftStopped ? 1 : -1;
+}
+
+function isStoppedAgent(agent: AgentSummary): boolean {
+  return agent.lifecycle.toLowerCase() === "stopped";
 }
 
 function compareIsoDesc(left: string | undefined, right: string | undefined): number {
