@@ -13,7 +13,7 @@ fn parse_frontmatter(content: &str) -> NoteMetadata {
     if !content.starts_with("---") {
         return parsed;
     }
-    let after_start = &content[3..];
+    let after_start = &content[3..].trim_start();
     let body_start = match after_start.find("---") {
         Some(i) => i + 3,
         None => return parsed,
@@ -62,7 +62,13 @@ fn first_heading_or_filename(content: &str, filename: &str) -> String {
 }
 
 fn first_body_paragraph(content: &str) -> String {
-    let body = if content.starts_with("---\n") || content.starts_with("---\r\n") {
+    let content_trimmed = if content.starts_with("---") {
+        content.trim_start()
+    } else {
+        content
+    };
+    let body = if content_trimmed.starts_with("---\n") || content_trimmed.starts_with("---\r\n") {
+        let content = content_trimmed;
         content
             .split_once("\n---\n")
             .map(|(_, body)| body)
@@ -86,7 +92,7 @@ fn read_note_metadata(path: &Path) -> Option<NoteMetadata> {
         meta.title = first_heading_or_filename(&content, &filename);
     }
     if meta.summary.is_empty() {
-        meta.summary = first_body_paragraph(&content);
+        meta.summary = first_body_paragraph(&content.trim_start());
     }
     Some(meta)
 }
