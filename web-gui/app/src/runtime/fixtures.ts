@@ -1,0 +1,132 @@
+import type { AgentDetail, RuntimeBootstrap } from "./types";
+
+export const runtimeFixture: RuntimeBootstrap = {
+  attentionCount: 1,
+  connection: {
+    mode: "local",
+    summary: "fixture bootstrap · set VITE_HOLON_API_BASE to use live data",
+    source: "fixture",
+  },
+  metrics: [
+    { label: "Agents", value: "2" },
+    { label: "Needs attention", value: "1", tone: "attention" },
+    { label: "Active tasks", value: "0", tone: "muted" },
+    { label: "Current work", value: "1" },
+  ],
+  agents: [
+    {
+      id: "holon-pm",
+      badge: "PM",
+      profile: "public · project manager profile",
+      lifecycle: "asleep",
+      focusSummary: "standalone Web GUI implementation plan",
+      workspace: "holon · web-gui-prototype",
+      attention: "1 waiting signal",
+      model: "gpt-5-high",
+      footer: "asleep · ready for operator input",
+      subtitle: "asleep · workspace holon · web-gui-prototype",
+      lastBrief: "Standalone Web GUI work is split into contract, scaffold, Dashboard, Agent page, and API-gap slices.",
+      lastTurnTime: "16:39",
+      pending: 0,
+      activeTaskCount: 0,
+      waitingCount: 1,
+      posture: "waiting_for_operator",
+      postureReason: "current work item is waiting for the next operator decision",
+      currentWork: {
+        id: "work_57ad2568ea1307f",
+        objective: "Web GUI standalone implementation plan in current worktree",
+        state: "in_progress",
+        current: true,
+      },
+      workspaceSummary: {
+        id: "ws_fixture",
+        name: "holon",
+        anchor: "/Users/jolestar/opensource/src/github.com/holon-run/holon",
+        executionRoot: "/Users/jolestar/opensource/src/github.com/holon-run/.holon-worktrees-holon/web-gui-prototype",
+        cwd: "/Users/jolestar/opensource/src/github.com/holon-run/.holon-worktrees-holon/web-gui-prototype",
+        worktree: {
+          branch: "web-gui-prototype",
+          path: "/Users/jolestar/opensource/src/github.com/holon-run/.holon-worktrees-holon/web-gui-prototype",
+        },
+      },
+      tasks: [
+        {
+          id: "task_fixture_dev",
+          kind: "command_task",
+          status: "running",
+          summary: "Run command: npm run dev",
+          command: "npm run dev",
+          workdir: "web-gui/app",
+        },
+      ],
+      workItems: [
+        {
+          id: "work_57ad2568ea1307f",
+          objective: "Web GUI standalone implementation plan in current worktree",
+          state: "in_progress",
+          current: true,
+        },
+        {
+          id: "work_waiting_fixture",
+          objective: "Confirm dashboard summary fields",
+          state: "waiting_for_operator",
+          planStatus: "needs_input",
+        },
+      ],
+    },
+    {
+      id: "holon-dev",
+      badge: "DEV",
+      badgeTone: "muted",
+      profile: "public · implementation profile",
+      lifecycle: "stopped",
+      focusSummary: "no active workspace",
+      workspace: "not bound",
+      attention: "none",
+      model: "runtime default",
+      footer: "stopped · no active workspace",
+      subtitle: "stopped · no active workspace",
+      lastBrief: "Stored state is available when this agent becomes active.",
+      lastTurnTime: "—",
+      pending: 0,
+      activeTaskCount: 0,
+      waitingCount: 0,
+      posture: "idle",
+      postureReason: "agent is stopped",
+    },
+  ],
+};
+
+export const agentDetailFixtures: Record<string, AgentDetail> = Object.fromEntries(
+  runtimeFixture.agents.map((agent) => [
+    agent.id,
+    {
+      agent,
+      source: "fixture",
+      timeline: [
+        {
+          id: `${agent.id}-brief`,
+          kind: "assistant",
+          label: "Latest brief",
+          body: agent.lastBrief,
+          timestamp: agent.lastTurnTime,
+          meta: "brief · fixture",
+          minDisplayLevel: "info",
+          sourceIds: [`${agent.id}-brief`],
+          debug: JSON.stringify({ agent_id: agent.id, posture: agent.posture }, null, 2),
+        },
+        {
+          id: `${agent.id}-posture`,
+          kind: "system",
+          label: "Scheduling posture",
+          body: agent.postureReason,
+          timestamp: "—",
+          meta: `${agent.posture} · ${agent.attention}`,
+          minDisplayLevel: "verbose",
+          sourceIds: [`${agent.id}-posture`],
+          debug: JSON.stringify(agent, null, 2),
+        },
+      ],
+    },
+  ]),
+);

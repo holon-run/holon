@@ -1682,6 +1682,179 @@ pub fn validate_provider_config(
     validate_provider_builtin_web_search(provider_id, provider_config)
 }
 
+fn persisted_provider_config_mut<'a>(
+    config: &'a mut HolonConfigFile,
+    key: &str,
+    suffix: &str,
+) -> Result<&'a mut ProviderConfigFile> {
+    let rest = key
+        .strip_prefix("providers.")
+        .and_then(|value| value.strip_suffix(suffix))
+        .ok_or_else(|| unknown_config_key(key))?;
+    if rest.is_empty() {
+        return Err(anyhow!(
+            "providers.<id>{suffix} requires a non-empty provider id"
+        ));
+    }
+    let id = ProviderId::parse(rest)?;
+    if !config.providers.contains_key(&id) {
+        let defaults = built_in_provider_default_config(&id)?
+            .ok_or_else(|| anyhow!("provider {} not found", id.as_str()))?;
+        config.providers.insert(id.clone(), defaults);
+    }
+    config
+        .providers
+        .get_mut(&id)
+        .ok_or_else(|| anyhow!("provider {} not found", id.as_str()))
+}
+
+fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
+    let rest = key
+        .strip_prefix("providers.")
+        .ok_or_else(|| unknown_config_key(key))?;
+    if rest.is_empty() {
+        return Err(anyhow!("providers.<id> requires a non-empty provider id"));
+    }
+    if let Some(id) = rest.strip_suffix(".transport") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .map(|provider| Value::String(provider.transport.as_str().to_string()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some(id) = rest.strip_suffix(".base_url") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .map(|provider| Value::String(provider.base_url.clone()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some(id) = rest.strip_suffix(".auth.source") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .map(|provider| Value::String(provider.auth.source.as_str().to_string()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some(id) = rest.strip_suffix(".auth.kind") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .map(|provider| Value::String(provider.auth.kind.as_str().to_string()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some(id) = rest.strip_suffix(".auth.env") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.auth.env.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some(id) = rest.strip_suffix(".auth.profile") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.auth.profile.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some(id) = rest.strip_suffix(".auth.external") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.auth.external.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
+    if rest.contains('.') {
+        return Err(unknown_config_key(key));
+    }
+    Ok(config
+        .providers
+        .get(&ProviderId::parse(rest)?)
+        .map(serde_json::to_value)
+        .transpose()?
+        .unwrap_or(Value::Null))
+}
+
+fn set_provider_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) -> Result<()> {
+    if key.ends_with(".transport") {
+        persisted_provider_config_mut(config, key, ".transport")?.transport =
+            ProviderTransportKind::parse(raw_value)?;
+        return Ok(());
+    }
+    if key.ends_with(".base_url") {
+        let value = raw_value.trim();
+        parse_url_value(key, value)?;
+        persisted_provider_config_mut(config, key, ".base_url")?.base_url = value.to_string();
+        return Ok(());
+    }
+    if key.ends_with(".auth.source") {
+        persisted_provider_config_mut(config, key, ".auth.source")?
+            .auth
+            .source = CredentialSource::parse(raw_value)?;
+        return Ok(());
+    }
+    if key.ends_with(".auth.kind") {
+        persisted_provider_config_mut(config, key, ".auth.kind")?
+            .auth
+            .kind = CredentialKind::parse(raw_value)?;
+        return Ok(());
+    }
+    if key.ends_with(".auth.env") {
+        let value = raw_value.trim();
+        persisted_provider_config_mut(config, key, ".auth.env")?
+            .auth
+            .env = (!value.is_empty()).then(|| value.to_string());
+        return Ok(());
+    }
+    if key.ends_with(".auth.profile") {
+        let value = raw_value.trim();
+        persisted_provider_config_mut(config, key, ".auth.profile")?
+            .auth
+            .profile = (!value.is_empty()).then(|| value.to_string());
+        return Ok(());
+    }
+    if key.ends_with(".auth.external") {
+        let value = raw_value.trim();
+        persisted_provider_config_mut(config, key, ".auth.external")?
+            .auth
+            .external = (!value.is_empty()).then(|| value.to_string());
+        return Ok(());
+    }
+    Err(unknown_config_key(key))
+}
+
+fn unset_provider_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
+    if key.ends_with(".auth.env") {
+        persisted_provider_config_mut(config, key, ".auth.env")?
+            .auth
+            .env = None;
+        return Ok(());
+    }
+    if key.ends_with(".auth.profile") {
+        persisted_provider_config_mut(config, key, ".auth.profile")?
+            .auth
+            .profile = None;
+        return Ok(());
+    }
+    if key.ends_with(".auth.external") {
+        persisted_provider_config_mut(config, key, ".auth.external")?
+            .auth
+            .external = None;
+        return Ok(());
+    }
+    let id = key
+        .strip_prefix("providers.")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("providers.<id> requires a non-empty provider id"))?;
+    if config.providers.remove(&ProviderId::parse(id)?).is_none() {
+        return Err(anyhow!("provider {id} not found"));
+    }
+    Ok(())
+}
+
 pub fn built_in_provider_default_config(
     provider_id: &ProviderId,
 ) -> Result<Option<ProviderConfigFile>> {
@@ -1824,6 +1997,74 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             kind: "model_ref",
             description:
                 "Explicit provider/model ref for ViewImage visual observation generation. When unset, ViewImage auto-discovers an authenticated image-capable provider and keeps model.fallbacks only as a compatibility candidate source.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "providers.<id>.transport",
+            kind: "enum",
+            description: "Model provider transport used for the provider account/profile.",
+            default: Value::Null,
+            allowed_values: vec![
+                "openai_codex_responses",
+                "openai_responses",
+                "openai_chat_completions",
+                "anthropic_messages",
+                "gemini_generate_content",
+            ],
+        },
+        ConfigSchemaEntry {
+            key: "providers.<id>.base_url",
+            kind: "string",
+            description: "Model provider API base URL.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "providers.<id>.auth.source",
+            kind: "enum",
+            description: "Credential source for the provider account/profile.",
+            default: Value::Null,
+            allowed_values: vec![
+                "env",
+                "external_cli",
+                "credential_profile",
+                "credential_process",
+                "none",
+            ],
+        },
+        ConfigSchemaEntry {
+            key: "providers.<id>.auth.kind",
+            kind: "enum",
+            description: "Credential material kind for the provider account/profile.",
+            default: Value::Null,
+            allowed_values: vec![
+                "api_key",
+                "bearer_token",
+                "oauth",
+                "session_token",
+                "aws_sdk",
+                "none",
+            ],
+        },
+        ConfigSchemaEntry {
+            key: "providers.<id>.auth.env",
+            kind: "string",
+            description: "Environment variable name used when auth.source=env.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "providers.<id>.auth.profile",
+            kind: "string",
+            description: "Credential profile id used when auth.source=credential_profile.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "providers.<id>.auth.external",
+            kind: "string",
+            description: "External credential provider id used when auth.source=external_cli.",
             default: Value::Null,
             allowed_values: vec![],
         },
@@ -2232,6 +2473,8 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .and_then(|value| value.runtime_max_output_tokens)
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "providers" => Ok(serde_json::to_value(&config.providers)?),
+        key if key.starts_with("providers.") => get_provider_config_key(config, key),
         "runtime.max_output_tokens" => Ok(config
             .runtime
             .max_output_tokens
@@ -2491,6 +2734,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             ensure_unknown_model_fallback(config).runtime_max_output_tokens =
                 Some(parse_positive_u32_key(key, raw_value)?);
         }
+        key if key.starts_with("providers.") => set_provider_config_key(config, key, raw_value)?,
         "runtime.max_output_tokens" => {
             let value = parse_positive_u32_key(key, raw_value)?;
             config.runtime.max_output_tokens = Some(value);
@@ -2726,6 +2970,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
                 value.runtime_max_output_tokens = None;
             });
         }
+        key if key.starts_with("providers.") => unset_provider_config_key(config, key)?,
         "runtime.max_output_tokens" => config.runtime.max_output_tokens = None,
         "runtime.default_tool_output_tokens" => config.runtime.default_tool_output_tokens = None,
         "runtime.max_tool_output_tokens" => config.runtime.max_tool_output_tokens = None,

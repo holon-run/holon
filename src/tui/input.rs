@@ -2297,6 +2297,16 @@ mod tests {
             max_tool_output_tokens: 16384,
             disable_provider_fallback: false,
             providers: Vec::new(),
+            web_search: crate::daemon::RuntimeWebSearchSummary {
+                enabled: false,
+                builtin_provider_enabled: false,
+                provider: "duckduckgo".into(),
+                mode: "fallback".into(),
+                providers: Vec::new(),
+                max_results: 5,
+                max_provider_attempts: 2,
+            },
+            web_search_providers: Vec::new(),
         };
         let accepted = crate::http::RuntimeConfigUpdateResponse {
             ok: true,

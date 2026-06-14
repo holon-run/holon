@@ -85,6 +85,8 @@ pub struct RuntimeConfigSurface {
     pub max_tool_output_tokens: u32,
     pub disable_provider_fallback: bool,
     pub providers: Vec<RuntimeProviderSummary>,
+    pub web_search: RuntimeWebSearchSummary,
+    pub web_search_providers: Vec<RuntimeWebSearchProviderSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -94,7 +96,29 @@ pub struct RuntimeProviderSummary {
     pub base_url: String,
     pub credential_source: String,
     pub credential_kind: String,
+    pub credential_env: Option<String>,
+    pub credential_profile: Option<String>,
+    pub credential_external: Option<String>,
     pub credential_configured: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeWebSearchSummary {
+    pub enabled: bool,
+    pub builtin_provider_enabled: bool,
+    pub provider: String,
+    pub mode: String,
+    pub providers: Vec<String>,
+    pub max_results: usize,
+    pub max_provider_attempts: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeWebSearchProviderSummary {
+    pub id: String,
+    pub kind: String,
+    pub base_url: Option<String>,
+    pub credential_profile: Option<String>,
 }
 
 impl RuntimeConfigSurface {
@@ -127,7 +151,31 @@ impl RuntimeConfigSurface {
                     base_url: provider.base_url.clone(),
                     credential_source: provider.auth.source.as_str().to_string(),
                     credential_kind: provider.auth.kind.as_str().to_string(),
+                    credential_env: provider.auth.env.clone(),
+                    credential_profile: provider.auth.profile.clone(),
+                    credential_external: provider.auth.external.clone(),
                     credential_configured: provider.has_configured_credential(),
+                })
+                .collect(),
+            web_search: RuntimeWebSearchSummary {
+                enabled: config.web_config.search.enabled,
+                builtin_provider_enabled: config.web_config.search.builtin_provider_enabled,
+                provider: config.web_config.search.provider.clone(),
+                mode: config.web_config.search.mode.as_str().to_string(),
+                providers: config.web_config.search.providers.clone(),
+                max_results: config.web_config.search.max_results,
+                max_provider_attempts: config.web_config.search.max_provider_attempts,
+            },
+            web_search_providers: config
+                .stored_config
+                .web
+                .providers
+                .iter()
+                .map(|(id, provider)| RuntimeWebSearchProviderSummary {
+                    id: id.clone(),
+                    kind: provider.kind.as_str().to_string(),
+                    base_url: provider.base_url.clone(),
+                    credential_profile: provider.credential_profile.clone(),
                 })
                 .collect(),
         }
