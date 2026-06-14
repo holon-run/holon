@@ -863,7 +863,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     oldestEventSeq: detail.oldestEventSeq ?? current.detail?.oldestEventSeq ?? eventSeqs[0],
     hasOlderEvents: detail.hasOlderEvents,
   };
-  const newestSeq = Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0, current.newestSeq ?? 0, highestSeq(eventSeqs) ?? 0);
+  const newestSeq = Math.max(detail.newestEventSeq ?? 0, current.newestSeq ?? 0, highestSeq(eventSeqs) ?? 0);
 
   return {
     bootstrap:
