@@ -30,6 +30,20 @@ Each built-in tool entry records:
 - related HTTP or CLI surfaces when commands wrap tool or runtime APIs
 - model-visible tool description
 
+## Capability families
+
+Each built-in tool belongs to a capability family.  The runtime defines six
+families in `src/types.rs` (`ToolCapabilityFamily`):
+
+| Family | Description | Example tools |
+|--------|-------------|---------------|
+| `CoreAgent` | Core agent operations (state, memory, work items, scheduling, CLI/config introspection) | MemorySearch, WaitFor, ListWorkItems, ListModelProviders |
+| `LocalEnvironment` | Workspace-local operations | ExecCommand, ApplyPatch, ViewImage, UseWorkspace |
+| `Web` | Public web access | WebFetch, WebSearch |
+| `AgentCreation` | Agent spawning and delegation | SpawnAgent |
+| `AuthorityExpanding` | Tools that can expand agent authority | (reserved; no built-in tools) |
+| `ExternalTrigger` | External event ingress | CreateExternalTrigger, CancelExternalTrigger |
+
 ## Stability levels
 
 | Level | Meaning |

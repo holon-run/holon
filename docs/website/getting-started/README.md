@@ -12,8 +12,9 @@ based on what you want to do next.
 
 ## New to Holon?
 
-If this is your first time using Holon, follow our step-by-step tutorial:
+If this is your first time using Holon:
 
+- **[Onboarding guide](onboarding.md)** — Interactive provider, credential, model, and search setup with `holon onboard`
 - **[Create your first agent](first-agent.md)** - Install, start, connect with TUI, create an agent, and configure models in ~15 minutes
 
 The tutorial covers:
@@ -74,6 +75,10 @@ This is a short orientation for contributors. End users don't need to know the r
 
 
 <!-- INDEX:START -->
+
+- [Onboarding guide](./onboarding.md)
+  Interactive setup with `holon onboard` — provider, credential, model, and search configuration.
+  <!-- mdorigin:index kind=article -->
 
 - [Create your first agent](./first-agent.md)
   From zero to your first Holon agent: build, start, TUI basics, create an agent, and configure models.
