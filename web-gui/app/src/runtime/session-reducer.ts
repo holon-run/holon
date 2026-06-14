@@ -109,7 +109,7 @@ export function filterTimelineByDisplayLevel(
       ...item,
       activities:
         displayLevel === "info"
-          ? []
+          ? (item.activities ?? []).filter(isInfoActivity)
           : (item.activities ?? []).filter((activity) => displayLevelRank[activity.minDisplayLevel] <= rank),
     }));
   const limit = options.itemLimit ?? (displayLevel === "info" ? 12 : 160);
@@ -510,7 +510,7 @@ function attachActivitiesToConversationItems(items: AgentTimelineItem[]): AgentT
       body: summarizeActivityGroup(orphanActivities),
       timestamp: orphanActivities[0].timestamp,
       meta: "activity",
-      minDisplayLevel,
+      minDisplayLevel: minDisplayLevel === "info" ? "verbose" : minDisplayLevel,
       sourceIds: mergeSourceIds(orphanActivities.flatMap((activity) => activity.sourceIds)),
       activities: orphanActivities,
       debug: debugJson(orphanActivities),
@@ -542,6 +542,13 @@ function isCompactActivityItem(item: AgentTimelineItem): boolean {
   if (item.meta === "activity") return false;
   if (item.kind === "tool" || item.kind === "event") return true;
   return item.kind === "system" && item.minDisplayLevel !== "info";
+}
+
+function isInfoActivity(activity: AgentTimelineActivity): boolean {
+  if (activity.kind !== "tool") return false;
+  if (/failed|error|exit\s+[1-9]/i.test(`${activity.label} ${activity.body} ${activity.meta}`)) return true;
+  if (activity.detail?.tone === "command" || activity.detail?.tone === "diff" || activity.detail?.tone === "output") return true;
+  return /command|patch|wait/i.test(`${activity.label} ${activity.meta}`);
 }
 
 function isActivityDuplicateOfTarget(activity: AgentTimelineActivity, target: AgentTimelineItem): boolean {
@@ -817,6 +824,7 @@ function toolFriendlyLabel(toolName: string, failed: boolean): string {
   if (toolName === "ApplyPatch") return failed ? "Patch failed" : "Applied patch";
   if (toolName === "ExecCommand") return failed ? "Command failed" : "Command finished";
   if (toolName === "ExecCommandBatch") return failed ? "Command batch failed" : "Command batch finished";
+  if (toolName === "WaitFor") return failed ? "Wait failed" : "Waiting";
   if (toolName === "UpdateWorkItem") return failed ? "Work item update failed" : "Updated work item";
   if (toolName === "PickWorkItem") return failed ? "Work item switch failed" : "Picked work item";
   if (toolName === "CompleteWorkItem") return failed ? "Work item completion failed" : "Completed work item";

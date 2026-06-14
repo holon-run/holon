@@ -620,7 +620,9 @@ function ActivityTrail({
       {visibleActivities.map((activity) => (
         <div className={`activity-item ${activity.kind}`} key={activity.id}>
           <div className="activity-row">
-            <span className="activity-label">{activity.label}</span>
+            <span className="activity-icon" aria-label={activity.label} title={activity.label}>
+              {activityIcon(activity)}
+            </span>
             <span className="activity-body">{activity.body}</span>
             <time>{formatDisplayTime(activity.timestamp)}</time>
           </div>
@@ -632,12 +634,24 @@ function ActivityTrail({
               </button>
             </div>
           ) : null}
-          <TimelineItemDetail detail={activity.detail} />
+          <TimelineItemDetail detail={activity.detail} compact={displayLevel !== "debug"} />
         </div>
       ))}
       {hiddenCount > 0 ? <div className="activity-more">+{hiddenCount} earlier activities</div> : null}
     </div>
   );
+}
+
+function activityIcon(activity: AgentTimelineActivity): string {
+  const text = `${activity.label} ${activity.meta} ${activity.detail?.tone ?? ""}`;
+  if (/failed|error|exit\s+[1-9]/i.test(text)) return "!";
+  if (/wait/i.test(text)) return "…";
+  if (activity.detail?.tone === "diff" || /patch/i.test(text)) return "◇";
+  if (activity.detail?.tone === "command" || /command|exec/i.test(text)) return "›";
+  if (activity.detail?.tone === "output") return "≡";
+  if (activity.kind === "tool") return "⌁";
+  if (activity.kind === "event") return "↻";
+  return "·";
 }
 
 function WorkingActivityPanel({ activities }: { activities: AgentTimelineActivity[] }) {
