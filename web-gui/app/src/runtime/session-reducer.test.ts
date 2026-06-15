@@ -474,8 +474,8 @@ describe("debugAgentSessionEvents", () => {
         label: "Assistant Round Recorded",
         meta: "assistant_round_recorded · event #50",
         detail: expect.objectContaining({
-          label: "Event payload",
-          text: expect.stringContaining('"assistant_round_recorded"'),
+          label: "Event details",
+          text: "Turn Id: turn-1",
         }),
         rawEvent: events[0],
       }),
@@ -485,7 +485,8 @@ describe("debugAgentSessionEvents", () => {
         label: "Tool finished",
         body: expect.stringContaining("Track debug visibility"),
         detail: expect.objectContaining({
-          text: expect.stringContaining('"CreateWorkItem"'),
+          label: "Work item change",
+          text: expect.stringContaining("Objective: Track debug visibility"),
         }),
       }),
     );

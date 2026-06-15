@@ -617,7 +617,6 @@ const TimelineMessage = memo(function TimelineMessage({
   }
 
   const timelineMeta = formatTimelineMeta(item.meta, displayLevel);
-  const canInspect = displayLevel !== "info" && canInspectTimelineItem(item);
   const inspectItem = () => onInspectActivity(timelineItemToWorkingActivity(item));
 
   return (
@@ -643,14 +642,9 @@ const TimelineMessage = memo(function TimelineMessage({
           selectedActivityId={selectedActivityId}
         />
       ) : null}
-      {!compactAssistant && (timelineMeta || canInspect) ? (
+      {!compactAssistant && timelineMeta ? (
         <div className="message-meta">
-          {timelineMeta ? <span>{timelineMeta}</span> : null}
-          {canInspect ? (
-            <button className="copy-action" type="button" onClick={inspectItem}>
-              inspect
-            </button>
-          ) : null}
+          <span>{timelineMeta}</span>
         </div>
       ) : null}
     </article>
@@ -686,11 +680,6 @@ function TimelineItemDetail({ detail, compact = false }: { detail?: AgentTimelin
 
 function isRuntimeActivityItem(item: Pick<AgentTimelineItem, "kind">): boolean {
   return item.kind === "tool" || item.kind === "event" || item.kind === "system";
-}
-
-function canInspectTimelineItem(item: AgentTimelineItem): boolean {
-  if (item.kind === "operator" && isSentMessageMeta(item.meta)) return false;
-  return !(item.kind === "assistant" && isLowValueAssistantEventMeta(item.meta));
 }
 
 function ActivityTrail({
@@ -732,9 +721,6 @@ function ActivityTrail({
             {displayLevel === "debug" ? (
               <div className="activity-meta">
                 <span>{activity.meta}</span>
-                <button className="copy-action" type="button" onClick={() => onInspectActivity(activity)}>
-                  inspect
-                </button>
               </div>
             ) : null}
             {displayLevel === "debug" ? <TimelineItemDetail detail={activity.detail} /> : null}
@@ -866,10 +852,6 @@ function formatTimelineMeta(meta: string, displayLevel: DisplayLevel): string {
     .filter((part) => part && !/^event #\d+$/i.test(part));
   if (displayLevel === "verbose") return parts.join(" · ") || meta.split(" · ")[0] || meta;
   return parts[0] || meta;
-}
-
-function isSentMessageMeta(meta: string): boolean {
-  return meta === "Sent" || meta.startsWith("Sent · ");
 }
 
 function isLowValueAssistantEventMeta(meta: string): boolean {

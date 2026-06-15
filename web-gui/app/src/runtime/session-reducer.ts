@@ -163,6 +163,7 @@ function debugEventTimelineItem(event: SessionEventEnvelope): AgentTimelineItem 
   const projection = projectDebugEvent(eventType, payload);
   const meta = eventMeta(eventType, payload, event.event_seq);
   const body = projection?.body || readableText(payload) || summarizeDebugEvent(eventType, payload) || humanizeEventType(eventType);
+  const detail = debugEventDetail(eventType, payload, projection?.detail);
   return item({
     id: `debug:${id}`,
     kind: projection?.kind ?? "event",
@@ -172,14 +173,31 @@ function debugEventTimelineItem(event: SessionEventEnvelope): AgentTimelineItem 
     meta,
     minDisplayLevel: "debug",
     sourceIds: [id],
-    detail: {
-      label: "Event payload",
-      text: debugJson(event),
-      tone: eventType.includes("failed") || eventType.includes("error") ? "data" : (projection?.detail?.tone ?? "data"),
-    },
+    detail,
     rawEvent: event,
     debug: debugJson(event),
   });
+}
+
+function debugEventDetail(
+  eventType: string,
+  payload: Record<string, unknown> | undefined,
+  projectedDetail: AgentTimelineItemDetail | undefined,
+): AgentTimelineItemDetail | undefined {
+  if (projectedDetail) return projectedDetail;
+
+  const facts = readableEventFacts(payload);
+  if (facts.length) {
+    return {
+      label: "Event details",
+      text: facts.join("\n"),
+      tone: eventType.includes("failed") || eventType.includes("error") ? "data" : "data",
+    };
+  }
+
+  const readable = readableText(payload);
+  if (readable) return { label: "Details", text: readable, tone: "data" };
+  return undefined;
 }
 
 function eventMeta(eventType: string, payload: Record<string, unknown> | undefined, eventSeq: number | undefined): string {
@@ -493,6 +511,7 @@ function projectKnownToolExecution(
   if (toolName === "ApplyPatch") return projectApplyPatchTool(payload);
   if (toolName === "ListWorkItems") return projectListWorkItemsTool(payload);
   if (toolName === "GetWorkItem") return projectGetWorkItemTool(payload);
+  if (isWorkItemMutationTool(toolName)) return projectWorkItemMutationTool(payload);
   if (toolName === "ViewImage") return projectViewImageTool(payload);
   return undefined;
 }
@@ -585,6 +604,17 @@ function projectGetWorkItemTool(payload: Record<string, unknown> | undefined): P
   return {
     body: summary || compactJoin(["Loaded work item", workItemId]) || "Loaded work item",
     detail: { label: "Work item", text: debugJson(result ?? payload ?? {}), tone: "data" },
+  };
+}
+
+function projectWorkItemMutationTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.result);
+  const workItem = asRecord(result?.work_item) ?? asRecord(result) ?? payload;
+  const summary = summarizeWorkItemRecord(workItem);
+  const facts = readableEventFacts(payload);
+  return {
+    body: summary || genericToolDescription(stringField(payload, "tool_name") ?? "WorkItem", payload),
+    detail: facts.length ? { label: "Work item change", text: facts.join("\n"), tone: "data" } : undefined,
   };
 }
 
@@ -887,6 +917,55 @@ function readableTextWithoutSummary(value: unknown): string {
   }
 
   return "";
+}
+
+function readableEventFacts(payload: Record<string, unknown> | undefined): string[] {
+  if (!payload) return [];
+  const facts = new Map<string, string>();
+  collectReadableEventFacts(payload, facts);
+  return Array.from(facts.entries())
+    .map(([key, value]) => `${humanizeEventType(key)}: ${truncateText(value, 240)}`)
+    .slice(0, 12);
+}
+
+function collectReadableEventFacts(value: Record<string, unknown>, facts: Map<string, string>, prefix = "", depth = 0): void {
+  const preferredKeys = [
+    "summary",
+    "summary_text",
+    "text_preview",
+    "output_preview",
+    "stdout_preview",
+    "stderr_preview",
+    "diff_preview",
+    "message",
+    "reason",
+    "status",
+    "priority",
+    "objective",
+    "work_item_id",
+    "task_id",
+    "agent_id",
+    "turn_id",
+    "run_id",
+    "active_model",
+    "stop_reason",
+  ];
+
+  for (const key of preferredKeys) {
+    const factKey = prefix ? `${prefix}_${key}` : key;
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim()) facts.set(factKey, candidate.trim());
+    if (typeof candidate === "number" || typeof candidate === "boolean") facts.set(factKey, String(candidate));
+  }
+
+  if (depth >= 2 || facts.size >= 12) return;
+
+  for (const [key, candidate] of Object.entries(value)) {
+    if (facts.size >= 12) return;
+    const record = asRecord(candidate);
+    if (!record) continue;
+    collectReadableEventFacts(record, facts, prefix ? `${prefix}_${key}` : key, depth + 1);
+  }
 }
 
 function toolErrorMessage(payload: Record<string, unknown> | undefined): string | undefined {
