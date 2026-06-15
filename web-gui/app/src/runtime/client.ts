@@ -8,6 +8,7 @@ import type {
   RuntimeConfigState,
   RuntimeConfigSurface,
   RuntimeConnection,
+  RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeModelOption,
   SearchResponse,
@@ -363,6 +364,11 @@ interface SearchResultItemDto {
   preview?: string;
 }
 
+interface AgentMessagesBatchGetResponseDto {
+  messages?: RuntimeMessageEnvelope[];
+  missing_message_ids?: string[];
+}
+
 export interface RuntimeConfigUpdateEntry {
   key: string;
   value?: unknown;
@@ -405,6 +411,18 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         return { events: [], has_older: false };
       }
       return fetchAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
+    },
+    async getAgentMessagesBatch(agentId: string, messageIds: string[]): Promise<AgentMessagesBatchGetResponseDto> {
+      if (!baseUrl || !messageIds.length) {
+        return { messages: [], missing_message_ids: [] };
+      }
+      return postJson<AgentMessagesBatchGetResponseDto>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/messages:batchGet`,
+        { message_ids: messageIds },
+        requestHeaders,
+      );
     },
     async getModels(): Promise<RuntimeModelCatalog> {
       if (!baseUrl) {

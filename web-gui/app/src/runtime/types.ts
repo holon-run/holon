@@ -178,6 +178,14 @@ export interface SearchResponse {
   results: SearchResultItem[];
 }
 
+export interface RuntimeMessageEnvelope {
+  id?: string;
+  agent_id?: string;
+  origin?: unknown;
+  body?: unknown;
+  [key: string]: unknown;
+}
+
 export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event" | "system";
 
 export interface AgentTimelineItemDetail {

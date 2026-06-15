@@ -4,6 +4,7 @@ import type {
   AgentTimelineItemDetail,
   AgentTimelineItemKind,
   DisplayLevel,
+  RuntimeMessageEnvelope,
 } from "./types";
 
 export interface SessionEventEnvelope {
@@ -30,6 +31,7 @@ export interface ReduceAgentSessionInput {
   };
   eventDisplayLevel?: DisplayLevel;
   includeDebug?: boolean;
+  messagesById?: Record<string, RuntimeMessageEnvelope>;
 }
 
 interface SessionItemDraft {
@@ -71,7 +73,7 @@ const debugOnlyToolNames = new Set(["WaitFor"]);
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
   const eventDisplayLevel = input.eventDisplayLevel ?? "debug";
   const eventItems = (input.events.events ?? []).map((event) =>
-    projectEventEnvelope(event, eventDisplayLevel, input.includeDebug ?? false),
+    projectEventEnvelope(event, eventDisplayLevel, input.includeDebug ?? false, input.messagesById),
   );
 
   const sorted = mergeAgentTimelineItems([], eventItems)
@@ -132,12 +134,13 @@ function projectEventEnvelope(
   event: SessionEventEnvelope,
   eventDisplayLevel: DisplayLevel,
   includeDebug: boolean,
+  messagesById: Record<string, RuntimeMessageEnvelope> | undefined,
 ): AgentTimelineItem | undefined {
   if (!event.id && event.event_seq == null) return undefined;
   const id = event.id ?? `event-${event.event_seq}`;
   const payload = asRecord(event.payload);
   const eventType = event.type ?? "runtime_event";
-  const projection = projectRuntimeEvent(eventType, payload);
+  const projection = projectRuntimeEvent(eventType, payload, messagesById);
   if (!projection) return undefined;
   const meta = eventMeta(eventType, payload, event.event_seq);
 
@@ -219,14 +222,15 @@ function eventProjectionDisplayLevel(level: DisplayLevel, eventDisplayLevel: Dis
 function projectRuntimeEvent(
   eventType: string,
   payload: Record<string, unknown> | undefined,
+  messagesById?: Record<string, RuntimeMessageEnvelope>,
 ): (Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string }) | undefined {
   if (eventType === "message_enqueued") {
-    const message = messageEnvelopeProjection(payload);
+    const message = messageEnvelopeProjection(payload, messagesById);
     if (message?.origin === "operator") {
       return {
         kind: "operator",
         label: "Operator input",
-        body: message.body || "Operator input.",
+        body: message.body || "Loading operator input…",
         minDisplayLevel: "info",
       };
     }
@@ -872,15 +876,27 @@ function systemRuntimeLabel(eventType: string): string {
   return humanizeEventType(eventType);
 }
 
-function messageEnvelopeProjection(payload: Record<string, unknown> | undefined): { origin: "operator" | "runtime"; body: string } | undefined {
+function messageEnvelopeProjection(
+  payload: Record<string, unknown> | undefined,
+  messagesById?: Record<string, RuntimeMessageEnvelope>,
+): { origin: "operator" | "runtime"; body: string } | undefined {
   if (!payload) return undefined;
-  const origin = asRecord(payload.origin);
+  const source = hydratedMessageForPayload(payload, messagesById) ?? payload;
+  const origin = asRecord(source.origin);
   const originKind = stringField(origin, "kind")?.toLowerCase();
-  const body = asRecord(payload.body);
+  const body = asRecord(source.body);
   return {
     origin: originKind === "operator" ? "operator" : "runtime",
     body: messageBodyText(body),
   };
+}
+
+function hydratedMessageForPayload(
+  payload: Record<string, unknown>,
+  messagesById: Record<string, RuntimeMessageEnvelope> | undefined,
+): RuntimeMessageEnvelope | undefined {
+  const messageId = stringField(payload, "message_id");
+  return messageId ? messagesById?.[messageId] : undefined;
 }
 
 function messageBodyText(body: Record<string, unknown> | undefined): string {

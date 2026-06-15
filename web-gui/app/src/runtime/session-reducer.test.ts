@@ -40,6 +40,67 @@ describe("reduceAgentSessionTimeline", () => {
     ]);
   });
 
+  it("hydrates slim operator message events from the message cache", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          {
+            id: "event-1",
+            event_seq: 1,
+            ts: "2026-06-15T10:00:00Z",
+            type: "message_enqueued",
+            payload: {
+              message_id: "msg-1",
+              origin: { kind: "operator" },
+            },
+          },
+        ],
+      },
+      messagesById: {
+        "msg-1": {
+          id: "msg-1",
+          origin: { kind: "operator" },
+          body: { text: "hydrated hello" },
+        },
+      },
+    });
+
+    expect(timeline).toEqual([
+      expect.objectContaining({
+        id: "event-1",
+        kind: "operator",
+        body: "hydrated hello",
+      }),
+    ]);
+  });
+
+  it("keeps slim operator message events visible while hydration is pending", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          {
+            id: "event-1",
+            event_seq: 1,
+            ts: "2026-06-15T10:00:00Z",
+            type: "message_enqueued",
+            payload: {
+              message_id: "msg-1",
+              origin: { kind: "operator" },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(timeline).toEqual([
+      expect.objectContaining({
+        id: "event-1",
+        kind: "operator",
+        body: "Loading operator input…",
+      }),
+    ]);
+  });
+
   it("keeps the raw event on projected timeline items", () => {
     const rawEvent = event({
       id: "event-raw",
