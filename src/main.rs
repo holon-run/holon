@@ -1448,6 +1448,54 @@ mod tests {
     }
 
     #[test]
+    fn daemon_restart_explicit_tunnel_access_clears_inherited_advertise_url() {
+        let mut config = test_config();
+        config.control_token = None;
+        let token_file = config.home_dir.join("control.token");
+        fs::write(&token_file, "file-secret").unwrap();
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec![
+                "--access",
+                "lan",
+                "--host",
+                "192.168.1.10",
+                "--port",
+                "8787",
+                "--advertise",
+                "http://old.example.test:8787",
+                "--token-file",
+                token_file.to_str().unwrap(),
+            ],
+            false,
+        );
+
+        let launch = restart_serve_launch_options(
+            &mut config,
+            ServeOptions {
+                access: Some(ServeAccess::Tunnel),
+                host: None,
+                listen: None,
+                port: None,
+                advertise: None,
+                token: None,
+                token_file: None,
+            },
+            Some(&metadata),
+        )
+        .unwrap();
+
+        assert_eq!(config.http_addr, "127.0.0.1:8787");
+        assert_ne!(config.callback_base_url, "http://old.example.test:8787");
+        assert_eq!(config.control_token.as_deref(), Some("file-secret"));
+        assert!(!launch.args.iter().any(|arg| arg == "--advertise"));
+        assert!(!launch
+            .args
+            .iter()
+            .any(|arg| arg == "http://old.example.test:8787"));
+    }
+
+    #[test]
     fn daemon_restart_listen_and_port_override_their_inherited_counterpart() {
         let mut config = test_config();
         let token_file = config.home_dir.join("control.token");
