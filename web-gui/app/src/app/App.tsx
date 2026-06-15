@@ -69,7 +69,6 @@ export function App() {
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
-  const selectedAgentCurrentWork = activeAgent?.currentWork;
   const selectedAgentContext =
     route === "agent" && activeAgent
       ? [activeAgent.lifecycle, activeAgent.posture].filter(Boolean).join(" · ")
@@ -254,21 +253,6 @@ export function App() {
 
           {route === "agent" ? (
             <div className="agent-top-context" aria-label="Agent conversation context">
-              <div className="agent-context-main">
-                <button
-                  className={`work-summary ${selectedAgentCurrentWork ? "has-work" : "is-empty"}`}
-                  type="button"
-                  onClick={() => setInspectorOpen(true)}
-                >
-                  <span className="work-summary-label">Current work</span>
-                  <strong>{selectedAgentCurrentWork?.objective ?? "No active work item"}</strong>
-                  <span className="work-summary-meta">
-                    {selectedAgentCurrentWork
-                      ? `${selectedAgentCurrentWork.state} · ${selectedAgentCurrentWork.id}`
-                      : "Ready for operator input"}
-                  </span>
-                </button>
-              </div>
               <div className="agent-top-controls">
                 <div className="agent-stream-controls" aria-label="Agent stream status">
                   <StatusBadge
