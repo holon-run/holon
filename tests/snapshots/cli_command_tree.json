@@ -455,7 +455,7 @@
       {
         "long": "access",
         "short": null,
-        "default_value": "local",
+        "default_value": null,
         "possible_values": [
           "local",
           "tunnel",
@@ -516,7 +516,7 @@
       {
         "long": "access",
         "short": null,
-        "default_value": "local",
+        "default_value": null,
         "possible_values": [
           "local",
           "tunnel",
@@ -927,7 +927,7 @@
       {
         "long": "access",
         "short": null,
-        "default_value": "local",
+        "default_value": null,
         "possible_values": [
           "local",
           "tunnel",
