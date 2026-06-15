@@ -127,6 +127,33 @@
   },
   {
     "method": "get",
+    "path": "/agents/{agent_id}/messages/{message_id}",
+    "handler": "message",
+    "operation_id": "agentMessage",
+    "tag": "messages",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "message_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/agents/{agent_id}/skills",
     "handler": "list_skills",
     "operation_id": "agentSkills",
@@ -670,6 +697,28 @@
     ],
     "request_schema": "EnqueueRequest",
     "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/agents/{agent_id}/messages:batchGet",
+    "handler": "messages_batch_get",
+    "operation_id": "agentMessagesBatchGet",
+    "tag": "messages",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "BatchGetMessagesRequest",
+    "request_strict": null,
     "response_content_types": [
       "application/json"
     ],

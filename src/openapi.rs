@@ -8,9 +8,10 @@ use serde_json::{json, Value};
 use crate::{
     diagnostics::PerformanceDiagnosticsSnapshot,
     http::{
-        CancelTimerRequest, CompleteWorkItemRequest, CreateTimerRequest, PickWorkItemRequest,
-        PickWorkItemResponse, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
-        RuntimeConfigUpdateResponse, SearchRequest, SearchResponse, UpdateWorkItemRequest,
+        BatchGetMessagesRequest, CancelTimerRequest, CompleteWorkItemRequest, CreateTimerRequest,
+        PickWorkItemRequest, PickWorkItemResponse, RuntimeConfigReadResponse,
+        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SearchRequest, SearchResponse,
+        UpdateWorkItemRequest,
     },
     types::{
         BriefRecord, TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult,
@@ -71,6 +72,8 @@ const ROUTES: &[RouteSpec] = &[
     aide_route("get", "/agents/{agent_id}/state", "agentState", "agents", "Agent state snapshot", "Return the current bootstrap snapshot for an agent.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/events", "agentEvents", "events", "Agent event page", "Return a bounded page of runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Event payloads are included in full; max_level filters event inclusion only. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.", None, AuthKind::RemoteAccess),
     event_stream_route("get", "/agents/{agent_id}/events/stream", "agentEventsStream", "events", "Agent event stream", "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.", None, AuthKind::RemoteAccess),
+    route("get", "/agents/{agent_id}/messages/{message_id}", "agentMessage", "messages", "Message detail", "Return a persisted message envelope by id for the selected agent.", None, AuthKind::RemoteAccess),
+    route_with_response("post", "/agents/{agent_id}/messages:batchGet", "agentMessagesBatchGet", "messages", "Batch get messages", "Return persisted message envelopes for the selected agent. Missing or cross-agent ids are reported in missing_message_ids.", Some("BatchGetMessagesRequest"), "BatchGetMessagesResponse", AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/transcript", "agentTranscript", "agents", "Recent transcript", "Return recent transcript entries. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/tasks", "agentTasks", "tasks", "List active tasks", "Return active task records. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/tasks/{task_id}", "agentTaskStatus", "tasks", "Task status", "Return a task lifecycle snapshot by id.", None, "TaskStatusSnapshot", AuthKind::RemoteAccess),
@@ -255,6 +258,7 @@ fn openapi_value() -> Value {
             { "name": "discovery" },
             { "name": "agents" },
             { "name": "events" },
+            { "name": "messages" },
             { "name": "ingress" },
             { "name": "control" },
             { "name": "runtime" },
@@ -381,6 +385,9 @@ fn path_parameters(path: &str) -> Vec<Value> {
     }
     if path.contains("{tool_execution_id}") {
         params.push(path_param("tool_execution_id", "Tool execution id."));
+    }
+    if path.contains("{message_id}") {
+        params.push(path_param("message_id", "Message id."));
     }
     if path.contains("{callback_token}") {
         params.push(path_param(
@@ -545,6 +552,28 @@ fn component_schemas() -> Value {
     schemas.insert(
         "SearchResponse".into(),
         component_schema::<SearchResponse>(),
+    );
+    schemas.insert(
+        "BatchGetMessagesRequest".into(),
+        component_schema::<BatchGetMessagesRequest>(),
+    );
+    schemas.insert(
+        "BatchGetMessagesResponse".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "messages": {
+                    "type": "array",
+                    "items": { "$ref": "#/components/schemas/JsonValue" }
+                },
+                "missing_message_ids": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            },
+            "required": ["messages"],
+            "additionalProperties": false
+        }),
     );
     for name in [
         "EnqueueRequest",

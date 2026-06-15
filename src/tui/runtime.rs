@@ -5,6 +5,7 @@ use crate::client::{
     AgentStateSnapshot, AgentStreamEvent, EventPageRequest, EventPageResponse, EventStreamRequest,
     LocalEventStream, LocalHttpError, StreamEventEnvelope,
 };
+use crate::types::MessageEnvelope;
 use tokio::sync::mpsc;
 
 const REFRESH_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -56,6 +57,10 @@ pub(super) enum TuiRuntimeMessage {
         request_id: u64,
         agent_id: String,
         result: Result<EventPageResponse, String>,
+    },
+    MessagesHydrated {
+        agent_id: String,
+        result: Result<Vec<MessageEnvelope>, String>,
     },
     EventStreamOpened {
         request_id: u64,
@@ -395,6 +400,7 @@ impl TuiApp {
         self.snapshot_refresh_in_flight = false;
         self.stream_connect_in_flight = false;
         self.event_history_load_in_flight = false;
+        self.message_hydration_in_flight = None;
         self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
         self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
         self.event_history_request_id = self.event_history_request_id.saturating_add(1);
@@ -529,6 +535,7 @@ impl TuiApp {
         self.reconnect_attempt = 0;
         self.reconnect_deadline = None;
         self.status_line = format!("Bootstrapped agent {agent_id} from /state");
+        self.begin_message_hydration_if_needed();
 
         self.begin_connect_event_stream_for(agent_id, cursor);
     }
@@ -728,6 +735,9 @@ impl TuiApp {
                     agent_id,
                     result,
                 } => self.apply_event_history_page_result(request_id, agent_id, result),
+                TuiRuntimeMessage::MessagesHydrated { agent_id, result } => {
+                    self.apply_messages_hydrated(agent_id, result)
+                }
                 TuiRuntimeMessage::EventStreamOpened {
                     request_id,
                     agent_id,
@@ -753,6 +763,7 @@ impl TuiApp {
             self.last_event_at = Some(Local::now());
             self.apply_projection_view();
             self.schedule_projection_refresh_if_stale();
+            self.begin_message_hydration_if_needed();
         }
     }
 
@@ -841,6 +852,7 @@ impl TuiApp {
         if added > 0 {
             self.chat_text_cache.borrow_mut().take();
             self.apply_projection_view();
+            self.begin_message_hydration_if_needed();
             self.status_line = format!("Loaded {added} older events");
         } else if has_older {
             self.status_line = "No new older events in page".into();
@@ -852,6 +864,61 @@ impl TuiApp {
             self.status_line = "Reached local event history limit".into();
         } else {
             self.status_line = "Reached beginning of event history".into();
+        }
+    }
+
+    pub(super) fn begin_message_hydration_if_needed(&mut self) {
+        let Some(projection) = self.projection.as_ref() else {
+            return;
+        };
+        let agent_id = projection.agent.identity.agent_id.clone();
+        if self.message_hydration_in_flight.as_ref() == Some(&agent_id) {
+            return;
+        }
+        let message_ids = projection.missing_message_ids_for_hydration();
+        if message_ids.is_empty() {
+            return;
+        }
+        self.message_hydration_in_flight = Some(agent_id.clone());
+        let client = self.client.clone();
+        let tx = self.runtime_tx.clone();
+        tokio::spawn(async move {
+            let result = client
+                .agent_messages_batch_get(&agent_id, message_ids)
+                .await
+                .map(|response| response.messages)
+                .map_err(|err| err.to_string());
+            let _ = tx.send(TuiRuntimeMessage::MessagesHydrated { agent_id, result });
+        });
+    }
+
+    pub(super) fn apply_messages_hydrated(
+        &mut self,
+        agent_id: String,
+        result: Result<Vec<MessageEnvelope>, String>,
+    ) {
+        if self.message_hydration_in_flight.as_ref() == Some(&agent_id) {
+            self.message_hydration_in_flight = None;
+        }
+        let Some(projection) = self.projection.as_mut() else {
+            self.begin_message_hydration_if_needed();
+            return;
+        };
+        if projection.agent.identity.agent_id != agent_id {
+            self.begin_message_hydration_if_needed();
+            return;
+        }
+        let messages = match result {
+            Ok(messages) => messages,
+            Err(error) => {
+                self.status_line = format!("Message hydration failed for {agent_id}: {error}");
+                return;
+            }
+        };
+        if projection.hydrate_messages(messages) {
+            self.chat_text_cache.borrow_mut().take();
+            self.prune_optimistic_operator_messages();
+            self.apply_projection_view();
         }
     }
 
@@ -953,6 +1020,7 @@ impl TuiApp {
         self.snapshot_refresh_in_flight = false;
         self.stream_connect_in_flight = false;
         self.event_history_load_in_flight = false;
+        self.message_hydration_in_flight = None;
         self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
         self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
         self.event_history_request_id = self.event_history_request_id.saturating_add(1);

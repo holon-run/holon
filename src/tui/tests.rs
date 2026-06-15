@@ -334,6 +334,26 @@ fn operator_message_event_envelope(
     )
 }
 
+fn slim_operator_message_event_envelope(
+    id: &str,
+    event_seq: u64,
+    agent_id: &str,
+) -> StreamEventEnvelope {
+    pipeline_event_envelope(
+        &format!("evt-{id}"),
+        event_seq,
+        agent_id,
+        "message_enqueued",
+        json!({
+            "message_id": id,
+            "origin": {
+                "kind": "operator",
+                "actor_id": null
+            }
+        }),
+    )
+}
+
 fn work_item_written_event_envelope(
     id: &str,
     event_seq: u64,
@@ -3755,6 +3775,102 @@ fn projection_operator_message_prunes_reconciled_optimistic_entry() {
             ..
         } if body == "durable text"
     ));
+}
+
+#[test]
+fn slim_projection_operator_message_hydrates_from_message_evidence() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+    let ts = Utc::now();
+    app.optimistic_operator_messages = vec![OperatorMessageRecord {
+        message_id: "message-1".into(),
+        agent_id: "default".into(),
+        status: OperatorMessageStatus::Queued,
+        created_at: ts,
+        updated_at: ts,
+        body: MessageBody::Text {
+            text: "optimistic text".into(),
+        },
+        error: None,
+    }];
+
+    let snapshot = sample_snapshot("default", "evt-0");
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.replace_event_window(
+        vec![slim_operator_message_event_envelope(
+            "message-1",
+            0,
+            "default",
+        )],
+        Some(0),
+    );
+    assert_eq!(
+        projection.missing_message_ids_for_hydration(),
+        vec!["message-1".to_string()]
+    );
+    app.projection = Some(projection);
+    app.apply_projection_view();
+    assert!(app.optimistic_operator_messages.is_empty());
+
+    let mut message = crate::types::MessageEnvelope::new(
+        "default",
+        crate::types::MessageKind::OperatorPrompt,
+        crate::types::MessageOrigin::Operator { actor_id: None },
+        crate::types::AuthorityClass::OperatorInstruction,
+        crate::types::Priority::Normal,
+        MessageBody::Text {
+            text: "durable hydrated text".into(),
+        },
+    );
+    message.id = "message-1".into();
+    app.projection
+        .as_mut()
+        .unwrap()
+        .hydrate_messages(vec![message]);
+
+    let items = collect_chat_items(&app);
+    let user_messages = items
+        .iter()
+        .filter(|item| matches!(item, ConversationCell::UserMessage { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(user_messages.len(), 1);
+    assert!(matches!(
+        user_messages[0],
+        ConversationCell::UserMessage {
+            body,
+            status: None,
+            ..
+        } if body == "durable hydrated text"
+    ));
+}
+
+#[tokio::test]
+async fn stale_message_hydration_completion_does_not_block_selected_agent() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+
+    let snapshot = sample_snapshot("default", "evt-0");
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.replace_event_window(
+        vec![slim_operator_message_event_envelope(
+            "message-1",
+            0,
+            "default",
+        )],
+        Some(0),
+    );
+    app.projection = Some(projection);
+    app.message_hydration_in_flight = Some("stale-agent".into());
+
+    app.apply_messages_hydrated("stale-agent".into(), Ok(Vec::new()));
+
+    assert_eq!(app.message_hydration_in_flight, Some("default".to_string()));
 }
 
 #[test]

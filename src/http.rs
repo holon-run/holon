@@ -74,8 +74,8 @@ use crate::{
     types::{
         ActiveWorkspaceEntry, AdmissionContext, AgentRegistryStatus, AgentSummary, AgentVisibility,
         AuditEvent, AuthorityClass, CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
-        ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageKind,
-        MessageOrigin, OperatorNotificationRecord, OperatorTransportBinding,
+        ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageEnvelope,
+        MessageKind, MessageOrigin, OperatorNotificationRecord, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
         TaskStatus, TaskStatusSnapshot, TaskStopResult, TimerRecord, TodoItem, TurnTerminalRecord,
@@ -222,6 +222,11 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{agent_id}/state", get(agent_state))
         .route("/agents/{agent_id}/events", get(events))
         .route("/agents/{agent_id}/events/stream", get(events_stream))
+        .route(
+            "/agents/{agent_id}/messages:batchGet",
+            post(messages_batch_get),
+        )
+        .route("/agents/{agent_id}/messages/{message_id}", get(message))
         .route("/agents/{agent_id}/transcript", get(transcript))
         .route("/agents/{agent_id}/tasks", get(tasks))
         .route("/agents/{agent_id}/tasks/{task_id}", get(task_status))
@@ -717,6 +722,19 @@ struct EventsPageResponse {
     has_newer: bool,
     order: EventPageOrder,
     limit: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct BatchGetMessagesRequest {
+    #[serde(default)]
+    pub message_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BatchGetMessagesResponse {
+    pub messages: Vec<MessageEnvelope>,
+    #[serde(default)]
+    pub missing_message_ids: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1994,6 +2012,64 @@ pub async fn events(
         has_newer: page.has_newer,
         order,
         limit,
+    }))
+}
+
+pub async fn message(
+    Path((agent_id, message_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    if state.require_control_token {
+        authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    }
+    let Some(message) = runtime
+        .storage()
+        .read_message_by_id(&message_id)
+        .map_err(error_response)?
+    else {
+        return Err(not_found(format!("message {message_id} not found")));
+    };
+    if message.agent_id != agent_id {
+        return Err(not_found(format!("message {message_id} not found")));
+    }
+    Ok(Json(message))
+}
+
+pub async fn messages_batch_get(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<BatchGetMessagesRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    if state.require_control_token {
+        authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    }
+    let mut messages = Vec::new();
+    let mut missing_message_ids = Vec::new();
+    for message_id in request.message_ids {
+        match runtime
+            .storage()
+            .read_message_by_id(&message_id)
+            .map_err(error_response)?
+        {
+            Some(message) if message.agent_id == agent_id => messages.push(message),
+            _ => missing_message_ids.push(message_id),
+        }
+    }
+    Ok(Json(BatchGetMessagesResponse {
+        messages,
+        missing_message_ids,
     }))
 }
 

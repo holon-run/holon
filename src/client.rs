@@ -11,19 +11,21 @@ use crate::{
     daemon::{RuntimeShutdownResponse, RuntimeStatusResponse},
     diagnostics::PerformanceDiagnosticsSnapshot,
     http::{
-        AttachWorkspaceRequest, ClearAgentModelRequest, ControlPromptRequest, CreateAgentRequest,
-        DebugPromptRequest, DetachWorkspaceRequest, ExitWorkspaceRequest,
-        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
-        SetAgentModelRequest, TaskInputRequest, TaskStopRequest,
+        AttachWorkspaceRequest, BatchGetMessagesRequest, BatchGetMessagesResponse,
+        ClearAgentModelRequest, ControlPromptRequest, CreateAgentRequest, DebugPromptRequest,
+        DetachWorkspaceRequest, ExitWorkspaceRequest, RuntimeConfigReadResponse,
+        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SetAgentModelRequest,
+        TaskInputRequest, TaskStopRequest,
     },
     model_catalog::BuiltInModelMetadata,
     system::ExecutionSnapshot,
     types::{
         ActiveWorkspaceEntry, AgentListEntry, AgentSummary, AuthorityClass, BriefRecord,
-        ExternalTriggerStateSnapshot, OperatorNotificationRecord, ResolvedModelAvailability,
-        TaskInputResult, TaskOutputResult, TaskRecord, TaskStatusSnapshot, TaskStopResult,
-        TimerRecord, ToolExecutionRecord, TranscriptEntry, TurnTerminalRecord, WaitingIntentRecord,
-        WorkItemRecord, WorkspaceOccupancyRecord, WorktreeSession,
+        ExternalTriggerStateSnapshot, MessageEnvelope, OperatorNotificationRecord,
+        ResolvedModelAvailability, TaskInputResult, TaskOutputResult, TaskRecord,
+        TaskStatusSnapshot, TaskStopResult, TimerRecord, ToolExecutionRecord, TranscriptEntry,
+        TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord, WorkspaceOccupancyRecord,
+        WorktreeSession,
     },
 };
 
@@ -736,10 +738,39 @@ impl LocalClient {
         self.get_json(&path).await
     }
 
+    pub async fn agent_message(&self, agent_id: &str, message_id: &str) -> Result<MessageEnvelope> {
+        self.get_json(&format!("/agents/{agent_id}/messages/{message_id}"))
+            .await
+    }
+
+    pub async fn agent_messages_batch_get(
+        &self,
+        agent_id: &str,
+        message_ids: Vec<String>,
+    ) -> Result<BatchGetMessagesResponse> {
+        self.post_json(
+            &format!("/agents/{agent_id}/messages:batchGet"),
+            &BatchGetMessagesRequest { message_ids },
+        )
+        .await
+    }
+
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let body = self.send(RequestSpec::get(path), false).await?;
         serde_json::from_slice(&body)
             .with_context(|| format!("failed to decode response body for GET {}", path))
+    }
+
+    async fn post_json<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        payload: &B,
+    ) -> Result<T> {
+        let body = self
+            .send(RequestSpec::post_json(path, payload)?, false)
+            .await?;
+        serde_json::from_slice(&body)
+            .with_context(|| format!("failed to decode response body for POST {}", path))
     }
 
     async fn get_control_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
