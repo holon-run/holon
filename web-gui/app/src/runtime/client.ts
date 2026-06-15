@@ -227,8 +227,26 @@ export interface AgentEventPageOptions {
 }
 
 interface RuntimeModelsDto {
-  available_models?: string[];
+  available_models?: Array<string | RuntimeAvailableModelDto>;
   model_availability?: ModelAvailabilityDto[];
+}
+
+interface RuntimeAvailableModelDto {
+  model?: string;
+  provider?: string;
+  display_name?: string;
+  capabilities?: {
+    image_input?: boolean;
+    reasoning_summaries?: boolean;
+  };
+  policy?: {
+    supported_parameters?: string[];
+    capabilities?: {
+      image_input?: boolean;
+      reasoning_summaries?: boolean;
+    };
+  };
+  supported_parameters?: string[];
 }
 
 interface ModelAvailabilityDto {
@@ -241,6 +259,7 @@ interface ModelAvailabilityDto {
     supported_parameters?: string[];
     capabilities?: {
       image_input?: boolean;
+      reasoning_summaries?: boolean;
     };
   };
 }
@@ -838,7 +857,7 @@ function sortableTime(value: string | undefined): number {
   return Number.isNaN(time) ? 0 : time;
 }
 
-function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOption[] {
+export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOption[] {
   if (response.model_availability?.length) {
     return response.model_availability
       .filter((entry): entry is ModelAvailabilityDto & { model: string } => Boolean(entry.model))
@@ -849,21 +868,36 @@ function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOption[] {
         available: entry.available ?? false,
         unavailableReason: entry.unavailable_reason,
         supportsImageInput: entry.policy?.capabilities?.image_input ?? false,
-        supportsReasoningEffort: entry.policy?.supported_parameters?.includes("reasoning_effort") ?? false,
+        supportsReasoningEffort: supportsReasoningEffort(entry),
       }))
       .sort(compareModelOptions);
   }
 
   return (response.available_models ?? [])
-    .map((model) => ({
-      model,
-      provider: model.split("/")[0] ?? "unknown",
-      displayName: model,
-      available: true,
-      supportsImageInput: false,
-      supportsReasoningEffort: false,
-    }))
+    .map((entry) => {
+      const model = typeof entry === "string" ? entry : entry.model;
+      if (!model) return undefined;
+      return {
+        model,
+        provider: typeof entry === "string" ? (model.split("/")[0] ?? "unknown") : (entry.provider ?? model.split("/")[0] ?? "unknown"),
+        displayName: typeof entry === "string" ? model : (entry.display_name ?? model),
+        available: true,
+        supportsImageInput: typeof entry === "string" ? false : (entry.capabilities?.image_input ?? false),
+        supportsReasoningEffort: typeof entry === "string" ? false : supportsReasoningEffort(entry),
+      };
+    })
+    .filter((entry): entry is RuntimeModelOption => Boolean(entry))
     .sort(compareModelOptions);
+}
+
+function supportsReasoningEffort(entry: ModelAvailabilityDto | RuntimeAvailableModelDto): boolean {
+  return (
+    entry.policy?.supported_parameters?.includes("reasoning_effort") ||
+    ("supported_parameters" in entry && entry.supported_parameters?.includes("reasoning_effort")) ||
+    entry.policy?.capabilities?.reasoning_summaries ||
+    ("capabilities" in entry && entry.capabilities?.reasoning_summaries) ||
+    false
+  );
 }
 
 function compareModelOptions(left: RuntimeModelOption, right: RuntimeModelOption): number {
