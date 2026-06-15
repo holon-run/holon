@@ -121,6 +121,35 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
+  it("projects structured tool errors as readable error text instead of raw json", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("patch-failed", "ApplyPatch", {
+            duration_ms: 120,
+            error: {
+              message: "context mismatch near projectApplyPatchTool",
+              diagnostics: [{ path: "src/runtime/session-reducer.ts" }],
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        label: "Patch failed",
+        body: "ApplyPatch · 120ms · context mismatch near projectApplyPatchTool",
+        detail: {
+          label: "Error",
+          text: "context mismatch near projectApplyPatchTool",
+          tone: "data",
+        },
+      }),
+    );
+  });
+
   it("renders work_item_picked objective and reason without internal ids", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {

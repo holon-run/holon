@@ -415,7 +415,7 @@ function projectToolExecution(
   const result = asRecord(payload?.exec_command_result);
   const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status");
   const durationMs = numberField(payload, "duration_ms") ?? numberField(result, "duration_ms");
-  const error = stringField(payload, "error");
+  const error = toolErrorMessage(payload);
   const stringPreview = toolStringPreview(toolName, payload, commandPreview) || undefined;
   const toolSummary = projection?.body ?? stringPreview ?? summary ?? genericToolDescription(toolName, payload) ?? toolName;
   const body = compactJoin([
@@ -425,7 +425,7 @@ function projectToolExecution(
     error,
   ]);
   const outputPreview = commandOutputPreview(payload);
-  const detail = projection?.detail ?? toolExecutionDetail(toolName, payload, commandPreview, outputPreview, toolSummary);
+  const detail = projection?.detail ?? toolExecutionDetail(toolName, payload, commandPreview, outputPreview, toolSummary, failed ? error : undefined);
 
   return {
     kind: "tool",
@@ -610,12 +610,14 @@ function toolExecutionDetail(
   commandPreview: string | undefined,
   outputPreview: string | undefined,
   summary: string | undefined,
+  error: string | undefined,
 ): AgentTimelineItemDetail | undefined {
   if (toolName === "ExecCommandBatch") {
     const batchDetail = commandBatchDetail(payload);
     if (batchDetail) return { label: "Commands", text: batchDetail, tone: "command" };
   }
 
+  if (error) return { label: "Error", text: error, tone: "data" };
   if (commandPreview && outputPreview) return { label: "Output", text: outputPreview, tone: "command" };
   if (commandPreview) {
     return { label: toolName === "ExecCommandBatch" ? "Commands" : "Command", text: commandPreview, tone: "command" };
@@ -840,6 +842,23 @@ function readableTextWithoutSummary(value: unknown): string {
   }
 
   return "";
+}
+
+function toolErrorMessage(payload: Record<string, unknown> | undefined): string | undefined {
+  const direct = stringField(payload, "error");
+  if (direct) return direct;
+
+  const error = payload?.error;
+  if (typeof error === "string" && error.trim()) return error;
+
+  const errorRecord = asRecord(error);
+  const message = firstStringField(errorRecord, ["message", "summary", "summary_text", "reason", "detail"]);
+  if (message) return message;
+
+  const nested = firstStringField(asRecord(errorRecord?.error), ["message", "summary", "summary_text", "reason", "detail"]);
+  if (nested) return nested;
+
+  return undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
