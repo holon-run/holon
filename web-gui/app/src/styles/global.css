@@ -1512,9 +1512,7 @@ code {
   display: grid;
   gap: 4px;
   width: min(760px, 100%);
-  margin: 6px 0 0 18px;
-  padding-left: 12px;
-  border-left: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  margin: 6px 0 0;
 }
 
 .activity-item {
