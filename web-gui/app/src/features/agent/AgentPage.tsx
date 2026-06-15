@@ -73,7 +73,7 @@ export function AgentPage({
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
   const activeAgent = detail?.agent ?? agent;
-  const sourceTimeline = useMemo(() => detail?.timeline ?? fallbackTimeline(activeAgent), [activeAgent, detail?.timeline]);
+  const sourceTimeline = useMemo(() => timelineWithFallbackBrief(detail?.timeline, activeAgent), [activeAgent, detail?.timeline]);
   const timeline = useMemo(
     () =>
       filterTimelineByDisplayLevel(sourceTimeline, displayLevel, {
@@ -822,6 +822,22 @@ function fallbackTimeline(agent: AgentSummary): AgentTimelineItem[] {
       debug: JSON.stringify(agent, null, 2),
     },
   ];
+}
+
+function timelineWithFallbackBrief(timeline: AgentTimelineItem[] | undefined, agent: AgentSummary): AgentTimelineItem[] {
+  const fallback = fallbackTimeline(agent);
+  if (!timeline?.length) return fallback;
+  const latestBrief = fallback[0];
+  if (!latestBrief) return timeline;
+
+  const hasLatestBrief = timeline.some(
+    (item) => item.kind === "assistant" && normalizeTimelineText(item.body) === normalizeTimelineText(latestBrief.body),
+  );
+  return hasLatestBrief ? timeline : [...timeline, latestBrief];
+}
+
+function normalizeTimelineText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function hasVisibleBrief(value: string): boolean {
