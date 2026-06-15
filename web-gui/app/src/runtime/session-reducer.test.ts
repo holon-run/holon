@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import type { AgentTimelineItem } from "./types";
 import type { SessionEventEnvelope } from "./session-reducer";
-import { reduceAgentSessionTimeline } from "./session-reducer";
+import {
+  compactAgentTimelineItems,
+  filterTimelineByDisplayLevel,
+  mergeAgentTimelineItems,
+  reduceAgentSessionTimeline,
+} from "./session-reducer";
 
 describe("reduceAgentSessionTimeline", () => {
   it("projects operator input events into the timeline", () => {
@@ -172,6 +178,105 @@ describe("reduceAgentSessionTimeline", () => {
   });
 });
 
+describe("filterTimelineByDisplayLevel", () => {
+  it("filters items by display level and preserves info-level tool activities", () => {
+    const filtered = filterTimelineByDisplayLevel(
+      [
+        timelineItem({ id: "info", minDisplayLevel: "info" }),
+        timelineItem({ id: "verbose", minDisplayLevel: "verbose" }),
+        timelineItem({ id: "debug", minDisplayLevel: "debug" }),
+        timelineItem({
+          id: "activity-parent",
+          minDisplayLevel: "debug",
+          activities: [
+            {
+              ...timelineItem({ id: "tool-activity", kind: "tool", minDisplayLevel: "verbose" }),
+              meta: "tool_executed · event #1",
+            },
+            {
+              ...timelineItem({ id: "system-activity", kind: "system", minDisplayLevel: "info" }),
+              meta: "brief_created · event #2",
+            },
+          ],
+        }),
+      ],
+      "info",
+    );
+
+    expect(filtered.map((item) => item.id)).toEqual(["info", "activity-parent"]);
+    expect(filtered[1].activities?.map((activity) => activity.id)).toEqual(["tool-activity"]);
+  });
+
+  it("applies explicit item limits after filtering", () => {
+    const filtered = filterTimelineByDisplayLevel(
+      [
+        timelineItem({ id: "first", timestamp: "2026-06-15T10:00:00Z" }),
+        timelineItem({ id: "second", timestamp: "2026-06-15T10:01:00Z" }),
+        timelineItem({ id: "third", timestamp: "2026-06-15T10:02:00Z" }),
+      ],
+      "debug",
+      { itemLimit: 2 },
+    );
+
+    expect(filtered.map((item) => item.id)).toEqual(["second", "third"]);
+  });
+});
+
+describe("mergeAgentTimelineItems", () => {
+  it("merges semantic duplicates and combines source ids", () => {
+    const merged = mergeAgentTimelineItems(
+      [
+        timelineItem({
+          id: "event-1",
+          kind: "assistant",
+          body: "same answer",
+          meta: "brief_created · event #1",
+          sourceIds: ["event-1"],
+        }),
+      ],
+      [
+        timelineItem({
+          id: "brief-1",
+          kind: "assistant",
+          body: "same answer",
+          meta: "brief_created",
+          sourceIds: ["brief-1"],
+        }),
+      ],
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual(
+      expect.objectContaining({
+        id: "event-1",
+        sourceIds: ["brief-1", "event-1"],
+      }),
+    );
+  });
+});
+
+describe("compactAgentTimelineItems", () => {
+  it("flattens meaningful activities and drops ephemeral runtime activities", () => {
+    const compacted = compactAgentTimelineItems([
+      timelineItem({
+        id: "parent",
+        activities: [
+          {
+            ...timelineItem({ id: "ephemeral-tool", kind: "tool" }),
+            meta: "tool_executed · event #1",
+          },
+          {
+            ...timelineItem({ id: "work-item", kind: "system", label: "Work item" }),
+            meta: "work_item_picked · event #2",
+          },
+        ],
+      }),
+    ]);
+
+    expect(compacted.map((item) => item.id)).toEqual(["parent", "work-item"]);
+  });
+});
+
 function event(overrides: SessionEventEnvelope): SessionEventEnvelope {
   return {
     ts: "2026-06-15T10:00:00Z",
@@ -190,4 +295,18 @@ function toolEvent(id: string, toolName: string, payload: Record<string, unknown
       ...payload,
     },
   });
+}
+
+function timelineItem(overrides: Partial<AgentTimelineItem> = {}): AgentTimelineItem {
+  return {
+    id: "item",
+    kind: "event",
+    label: "Event",
+    body: "body",
+    timestamp: "2026-06-15T10:00:00Z",
+    meta: "event",
+    minDisplayLevel: "info",
+    sourceIds: [overrides.id ?? "item"],
+    ...overrides,
+  };
 }
