@@ -1678,15 +1678,23 @@ code {
   display: grid;
   gap: 10px;
   padding: 12px;
+  cursor: default;
 }
 
 .working-activity-header {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   min-width: 0;
+  padding: 0;
   color: var(--faint);
+  text-align: left;
 }
 
 .working-activity-header small {
@@ -1716,8 +1724,27 @@ code {
 }
 
 .working-activity-item {
+  appearance: none;
+  border: 0;
   padding: 7px 0 0;
   border-top: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.working-activity-header:hover small,
+.working-activity-item:hover span:not(.working-activity-icon),
+.working-activity-header:focus-visible small,
+.working-activity-item:focus-visible span:not(.working-activity-icon) {
+  color: var(--text);
+}
+
+.working-activity-header:focus-visible,
+.working-activity-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 52%, transparent);
+  outline-offset: 3px;
 }
 
 .working-activity-item.slot-assistant {

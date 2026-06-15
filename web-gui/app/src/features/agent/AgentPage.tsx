@@ -231,6 +231,7 @@ export function AgentPage({
                 activities={workingActivities}
                 agent={activeAgent}
                 displayLevel={displayLevel}
+                onInspectActivity={onInspectActivity}
                 onOpenOverview={onOpenInspector}
               />
             ) : null}
@@ -754,11 +755,13 @@ function WorkingIndicator({
   activities,
   agent,
   displayLevel,
+  onInspectActivity,
   onOpenOverview,
 }: {
   activities: AgentTimelineActivity[];
   agent: AgentSummary;
   displayLevel: DisplayLevel;
+  onInspectActivity: (activity: AgentTimelineActivity) => void;
   onOpenOverview: () => void;
 }) {
   const parts = [
@@ -778,23 +781,28 @@ function WorkingIndicator({
   }
 
   return (
-    <button className="working-indicator detail" type="button" onClick={onOpenOverview}>
-      <div className="working-activity-header">
+    <div className="working-indicator detail">
+      <button className="working-activity-header" type="button" onClick={onOpenOverview}>
         <span className="working-activity-dot" aria-hidden="true" />
         <strong>Working</strong>
         {parts.length ? <small>{parts.join(" · ")}</small> : null}
-      </div>
+      </button>
       <div className="working-activity-list">
         {activities.map((activity) => (
-          <div className={`working-activity-item ${activity.kind} slot-${workingActivitySlot(activity)}`} key={activity.id}>
+          <button
+            className={`working-activity-item ${activity.kind} slot-${workingActivitySlot(activity)}`}
+            key={activity.id}
+            type="button"
+            onClick={() => onInspectActivity(activity)}
+          >
             <span className="working-activity-icon" aria-label={workingActivityLabel(activity)} title={workingActivityLabel(activity)}>
               {workingActivityIcon(activity)}
             </span>
             <span>{workingActivityBody(activity)}</span>
-          </div>
+          </button>
         ))}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -811,6 +819,9 @@ function workingActivityIcon(activity: AgentTimelineActivity): string {
 }
 
 function workingActivityBody(activity: AgentTimelineActivity): string {
+  if (workingActivitySlot(activity) === "action") {
+    return trimActivityLine(activity.body || activity.label, 120);
+  }
   const detail = activity.detail?.text
     ?.split("\n")
     .map((line) => line.trim())
