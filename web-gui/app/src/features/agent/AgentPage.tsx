@@ -92,6 +92,8 @@ export function AgentPage({
   const groupedModelOptions = useMemo(() => groupModelOptionsByProvider(modelCatalog.options), [modelCatalog.options]);
   const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.model === activeAgent.model), [activeAgent.model, modelCatalog.options]);
   const activeModelSupportsReasoning = activeModelOption?.supportsReasoningEffort ?? Boolean(activeAgent.modelReasoningEffort);
+  const activeReasoningBadge = activeModelSupportsReasoning ? (activeAgent.modelReasoningEffort ?? "auto") : undefined;
+  const activeModelTitle = modelButtonTitle(activeAgent.model, activeReasoningBadge, activeAgent.modelSource === "agent_override");
   const currentProvider = selectedProvider ?? activeModelOption?.provider ?? groupedModelOptions[0]?.provider ?? "runtime";
   const currentProviderModels = groupedModelOptions.find((group) => group.provider === currentProvider)?.models ?? [];
 
@@ -264,10 +266,17 @@ export function AgentPage({
               </div>
               <div className="composer-right">
                 <div className="model-picker">
-                  <Button className="model-button" type="button" variant="secondary" aria-expanded={modelPickerOpen} onClick={toggleModelPicker}>
-                    <span>{shortModelLabel(activeAgent.model)}</span>
-                    {activeModelSupportsReasoning ? <small>{activeAgent.modelReasoningEffort ? `thinking ${activeAgent.modelReasoningEffort}` : "thinking auto"}</small> : null}
-                    {activeAgent.modelSource === "agent_override" ? <small>override</small> : null}
+                  <Button
+                    className="model-button"
+                    type="button"
+                    variant="secondary"
+                    aria-expanded={modelPickerOpen}
+                    aria-label={activeModelTitle}
+                    title={activeModelTitle}
+                    onClick={toggleModelPicker}
+                  >
+                    <span className="model-button-label">{shortModelLabel(activeAgent.model)}</span>
+                    {activeReasoningBadge ? <small className="model-button-badge">{activeReasoningBadge}</small> : null}
                     <span aria-hidden="true">⌄</span>
                   </Button>
                   {modelPickerOpen ? (
@@ -395,6 +404,13 @@ export function AgentPage({
 function shortModelLabel(model: string): string {
   const parts = model.split("/");
   return parts[parts.length - 1] || model;
+}
+
+function modelButtonTitle(model: string, reasoningEffort: string | undefined, isModelOverride: boolean): string {
+  const details = [model];
+  if (reasoningEffort) details.push(`reasoning effort: ${reasoningEffort}`);
+  if (isModelOverride) details.push("model override");
+  return details.join(" · ");
 }
 
 function groupModelOptionsByProvider(options: RuntimeModelOption[]): Array<{ provider: string; availableCount: number; models: RuntimeModelOption[] }> {

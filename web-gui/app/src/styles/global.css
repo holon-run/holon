@@ -1913,15 +1913,23 @@ code {
   padding-inline: 10px;
 }
 
-.model-button span:first-child {
+.model-button-label {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.model-button small {
+.model-button-badge {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   color: var(--accent);
   font-size: 11px;
+  line-height: 1.35;
 }
 
 .model-menu {
