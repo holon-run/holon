@@ -424,12 +424,77 @@ button {
   margin-top: auto;
 }
 
+.connection-switcher {
+  display: grid;
+  gap: 8px;
+}
+
 .runtime-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
   background: var(--success);
   box-shadow: 0 0 0 4px rgba(22, 131, 79, 0.12);
+}
+
+.runtime-dot.error {
+  background: var(--danger);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.connection-panel {
+  display: grid;
+  gap: 8px;
+  margin: 0 2px 2px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 58%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 84%, var(--sidebar-soft));
+  box-shadow: 0 8px 24px rgba(30, 42, 58, 0.08);
+}
+
+.connection-panel label {
+  display: grid;
+  gap: 5px;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.connection-panel input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 64%, transparent);
+  border-radius: 9px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.connection-error {
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.connection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.boot-card .connection-switcher {
+  margin-top: 16px;
+}
+
+.boot-card .connection-panel {
+  margin: 0;
 }
 
 .main-shell {

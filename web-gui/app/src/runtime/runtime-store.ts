@@ -11,6 +11,7 @@ import type {
   InspectorSelection,
   RouteKey,
   RuntimeBootstrap,
+  RuntimeConnectionConfig,
   RuntimeConfigState,
   RuntimeModelCatalog,
   SearchResponse,
@@ -165,6 +166,7 @@ export interface RuntimeStoreState {
   clearInspectorSelection: () => void;
   toggleInspector: () => void;
   toggleNavCollapsed: () => void;
+  setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
   refreshModelCatalog: () => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
@@ -179,7 +181,10 @@ export interface RuntimeStoreState {
   stopAgentEventStream: (agentId: string | undefined) => void;
 }
 
-const runtimeClient = createRuntimeClient();
+const RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1";
+const DISPLAY_LEVEL_STORAGE_KEY = "holon.webGui.displayLevelsByAgentId.v1";
+let runtimeConnectionConfig = readStoredRuntimeConnectionConfig();
+let runtimeClient = createRuntimeClient(runtimeClientOptions(runtimeConnectionConfig));
 const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
 const pendingStreamEvents = new Map<string, StreamEventEnvelopeDto[]>();
 const streamFlushTimers = new Map<string, number>();
@@ -191,7 +196,44 @@ const STREAM_FLUSH_INTERVAL_MS = 100;
 const STREAM_STALE_TIMEOUT_MS = 45_000;
 const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
-const DISPLAY_LEVEL_STORAGE_KEY = "holon.webGui.displayLevelsByAgentId.v1";
+
+function runtimeClientOptions(config: RuntimeConnectionConfig) {
+  return config.mode === "remote" ? { baseUrl: config.baseUrl, token: config.token } : {};
+}
+
+function readStoredRuntimeConnectionConfig(): RuntimeConnectionConfig {
+  if (typeof window === "undefined") return { mode: "local" };
+  try {
+    const raw = window.localStorage.getItem(RUNTIME_CONNECTION_STORAGE_KEY);
+    if (!raw) return { mode: "local" };
+    const parsed = JSON.parse(raw) as Partial<RuntimeConnectionConfig>;
+    if (parsed.mode !== "remote") return { mode: "local" };
+    return {
+      mode: "remote",
+      baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
+      token: typeof parsed.token === "string" ? parsed.token : "",
+    };
+  } catch {
+    return { mode: "local" };
+  }
+}
+
+function writeStoredRuntimeConnectionConfig(config: RuntimeConnectionConfig): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (config.mode === "local") {
+      window.localStorage.removeItem(RUNTIME_CONNECTION_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(RUNTIME_CONNECTION_STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // Ignore storage failures; the in-memory connection still applies.
+  }
+}
+
+function normalizeConnectionBaseUrl(value: string | undefined): string {
+  return value?.trim().replace(/\/+$/, "") ?? "";
+}
 
 function readStoredDisplayLevels(): Record<string, DisplayLevel> {
   if (typeof window === "undefined") return {};
@@ -235,6 +277,18 @@ const emptyBootstrap: RuntimeBootstrap = {
   agents: [],
 };
 
+function pendingBootstrap(config: RuntimeConnectionConfig): RuntimeBootstrap {
+  return {
+    ...emptyBootstrap,
+    connection: {
+      mode: config.mode,
+      source: "fixture",
+      baseUrl: config.mode === "remote" ? config.baseUrl : undefined,
+      summary: config.mode === "remote" ? "Connecting to remote runtime…" : "Connecting to local runtime…",
+    },
+  };
+}
+
 const emptyModelCatalog: RuntimeModelCatalog = {
   source: "fixture",
   options: [],
@@ -253,7 +307,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   inspectorSelection: undefined,
   navCollapsed: false,
 
-  bootstrap: emptyBootstrap,
+  bootstrap: pendingBootstrap(runtimeConnectionConfig),
   bootstrapLoading: true,
   modelCatalog: emptyModelCatalog,
   modelCatalogLoading: false,
@@ -292,6 +346,45 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   clearInspectorSelection: () => set({ inspectorSelection: undefined }),
   toggleInspector: () => set((state) => ({ inspectorOpen: !state.inspectorOpen })),
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
+
+  setRuntimeConnection: async (config) => {
+    const normalizedConfig: RuntimeConnectionConfig =
+      config.mode === "remote"
+        ? {
+            mode: "remote",
+            baseUrl: normalizeConnectionBaseUrl(config.baseUrl),
+            token: config.token?.trim() || undefined,
+          }
+        : { mode: "local" };
+    runtimeConnectionConfig = normalizedConfig;
+    runtimeClient = createRuntimeClient(runtimeClientOptions(normalizedConfig));
+    writeStoredRuntimeConnectionConfig(normalizedConfig);
+    bootstrapRefreshInFlight = undefined;
+    for (const subscription of activeEventStreams.values()) subscription.close();
+    activeEventStreams.clear();
+    pendingStreamEvents.clear();
+    for (const timer of streamFlushTimers.values()) window.clearTimeout(timer);
+    for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
+    for (const timer of staleTimers.values()) window.clearTimeout(timer);
+    streamFlushTimers.clear();
+    reconnectTimers.clear();
+    staleTimers.clear();
+    set({
+      bootstrap: pendingBootstrap(normalizedConfig),
+      bootstrapLoading: true,
+      bootstrapError: undefined,
+      modelCatalog: emptyModelCatalog,
+      modelCatalogError: undefined,
+      runtimeConfig: emptyRuntimeConfig,
+      runtimeConfigError: undefined,
+      search: null,
+      searchError: undefined,
+      sessionsByAgentId: {},
+      selectedAgentId: "",
+      route: "dashboard",
+    });
+    await get().refreshBootstrap();
+  },
 
   refreshBootstrap: async (options = {}) => {
     if (bootstrapRefreshInFlight) return bootstrapRefreshInFlight;

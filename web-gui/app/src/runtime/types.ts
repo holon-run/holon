@@ -10,6 +10,12 @@ export interface RuntimeConnection {
   error?: string;
 }
 
+export interface RuntimeConnectionConfig {
+  mode: "local" | "remote";
+  baseUrl?: string;
+  token?: string;
+}
+
 export interface WorkItemSummary {
   id: string;
   objective: string;

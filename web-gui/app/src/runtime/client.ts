@@ -19,6 +19,7 @@ import type {
 
 export interface RuntimeClientOptions {
   baseUrl?: string;
+  token?: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -62,15 +63,21 @@ function disconnectedAgentDetail(agentId: string, error: string): AgentDetail {
   };
 }
 
-async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentId: string, displayLevel: DisplayLevel): Promise<AgentDetail> {
+async function fetchAgentDetail(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+  displayLevel: DisplayLevel,
+): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
   const eventDisplayLevel = displayLevel;
   const [entry, state, events] = await Promise.all([
-    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS })
+    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers })
       .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
       .catch(() => undefined),
-    getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`),
-    fetchAgentEvents(baseUrl, fetchImpl, agentId, { limit: 80, order: "desc", displayLevel: eventDisplayLevel }).catch((): EventPageResponseDto => ({
+    getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers }),
+    fetchAgentEvents(baseUrl, fetchImpl, headers, agentId, { limit: 80, order: "desc", displayLevel: eventDisplayLevel }).catch((): EventPageResponseDto => ({
       events: [],
       has_older: false,
     })),
@@ -366,6 +373,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const defaultBaseUrl = import.meta.env.DEV ? DEFAULT_DEV_API_BASE : undefined;
   const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
   const fetchImpl = options.fetchImpl ?? fetch;
+  const requestHeaders = authorizationHeaders(options.token);
 
   return {
     async getBootstrap(): Promise<RuntimeBootstrap> {
@@ -374,7 +382,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
 
       try {
-        return await fetchRuntimeBootstrap(baseUrl, fetchImpl);
+        return await fetchRuntimeBootstrap(baseUrl, fetchImpl, requestHeaders);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return buildDisconnectedBootstrap(baseUrl, message);
@@ -386,7 +394,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
 
       try {
-        return await fetchAgentDetail(baseUrl, fetchImpl, agentId, displayLevel);
+        return await fetchAgentDetail(baseUrl, fetchImpl, requestHeaders, agentId, displayLevel);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return disconnectedAgentDetail(agentId, message);
@@ -396,13 +404,13 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) {
         return { events: [], has_older: false };
       }
-      return fetchAgentEvents(baseUrl, fetchImpl, agentId, options);
+      return fetchAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
     },
     async getModels(): Promise<RuntimeModelCatalog> {
       if (!baseUrl) {
         return { source: "fixture", options: [] };
       }
-      const response = await getJson<RuntimeModelsDto>(fetchImpl, baseUrl, "/models");
+      const response = await getJson<RuntimeModelsDto>(fetchImpl, baseUrl, "/models", { headers: requestHeaders });
       return {
         source: "http",
         options: projectModelOptions(response),
@@ -412,14 +420,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) {
         return { source: "fixture" };
       }
-      const response = await getJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config");
+      const response = await getJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { headers: requestHeaders });
       return projectRuntimeConfigState(response);
     },
     async updateRuntimeConfig(updates: RuntimeConfigUpdateEntry[]): Promise<RuntimeConfigState> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      const response = await patchJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { updates });
+      const response = await patchJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { updates }, requestHeaders);
       return projectRuntimeConfigState(response);
     },
     async search(query: string, options: { agentIds?: string[]; limit?: number } = {}): Promise<SearchResponse> {
@@ -431,18 +439,18 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         agent_ids: options.agentIds,
         limit: options.limit,
         types: ["message"],
-      });
+      }, requestHeaders);
       return projectSearchResponse(response);
     },
     streamAgentEvents(agentId: string, options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
       if (!baseUrl) return undefined;
-      return streamAgentEvents(baseUrl, fetchImpl, agentId, options);
+      return streamAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
     },
     async sendOperatorPrompt(agentId: string, text: string): Promise<void> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, { text });
+      await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, { text }, requestHeaders);
     },
     async setAgentModel(agentId: string, model: string, reasoningEffort?: string): Promise<AgentModelStateDto | undefined> {
       if (!baseUrl) {
@@ -453,6 +461,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         baseUrl,
         `/control/agents/${encodeURIComponent(agentId)}/model`,
         { model, reasoning_effort: reasoningEffort, authority_class: "operator_instruction" },
+        requestHeaders,
       );
       return response.model;
     },
@@ -465,6 +474,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         baseUrl,
         `/control/agents/${encodeURIComponent(agentId)}/model/clear`,
         { authority_class: "operator_instruction" },
+        requestHeaders,
       );
       return response.model;
     },
@@ -474,6 +484,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
 async function fetchAgentEvents(
   baseUrl: string,
   fetchImpl: typeof fetch,
+  headers: Record<string, string>,
   agentId: string,
   options: AgentEventPageOptions,
 ): Promise<EventPageResponseDto> {
@@ -485,12 +496,13 @@ async function fetchAgentEvents(
   if (options.displayLevel) query.set("max_level", options.displayLevel);
   const queryString = query.toString();
   const path = `/agents/${encodeURIComponent(agentId)}/events${queryString ? `?${queryString}` : ""}`;
-  return getJson<EventPageResponseDto>(fetchImpl, baseUrl, path);
+  return getJson<EventPageResponseDto>(fetchImpl, baseUrl, path, { headers });
 }
 
 function streamAgentEvents(
   baseUrl: string,
   fetchImpl: typeof fetch,
+  headers: Record<string, string>,
   agentId: string,
   options: AgentEventStreamOptions,
 ): AgentEventStreamSubscription {
@@ -502,7 +514,7 @@ function streamAgentEvents(
   const queryString = query.toString();
   const path = `/agents/${encodedAgentId}/events/stream${queryString ? `?${queryString}` : ""}`;
 
-  void readEventStream(fetchImpl, `${baseUrl}${path}`, controller.signal, options);
+  void readEventStream(fetchImpl, `${baseUrl}${path}`, headers, controller.signal, options);
 
   return {
     close: () => controller.abort(),
@@ -512,12 +524,13 @@ function streamAgentEvents(
 async function readEventStream(
   fetchImpl: typeof fetch,
   url: string,
+  headers: Record<string, string>,
   signal: AbortSignal,
   options: AgentEventStreamOptions,
 ): Promise<void> {
   try {
     const response = await fetchImpl(url, {
-      headers: { Accept: "text/event-stream" },
+      headers: { Accept: "text/event-stream", ...headers },
       signal,
     });
     if (!response.ok) {
@@ -583,10 +596,10 @@ function parseSseEventFrame(frame: string): StreamEventEnvelopeDto | undefined {
   return JSON.parse(dataLines.join("\n")) as StreamEventEnvelopeDto;
 }
 
-async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): Promise<RuntimeBootstrap> {
+async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch, headers: Record<string, string>): Promise<RuntimeBootstrap> {
   const [handshake, agentEntries] = await Promise.all([
-    getJson<{ auth?: { mode?: string } }>(fetchImpl, baseUrl, "/handshake"),
-    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list"),
+    getJson<{ auth?: { mode?: string } }>(fetchImpl, baseUrl, "/handshake", { headers }),
+    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { headers }),
   ]);
 
   const agents = agentEntries.map((entry) => projectAgent(entry));
@@ -612,12 +625,12 @@ async function getJson<T>(
   fetchImpl: typeof fetch,
   baseUrl: string,
   path: string,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; headers?: Record<string, string> } = {},
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
-    headers: { Accept: "application/json" },
+    headers: { Accept: "application/json", ...options.headers },
     signal: controller.signal,
   }).finally(() => window.clearTimeout(timeout));
   if (!response.ok) {
@@ -626,7 +639,13 @@ async function getJson<T>(
   return (await response.json()) as T;
 }
 
-async function postJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: string, body: unknown): Promise<T> {
+async function postJson<T>(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
@@ -634,6 +653,7 @@ async function postJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: strin
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
+      ...headers,
     },
     body: JSON.stringify(body),
     signal: controller.signal,
@@ -646,7 +666,13 @@ async function postJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: strin
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
-async function patchJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: string, body: unknown): Promise<T> {
+async function patchJson<T>(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
@@ -654,6 +680,7 @@ async function patchJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: stri
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
+      ...headers,
     },
     body: JSON.stringify(body),
     signal: controller.signal,
@@ -977,6 +1004,11 @@ function normalizeBaseUrl(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   return trimmed.replace(/\/+$/, "");
+}
+
+function authorizationHeaders(token: string | undefined): Record<string, string> {
+  const trimmed = token?.trim();
+  return trimmed ? { Authorization: `Bearer ${trimmed}` } : {};
 }
 
 function compactJoin(parts: Array<string | undefined | null>): string {

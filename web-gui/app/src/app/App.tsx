@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 
 import { AgentPage } from "../features/agent/AgentPage";
 import { Button } from "../components/ui/Button";
@@ -14,7 +14,7 @@ import { selectSelectedAgent } from "../runtime/runtime-selectors";
 import { useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
-import type { AgentSummary, DisplayLevel, RouteKey } from "../runtime/types";
+import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig } from "../runtime/types";
 import { pushBrowserRoute, routeFromLocation } from "./routes";
 
 const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
@@ -39,6 +39,7 @@ export function App() {
   const clearInspectorSelection = useRuntimeStore((state) => state.clearInspectorSelection);
   const toggleInspector = useRuntimeStore((state) => state.toggleInspector);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
+  const setRuntimeConnection = useRuntimeStore((state) => state.setRuntimeConnection);
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
   const activeAgentId = route === "agent" ? selectedAgent?.id ?? selectedAgentId : undefined;
   const selectedAgentSession = useRuntimeStore((state) =>
@@ -124,7 +125,7 @@ export function App() {
         </SegmentedControl>
       </div>
     ) : null;
-  const isInitialBootstrapping = loading && bootstrap.connection.summary === "Connecting to local runtime…" && !bootstrap.connection.error;
+  const isInitialBootstrapping = loading && bootstrap.agents.length === 0 && !bootstrap.connection.error;
 
   useLayoutEffect(() => {
     const applyBrowserRoute = () => {
@@ -162,7 +163,7 @@ export function App() {
   }
 
   if (isInitialBootstrapping) {
-    return <BootstrappingPage />;
+    return <BootstrappingPage connection={bootstrap.connection} onSetConnection={setRuntimeConnection} />;
   }
 
   return (
@@ -247,13 +248,7 @@ export function App() {
         </section>
 
         <div className="sidebar-bottom">
-          <button className="connection-status" type="button">
-            <span className="runtime-dot" />
-            <span>
-              <strong>{bootstrap.connection.mode}</strong>
-              <small>{bootstrap.connection.summary}</small>
-            </span>
-          </button>
+          <ConnectionSwitcher connection={bootstrap.connection} onSetConnection={setRuntimeConnection} />
         </div>
       </aside>
 
@@ -381,7 +376,13 @@ export function App() {
   );
 }
 
-function BootstrappingPage() {
+function BootstrappingPage({
+  connection,
+  onSetConnection,
+}: {
+  connection: RuntimeConnection;
+  onSetConnection: (config: RuntimeConnectionConfig) => Promise<void>;
+}) {
   return (
     <main className="boot-page" aria-label="Holon is loading">
       <section className="boot-card" role="status" aria-live="polite">
@@ -390,9 +391,93 @@ function BootstrappingPage() {
           <p>Starting Holon Web GUI</p>
           <h1>Preparing runtime data…</h1>
           <span>Loading the runtime handshake and agent roster before rendering the workspace.</span>
+          <ConnectionSwitcher connection={connection} onSetConnection={onSetConnection} compact={false} />
         </div>
       </section>
     </main>
+  );
+}
+
+function ConnectionSwitcher({
+  connection,
+  onSetConnection,
+  compact = true,
+}: {
+  connection: RuntimeConnection;
+  onSetConnection: (config: RuntimeConnectionConfig) => Promise<void>;
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(!compact || Boolean(connection.error));
+  const [baseUrl, setBaseUrl] = useState(connection.mode === "remote" ? connection.baseUrl ?? "" : "");
+  const [token, setToken] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | undefined>();
+
+  async function applyConnection(config: RuntimeConnectionConfig) {
+    setSaving(true);
+    setFormError(undefined);
+    try {
+      await onSetConnection(config);
+      if (compact) setOpen(false);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className={`connection-switcher ${open ? "is-open" : ""}`}>
+      <button className="connection-status" type="button" onClick={() => setOpen((value) => !value)}>
+        <span className={`runtime-dot ${connection.error ? "error" : ""}`} />
+        <span>
+          <strong>{connection.mode}</strong>
+          <small>{connection.summary}</small>
+        </span>
+      </button>
+      {open ? (
+        <form
+          className="connection-panel"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const trimmedBaseUrl = baseUrl.trim();
+            if (!trimmedBaseUrl) {
+              setFormError("Remote URL is required.");
+              return;
+            }
+            void applyConnection({ mode: "remote", baseUrl: trimmedBaseUrl, token });
+          }}
+        >
+          <label>
+            Remote URL
+            <input
+              value={baseUrl}
+              onChange={(event) => setBaseUrl(event.target.value)}
+              placeholder="http://192.168.1.10:7878"
+              inputMode="url"
+            />
+          </label>
+          <label>
+            Bearer token
+            <input
+              value={token}
+              onChange={(event) => setToken(event.target.value)}
+              placeholder="optional for trusted local networks"
+              type="password"
+            />
+          </label>
+          {formError ? <span className="connection-error">{formError}</span> : null}
+          <div className="connection-actions">
+            <Button type="button" size="sm" variant="secondary" disabled={saving} onClick={() => void applyConnection({ mode: "local" })}>
+              Localhost
+            </Button>
+            <Button type="submit" size="sm" disabled={saving}>
+              {saving ? "Connecting…" : "Use remote"}
+            </Button>
+          </div>
+        </form>
+      ) : null}
+    </div>
   );
 }
 
