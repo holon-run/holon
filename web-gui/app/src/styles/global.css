@@ -1420,7 +1420,8 @@ code {
 
 .bubble {
   position: relative;
-  max-width: min(820px, 100%);
+  width: 100%;
+  max-width: 100%;
   padding: 2px 0;
   border: 0;
   border-radius: 0;
