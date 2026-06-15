@@ -44,6 +44,7 @@ const displayLevelRank: Record<DisplayLevel, number> = {
 const maxTimelineSourceIds = 200;
 const infoRuntimeEvents = new Set(["brief_created", "wait_condition_registered", "agent_waiting"]);
 const verboseRuntimeEventPrefixes = ["work_item_"];
+const debugRuntimeEventNames = new Set(["work_item_stale_reminder_injected"]);
 const debugRuntimeEventPrefixes = ["provider_", "task_"];
 const debugRuntimeEvents = new Set([
   "message_enqueued",
@@ -260,6 +261,7 @@ function projectRuntimeEvent(
 function runtimeEventDisplayLevel(eventType: string): DisplayLevel {
   if (infoRuntimeEvents.has(eventType)) return "info";
   if (eventType.includes("failed") || eventType.includes("error")) return "info";
+  if (debugRuntimeEventNames.has(eventType)) return "debug";
   if (debugRuntimeEvents.has(eventType)) return "debug";
   if (debugRuntimeEventPrefixes.some((prefix) => eventType.startsWith(prefix))) return "debug";
   if (verboseRuntimeEventPrefixes.some((prefix) => eventType.startsWith(prefix))) return "verbose";
@@ -399,9 +401,10 @@ function mergeSourceIds(sourceIds: string[]): string[] {
 function projectToolExecution(
   eventType: string,
   payload: Record<string, unknown> | undefined,
-): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> {
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> | undefined {
   const toolName = stringField(payload, "tool_name") ?? "tool";
   const failed = eventType === "tool_execution_failed" || Boolean(payload?.error);
+  if (!failed && isWorkItemMutationTool(toolName)) return undefined;
   const projection = projectKnownToolExecution(toolName, payload);
   const label = toolFriendlyLabel(toolName, failed);
   const summary = stringField(payload, "summary");
@@ -440,7 +443,13 @@ function projectKnownToolExecution(
   payload: Record<string, unknown> | undefined,
 ): Pick<SessionItemDraft, "body" | "detail"> | undefined {
   if (toolName === "ApplyPatch") return projectApplyPatchTool(payload);
+  if (toolName === "ListWorkItems") return projectListWorkItemsTool(payload);
+  if (toolName === "GetWorkItem") return projectGetWorkItemTool(payload);
   return undefined;
+}
+
+function isWorkItemMutationTool(toolName: string): boolean {
+  return toolName === "CreateWorkItem" || toolName === "UpdateWorkItem" || toolName === "PickWorkItem" || toolName === "CompleteWorkItem";
 }
 
 function toolStringPreview(
@@ -499,6 +508,50 @@ function projectApplyPatchTool(payload: Record<string, unknown> | undefined): Pi
         }
       : undefined,
   };
+}
+
+function projectListWorkItemsTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.list_work_items_result) ?? asRecord(payload?.result);
+  const items = arrayField(result, "work_items") ?? arrayField(result, "items");
+  const total = numberField(result, "total") ?? numberField(result, "total_open") ?? items?.length;
+  const filter = stringField(payload, "filter") ?? stringField(result, "filter");
+  const itemSummaries = summarizeWorkItemRecords(items);
+  return {
+    body: compactJoin([
+      total == null ? "Listed work items" : `${total} work item${total === 1 ? "" : "s"}`,
+      filter ? `filter: ${filter}` : undefined,
+      itemSummaries.length ? itemSummaries.slice(0, 3).join("; ") : undefined,
+    ]),
+    detail: itemSummaries.length
+      ? { label: "Work items", text: itemSummaries.join("\n"), tone: "data" }
+      : { label: "Result", text: debugJson(result ?? payload ?? {}), tone: "data" },
+  };
+}
+
+function projectGetWorkItemTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.get_work_item_result) ?? asRecord(payload?.result);
+  const workItem = asRecord(result?.work_item) ?? asRecord(result);
+  const summary = summarizeWorkItemRecord(workItem);
+  const workItemId = stringField(payload, "work_item_id") ?? stringField(workItem, "id");
+  return {
+    body: summary || compactJoin(["Loaded work item", workItemId]) || "Loaded work item",
+    detail: { label: "Work item", text: debugJson(result ?? payload ?? {}), tone: "data" },
+  };
+}
+
+function summarizeWorkItemRecords(items: unknown[] | undefined): string[] {
+  return (items ?? [])
+    .map(asRecord)
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .map(summarizeWorkItemRecord)
+    .filter(Boolean);
+}
+
+function summarizeWorkItemRecord(record: Record<string, unknown> | undefined): string {
+  const id = stringField(record, "id") ?? stringField(record, "work_item_id");
+  const objective = stringField(record, "objective");
+  const lifecycle = stringField(record, "lifecycle") ?? stringField(record, "status");
+  return compactJoin([objective, lifecycle, id]);
 }
 
 function applyPatchDetailText(
@@ -654,6 +707,9 @@ function summarizeWorkItemEvent(eventType: string, payload: Record<string, unkno
   const record = asRecord(payload?.record);
   const objective = stringField(record, "objective");
   const id = stringField(record, "id");
+  if (eventType === "work_item_picked") {
+    return compactJoin(["Picked work item", objective ?? id, stringField(payload, "reason")]);
+  }
   return compactJoin([humanizeEventType(`work_item_${action}`), objective, id]);
 }
 
