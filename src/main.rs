@@ -25,7 +25,7 @@ use holon::{
     daemon::{
         daemon_logs, daemon_restart, daemon_start, daemon_status, daemon_stop,
         ensure_serve_preflight, prepare_runtime_before_server, RuntimeServiceHandle,
-        PRE_SERVER_PREPARED_ENV,
+        DAEMON_SERVE_ARGS_ENV, PRE_SERVER_PREPARED_ENV,
     },
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
@@ -353,6 +353,7 @@ async fn run_solve_command(
 }
 
 fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<Option<String>> {
+    let access = options.access.unwrap_or(ServeAccess::Local);
     let token = resolve_inline_or_file_token(options.token, options.token_file)?;
     if let Some(token) = token {
         config.control_token = Some(token);
@@ -366,9 +367,9 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
 
     if let Some(listen) = options.listen {
         config.http_addr = listen;
-    } else if options.access == ServeAccess::Tunnel {
+    } else if access == ServeAccess::Tunnel {
         config.http_addr = loopback_with_configured_port(&config.http_addr, options.port);
-    } else if matches!(options.access, ServeAccess::Lan | ServeAccess::Tailnet) {
+    } else if matches!(access, ServeAccess::Lan | ServeAccess::Tailnet) {
         config.http_addr =
             default_remote_listen_addr(options.host.as_deref(), &config.http_addr, options.port);
     } else if options.port.is_some() {
@@ -377,7 +378,7 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
 
     let advertise_url = match options.advertise {
         Some(url) => Some(validate_client_visible_url("advertise URL", &url)?),
-        None => match options.access {
+        None => match access {
             ServeAccess::Local | ServeAccess::Tunnel => None,
             ServeAccess::Lan | ServeAccess::Tailnet => {
                 let Some(host) = options
@@ -387,7 +388,7 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
                 else {
                     return Err(anyhow!(
                         "--access {:?} requires --host or --advertise",
-                        options.access
+                        access
                     ));
                 };
                 Some(format!(
@@ -415,7 +416,7 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
             config.http_addr
         ));
     }
-    if matches!(options.access, ServeAccess::Lan | ServeAccess::Tailnet)
+    if matches!(access, ServeAccess::Lan | ServeAccess::Tailnet)
         && config
             .control_token
             .as_deref()
@@ -423,10 +424,10 @@ fn apply_serve_options(config: &mut AppConfig, options: ServeOptions) -> Result<
     {
         return Err(anyhow!(
             "--access {:?} requires --token, --token-file, or HOLON_CONTROL_TOKEN",
-            options.access
+            access
         ));
     }
-    if non_loopback_tcp || matches!(options.access, ServeAccess::Lan | ServeAccess::Tailnet) {
+    if non_loopback_tcp || matches!(access, ServeAccess::Lan | ServeAccess::Tailnet) {
         config.control_auth_mode = ControlAuthMode::Required;
     }
 
@@ -574,17 +575,39 @@ struct DaemonServeLaunchOptions {
     control_token_env: Option<String>,
 }
 
+fn safe_serve_args_for_metadata(args: &[OsString]) -> Vec<String> {
+    args.iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
+fn parse_serve_options_from_args(args: &[OsString]) -> Result<ServeOptions> {
+    let argv = std::iter::once(OsString::from("holon"))
+        .chain(std::iter::once(OsString::from("serve")))
+        .chain(args.iter().cloned())
+        .collect::<Vec<_>>();
+    let cli = Cli::try_parse_from(argv).map_err(|err| anyhow!(err.to_string()))?;
+    let Commands::Serve { options } = cli.command else {
+        return Err(anyhow!(
+            "recorded daemon start arguments did not parse as serve options"
+        ));
+    };
+    Ok(options)
+}
+
 fn serve_args_for_options(options: &ServeOptions) -> DaemonServeLaunchOptions {
-    let mut args = vec![
-        OsString::from("--access"),
-        OsString::from(
-            options
-                .access
-                .to_possible_value()
-                .expect("serve access should have clap value")
-                .get_name(),
-        ),
-    ];
+    let mut args = Vec::new();
+    if let Some(access) = options.access {
+        args.extend([
+            OsString::from("--access"),
+            OsString::from(
+                access
+                    .to_possible_value()
+                    .expect("serve access should have clap value")
+                    .get_name(),
+            ),
+        ]);
+    }
     if let Some(host) = &options.host {
         args.extend([OsString::from("--host"), OsString::from(host)]);
     }
@@ -609,7 +632,92 @@ fn serve_args_for_options(options: &ServeOptions) -> DaemonServeLaunchOptions {
     }
 }
 
+fn merge_serve_options(inherited: ServeOptions, explicit: ServeOptions) -> ServeOptions {
+    let explicit_token = explicit.token.is_some();
+    let explicit_token_file = explicit.token_file.is_some();
+    let explicit_access = explicit.access.is_some();
+    let explicit_host = explicit.host.is_some();
+    let explicit_listen = explicit.listen.is_some();
+    let explicit_port = explicit.port.is_some();
+    let explicit_advertise = explicit.advertise.is_some();
+    let clear_inherited_advertise =
+        explicit_access || explicit_host || explicit_listen || explicit_port;
+    ServeOptions {
+        access: explicit.access.or(inherited.access),
+        host: explicit.host.or(inherited.host),
+        listen: if explicit_listen {
+            explicit.listen
+        } else if explicit_port {
+            None
+        } else {
+            inherited.listen
+        },
+        port: if explicit_port {
+            explicit.port
+        } else if explicit_listen {
+            None
+        } else {
+            inherited.port
+        },
+        advertise: if explicit_advertise {
+            explicit.advertise
+        } else if clear_inherited_advertise {
+            None
+        } else {
+            inherited.advertise
+        },
+        token: if explicit_token {
+            explicit.token
+        } else if explicit_token_file {
+            None
+        } else {
+            inherited.token
+        },
+        token_file: if explicit_token_file {
+            explicit.token_file
+        } else if explicit_token {
+            None
+        } else {
+            inherited.token_file
+        },
+    }
+}
+
+fn restart_serve_launch_options(
+    config: &mut AppConfig,
+    options: ServeOptions,
+    metadata: Option<&holon::daemon::RuntimeServiceMetadata>,
+) -> Result<DaemonServeLaunchOptions> {
+    let options = if let Some(metadata) = metadata {
+        let inherited = parse_serve_options_from_args(
+            &metadata
+                .serve_args
+                .iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>(),
+        )?;
+        let merged = merge_serve_options(inherited, options);
+        apply_serve_options(config, merged.clone())?;
+        if metadata.control_token_env_configured
+            && config
+                .control_token
+                .as_deref()
+                .is_none_or(|token| token.trim().is_empty())
+        {
+            return Err(anyhow!(
+                "the previous daemon start used an inline --token, which is not persisted; restart with --token or --token-file"
+            ));
+        }
+        merged
+    } else {
+        apply_serve_options(config, options.clone())?;
+        options
+    };
+    Ok(serve_args_for_options(&options))
+}
+
 async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
+    let serve_args = serve_args_for_options(&options).args;
     let advertise_url = apply_serve_options(&mut config, options)?;
     std::fs::create_dir_all(config.agent_root_dir())
         .with_context(|| format!("failed to create {}", config.agent_root_dir().display()))?;
@@ -622,6 +730,12 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     ensure_serve_preflight(&config).await?;
     if std::env::var_os(PRE_SERVER_PREPARED_ENV).is_none() {
         prepare_runtime_before_server(&config)?;
+    }
+    if std::env::var_os(DAEMON_SERVE_ARGS_ENV).is_none() {
+        std::env::set_var(
+            DAEMON_SERVE_ARGS_ENV,
+            serde_json::to_string(&safe_serve_args_for_metadata(&serve_args))?,
+        );
     }
 
     let host = RuntimeHost::new(config.clone())?;
@@ -808,7 +922,7 @@ mod tests {
         let advertise = apply_serve_options(
             &mut config,
             ServeOptions {
-                access: ServeAccess::Tailnet,
+                access: Some(ServeAccess::Tailnet),
                 host: Some("lab.tailnet.ts.net".into()),
                 listen: None,
                 port: None,
@@ -831,7 +945,7 @@ mod tests {
         let advertise = apply_serve_options(
             &mut config,
             ServeOptions {
-                access: ServeAccess::Lan,
+                access: Some(ServeAccess::Lan),
                 host: Some("192.168.1.10".into()),
                 listen: None,
                 port: Some(8787),
@@ -870,7 +984,7 @@ mod tests {
             panic!("expected daemon start command");
         };
 
-        assert_eq!(options.access, ServeAccess::Lan);
+        assert_eq!(options.access, Some(ServeAccess::Lan));
         let serve_launch = serve_args_for_options(&options);
         assert_eq!(
             serve_launch.args,
@@ -1184,7 +1298,7 @@ mod tests {
     #[test]
     fn daemon_start_passes_inline_token_through_env_not_argv() {
         let options = ServeOptions {
-            access: ServeAccess::Lan,
+            access: Some(ServeAccess::Lan),
             host: Some("192.168.1.10".into()),
             listen: None,
             port: None,
@@ -1204,6 +1318,326 @@ mod tests {
             .args
             .iter()
             .any(|arg| arg == &token_flag || arg == &token_value));
+    }
+
+    fn runtime_metadata_with_serve_args(
+        config: &AppConfig,
+        args: Vec<&str>,
+        control_token_env_configured: bool,
+    ) -> holon::daemon::RuntimeServiceMetadata {
+        holon::daemon::RuntimeServiceMetadata {
+            pid: 123,
+            home_dir: config.home_dir.clone(),
+            socket_path: config.socket_path.clone(),
+            http_addr: config.http_addr.clone(),
+            started_at: chrono::Utc::now(),
+            config_fingerprint: "test-fingerprint".into(),
+            serve_args: args.into_iter().map(String::from).collect(),
+            control_token_env_configured,
+        }
+    }
+
+    #[test]
+    fn daemon_restart_inherits_recorded_start_options_and_overrides_explicit_flags() {
+        let mut config = test_config();
+        config.control_token = None;
+        let token_file = config.home_dir.join("control.token");
+        fs::write(&token_file, "file-secret").unwrap();
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec![
+                "--access",
+                "lan",
+                "--host",
+                "192.168.1.10",
+                "--port",
+                "8787",
+                "--advertise",
+                "http://old.example.test:8787",
+                "--token-file",
+                token_file.to_str().unwrap(),
+            ],
+            false,
+        );
+
+        let launch = restart_serve_launch_options(
+            &mut config,
+            ServeOptions {
+                access: None,
+                host: Some("192.168.1.11".into()),
+                listen: None,
+                port: None,
+                advertise: None,
+                token: None,
+                token_file: None,
+            },
+            Some(&metadata),
+        )
+        .unwrap();
+
+        assert_eq!(config.http_addr, "192.168.1.11:8787");
+        assert_eq!(config.callback_base_url, "http://192.168.1.11:8787");
+        assert_eq!(config.control_token.as_deref(), Some("file-secret"));
+        assert_eq!(
+            launch.args,
+            vec![
+                OsString::from("--access"),
+                OsString::from("lan"),
+                OsString::from("--host"),
+                OsString::from("192.168.1.11"),
+                OsString::from("--port"),
+                OsString::from("8787"),
+                OsString::from("--token-file"),
+                token_file.as_os_str().to_os_string(),
+            ]
+        );
+        assert_eq!(launch.control_token_env, None);
+        assert!(!launch.args.iter().any(|arg| arg == "--advertise"));
+        assert!(!launch
+            .args
+            .iter()
+            .any(|arg| arg == "http://old.example.test:8787"));
+    }
+
+    #[test]
+    fn daemon_restart_explicit_local_access_clears_inherited_advertise_url() {
+        let mut config = test_config();
+        config.control_token = None;
+        let token_file = config.home_dir.join("control.token");
+        fs::write(&token_file, "file-secret").unwrap();
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec![
+                "--access",
+                "lan",
+                "--host",
+                "192.168.1.10",
+                "--port",
+                "8787",
+                "--advertise",
+                "http://old.example.test:8787",
+                "--token-file",
+                token_file.to_str().unwrap(),
+            ],
+            false,
+        );
+
+        let launch = restart_serve_launch_options(
+            &mut config,
+            ServeOptions {
+                access: Some(ServeAccess::Local),
+                host: None,
+                listen: None,
+                port: None,
+                advertise: None,
+                token: None,
+                token_file: None,
+            },
+            Some(&metadata),
+        )
+        .unwrap();
+
+        assert_eq!(config.http_addr, "127.0.0.1:8787");
+        assert_ne!(config.callback_base_url, "http://old.example.test:8787");
+        assert_eq!(config.control_token.as_deref(), Some("file-secret"));
+        assert!(!launch.args.iter().any(|arg| arg == "--advertise"));
+        assert!(!launch
+            .args
+            .iter()
+            .any(|arg| arg == "http://old.example.test:8787"));
+    }
+
+    #[test]
+    fn daemon_restart_explicit_tunnel_access_clears_inherited_advertise_url() {
+        let mut config = test_config();
+        config.control_token = None;
+        let token_file = config.home_dir.join("control.token");
+        fs::write(&token_file, "file-secret").unwrap();
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec![
+                "--access",
+                "lan",
+                "--host",
+                "192.168.1.10",
+                "--port",
+                "8787",
+                "--advertise",
+                "http://old.example.test:8787",
+                "--token-file",
+                token_file.to_str().unwrap(),
+            ],
+            false,
+        );
+
+        let launch = restart_serve_launch_options(
+            &mut config,
+            ServeOptions {
+                access: Some(ServeAccess::Tunnel),
+                host: None,
+                listen: None,
+                port: None,
+                advertise: None,
+                token: None,
+                token_file: None,
+            },
+            Some(&metadata),
+        )
+        .unwrap();
+
+        assert_eq!(config.http_addr, "127.0.0.1:8787");
+        assert_ne!(config.callback_base_url, "http://old.example.test:8787");
+        assert_eq!(config.control_token.as_deref(), Some("file-secret"));
+        assert!(!launch.args.iter().any(|arg| arg == "--advertise"));
+        assert!(!launch
+            .args
+            .iter()
+            .any(|arg| arg == "http://old.example.test:8787"));
+    }
+
+    #[test]
+    fn daemon_restart_listen_and_port_override_their_inherited_counterpart() {
+        let mut config = test_config();
+        let token_file = config.home_dir.join("control.token");
+        fs::write(&token_file, "file-secret").unwrap();
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec![
+                "--access",
+                "lan",
+                "--host",
+                "192.168.1.10",
+                "--port",
+                "8787",
+                "--token-file",
+                token_file.to_str().unwrap(),
+            ],
+            false,
+        );
+
+        let launch = restart_serve_launch_options(
+            &mut config,
+            ServeOptions {
+                access: None,
+                host: None,
+                listen: Some("0.0.0.0:8989".into()),
+                port: None,
+                advertise: None,
+                token: None,
+                token_file: None,
+            },
+            Some(&metadata),
+        )
+        .unwrap();
+
+        assert_eq!(config.http_addr, "0.0.0.0:8989");
+        assert!(launch.args.iter().any(|arg| arg == "--listen"));
+        assert!(launch.args.iter().any(|arg| arg == "0.0.0.0:8989"));
+        assert!(!launch.args.iter().any(|arg| arg == "--port"));
+
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec![
+                "--access",
+                "lan",
+                "--host",
+                "192.168.1.10",
+                "--listen",
+                "0.0.0.0:7878",
+                "--token-file",
+                token_file.to_str().unwrap(),
+            ],
+            false,
+        );
+
+        let launch = restart_serve_launch_options(
+            &mut config,
+            ServeOptions {
+                access: None,
+                host: None,
+                listen: None,
+                port: Some(8989),
+                advertise: None,
+                token: None,
+                token_file: None,
+            },
+            Some(&metadata),
+        )
+        .unwrap();
+
+        assert_eq!(config.http_addr, "192.168.1.10:8989");
+        assert!(launch.args.iter().any(|arg| arg == "--port"));
+        assert!(launch.args.iter().any(|arg| arg == "8989"));
+        assert!(!launch.args.iter().any(|arg| arg == "--listen"));
+    }
+
+    #[test]
+    fn daemon_restart_inline_token_overrides_inherited_token_file_without_argv_secret() {
+        let mut config = test_config();
+        config.control_token = None;
+        let token_file = config.home_dir.join("control.token");
+        fs::write(&token_file, "file-secret").unwrap();
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec![
+                "--access",
+                "lan",
+                "--host",
+                "192.168.1.10",
+                "--token-file",
+                token_file.to_str().unwrap(),
+            ],
+            false,
+        );
+
+        let launch = restart_serve_launch_options(
+            &mut config,
+            ServeOptions {
+                access: None,
+                host: None,
+                listen: None,
+                port: None,
+                advertise: None,
+                token: Some("restart-secret".into()),
+                token_file: None,
+            },
+            Some(&metadata),
+        )
+        .unwrap();
+
+        assert_eq!(config.control_token.as_deref(), Some("restart-secret"));
+        assert_eq!(launch.control_token_env.as_deref(), Some("restart-secret"));
+        assert!(!launch
+            .args
+            .iter()
+            .any(|arg| arg == "--token-file" || arg == token_file.as_os_str()));
+        assert!(!launch.args.iter().any(|arg| arg == "restart-secret"));
+    }
+
+    #[test]
+    fn daemon_restart_requires_new_token_when_previous_inline_token_was_not_persisted() {
+        let mut config = test_config();
+        config.control_token = None;
+        let metadata = runtime_metadata_with_serve_args(&config, vec!["--access", "local"], true);
+
+        let error = restart_serve_launch_options(
+            &mut config,
+            ServeOptions {
+                access: None,
+                host: None,
+                listen: None,
+                port: None,
+                advertise: None,
+                token: None,
+                token_file: None,
+            },
+            Some(&metadata),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("previous daemon start used an inline --token"));
     }
 
     #[test]
@@ -1295,7 +1729,7 @@ mod tests {
         let advertise = apply_serve_options(
             &mut config,
             ServeOptions {
-                access: ServeAccess::Lan,
+                access: Some(ServeAccess::Lan),
                 host: None,
                 listen: Some("0.0.0.0:7878".into()),
                 port: None,
@@ -1320,7 +1754,7 @@ mod tests {
         let advertise = apply_serve_options(
             &mut config,
             ServeOptions {
-                access: ServeAccess::Local,
+                access: Some(ServeAccess::Local),
                 host: None,
                 listen: None,
                 port: None,
@@ -2088,8 +2522,9 @@ async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Re
         DaemonCommands::Status => serde_json::to_value(daemon_status(&config).await?)?,
         DaemonCommands::Restart { options } => {
             let mut config = config;
-            let serve_launch = serve_args_for_options(&options);
-            apply_serve_options(&mut config, options)?;
+            let metadata = holon::daemon::load_daemon_metadata(&config)?;
+            let serve_launch =
+                restart_serve_launch_options(&mut config, options, metadata.as_ref())?;
             serde_json::to_value(
                 daemon_restart(
                     &config,

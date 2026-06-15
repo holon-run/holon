@@ -233,8 +233,8 @@ pub enum ServeAccess {
 
 #[derive(Debug, Clone, Args)]
 pub struct ServeOptions {
-    #[arg(long, value_enum, default_value_t = ServeAccess::Local)]
-    pub access: ServeAccess,
+    #[arg(long, value_enum)]
+    pub access: Option<ServeAccess>,
     #[arg(long)]
     pub host: Option<String>,
     #[arg(long)]
