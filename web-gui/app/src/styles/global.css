@@ -1243,6 +1243,8 @@ code {
 }
 
 .conversation-pane {
+  --conversation-content-max: 980px;
+
   display: grid;
   grid-template-rows: 1fr auto;
   min-height: 0;
@@ -1341,7 +1343,7 @@ code {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
   gap: 10px;
-  max-width: min(980px, 100%);
+  max-width: min(var(--conversation-content-max), 100%);
   width: 100%;
   align-self: center;
 }
@@ -1711,8 +1713,9 @@ code {
 
 .working-activity-panel,
 .working-status-marker {
-  width: min(760px, 72%);
-  margin-left: 22px;
+  width: 100%;
+  max-width: min(var(--conversation-content-max), 100%);
+  align-self: center;
   border: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
   border-radius: 14px;
   background:
@@ -1894,7 +1897,8 @@ code {
 }
 
 .composer {
-  margin: 0 28px 18px;
+  width: min(var(--conversation-content-max), calc(100% - 60px));
+  margin: 0 auto 18px;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--surface);
