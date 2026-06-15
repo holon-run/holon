@@ -1163,6 +1163,12 @@
               "unknown_model_fallback_configured": {
                 "type": "boolean"
               },
+              "vision_default": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "web_search": {
                 "properties": {
                   "builtin_provider_enabled": {
@@ -1416,6 +1422,12 @@
               },
               "unknown_model_fallback_configured": {
                 "type": "boolean"
+              },
+              "vision_default": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "web_search": {
                 "properties": {
