@@ -148,7 +148,8 @@ async fn runtime_records_scheduler_decision_before_dequeueing_message() {
     loop {
         let events = runtime.storage().read_recent_events(200).unwrap();
         if events.iter().any(|event| {
-            event.kind == "message_processing_started" && event.data["id"] == message.id.as_str()
+            event.kind == "message_processing_started"
+                && event.data["message_id"] == message.id.as_str()
         }) {
             let decision_index = events
                 .iter()
@@ -162,7 +163,7 @@ async fn runtime_records_scheduler_decision_before_dequeueing_message() {
                 .iter()
                 .position(|event| {
                     event.kind == "message_processing_started"
-                        && event.data["id"] == message.id.as_str()
+                        && event.data["message_id"] == message.id.as_str()
                 })
                 .expect("message processing should start");
             assert!(

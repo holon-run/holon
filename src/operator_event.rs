@@ -1060,7 +1060,13 @@ fn agent_body(payload: &Value) -> Option<String> {
 fn model_body(payload: &Value) -> Option<String> {
     first_string_field(
         payload,
-        &["model", "override_model", "requested_model", "active_model"],
+        &[
+            "model",
+            "override_model",
+            "requested_model",
+            "active_model",
+            "effective_model",
+        ],
     )
     .map(|model| format!("model {model}"))
     .or_else(|| agent_body(payload))
@@ -1162,7 +1168,12 @@ fn task_record_text(
             "task_result_received" => "Task result received",
             _ => "Task updated",
         };
-        return (label.into(), None, label.into());
+        let body = task_body(payload);
+        let summary = body
+            .as_deref()
+            .map(|body| format!("{label}: {body}"))
+            .unwrap_or_else(|| label.to_string());
+        return (label.into(), body, summary);
     };
     let summary = task
         .summary

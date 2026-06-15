@@ -16,6 +16,7 @@ use crate::{
     runtime::provider_turn::{
         build_continuation_request, build_provider_prompt_frame, build_provider_turn_request,
     },
+    storage::to_json_value,
     tool::{
         helpers::{
             command_cost_diagnostics, command_digest, command_display, command_preview,
@@ -27,10 +28,10 @@ use crate::{
     types::{
         AdmissionContext, AuditEvent, AuthorityClass, BriefKind, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        QueueEntryRecord, QueueEntryStatus, TodoItemState, TokenUsage, TranscriptEntry,
-        TranscriptEntryKind, TurnRecord, TurnTerminalCheckpointRecord, TurnTerminalKind,
-        TurnTerminalRecord, TurnTerminalSummary, TurnTriggerSummary, WorkItemPlanStatus,
-        WorkItemRecord,
+        QueueEntryRecord, QueueEntryStatus, TodoItemState, TokenUsage, ToolExecutionAuditEvent,
+        TranscriptEntry, TranscriptEntryKind, TurnRecord, TurnTerminalCheckpointRecord,
+        TurnTerminalKind, TurnTerminalRecord, TurnTerminalSummary, TurnTriggerSummary,
+        WorkItemPlanStatus, WorkItemRecord,
     },
 };
 
@@ -3166,29 +3167,40 @@ impl TurnExecution<'_> {
 
                         runtime.inner.storage.append_event(&AuditEvent::new(
                             "tool_executed",
-                            serde_json::json!({
-                                "tool_call_id": tool_call_id,
-                                "tool_name": tool_name,
-                                "turn_index": turn_index,
-                                "run_id": run_id,
-                                "work_item_id": record.work_item_id.clone(),
-                                "exec_command_cmd": command_preview_field(&call),
-                                "exec_command_display": command_display_field(&call),
-                                "exec_command_batch_items": command_batch_preview_field(&call),
-                                "exec_command_result": exec_command_result_field(&call, &result.envelope),
-                                "apply_patch_result": apply_patch_result_field(&call, &result.envelope),
-                                "tool_result": generic_tool_result_field(&call, &result.envelope),
-                                "exec_command_cost": command_cost_field(
+                            to_json_value(&ToolExecutionAuditEvent {
+                                tool_call_id: tool_call_id.clone(),
+                                tool_execution_id: record.id.clone(),
+                                agent_id: record.agent_id.clone(),
+                                tool_name: tool_name.clone(),
+                                turn_index,
+                                turn_id: record.turn_id.clone(),
+                                run_id,
+                                work_item_id: record.work_item_id.clone(),
+                                status: record.status.clone(),
+                                duration_ms,
+                                summary: record.summary.clone(),
+                                exec_command_cmd: command_preview_field(&call),
+                                exec_command_display: command_display_field(&call),
+                                exec_command_batch_items: command_batch_preview_field(&call),
+                                exec_command_cost: command_cost_field(
                                     &call,
                                     runtime.inner.default_tool_output_tokens,
-                                    runtime.inner.max_tool_output_tokens
+                                    runtime.inner.max_tool_output_tokens,
                                 ),
-                                "status": record.status,
-                                "duration_ms": duration_ms,
-                                "summary": record.summary,
-                                "error": result.tool_error().map(|error| error.render()),
-                                "error_kind": result.tool_error().map(|error| error.kind.clone()),
-                                "tool_error": result.tool_error().cloned(),
+                                exec_command_disposition: exec_command_disposition_field(
+                                    &call,
+                                    &result.envelope,
+                                ),
+                                exit_status: exec_command_exit_status_field(
+                                    &call,
+                                    &result.envelope,
+                                ),
+                                task_handle: exec_command_task_handle_field(
+                                    &call,
+                                    &result.envelope,
+                                ),
+                                error: result.tool_error().map(|error| error.render()),
+                                error_kind: result.tool_error().map(|error| error.kind.clone()),
                             }),
                         ))?;
                         tool_result_envelopes.push(result.envelope.clone());
@@ -3607,26 +3619,33 @@ fn command_batch_preview_field(call: &ToolCall) -> Option<Value> {
     (!previews.is_empty()).then(|| Value::Array(previews))
 }
 
-fn exec_command_result_field(call: &ToolCall, envelope: &ToolResultEnvelope) -> Option<Value> {
+fn exec_command_disposition_field(
+    call: &ToolCall,
+    envelope: &ToolResultEnvelope,
+) -> Option<String> {
     matches!(call.name.as_str(), "ExecCommand" | "ExecCommandBatch")
-        .then(|| envelope.result.clone())
+        .then(|| envelope.result.as_ref())
         .flatten()
+        .and_then(|result| result.get("disposition"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
-fn apply_patch_result_field(call: &ToolCall, envelope: &ToolResultEnvelope) -> Option<Value> {
-    (call.name == "ApplyPatch")
-        .then(|| envelope.result.clone())
+fn exec_command_exit_status_field(call: &ToolCall, envelope: &ToolResultEnvelope) -> Option<i32> {
+    matches!(call.name.as_str(), "ExecCommand" | "ExecCommandBatch")
+        .then(|| envelope.result.as_ref())
         .flatten()
+        .and_then(|result| result.get("exit_status"))
+        .and_then(Value::as_i64)
+        .map(|status| status as i32)
 }
 
-fn generic_tool_result_field(call: &ToolCall, envelope: &ToolResultEnvelope) -> Option<Value> {
-    if matches!(
-        call.name.as_str(),
-        "ExecCommand" | "ExecCommandBatch" | "ApplyPatch"
-    ) {
-        return None;
-    }
-    envelope.result.clone()
+fn exec_command_task_handle_field(call: &ToolCall, envelope: &ToolResultEnvelope) -> Option<Value> {
+    matches!(call.name.as_str(), "ExecCommand" | "ExecCommandBatch")
+        .then(|| envelope.result.as_ref())
+        .flatten()
+        .and_then(|result| result.get("task_handle"))
+        .cloned()
 }
 
 fn command_cost_field(

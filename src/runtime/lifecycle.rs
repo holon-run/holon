@@ -700,11 +700,11 @@ impl RuntimeHandle {
             } else {
                 "agent_model_override_set"
             },
-            serde_json::json!({
-                "agent_id": next_state.id,
-                "model": model_state,
-                "pending_next_turn": turn_in_progress,
-            }),
+            to_json_value(&AgentModelOverrideAuditEvent::from_model_state(
+                next_state.id,
+                &model_state,
+                turn_in_progress,
+            )),
         )?;
         Ok(model_state)
     }
@@ -733,11 +733,11 @@ impl RuntimeHandle {
             } else {
                 "agent_model_override_cleared"
             },
-            serde_json::json!({
-                "agent_id": next_state.id,
-                "model": model_state,
-                "pending_next_turn": turn_in_progress,
-            }),
+            to_json_value(&AgentModelOverrideAuditEvent::from_model_state(
+                next_state.id,
+                &model_state,
+                turn_in_progress,
+            )),
         )?;
         Ok(model_state)
     }

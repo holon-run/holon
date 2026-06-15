@@ -3539,6 +3539,95 @@
         "title": "TimerRecord",
         "type": "object"
       },
+      "ToolExecutionRecord": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "authority_class": {
+            "enum": [
+              "operator_instruction",
+              "runtime_instruction",
+              "integration_signal",
+              "external_evidence"
+            ],
+            "type": "string"
+          },
+          "completed_at": {
+            "default": null,
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "duration_ms": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "input": true,
+          "invocation_surface": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output": true,
+          "status": {
+            "enum": [
+              "success",
+              "error"
+            ],
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "tool_name": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_index": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "work_item_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "agent_id",
+          "tool_name",
+          "created_at",
+          "authority_class",
+          "status",
+          "input",
+          "output",
+          "summary"
+        ],
+        "title": "ToolExecutionRecord",
+        "type": "object"
+      },
       "UninstallSkillRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -4705,6 +4794,73 @@
         "summary": "Timer detail",
         "tags": [
           "timers"
+        ]
+      }
+    },
+    "/agents/{agent_id}/tool-executions/{tool_execution_id}": {
+      "get": {
+        "description": "Return a persisted tool execution record by id.",
+        "operationId": "agentToolExecution",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Tool execution id.",
+            "in": "path",
+            "name": "tool_execution_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolExecutionRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Tool execution detail",
+        "tags": [
+          "tools"
         ]
       }
     },

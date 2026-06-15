@@ -258,7 +258,9 @@ Every stream event should use one canonical envelope.
 - `provenance`
   - provenance fields duplicated for client recovery and indexing
 - `payload`
-  - full standard event payload
+  - bounded event payload for replay, display, and correlation; payloads should
+    reference canonical records instead of copying large message bodies, task
+    details, tool outputs, or full agent state
 
 ### SSE Projection
 
@@ -280,8 +282,10 @@ Important first-party event families currently include:
 ### Message ingress and queue
 
 - `message_admitted`
-- `message_enqueued`
-- `message_processing_started`
+- `message_enqueued` lightweight message lifecycle payload; full message body
+  is read from message storage
+- `message_processing_started` lightweight message lifecycle payload; full
+  message body is read from message storage
 - `continuation_trigger_received`
 - `continuation_resolved`
 
@@ -306,9 +310,12 @@ Important first-party event families currently include:
 
 ### Tasks and timers
 
-- `task_created`
-- `task_status_updated`
-- `task_result_received`
+- `task_created` lightweight task lifecycle payload; full task detail is read
+  from task storage
+- `task_status_updated` lightweight task lifecycle payload; full task detail is
+  read from task storage
+- `task_result_received` lightweight task lifecycle payload; full task output is
+  read from the task output API
 - `task_requeued_after_restart`
 - `timer_created`
 - `timer_fired`
@@ -350,7 +357,8 @@ Important first-party event families currently include:
 
 ### Optional/secondary runtime detail
 
-- `tool_executed`
+- `tool_executed` lightweight tool lifecycle payload with `tool_execution_id`;
+  full tool input/output is read from tool execution storage
 - `tool_execution_failed`
 - `skill_activated`
 - `system_tick_emitted`

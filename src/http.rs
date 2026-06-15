@@ -229,6 +229,10 @@ pub fn router(state: AppState) -> Router {
             get(task_output),
         )
         .route(
+            "/agents/{agent_id}/tool-executions/{tool_execution_id}",
+            get(tool_execution),
+        )
+        .route(
             "/control/agents/{agent_id}/tasks/{task_id}/input",
             post(task_input),
         )
@@ -2324,6 +2328,30 @@ pub async fn task_output(
     Ok(Json(output))
 }
 
+pub async fn tool_execution(
+    Path((agent_id, tool_execution_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let Some(record) = runtime
+        .storage()
+        .read_tool_execution_by_id(&tool_execution_id)
+        .map_err(error_response)?
+        .filter(|record| record.agent_id == agent_id)
+    else {
+        return Err(not_found(format!(
+            "tool execution {tool_execution_id} not found"
+        )));
+    };
+    Ok(Json(record))
+}
+
 pub async fn task_input(
     Path((agent_id, task_id)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
@@ -3146,33 +3174,15 @@ pub async fn set_agent_model(
     if let Some(reasoning_effort) = request.reasoning_effort.as_deref() {
         validate_reasoning_effort(reasoning_effort)?;
     }
-    let admission_context = control_admission_context(&state);
-    let provided_trust = request.authority_class;
     let model = ModelRef::parse(&request.model).map_err(error_response)?;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    let boundary = current_boundary_metadata(&runtime)
-        .await
-        .map_err(error_response)?;
     let model_state = runtime
         .set_model_override(model.clone(), request.reasoning_effort.clone())
         .await
-        .map_err(error_response)?;
-    runtime
-        .append_audit_event(
-            "agent_model_override_requested",
-            json!({
-                "target_agent_id": agent_id,
-                "override_model": model,
-                "admission_context": admission_context,
-                "provided_trust": provided_trust,
-                "boundary": boundary,
-                "model": model_state,
-            }),
-        )
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
@@ -3194,34 +3204,17 @@ pub async fn clear_agent_model(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<ClearAgentModelRequest>,
+    Json(_request): Json<ClearAgentModelRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
-    let admission_context = control_admission_context(&state);
-    let provided_trust = request.authority_class;
     let runtime = state
         .host
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    let boundary = current_boundary_metadata(&runtime)
-        .await
-        .map_err(error_response)?;
     let model_state = runtime
         .clear_model_override()
         .await
-        .map_err(error_response)?;
-    runtime
-        .append_audit_event(
-            "agent_model_override_clear_requested",
-            json!({
-                "target_agent_id": agent_id,
-                "admission_context": admission_context,
-                "provided_trust": provided_trust,
-                "boundary": boundary,
-                "model": model_state,
-            }),
-        )
         .map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,

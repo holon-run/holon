@@ -60,9 +60,10 @@ impl RuntimeHandle {
             }
             guard.persist_state(&self.inner.storage)?;
         }
-        self.inner
-            .storage
-            .append_event(&AuditEvent::new(transition.event_kind, to_json_value(task)))?;
+        self.inner.storage.append_event(&AuditEvent::new(
+            transition.event_kind,
+            to_json_value(&TaskLifecycleAuditEvent::from_task(task)),
+        ))?;
         Ok(())
     }
 

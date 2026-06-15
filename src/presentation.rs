@@ -2088,9 +2088,15 @@ fn command_status_from_tool_event(event: &ProjectionEventRecord) -> CommandStatu
     if event.kind == "tool_execution_failed" {
         return CommandStatus::Failed;
     }
-    if let Some(disposition) = exec_command_result(event)
-        .and_then(|result| result.get("disposition"))
+    if let Some(disposition) = event
+        .payload
+        .get("exec_command_disposition")
         .and_then(Value::as_str)
+        .or_else(|| {
+            exec_command_result(event)
+                .and_then(|result| result.get("disposition"))
+                .and_then(Value::as_str)
+        })
     {
         return match disposition {
             "promoted_to_task" => CommandStatus::PromotedToTask,
@@ -2109,9 +2115,10 @@ fn command_status_from_tool_event(event: &ProjectionEventRecord) -> CommandStatu
 }
 
 fn command_task_id(event: &ProjectionEventRecord) -> Option<String> {
-    exec_command_result(event)
-        .and_then(|result| result.get("task_handle"))
-        .or_else(|| event.payload.get("task_handle"))
+    event
+        .payload
+        .get("task_handle")
+        .or_else(|| exec_command_result(event).and_then(|result| result.get("task_handle")))
         .and_then(|handle| handle.get("task_id"))
         .and_then(Value::as_str)
         .map(ToString::to_string)

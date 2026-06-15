@@ -290,9 +290,11 @@ Examples:
 - `assistant_round_recorded` with tool calls should be merged with the subsequent
   tool or command item instead of producing `Assistant requested tools: ...`
 - `process_execution_requested` and `tool_executed` should become one command or
-  tool lifecycle item
+  tool lifecycle item; `tool_executed` should carry only bounded metadata and a
+  `tool_execution_id` for full output lookup
 - `task_created`, `task_status_updated`, and `task_result_received` should become
-  one task lifecycle item when they refer to the same task
+  one task lifecycle item when they refer to the same task; full task output
+  should be fetched from task APIs, not audit payloads
 - repeated `work_item_written` events should become work item deltas
 - `provider_round_completed` should usually attach telemetry to the nearest
   assistant/tool cycle rather than render as a standalone row
@@ -381,7 +383,8 @@ Policy:
 - `operator_interjection_admitted`: show as operator input in all main levels
 - `message_processing_aborted`: show only when it explains an abort or
   failure
-- all other message plumbing events: hide in main levels; trace only
+- all other message plumbing events: hide in main levels; trace only; message
+  lifecycle payloads carry ids and provenance, not full message bodies
 
 Rationale:
 
@@ -440,6 +443,11 @@ Events:
 - `tool_executed`
 - `tool_execution_failed`
 - `truncated_mutation_tool_call_rejected`
+
+Payload policy:
+
+- `tool_executed` carries command/tool preview, status, duration, summary, and
+  `tool_execution_id`; full tool input/output belongs in `tool_executions`
 
 Policy:
 
@@ -523,6 +531,11 @@ Events:
 - `command_task_runner_failed`
 - `command_task_running_persisted`
 - `command_task_result_enqueue_failed`
+
+Payload policy:
+
+- task lifecycle events carry task id, status, summary, and small terminal
+  metadata; full detail and command output belong in task storage/output APIs
 
 Policy:
 
@@ -655,6 +668,11 @@ Events:
 - `agent_state_changed` (lightweight state sync)
 - `state_changed`
 - `session_state_changed` (legacy replay only)
+
+Payload policy:
+
+- model override events carry model refs and pending/active status only; full
+  model state should be read from state snapshots
 
 Policy:
 

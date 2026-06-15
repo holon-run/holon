@@ -23,7 +23,8 @@ use holon::{
         CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
         ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
         MessageOrigin, OperatorDeliveryStatus, Priority, TaskKind, TaskRecord, TaskStatus,
-        TodoItem, TodoItemState, WaitingIntentStatus, WorkItemState,
+        TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus, WaitingIntentStatus,
+        WorkItemState,
     },
 };
 use reqwest::Client;
@@ -515,6 +516,56 @@ pub async fn events_stream_includes_tool_payload() -> Result<()> {
         replayed.data["payload"]["artifact_ref"],
         "artifact://test-output"
     );
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn tool_execution_route_returns_canonical_output() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+    let record = ToolExecutionRecord {
+        id: "tool-http-detail".into(),
+        agent_id: "default".into(),
+        work_item_id: Some("work-1".into()),
+        turn_index: 3,
+        turn_id: Some("turn-1".into()),
+        tool_name: "ExecCommand".into(),
+        created_at: chrono::Utc::now(),
+        completed_at: Some(chrono::Utc::now()),
+        duration_ms: 12,
+        authority_class: AuthorityClass::OperatorInstruction,
+        status: ToolExecutionStatus::Success,
+        input: serde_json::json!({"cmd": "printf full-output"}),
+        output: serde_json::json!({
+            "disposition": "completed",
+            "exit_status": 0,
+            "stdout_preview": "full-output".repeat(128)
+        }),
+        summary: "command completed".into(),
+        invocation_surface: None,
+    };
+    runtime.storage().append_tool_execution(&record)?;
+
+    let response = client
+        .get(format!(
+            "{base}/agents/default/tool-executions/tool-http-detail"
+        ))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: ToolExecutionRecord = response.json().await?;
+    assert_eq!(body.id, record.id);
+    assert_eq!(body.output, record.output);
+
+    let missing = client
+        .get(format!(
+            "{base}/agents/default/tool-executions/missing-tool"
+        ))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
 
     server.abort();
     Ok(())
