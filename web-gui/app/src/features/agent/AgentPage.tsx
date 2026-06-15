@@ -259,11 +259,6 @@ export function AgentPage({
               </div>
             ) : null}
             <div className="composer-toolbar">
-              <div className="composer-left">
-                <Button type="button" size="icon" variant="ghost" aria-label="Attach">
-                  ＋
-                </Button>
-              </div>
               <div className="composer-right">
                 <div className="model-picker">
                   <Button
