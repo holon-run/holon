@@ -1730,7 +1730,7 @@ code {
   border-top: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
   background: transparent;
   cursor: pointer;
-  font: inherit;
+  font-family: inherit;
   text-align: left;
 }
 
