@@ -44,7 +44,7 @@ const displayLevelRank: Record<DisplayLevel, number> = {
 const maxTimelineSourceIds = 200;
 const infoRuntimeEvents = new Set(["brief_created", "wait_condition_registered", "agent_waiting"]);
 const verboseRuntimeEventPrefixes = ["work_item_"];
-const debugRuntimeEventNames = new Set(["work_item_stale_reminder_injected"]);
+const debugRuntimeEventNames = new Set(["work_item_focus_released", "work_item_stale_reminder_injected"]);
 const debugRuntimeEventPrefixes = ["provider_", "task_"];
 const debugRuntimeEvents = new Set([
   "message_enqueued",
@@ -709,42 +709,20 @@ function summarizeWorkItemEvent(eventType: string, payload: Record<string, unkno
   const action = stringField(payload, "action") ?? eventType.replace(/^work_item_/, "");
   const record = asRecord(payload?.record);
   const objective = stringField(record, "objective");
-  const id = stringField(record, "id") ?? stringField(payload, "work_item_id");
   const reason = stringField(payload, "reason");
   if (eventType === "work_item_picked") {
-    return compactJoin(["Picked work item", objective ?? id, reason]);
+    return compactJoin(["Picked work item", objective, reason]);
   }
   if (eventType === "work_item_focus_released") {
-    return compactJoin(["Released work item focus", objective ?? id, reason, stringField(payload, "readiness")]);
+    return compactJoin(["Released work item focus", objective, reason, stringField(payload, "readiness")]);
   }
   if (eventType === "work_item_completion_report_promoted") {
-    return compactJoin([
-      "Promoted completion report",
-      objective ?? id,
-      stringField(payload, "brief_id"),
-      sourceTurnRound(payload),
-      stringField(payload, "text_preview"),
-    ]);
+    return compactJoin(["Promoted completion report", objective, stringField(payload, "text_preview")]);
   }
   if (eventType === "work_item_completion_report_candidate_promoted") {
-    return compactJoin([
-      "Promoted completion report candidate",
-      objective ?? id,
-      stringField(payload, "brief_id"),
-      sourceTurnRound(payload),
-      stringField(payload, "text_preview"),
-    ]);
+    return compactJoin(["Promoted completion report candidate", objective, stringField(payload, "text_preview")]);
   }
-  return compactJoin([humanizeEventType(`work_item_${action}`), objective, id]);
-}
-
-function sourceTurnRound(payload: Record<string, unknown> | undefined): string | undefined {
-  const turn = numberField(payload, "source_turn_index") ?? numberField(payload, "turn_index");
-  const round = numberField(payload, "source_round") ?? numberField(payload, "round");
-  if (turn == null && round == null) return undefined;
-  if (turn == null) return `round ${round}`;
-  if (round == null) return `turn ${turn}`;
-  return `turn ${turn} round ${round}`;
+  return compactJoin([humanizeEventType(`work_item_${action}`), objective]);
 }
 
 function summarizeDebugEvent(eventType: string, payload: Record<string, unknown> | undefined): string {

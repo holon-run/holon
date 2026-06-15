@@ -82,7 +82,7 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
-  it("renders work_item_picked objective, id, and reason", () => {
+  it("renders work_item_picked objective and reason without internal ids", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
         events: [
@@ -137,8 +137,8 @@ describe("reduceAgentSessionTimeline", () => {
         id: "released",
         kind: "system",
         label: "Work item",
-        body: "Released work item focus · work_456 · completed · ready",
-        minDisplayLevel: "verbose",
+        body: "Released work item focus · completed · ready",
+        minDisplayLevel: "debug",
       }),
     );
   });
@@ -168,7 +168,7 @@ describe("reduceAgentSessionTimeline", () => {
         id: "promoted",
         kind: "system",
         label: "Work item",
-        body: "Promoted completion report · work_789 · brief_123 · turn 7 round 2 · Finished the implementation.",
+        body: "Promoted completion report · Finished the implementation.",
       }),
     );
   });
@@ -198,7 +198,7 @@ describe("reduceAgentSessionTimeline", () => {
         id: "candidate-promoted",
         kind: "system",
         label: "Work item",
-        body: "Promoted completion report candidate · work_abc · brief_abc · turn 8 round 1 · Candidate completion text.",
+        body: "Promoted completion report candidate · Candidate completion text.",
       }),
     );
   });
