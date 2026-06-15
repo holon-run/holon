@@ -10,6 +10,15 @@ interface InspectorPanelProps {
   onClose: () => void;
 }
 
+function formatInspectorJson(value: unknown): string {
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 export function InspectorPanel({ agent, selection, open, onClearSelection, onClose }: InspectorPanelProps) {
   const title = selection?.kind === "activity" ? activityInspectorTitle(selection.activity) : "Session overview";
 
@@ -204,6 +213,7 @@ function WorkItemCard({ workItem, featured = false }: { workItem: NonNullable<Ag
 
 function ActivityDetails({ activity }: { activity: AgentTimelineActivity }) {
   const detail = activity.detail;
+  const rawEventText = formatInspectorJson(activity.rawEvent);
 
   return (
     <div className="inspector-stack">
@@ -246,9 +256,19 @@ function ActivityDetails({ activity }: { activity: AgentTimelineActivity }) {
           className="inspector-empty"
           icon="⌁"
           title="No structured detail"
-          description="This activity has no projected detail yet, so only its timeline summary is available."
+          description="This activity has no projected detail yet. Use the raw event below for the source payload."
         />
       )}
+
+      {rawEventText ? (
+        <section className="context-card inspector-card inspector-detail data">
+          <div className="context-head">
+            <span className="eyebrow">Raw event</span>
+            <strong>Source payload</strong>
+          </div>
+          <pre>{rawEventText}</pre>
+        </section>
+      ) : null}
     </div>
   );
 }

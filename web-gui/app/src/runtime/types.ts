@@ -189,6 +189,7 @@ export interface AgentTimelineActivity {
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
   detail?: AgentTimelineItemDetail;
+  rawEvent?: unknown;
   debug?: string;
 }
 
@@ -209,6 +210,7 @@ export interface AgentTimelineItem {
   sourceIds: string[];
   detail?: AgentTimelineItemDetail;
   activities?: AgentTimelineActivity[];
+  rawEvent?: unknown;
   debug?: string;
 }
 

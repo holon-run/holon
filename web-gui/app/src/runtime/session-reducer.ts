@@ -32,6 +32,7 @@ interface SessionItemDraft {
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
   detail?: AgentTimelineItemDetail;
+  rawEvent?: unknown;
   debug?: string;
 }
 
@@ -131,6 +132,7 @@ function projectEventEnvelope(
     minDisplayLevel: eventProjectionDisplayLevel(projection.minDisplayLevel, eventDisplayLevel),
     sourceIds: [id],
     detail: projection.detail,
+    rawEvent: event,
     debug: includeDebug ? debugJson(event) : undefined,
   });
 }
@@ -361,6 +363,7 @@ function activityToTimelineItem(activity: AgentTimelineActivity): AgentTimelineI
     minDisplayLevel: activity.minDisplayLevel,
     sourceIds: activity.sourceIds,
     detail: activity.detail,
+    rawEvent: activity.rawEvent,
     debug: activity.debug,
   };
 }
