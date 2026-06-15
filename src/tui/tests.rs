@@ -3847,6 +3847,32 @@ fn slim_projection_operator_message_hydrates_from_message_evidence() {
     ));
 }
 
+#[tokio::test]
+async fn stale_message_hydration_completion_does_not_block_selected_agent() {
+    let client = LocalClient::new(test_config()).unwrap();
+    let mut app = TuiApp::new(
+        client,
+        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
+    );
+
+    let snapshot = sample_snapshot("default", "evt-0");
+    let mut projection = TuiProjection::from_snapshot(snapshot);
+    projection.replace_event_window(
+        vec![slim_operator_message_event_envelope(
+            "message-1",
+            0,
+            "default",
+        )],
+        Some(0),
+    );
+    app.projection = Some(projection);
+    app.message_hydration_in_flight = Some("stale-agent".into());
+
+    app.apply_messages_hydrated("stale-agent".into(), Ok(Vec::new()));
+
+    assert_eq!(app.message_hydration_in_flight, Some("default".to_string()));
+}
+
 #[test]
 fn projection_operator_message_deduplicates_unreconciled_optimistic_entry_by_body() {
     let client = LocalClient::new(test_config()).unwrap();

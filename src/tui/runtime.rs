@@ -400,7 +400,7 @@ impl TuiApp {
         self.snapshot_refresh_in_flight = false;
         self.stream_connect_in_flight = false;
         self.event_history_load_in_flight = false;
-        self.message_hydration_in_flight = false;
+        self.message_hydration_in_flight = None;
         self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
         self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
         self.event_history_request_id = self.event_history_request_id.saturating_add(1);
@@ -868,18 +868,18 @@ impl TuiApp {
     }
 
     pub(super) fn begin_message_hydration_if_needed(&mut self) {
-        if self.message_hydration_in_flight {
-            return;
-        }
         let Some(projection) = self.projection.as_ref() else {
             return;
         };
         let agent_id = projection.agent.identity.agent_id.clone();
+        if self.message_hydration_in_flight.as_ref() == Some(&agent_id) {
+            return;
+        }
         let message_ids = projection.missing_message_ids_for_hydration();
         if message_ids.is_empty() {
             return;
         }
-        self.message_hydration_in_flight = true;
+        self.message_hydration_in_flight = Some(agent_id.clone());
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
         tokio::spawn(async move {
@@ -897,13 +897,17 @@ impl TuiApp {
         agent_id: String,
         result: Result<Vec<MessageEnvelope>, String>,
     ) {
+        if self.message_hydration_in_flight.as_ref() == Some(&agent_id) {
+            self.message_hydration_in_flight = None;
+        }
         let Some(projection) = self.projection.as_mut() else {
+            self.begin_message_hydration_if_needed();
             return;
         };
         if projection.agent.identity.agent_id != agent_id {
+            self.begin_message_hydration_if_needed();
             return;
         }
-        self.message_hydration_in_flight = false;
         let messages = match result {
             Ok(messages) => messages,
             Err(error) => {
@@ -1016,7 +1020,7 @@ impl TuiApp {
         self.snapshot_refresh_in_flight = false;
         self.stream_connect_in_flight = false;
         self.event_history_load_in_flight = false;
-        self.message_hydration_in_flight = false;
+        self.message_hydration_in_flight = None;
         self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
         self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
         self.event_history_request_id = self.event_history_request_id.saturating_add(1);
