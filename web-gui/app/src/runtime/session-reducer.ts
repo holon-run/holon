@@ -61,6 +61,20 @@ const displayLevelRank: Record<DisplayLevel, number> = {
   debug: 2,
 };
 const maxTimelineSourceIds = 200;
+const infoRuntimeEvents = new Set(["brief_created", "wait_condition_registered", "agent_waiting"]);
+const verboseRuntimeEventPrefixes = ["work_item_"];
+const debugRuntimeEventPrefixes = ["provider_", "task_"];
+const debugRuntimeEvents = new Set([
+  "message_enqueued",
+  "message_processing_started",
+  "turn_local_checkpoint_resume_requested",
+  "turn_local_checkpoint_requested",
+  "turn_local_checkpoint_recorded",
+  "continuation_trigger_received",
+  "continuation_resolved",
+  "closure_decided",
+]);
+const debugOnlyToolNames = new Set(["WaitFor"]);
 
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
   const transcriptItems = input.transcript.map(projectTranscriptEntry);
@@ -280,7 +294,7 @@ function projectEventEnvelope(
     body: projection.body,
     timestamp: projection.timestamp ?? event.ts ?? "",
     meta,
-    minDisplayLevel: capDisplayLevel(projection.minDisplayLevel, eventDisplayLevel),
+    minDisplayLevel: eventProjectionDisplayLevel(projection.minDisplayLevel, eventDisplayLevel),
     sourceIds: [id],
     detail: projection.detail,
     debug: includeDebug ? debugJson(event) : undefined,
@@ -295,8 +309,11 @@ function eventMeta(eventType: string, payload: Record<string, unknown> | undefin
   return eventRef == null ? eventType : `${eventType} · ${eventRef}`;
 }
 
-function capDisplayLevel(level: DisplayLevel, maxLevel: DisplayLevel): DisplayLevel {
-  void maxLevel;
+function eventProjectionDisplayLevel(level: DisplayLevel, eventDisplayLevel: DisplayLevel): DisplayLevel {
+  // `eventDisplayLevel` describes the API page that supplied the event. It must
+  // not promote or demote a semantic projection: display filtering is applied
+  // later against each item's intrinsic `minDisplayLevel`.
+  void eventDisplayLevel;
   return level;
 }
 
@@ -319,7 +336,7 @@ function projectRuntimeEvent(
       kind: "system",
       label: "Message queued",
       body: message?.body || readableText(payload) || "Runtime message queued.",
-      minDisplayLevel: "debug",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -329,7 +346,7 @@ function projectRuntimeEvent(
       label: stringField(payload, "kind") === "result" ? "Result" : "Brief Created",
       body: stringField(payload, "text") ?? "Brief text unavailable.",
       timestamp: stringField(payload, "created_at"),
-      minDisplayLevel: "info",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -347,23 +364,16 @@ function projectRuntimeEvent(
       label: "Started processing",
       body: compactJoin([stringField(payload, "origin") === "operator" ? "Operator input" : undefined, stringField(payload, "run_id")]) ||
         "Agent started processing input.",
-      minDisplayLevel: "debug",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
-  if (
-    eventType === "turn_local_checkpoint_resume_requested" ||
-    eventType === "turn_local_checkpoint_requested" ||
-    eventType === "turn_local_checkpoint_recorded" ||
-    eventType === "continuation_trigger_received" ||
-    eventType === "continuation_resolved" ||
-    eventType === "closure_decided"
-  ) {
+  if (debugRuntimeEvents.has(eventType)) {
     return {
       kind: "system",
       label: systemRuntimeLabel(eventType),
       body: summarizeSystemRuntimeEvent(eventType, payload),
-      minDisplayLevel: "debug",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -372,7 +382,7 @@ function projectRuntimeEvent(
       kind: "system",
       label: "Work item",
       body: summarizeWorkItemEvent(eventType, payload),
-      minDisplayLevel: "verbose",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -381,7 +391,7 @@ function projectRuntimeEvent(
       kind: "system",
       label: "Waiting",
       body: readableText(payload) || "Agent is waiting for an external condition.",
-      minDisplayLevel: "info",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -399,7 +409,7 @@ function projectRuntimeEvent(
       kind: "event",
       label: humanizeEventType(eventType),
       body: summarizeDebugEvent(eventType, payload),
-      minDisplayLevel: "debug",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -409,6 +419,15 @@ function projectRuntimeEvent(
     body: readableText(payload) || humanizeEventType(eventType),
     minDisplayLevel: "debug",
   };
+}
+
+function runtimeEventDisplayLevel(eventType: string): DisplayLevel {
+  if (infoRuntimeEvents.has(eventType)) return "info";
+  if (eventType.includes("failed") || eventType.includes("error")) return "info";
+  if (debugRuntimeEvents.has(eventType)) return "debug";
+  if (debugRuntimeEventPrefixes.some((prefix) => eventType.startsWith(prefix))) return "debug";
+  if (verboseRuntimeEventPrefixes.some((prefix) => eventType.startsWith(prefix))) return "verbose";
+  return "debug";
 }
 
 function projectAssistantRoundRecorded(
@@ -616,6 +635,7 @@ function projectToolExecution(
 }
 
 function toolTimelineDisplayLevel(toolName: string): DisplayLevel {
+  if (debugOnlyToolNames.has(toolName)) return "debug";
   return "verbose";
 }
 
