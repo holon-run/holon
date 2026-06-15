@@ -289,7 +289,7 @@ function timelineDedupeKey(item: AgentTimelineItem): string {
     return `operator:${normalizeTextKey(item.body)}`;
   }
   if (item.kind === "assistant") {
-    return `assistant:${normalizeTextKey(item.body)}`;
+    return `assistant:${item.id}`;
   }
   return `item:${item.id}`;
 }

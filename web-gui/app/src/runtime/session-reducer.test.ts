@@ -444,7 +444,7 @@ describe("filterTimelineByDisplayLevel", () => {
 });
 
 describe("mergeAgentTimelineItems", () => {
-  it("merges semantic duplicates and combines source ids", () => {
+  it("merges duplicate assistant items by source identity", () => {
     const merged = mergeAgentTimelineItems(
       [
         timelineItem({
@@ -457,7 +457,7 @@ describe("mergeAgentTimelineItems", () => {
       ],
       [
         timelineItem({
-          id: "brief-1",
+          id: "event-1",
           kind: "assistant",
           body: "same answer",
           meta: "brief_created",
@@ -473,6 +473,31 @@ describe("mergeAgentTimelineItems", () => {
         sourceIds: ["brief-1", "event-1"],
       }),
     );
+  });
+
+  it("keeps repeated final briefs with the same text from different events", () => {
+    const merged = mergeAgentTimelineItems(
+      [
+        timelineItem({
+          id: "brief-old",
+          kind: "assistant",
+          body: "Ignored.",
+          meta: "brief_created · event #1",
+          sourceIds: ["brief-old"],
+        }),
+      ],
+      [
+        timelineItem({
+          id: "brief-new",
+          kind: "assistant",
+          body: "Ignored.",
+          meta: "brief_created · event #2",
+          sourceIds: ["brief-new"],
+        }),
+      ],
+    );
+
+    expect(merged.map((item) => item.id)).toEqual(["brief-old", "brief-new"]);
   });
 });
 
