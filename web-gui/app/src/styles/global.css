@@ -1402,19 +1402,13 @@ code {
 }
 
 .message {
-  max-width: min(820px, 78%);
+  max-width: min(820px, 100%);
 }
 
 .message:not(.activity-message) {
   position: relative;
-}
-
-.message.assistant {
+  width: min(820px, 100%);
   align-self: flex-start;
-}
-
-.message.operator {
-  align-self: flex-end;
 }
 
 .message.activity-message {
@@ -1426,58 +1420,39 @@ code {
 
 .bubble {
   position: relative;
-  padding: 14px 16px;
-  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
-  border-radius: 18px;
-  background: var(--bubble);
-  box-shadow: var(--shadow-card);
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .operator .bubble {
-  border-top-right-radius: 5px;
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--accent) 13%, transparent), transparent 140px),
-    var(--surface);
+  border-radius: 0;
+  background: transparent;
   color: var(--text);
 }
 
 .assistant .bubble {
-  border-top-left-radius: 5px;
-  background: var(--surface);
+  border-radius: 0;
+  background: transparent;
 }
 
 .operator .bubble::before,
 .assistant .bubble::before {
-  position: absolute;
-  content: "";
-  top: 12px;
-  bottom: 12px;
-  left: 0;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--line-strong);
-}
-
-.operator .bubble::before {
-  background: var(--accent);
-}
-
-.assistant .bubble::before {
-  background: var(--success);
+  content: none;
 }
 
 .assistant + .assistant {
-  margin-top: -9px;
+  margin-top: -4px;
 }
 
 .message.is-compact {
-  margin-top: -10px;
+  margin-top: -5px;
 }
 
 .message.is-compact .bubble {
-  padding-top: 11px;
-  border-top-left-radius: 17px;
+  padding-top: 0;
 }
 
 .assistant + .activity-message,
@@ -1833,7 +1808,7 @@ code {
 }
 
 .message.operator .message-meta {
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 
 .message.activity-message .message-meta {
@@ -1844,7 +1819,7 @@ code {
 .message-actions {
   display: flex;
   position: absolute;
-  top: 6px;
+  top: 0;
   right: -34px;
   z-index: 2;
   flex-direction: column;
@@ -1853,11 +1828,6 @@ code {
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
-}
-
-.message.operator .message-actions {
-  right: auto;
-  left: -34px;
 }
 
 .message:not(.activity-message):hover .message-actions,
