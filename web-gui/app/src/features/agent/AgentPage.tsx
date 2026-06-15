@@ -322,6 +322,26 @@ export function AgentPage({
                             <b>Step 2</b>
                             {currentProvider} models
                           </span>
+                          {activeModelOption?.supportsReasoningEffort || currentProviderModels.some((option) => option.supportsReasoningEffort) ? (
+                            <div className="model-picker-reasoning" aria-label="Thinking level">
+                              <span>
+                                <b>Thinking</b>
+                                Choose before selecting a reasoning model
+                              </span>
+                              <div className="reasoning-options">
+                                {["auto", "low", "medium", "high"].map((effort) => (
+                                  <button
+                                    className={selectedReasoningEffort === effort ? "is-active" : ""}
+                                    key={effort}
+                                    type="button"
+                                    onClick={() => setSelectedReasoningEffort(effort)}
+                                  >
+                                    {titleCase(effort)}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
                           <div className="model-options" role="listbox" aria-label={`${currentProvider} models`}>
                             {currentProviderModels.map((option) => (
                               <button
@@ -346,23 +366,6 @@ export function AgentPage({
                           </div>
                         </div>
                       </div>
-                      {activeModelOption?.supportsReasoningEffort || currentProviderModels.some((option) => option.supportsReasoningEffort) ? (
-                        <div className="model-picker-section" aria-label="Thinking level">
-                          <span>Thinking</span>
-                          <div className="reasoning-options">
-                            {["auto", "low", "medium", "high"].map((effort) => (
-                              <button
-                                className={selectedReasoningEffort === effort ? "is-active" : ""}
-                                key={effort}
-                                type="button"
-                                onClick={() => setSelectedReasoningEffort(effort)}
-                              >
-                                {titleCase(effort)}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
                       {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
                         <EmptyState
                           className="model-picker-empty"

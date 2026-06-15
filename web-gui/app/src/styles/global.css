@@ -2011,6 +2011,32 @@ code {
   display: grid;
 }
 
+.model-picker-reasoning {
+  display: grid;
+  gap: 7px;
+  margin: 8px 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-soft) 88%, var(--accent));
+}
+
+.model-picker-reasoning > span {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.model-picker-reasoning > span b {
+  color: var(--accent);
+  font: inherit;
+  text-transform: uppercase;
+}
+
 .model-provider-option,
 .reasoning-options button {
   border: 1px solid var(--line);
