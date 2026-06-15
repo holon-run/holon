@@ -113,6 +113,96 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
+  it("renders focus release details from top-level work item fields", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "released",
+            event_seq: 11,
+            type: "work_item_focus_released",
+            payload: {
+              work_item_id: "work_456",
+              reason: "completed",
+              readiness: "ready",
+              revision: 3,
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "released",
+        kind: "system",
+        label: "Work item",
+        body: "Released work item focus · work_456 · completed · ready",
+        minDisplayLevel: "verbose",
+      }),
+    );
+  });
+
+  it("renders completion report promotion details and preview", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "promoted",
+            event_seq: 12,
+            type: "work_item_completion_report_promoted",
+            payload: {
+              work_item_id: "work_789",
+              brief_id: "brief_123",
+              source_turn_index: 7,
+              source_round: 2,
+              text_preview: "Finished the implementation.",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "promoted",
+        kind: "system",
+        label: "Work item",
+        body: "Promoted completion report · work_789 · brief_123 · turn 7 round 2 · Finished the implementation.",
+      }),
+    );
+  });
+
+  it("renders completion report candidate promotion details and preview", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "candidate-promoted",
+            event_seq: 13,
+            type: "work_item_completion_report_candidate_promoted",
+            payload: {
+              work_item_id: "work_abc",
+              brief_id: "brief_abc",
+              turn_index: 8,
+              round: 1,
+              text_preview: "Candidate completion text.",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "candidate-promoted",
+        kind: "system",
+        label: "Work item",
+        body: "Promoted completion report candidate · work_abc · brief_abc · turn 8 round 1 · Candidate completion text.",
+      }),
+    );
+  });
+
   it("keeps stale WorkItem reminders at debug level", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
