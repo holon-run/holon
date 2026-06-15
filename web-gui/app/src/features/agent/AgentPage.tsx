@@ -760,7 +760,6 @@ function WorkingIndicator({
   const parts = [
     agent.currentWork?.objective,
     agent.activeTaskCount ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}` : undefined,
-    agent.pending ? `${agent.pending} queued` : undefined,
   ].filter(Boolean);
 
   if (displayLevel !== "info" || activities.length === 0) {
