@@ -480,7 +480,7 @@ pub async fn subagent_task_failure_propagates_failed_output_to_parent() -> Resul
     let events = runtime.recent_events(20).await?;
     assert!(events.iter().any(|event| {
         event.kind == "task_result_received"
-            && event.data.get("id").and_then(|value| value.as_str()) == Some(task.id.as_str())
+            && event.data.get("task_id").and_then(|value| value.as_str()) == Some(task.id.as_str())
             && event.data.get("status").and_then(|value| value.as_str()) == Some("failed")
     }));
     Ok(())
