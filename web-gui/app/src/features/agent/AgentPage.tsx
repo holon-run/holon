@@ -91,6 +91,7 @@ export function AgentPage({
   const hasHiddenTimelineItems = timeline.length >= visibleTimelineItemLimit && sourceTimeline.length > visibleTimelineItemLimit;
   const groupedModelOptions = useMemo(() => groupModelOptionsByProvider(modelCatalog.options), [modelCatalog.options]);
   const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.model === activeAgent.model), [activeAgent.model, modelCatalog.options]);
+  const activeModelSupportsReasoning = activeModelOption?.supportsReasoningEffort ?? Boolean(activeAgent.modelReasoningEffort);
   const currentProvider = selectedProvider ?? activeModelOption?.provider ?? groupedModelOptions[0]?.provider ?? "runtime";
   const currentProviderModels = groupedModelOptions.find((group) => group.provider === currentProvider)?.models ?? [];
 
@@ -98,6 +99,7 @@ export function AgentPage({
     setVisibleTimelineItemLimit(defaultTimelineItemLimit(displayLevel));
     setModelPickerOpen(false);
     setSelectedProvider(null);
+    setSelectedReasoningEffort(activeAgent.modelReasoningEffort ?? "auto");
   }, [activeAgent.id, displayLevel]);
 
   useLayoutEffect(() => {
@@ -264,6 +266,7 @@ export function AgentPage({
                 <div className="model-picker">
                   <Button className="model-button" type="button" variant="secondary" aria-expanded={modelPickerOpen} onClick={toggleModelPicker}>
                     <span>{shortModelLabel(activeAgent.model)}</span>
+                    {activeModelSupportsReasoning ? <small>{activeAgent.modelReasoningEffort ? `thinking ${activeAgent.modelReasoningEffort}` : "thinking auto"}</small> : null}
                     {activeAgent.modelSource === "agent_override" ? <small>override</small> : null}
                     <span aria-hidden="true">⌄</span>
                   </Button>
@@ -322,14 +325,14 @@ export function AgentPage({
                             <b>Step 2</b>
                             {currentProvider} models
                           </span>
-                          {activeModelOption?.supportsReasoningEffort || currentProviderModels.some((option) => option.supportsReasoningEffort) ? (
+                          {activeModelSupportsReasoning || currentProviderModels.some((option) => option.supportsReasoningEffort) ? (
                             <div className="model-picker-reasoning" aria-label="Thinking level">
                               <span>
                                 <b>Thinking</b>
                                 Choose before selecting a reasoning model
                               </span>
                               <div className="reasoning-options">
-                                {["auto", "low", "medium", "high"].map((effort) => (
+                                {["auto", "low", "medium", "high", "xhigh"].map((effort) => (
                                   <button
                                     className={selectedReasoningEffort === effort ? "is-active" : ""}
                                     key={effort}

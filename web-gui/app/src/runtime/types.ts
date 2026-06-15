@@ -56,6 +56,7 @@ export interface AgentSummary {
   attention: string;
   model: string;
   modelSource?: "runtime_default" | "agent_override";
+  modelReasoningEffort?: string;
   footer: string;
   subtitle: string;
   lastBrief: string;

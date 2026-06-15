@@ -42,6 +42,7 @@ function disconnectedAgentDetail(agentId: string, error: string): AgentDetail {
       workspace: "unavailable",
       attention: "API disconnected",
       model: "unavailable",
+      modelReasoningEffort: undefined,
       footer: "disconnected",
       subtitle: "Runtime API unavailable",
       lastBrief: "",
@@ -110,6 +111,7 @@ interface AgentListEntryDto {
     source?: "runtime_default" | "agent_override";
     effective_model?: string;
     active_model?: string | null;
+    override_reasoning_effort?: string | null;
   };
   active_workspace_entry?: {
     workspace_id?: string;
@@ -247,6 +249,7 @@ interface AgentModelStateDto {
   source?: "runtime_default" | "agent_override";
   effective_model?: string;
   active_model?: string | null;
+  override_reasoning_effort?: string | null;
 }
 
 interface AgentModelResponseDto {
@@ -739,6 +742,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const postureReason = state?.agent?.scheduling_posture?.reason ?? entry.scheduling_posture?.reason ?? "posture unavailable";
   const model = state?.agent?.model?.active_model ?? state?.agent?.model?.effective_model ?? entry.model?.active_model ?? entry.model?.effective_model ?? "runtime default";
   const modelSource = state?.agent?.model?.source ?? entry.model?.source;
+  const modelReasoningEffort = state?.agent?.model?.override_reasoning_effort ?? entry.model?.override_reasoning_effort ?? undefined;
   const lifecycle = stringifyLifecycle(state?.agent?.lifecycle ?? entry.lifecycle ?? status);
   const currentRunId = state?.session?.current_run_id ?? entry.current_run_id ?? null;
 
@@ -752,6 +756,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     attention: attentionLabel(pending, waitingCount),
     model,
     modelSource,
+    modelReasoningEffort: modelReasoningEffort ?? undefined,
     footer: `${lifecycle} · ${posture}`,
     subtitle: `${status} · ${workspace}`,
     lastBrief: brief?.text ?? "",

@@ -557,6 +557,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         updateAgentModelInState(state, agentId, {
           model: modelState?.active_model ?? modelState?.effective_model ?? model,
           modelSource: modelState?.source ?? "agent_override",
+          modelReasoningEffort: modelState?.override_reasoning_effort ?? undefined,
         }),
       );
       await get().refreshAgentDetail(agentId, displayLevel);
@@ -580,6 +581,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         updateAgentModelInState(state, agentId, {
           model: modelState?.active_model ?? modelState?.effective_model ?? "runtime default",
           modelSource: modelState?.source ?? "runtime_default",
+          modelReasoningEffort: modelState?.override_reasoning_effort ?? undefined,
         }),
       );
       await get().refreshAgentDetail(agentId, displayLevel);
@@ -947,7 +949,7 @@ function buildBootstrapMetrics(agents: AgentSummary[]): RuntimeBootstrap["metric
 function updateAgentModelInState(
   state: RuntimeStoreState,
   agentId: string,
-  modelPatch: Pick<AgentSummary, "model"> & Partial<Pick<AgentSummary, "modelSource">>,
+  modelPatch: Pick<AgentSummary, "model"> & Partial<Pick<AgentSummary, "modelSource" | "modelReasoningEffort">>,
 ): Partial<RuntimeStoreState> {
   const session = state.sessionsByAgentId[agentId];
   const detail = session?.detail
