@@ -327,7 +327,7 @@ pub async fn lifecycle_stop_interrupts_active_command_task() -> Result<()> {
     let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| {
         event.kind == "task_interrupted_on_agent_stop"
-            && event.data.get("id").and_then(|value| value.as_str()) == Some(task.id.as_str())
+            && event.data.get("task_id").and_then(|value| value.as_str()) == Some(task.id.as_str())
     }));
 
     let active_tasks = runtime.active_tasks(10).await?;
@@ -1892,7 +1892,7 @@ pub async fn command_task_stop_cancels_running_command() -> Result<()> {
     let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| {
         event.kind == "task_result_received"
-            && event.data.get("id").and_then(|value| value.as_str()) == Some(task.id.as_str())
+            && event.data.get("task_id").and_then(|value| value.as_str()) == Some(task.id.as_str())
             && event.data.get("status").and_then(|value| value.as_str()) == Some("cancelled")
     }));
 
@@ -2217,7 +2217,7 @@ pub async fn command_task_runner_failure_marks_task_failed_and_cleans_up() -> Re
     let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| {
         event.kind == "task_result_received"
-            && event.data.get("id").and_then(|value| value.as_str()) == Some(task.id.as_str())
+            && event.data.get("task_id").and_then(|value| value.as_str()) == Some(task.id.as_str())
             && event.data.get("status").and_then(|value| value.as_str()) == Some("failed")
     }));
     Ok(())
@@ -2315,7 +2315,7 @@ pub async fn command_task_nonzero_exit_produces_failed_output_and_runtime_state(
     let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| {
         event.kind == "task_result_received"
-            && event.data.get("id").and_then(|value| value.as_str()) == Some(task.id.as_str())
+            && event.data.get("task_id").and_then(|value| value.as_str()) == Some(task.id.as_str())
             && event.data.get("status").and_then(|value| value.as_str()) == Some("failed")
     }));
     Ok(())
