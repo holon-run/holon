@@ -1649,6 +1649,66 @@ pub struct AgentState {
     pub last_runtime_failure: Option<RuntimeFailureSummary>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentStateChangedEvent {
+    pub agent_id: String,
+    pub status: AgentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sleeping_until: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_run_id: Option<String>,
+    pub pending: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_wake_reason: Option<String>,
+    pub turn_index: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_turn_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_terminal: Option<TurnTerminalSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attached_workspace_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_execution_root_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_workspace_occupancy_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub worktree_active: bool,
+}
+
+impl AgentStateChangedEvent {
+    pub fn from_state(state: &AgentState) -> Self {
+        let active_workspace = state.active_workspace_entry.as_ref();
+        Self {
+            agent_id: state.id.clone(),
+            status: state.status.clone(),
+            sleeping_until: state.sleeping_until,
+            current_run_id: state.current_run_id.clone(),
+            pending: state.pending,
+            last_wake_reason: state.last_wake_reason.clone(),
+            turn_index: state.turn_index,
+            current_turn_id: state.current_turn_id.clone(),
+            current_turn_work_item_id: state.current_turn_work_item_id.clone(),
+            current_work_item_id: state.current_work_item_id.clone(),
+            last_turn_terminal: state
+                .last_turn_terminal
+                .as_ref()
+                .map(TurnTerminalSummary::from_terminal),
+            attached_workspace_ids: state.attached_workspaces.clone(),
+            active_workspace_id: active_workspace.map(|entry| entry.workspace_id.clone()),
+            active_execution_root_id: active_workspace.map(|entry| entry.execution_root_id.clone()),
+            active_workspace_occupancy_id: active_workspace
+                .and_then(|entry| entry.occupancy_id.clone()),
+            worktree_active: state.worktree_session.is_some(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct TokenUsage {
     pub input_tokens: u64,
@@ -4386,6 +4446,72 @@ mod tests {
             serde_json::to_value(status).unwrap(),
             serde_json::json!("aborted")
         );
+    }
+
+    #[test]
+    fn agent_state_changed_event_is_bounded_state_summary() {
+        let mut state = AgentState::new("agent-a");
+        state.status = AgentStatus::AwakeRunning;
+        state.current_run_id = Some("run-1".into());
+        state.pending = 3;
+        state.last_wake_reason = Some("operator_message".into());
+        state.turn_index = 42;
+        state.current_turn_id = Some("turn-42".into());
+        state.current_turn_work_item_id = Some("turn-work".into());
+        state.current_work_item_id = Some("work-current".into());
+        state.context_summary = Some("large summary that must stay out of the event".into());
+        state.working_memory.archived_episode_count = 9;
+        state.attached_workspaces = vec!["ws-a".into(), "ws-b".into()];
+        state.active_workspace_entry = Some(ActiveWorkspaceEntry {
+            workspace_id: "ws-b".into(),
+            workspace_anchor: PathBuf::from("/tmp/ws-b"),
+            execution_root_id: "root-b".into(),
+            execution_root: PathBuf::from("/tmp/ws-b"),
+            projection_kind: WorkspaceProjectionKind::CanonicalRoot,
+            access_mode: WorkspaceAccessMode::ExclusiveWrite,
+            cwd: PathBuf::from("/tmp/ws-b"),
+            occupancy_id: Some("occupancy-b".into()),
+            projection_metadata: Some(serde_json::json!({
+                "large": "metadata that must stay out of the event"
+            })),
+        });
+        state.worktree_session = Some(WorktreeSession {
+            original_cwd: PathBuf::from("/tmp/ws-b"),
+            original_branch: "main".into(),
+            worktree_path: PathBuf::from("/tmp/ws-b-worktree"),
+            worktree_branch: "feature/state-event".into(),
+        });
+        state.last_turn_terminal = Some(TurnTerminalRecord {
+            turn_id: "turn-41".into(),
+            turn_index: 41,
+            kind: TurnTerminalKind::Completed,
+            reason: None,
+            last_assistant_message: Some("assistant output that must stay out of the event".into()),
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 123,
+        });
+
+        let payload = serde_json::to_value(AgentStateChangedEvent::from_state(&state)).unwrap();
+
+        assert_eq!(payload["agent_id"], "agent-a");
+        assert_eq!(payload["status"], "awake_running");
+        assert_eq!(payload["current_run_id"], "run-1");
+        assert_eq!(payload["pending"], 3);
+        assert_eq!(payload["turn_index"], 42);
+        assert_eq!(payload["active_workspace_id"], "ws-b");
+        assert_eq!(payload["active_execution_root_id"], "root-b");
+        assert_eq!(payload["active_workspace_occupancy_id"], "occupancy-b");
+        assert_eq!(payload["worktree_active"], true);
+        assert_eq!(payload["last_turn_terminal"]["kind"], "completed");
+
+        assert!(payload.get("working_memory").is_none());
+        assert!(payload.get("context_summary").is_none());
+        assert!(payload.get("active_workspace_entry").is_none());
+        assert!(payload.get("worktree_session").is_none());
+        assert!(payload["last_turn_terminal"]
+            .get("last_assistant_message")
+            .is_none());
     }
 
     #[test]

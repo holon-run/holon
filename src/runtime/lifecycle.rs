@@ -229,14 +229,11 @@ impl RuntimeHandle {
     }
 
     pub(super) fn append_state_changed_events(&self, state: &AgentState) -> Result<()> {
-        let state_payload = to_json_value(state);
+        let state_payload = AgentStateChangedEvent::from_state(state);
         self.inner.storage.append_event(&AuditEvent::new(
             "agent_state_changed",
-            state_payload.clone(),
+            to_json_value(&state_payload),
         ))?;
-        self.inner
-            .storage
-            .append_event(&AuditEvent::new("session_state_changed", state_payload))?;
         Ok(())
     }
 
