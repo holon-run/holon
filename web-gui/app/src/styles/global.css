@@ -1402,12 +1402,12 @@ code {
 }
 
 .message {
-  max-width: min(820px, 100%);
+  max-width: 100%;
 }
 
 .message:not(.activity-message) {
   position: relative;
-  width: min(820px, 100%);
+  width: 100%;
   align-self: flex-start;
 }
 
@@ -1420,6 +1420,7 @@ code {
 
 .bubble {
   position: relative;
+  max-width: min(820px, 100%);
   padding: 2px 0;
   border: 0;
   border-radius: 0;
@@ -1428,12 +1429,14 @@ code {
 }
 
 .operator .bubble {
+  margin-left: auto;
   border-radius: 0;
   background: transparent;
   color: var(--text);
 }
 
 .assistant .bubble {
+  margin-right: auto;
   border-radius: 0;
   background: transparent;
 }
@@ -1808,7 +1811,7 @@ code {
 }
 
 .message.operator .message-meta {
-  justify-content: flex-start;
+  justify-content: flex-end;
 }
 
 .message.activity-message .message-meta {
@@ -1828,6 +1831,11 @@ code {
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
+}
+
+.message.operator .message-actions {
+  right: auto;
+  left: -34px;
 }
 
 .message:not(.activity-message):hover .message-actions,
