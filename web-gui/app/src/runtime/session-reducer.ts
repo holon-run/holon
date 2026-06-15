@@ -42,7 +42,7 @@ const displayLevelRank: Record<DisplayLevel, number> = {
   debug: 2,
 };
 const maxTimelineSourceIds = 200;
-const infoRuntimeEvents = new Set(["brief_created", "wait_condition_registered", "agent_waiting"]);
+const infoRuntimeEvents = new Set(["brief_created", "agent_waiting"]);
 const verboseRuntimeEventPrefixes = ["work_item_"];
 const debugRuntimeEventNames = new Set(["work_item_focus_released", "work_item_stale_reminder_injected"]);
 const debugRuntimeEventPrefixes = ["provider_", "task_"];

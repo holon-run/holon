@@ -1084,7 +1084,8 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
     const baseDetail = current.detail ?? createLiveAgentDetail(state.bootstrap.agents.find((agent) => agent.id === agentId));
     const highestIncomingSeq = highestSeq(eventSeqs) ?? 0;
     const runPatch = agentRunPatchFromEvents(uniqueEvents);
-    const patchedBaseDetail = baseDetail && runPatch ? patchAgentDetailRunState(baseDetail, runPatch) : baseDetail;
+    const briefPatch = agentBriefPatchFromEvents(uniqueEvents);
+    const patchedBaseDetail = patchAgentDetail(baseDetail, runPatch, briefPatch);
     const detail = patchedBaseDetail
       ? {
           ...patchedBaseDetail,
@@ -1097,7 +1098,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
 
     return {
       bootstrap: sortBootstrapAgents(
-        runPatch ? patchBootstrapAgentRunState(state.bootstrap, agentId, runPatch) : state.bootstrap,
+        patchBootstrapAgent(state.bootstrap, agentId, runPatch, briefPatch),
         rosterActivityByAgentId,
       ),
       rosterActivityByAgentId,
@@ -1116,6 +1117,22 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
       },
     };
   });
+}
+
+function agentBriefPatchFromEvents(events: StreamEventEnvelopeDto[]): Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined {
+  let patch: Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined;
+  for (const event of events) {
+    if (event.type !== "brief_created") continue;
+    const payload = asRecord(event.payload);
+    const text = stringField(payload, "text");
+    if (!text) continue;
+    const createdAt = stringField(payload, "created_at") ?? event.ts;
+    patch = {
+      lastBrief: text,
+      lastTurnTime: formatTime(createdAt),
+    };
+  }
+  return patch;
 }
 
 function agentRunPatchFromEvents(events: StreamEventEnvelopeDto[]): Pick<AgentSummary, "currentRunId" | "lifecycle"> | undefined {
@@ -1148,26 +1165,31 @@ function runIdFromPayload(payload: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function patchBootstrapAgentRunState(
+function patchBootstrapAgent(
   bootstrap: RuntimeBootstrap,
   agentId: string,
-  patch: Pick<AgentSummary, "currentRunId" | "lifecycle">,
+  runPatch: Pick<AgentSummary, "currentRunId" | "lifecycle"> | undefined,
+  briefPatch: Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined,
 ): RuntimeBootstrap {
+  if (!runPatch && !briefPatch) return bootstrap;
   return {
     ...bootstrap,
-    agents: bootstrap.agents.map((agent) => (agent.id === agentId ? { ...agent, ...patch } : agent)),
+    agents: bootstrap.agents.map((agent) => (agent.id === agentId ? { ...agent, ...runPatch, ...briefPatch } : agent)),
   };
 }
 
-function patchAgentDetailRunState(
-  detail: AgentDetail,
-  patch: Pick<AgentSummary, "currentRunId" | "lifecycle">,
-): AgentDetail {
+function patchAgentDetail(
+  detail: AgentDetail | null,
+  runPatch: Pick<AgentSummary, "currentRunId" | "lifecycle"> | undefined,
+  briefPatch: Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined,
+): AgentDetail | null {
+  if (!detail || (!runPatch && !briefPatch)) return detail;
   return {
     ...detail,
     agent: {
       ...detail.agent,
-      ...patch,
+      ...runPatch,
+      ...briefPatch,
     },
   };
 }
@@ -1258,4 +1280,11 @@ function mergeTimeline(existing: AgentTimelineItem[], incoming: AgentTimelineIte
 function sortableTime(value: string): number {
   const timestamp = Date.parse(value);
   return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function formatTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
 }

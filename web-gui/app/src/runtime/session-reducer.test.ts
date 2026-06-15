@@ -336,6 +336,33 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
+  it("keeps wait condition registrations out of the Info timeline", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "wait-condition",
+            event_seq: 14,
+            type: "wait_condition_registered",
+            payload: {
+              reason: "awaiting external change",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "wait-condition",
+        kind: "system",
+        label: "Waiting",
+        minDisplayLevel: "debug",
+      }),
+    );
+    expect(filterTimelineByDisplayLevel(timeline, "info")).toEqual([]);
+  });
+
   it("dedupes assistant previews covered by final briefs", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
