@@ -34,6 +34,7 @@ const START_STABILITY_WINDOW: Duration = Duration::from_secs(2);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub const PRE_SERVER_PREPARED_ENV: &str = "HOLON_PRE_SERVER_RUNTIME_PREPARED";
+pub const DAEMON_SERVE_ARGS_ENV: &str = "HOLON_DAEMON_SERVE_ARGS";
 const UNIX_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[cfg(test)]
@@ -188,6 +189,14 @@ pub async fn daemon_start(
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
+    let safe_serve_args = serve_args
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    command.env(
+        DAEMON_SERVE_ARGS_ENV,
+        serde_json::to_string(&safe_serve_args)?,
+    );
     if let Some(token) = control_token_env {
         command.env("HOLON_CONTROL_TOKEN", token);
     }

@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{env, fs, path::PathBuf, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
@@ -22,6 +22,10 @@ pub struct RuntimeServiceMetadata {
     pub http_addr: String,
     pub started_at: DateTime<Utc>,
     pub config_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub serve_args: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub control_token_env_configured: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -232,6 +236,11 @@ impl RuntimeServiceHandle {
                     http_addr: config.http_addr.clone(),
                     started_at: Utc::now(),
                     config_fingerprint: super::config_fingerprint(config)?,
+                    serve_args: env::var(super::DAEMON_SERVE_ARGS_ENV)
+                        .ok()
+                        .and_then(|value| serde_json::from_str(&value).ok())
+                        .unwrap_or_default(),
+                    control_token_env_configured: env::var_os("HOLON_CONTROL_TOKEN").is_some(),
                 },
                 shutdown_tx,
             }),

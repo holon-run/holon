@@ -148,6 +148,8 @@ fn runtime_service_metadata_round_trips() {
         http_addr: config.http_addr.clone(),
         started_at: Utc::now(),
         config_fingerprint: config_fingerprint(&config).unwrap(),
+        serve_args: Vec::new(),
+        control_token_env_configured: false,
     };
     let encoded = serde_json::to_vec(&metadata).unwrap();
     let decoded: RuntimeServiceMetadata = serde_json::from_slice(&encoded).unwrap();
@@ -482,6 +484,8 @@ async fn probe_runtime_reports_running_when_socket_missing_but_pid_alive() {
         http_addr: metadata_http.clone(),
         started_at: Utc::now(),
         config_fingerprint: config_fingerprint(&config).unwrap(),
+        serve_args: Vec::new(),
+        control_token_env_configured: false,
     };
     fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
     // Intentionally do NOT create the socket — simulate externally removed socket.
@@ -514,6 +518,8 @@ async fn probe_runtime_reports_running_when_socket_refuses_but_pid_alive() {
         http_addr: config.http_addr.clone(),
         started_at: Utc::now(),
         config_fingerprint: config_fingerprint(&config).unwrap(),
+        serve_args: Vec::new(),
+        control_token_env_configured: false,
     };
     fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
 
@@ -538,6 +544,8 @@ fn runtime_status_metadata_match_rejects_foreign_runtime() {
         http_addr: config.http_addr.clone(),
         started_at: Utc::now(),
         config_fingerprint: config_fingerprint(&config).unwrap(),
+        serve_args: Vec::new(),
+        control_token_env_configured: false,
     };
     let matching_status = RuntimeStatusResponse {
         ok: true,
@@ -575,6 +583,8 @@ async fn daemon_status_surfaces_dead_pid_and_leftover_socket_as_stale() {
         http_addr: config.http_addr.clone(),
         started_at: Utc::now(),
         config_fingerprint: config_fingerprint(&config).unwrap(),
+        serve_args: Vec::new(),
+        control_token_env_configured: false,
     };
     fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
     let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
@@ -606,6 +616,8 @@ async fn serve_preflight_cleans_dead_pid_and_leftover_socket_state() {
         http_addr: config.http_addr.clone(),
         started_at: Utc::now(),
         config_fingerprint: config_fingerprint(&config).unwrap(),
+        serve_args: Vec::new(),
+        control_token_env_configured: false,
     };
     fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
     let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
@@ -739,6 +751,8 @@ async fn daemon_stop_treats_missing_pid_process_as_stale_state() {
         http_addr: config.http_addr.clone(),
         started_at: Utc::now(),
         config_fingerprint: config_fingerprint(&config).unwrap(),
+        serve_args: Vec::new(),
+        control_token_env_configured: false,
     };
     fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
 
@@ -770,6 +784,8 @@ async fn daemon_stop_uses_recorded_runtime_http_addr_when_socket_is_missing() {
         http_addr: metadata_http.clone(),
         started_at: Utc::now(),
         config_fingerprint: config_fingerprint(&config).unwrap(),
+        serve_args: Vec::new(),
+        control_token_env_configured: false,
     };
     fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
 
@@ -862,6 +878,8 @@ async fn daemon_stop_errors_on_permission_denied_signals() {
         http_addr: config.http_addr.clone(),
         started_at: Utc::now(),
         config_fingerprint: config_fingerprint(&config).unwrap(),
+        serve_args: Vec::new(),
+        control_token_env_configured: false,
     };
     fs::write(&paths.metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
 
