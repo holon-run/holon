@@ -979,7 +979,7 @@ pub enum MessageBody {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct BriefAttachment {
     pub kind: String,
     pub name: String,
@@ -3951,6 +3951,102 @@ impl MessageLifecycleAuditEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BriefCreatedAuditEvent {
+    pub brief_id: String,
+    #[serde(alias = "session_id")]
+    pub agent_id: String,
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_index: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    pub kind: BriefKind,
+    pub created_at: DateTime<Utc>,
+    pub text_preview: String,
+    pub text_len: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related_task_id: Option<String>,
+}
+
+impl BriefCreatedAuditEvent {
+    pub fn from_brief(brief: &BriefRecord) -> Self {
+        Self {
+            brief_id: brief.id.clone(),
+            agent_id: brief.agent_id.clone(),
+            workspace_id: brief.workspace_id.clone(),
+            work_item_id: brief.work_item_id.clone(),
+            turn_index: brief.turn_index,
+            turn_id: brief.turn_id.clone(),
+            kind: brief.kind,
+            created_at: brief.created_at,
+            text_preview: truncate_audit_preview(&brief.text, 600),
+            text_len: brief.text.chars().count(),
+            related_message_id: brief.related_message_id.clone(),
+            related_task_id: brief.related_task_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkItemLifecycleAuditEvent {
+    #[serde(alias = "session_id")]
+    pub agent_id: String,
+    pub work_item_id: String,
+    pub workspace_id: String,
+    pub revision: u64,
+    pub action: String,
+    pub state: WorkItemState,
+    pub plan_status: WorkItemPlanStatus,
+    pub readiness: WorkItemReadiness,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    pub objective_preview: String,
+    pub objective_len: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_brief_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_summary_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_by_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recheck_at: Option<DateTime<Utc>>,
+}
+
+impl WorkItemLifecycleAuditEvent {
+    pub fn from_work_item(action: impl Into<String>, record: &WorkItemRecord) -> Self {
+        Self {
+            agent_id: record.agent_id.clone(),
+            work_item_id: record.id.clone(),
+            workspace_id: record.workspace_id.clone(),
+            revision: record.revision,
+            action: action.into(),
+            state: record.state.clone(),
+            plan_status: record.plan_status,
+            readiness: record.readiness(),
+            updated_at: record.updated_at,
+            turn_id: record.turn_id.clone(),
+            objective_preview: truncate_audit_preview(&record.objective, 600),
+            objective_len: record.objective.chars().count(),
+            result_brief_id: record.result_brief_id.clone(),
+            result_summary_preview: record
+                .result_summary
+                .as_deref()
+                .map(|value| truncate_audit_preview(value, 600)),
+            blocked_by_preview: record
+                .blocked_by
+                .as_deref()
+                .map(|value| truncate_audit_preview(value, 600)),
+            recheck_at: record.recheck_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskLifecycleAuditEvent {
     pub task_id: String,
     #[serde(alias = "session_id")]
@@ -4090,7 +4186,7 @@ fn detail_i64(detail: Option<&Value>, field: &str) -> Option<i64> {
         .and_then(Value::as_i64)
 }
 
-fn truncate_audit_preview(value: &str, max_chars: usize) -> String {
+pub(crate) fn truncate_audit_preview(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
     }
@@ -4167,7 +4263,7 @@ impl TranscriptEntry {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BriefKind {
     Ack,
@@ -4189,7 +4285,7 @@ impl BriefKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct BriefRecord {
     pub id: String,
     #[serde(alias = "session_id")]
@@ -5412,6 +5508,75 @@ mod tests {
         assert!(payload.get("metadata").is_none());
         assert!(!payload.to_string().contains("large-message-body"));
         assert!(!payload.to_string().contains("large-message-metadata"));
+    }
+
+    #[test]
+    fn brief_created_audit_event_omits_full_text_and_attachments() {
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "large-brief-text".repeat(1024),
+            Some("msg-1".into()),
+            Some("task-1".into()),
+        );
+        brief.work_item_id = Some("wi-1".into());
+        brief.attachments = Some(vec![BriefAttachment {
+            kind: "json".into(),
+            name: "large".into(),
+            uri: None,
+            value: Some(serde_json::json!({
+                "large_attachment": "large-attachment-value".repeat(1024)
+            })),
+        }]);
+
+        let payload = serde_json::to_value(BriefCreatedAuditEvent::from_brief(&brief)).unwrap();
+
+        assert_eq!(payload["brief_id"], brief.id);
+        assert_eq!(payload["work_item_id"], "wi-1");
+        assert!(payload.get("text").is_none());
+        assert!(payload.get("attachments").is_none());
+        assert!(payload["text_preview"].as_str().unwrap().len() < brief.text.len());
+        assert!(!payload.to_string().contains("large-attachment-value"));
+    }
+
+    #[test]
+    fn work_item_lifecycle_audit_event_omits_full_record_payload() {
+        let mut record = WorkItemRecord::new(
+            "default",
+            "large-work-item-objective".repeat(1024),
+            WorkItemState::Open,
+        );
+        record.plan_artifact = Some(WorkItemPlanArtifact {
+            owner_agent_id: "default".into(),
+            workspace_id: AGENT_HOME_WORKSPACE_ID.into(),
+            workspace_alias: None,
+            relative_path: PathBuf::from("plans/wi.md"),
+            path: PathBuf::from("/tmp/plans/wi.md"),
+            hash: "hash".into(),
+            bytes: 42,
+            updated_at: Utc::now(),
+            preview: "large-plan-preview".repeat(1024),
+            preview_complete: true,
+        });
+        record.todo_list.push(TodoItem {
+            text: "large-todo".repeat(1024),
+            state: TodoItemState::Pending,
+        });
+        record.result_summary = Some("result-summary".into());
+
+        let payload = serde_json::to_value(WorkItemLifecycleAuditEvent::from_work_item(
+            "updated", &record,
+        ))
+        .unwrap();
+
+        assert_eq!(payload["work_item_id"], record.id);
+        assert_eq!(payload["action"], "updated");
+        assert!(payload.get("record").is_none());
+        assert!(payload.get("plan_artifact").is_none());
+        assert!(payload.get("todo_list").is_none());
+        assert!(payload["objective_preview"].as_str().unwrap().len() < record.objective.len());
+        assert!(!payload.to_string().contains("large-plan-preview"));
+        assert!(!payload.to_string().contains("large-todo"));
     }
 
     #[test]

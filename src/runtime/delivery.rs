@@ -12,6 +12,10 @@ impl RuntimeHandle {
         self.inner.storage.read_recent_briefs(limit)
     }
 
+    pub async fn brief_by_id(&self, brief_id: &str) -> Result<Option<BriefRecord>> {
+        self.inner.storage.read_brief_by_id(brief_id)
+    }
+
     pub async fn recent_operator_messages(
         &self,
         limit: usize,
@@ -87,7 +91,7 @@ impl RuntimeHandle {
         self.persist_brief_evidence(&bound_brief)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "brief_created",
-            to_json_value(&bound_brief),
+            to_json_value(&BriefCreatedAuditEvent::from_brief(&bound_brief)),
         ))?;
         let mut guard = self.inner.agent.lock().await;
         guard.state.last_brief_at = Some(bound_brief.created_at);

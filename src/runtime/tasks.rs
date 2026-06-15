@@ -2160,13 +2160,7 @@ impl RuntimeHandle {
             .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
         self.inner.runtime_db.work_items().upsert(&record, false)?;
         self.inner.storage.append_work_item(&record)?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_written",
-            serde_json::json!({
-                "action": "created",
-                "record": record,
-            }),
-        ))?;
+        self.append_work_item_written_event("created", &record, Value::Null)?;
         self.inner.notify.notify_one();
         Ok(record)
     }
@@ -2508,15 +2502,17 @@ impl RuntimeHandle {
                     }),
                 ))?;
             }
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_written",
+            self.append_work_item_written_event(
+                "updated",
+                &record,
                 serde_json::json!({
-                    "action": "updated",
-                    "record": record,
-                    "previous_objective": previous_objective,
+                    "previous_objective_preview": crate::types::truncate_audit_preview(
+                        &previous_objective,
+                        600
+                    ),
                     "objective_changed": previous_objective != record.objective,
                 }),
-            ))?;
+            )?;
             if let Some(reason) = focus_release_reason {
                 self.release_current_work_item_if_matches(&agent_id, &record, reason)
                     .await?;
@@ -2653,16 +2649,14 @@ impl RuntimeHandle {
         let continuation_resumed = self
             .resume_direct_caller_after_work_item_completed(&agent_id, &record)
             .await?;
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_written",
+        self.append_work_item_written_event(
+            "completed",
+            &record,
             serde_json::json!({
-                "action": "completed",
-                "record": record,
-                "warnings": warnings.clone(),
                 "warning_count": warnings.len(),
                 "continuation_resumed": continuation_resumed.clone(),
             }),
-        ))?;
+        )?;
         self.inner.notify.notify_one();
         Ok(CompletedWorkItem {
             work_item: record,

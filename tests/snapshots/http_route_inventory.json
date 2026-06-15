@@ -55,6 +55,33 @@
   },
   {
     "method": "get",
+    "path": "/agents/{agent_id}/briefs/{brief_id}",
+    "handler": "brief",
+    "operation_id": "agentBrief",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "brief_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/agents/{agent_id}/events",
     "handler": "events",
     "operation_id": "agentEvents",

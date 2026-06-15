@@ -286,13 +286,7 @@ impl RuntimeHandle {
                 }),
             ))?;
         }
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_written",
-            serde_json::json!({
-                "action": "wait_for_blocked",
-                "record": record.clone(),
-            }),
-        ))?;
+        self.append_work_item_written_event("wait_for_blocked", &record, Value::Null)?;
         Ok(record)
     }
 
@@ -371,14 +365,13 @@ impl RuntimeHandle {
                 }),
             ))?;
         }
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_written",
+        self.append_work_item_written_event(
+            "wait_for_task_resolved",
+            &record,
             serde_json::json!({
-                "action": "wait_for_task_resolved",
-                "record": record.clone(),
                 "wait_condition_id": condition.id,
             }),
-        ))?;
+        )?;
         Ok(())
     }
 
@@ -447,16 +440,15 @@ impl RuntimeHandle {
                 }),
             ))?;
         }
-        self.inner.storage.append_event(&AuditEvent::new(
-            "work_item_written",
+        self.append_work_item_written_event(
+            "pick_blocker_cleared",
+            &record,
             serde_json::json!({
-                "action": "pick_blocker_cleared",
-                "record": record.clone(),
                 "reason": reason,
                 "cancelled_wait_condition_ids": cancelled_wait_condition_ids.clone(),
                 "cancelled_waiting_intent_ids": cancelled_waiting_intent_ids.clone(),
             }),
-        ))?;
+        )?;
         self.inner.notify.notify_one();
         Ok(WorkItemBlockerClearance {
             work_item: record,

@@ -45,6 +45,104 @@
         ],
         "type": "object"
       },
+      "BriefRecord": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "attachments": {
+            "items": {
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "uri": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "value": true
+              },
+              "required": [
+                "kind",
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "ack",
+              "result",
+              "failure"
+            ],
+            "type": "string"
+          },
+          "related_message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "related_task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_index": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "work_item_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_id": {
+            "default": "agent_home",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "agent_id",
+          "kind",
+          "created_at",
+          "text"
+        ],
+        "title": "BriefRecord",
+        "type": "object"
+      },
       "CallbackBody": {
         "description": "Raw callback request body. JSON and text bodies are parsed; other content types are represented internally as base64 JSON."
       },
@@ -4160,6 +4258,73 @@
           "agents"
         ],
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
+      }
+    },
+    "/agents/{agent_id}/briefs/{brief_id}": {
+      "get": {
+        "description": "Return a persisted user-facing delivery brief by id.",
+        "operationId": "agentBrief",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Brief id.",
+            "in": "path",
+            "name": "brief_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BriefRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Brief detail",
+        "tags": [
+          "agents"
+        ]
       }
     },
     "/agents/{agent_id}/enqueue": {

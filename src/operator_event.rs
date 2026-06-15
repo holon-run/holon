@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::{
-    BriefRecord, TaskRecord, TaskStatus, TimerRecord, WaitingIntentRecord, WorkItemRecord,
-    WorkItemState, WorktreeSession,
+    BriefCreatedAuditEvent, BriefRecord, TaskRecord, TaskStatus, TimerRecord, WaitingIntentRecord,
+    WorkItemLifecycleAuditEvent, WorkItemRecord, WorkItemState, WorktreeSession,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -415,11 +415,13 @@ fn brief_visibility(payload: &Value, context: &OperatorPresentationContext) -> O
     if context.awaiting_operator_input {
         return OperatorVisibility::ActionRequired;
     }
-    let Some(brief) = decode_value::<BriefRecord>(payload.clone()) else {
-        return OperatorVisibility::TurnResult;
-    };
-    if brief
-        .work_item_id
+    let work_item_id = decode_value::<BriefRecord>(payload.clone())
+        .and_then(|brief| brief.work_item_id)
+        .or_else(|| {
+            decode_value::<BriefCreatedAuditEvent>(payload.clone())
+                .and_then(|brief| brief.work_item_id)
+        });
+    if work_item_id
         .as_deref()
         .is_some_and(|id| context.completed_work_item_ids.contains(id))
     {
@@ -907,6 +909,7 @@ fn simple_event_text(
 fn brief_text(payload: &Value) -> (String, Option<String>, String) {
     let text = payload
         .get("text")
+        .or_else(|| payload.get("text_preview"))
         .and_then(Value::as_str)
         .map(collapse_whitespace)
         .filter(|text| !text.is_empty())
@@ -1386,29 +1389,46 @@ fn timer_text(
 }
 
 fn work_item_text(payload: &Value, _fallback_summary: &str) -> (String, Option<String>, String) {
-    let Some(record) = payload
+    if let Some(record) = payload
         .get("record")
         .cloned()
         .and_then(decode_value::<WorkItemRecord>)
-    else {
-        return ("Work item updated".into(), None, "Work item updated".into());
-    };
-    let objective = trim_summary(&record.objective);
-    let state = format!("{:?}", record.state);
-    let title = if record.state == WorkItemState::Completed {
+    {
+        return work_item_record_text(
+            &record.objective,
+            record.result_summary.as_deref(),
+            &record.state,
+        );
+    }
+    if let Some(record) = decode_value::<WorkItemLifecycleAuditEvent>(payload.clone()) {
+        return work_item_record_text(
+            &record.objective_preview,
+            record.result_summary_preview.as_deref(),
+            &record.state,
+        );
+    }
+    ("Work item updated".into(), None, "Work item updated".into())
+}
+
+fn work_item_record_text(
+    objective: &str,
+    result_summary: Option<&str>,
+    state: &WorkItemState,
+) -> (String, Option<String>, String) {
+    let objective = trim_summary(objective);
+    let state_label = format!("{:?}", state);
+    let title = if *state == WorkItemState::Completed {
         "Work completed"
     } else {
         "Work item updated"
     };
-    let summary = if record.state == WorkItemState::Completed {
-        record
-            .result_summary
-            .as_deref()
+    let summary = if *state == WorkItemState::Completed {
+        result_summary
             .map(trim_summary)
             .map(|result| format!("Work completed: {result}"))
             .unwrap_or_else(|| format!("Work completed: {objective}"))
     } else {
-        format!("Work item {state}: {objective}")
+        format!("Work item {state_label}: {objective}")
     };
     (title.into(), Some(objective), summary)
 }
@@ -2255,6 +2275,28 @@ mod tests {
     }
 
     #[test]
+    fn brief_created_lightweight_payload_uses_preview_and_work_item_visibility() {
+        let mut context = OperatorPresentationContext::default();
+        context.completed_work_item_ids.insert("wi-1".into());
+        let payload = json!({
+            "brief_id": "brief-1",
+            "agent_id": "default",
+            "workspace_id": "agent_home",
+            "work_item_id": "wi-1",
+            "kind": "result",
+            "created_at": "2026-01-01T00:00:00Z",
+            "text_preview": "completed from preview",
+            "text_len": 22
+        });
+
+        let presentation = present_operator_event("brief_created", &payload, "fallback", &context);
+
+        assert_eq!(presentation.visibility, OperatorVisibility::WorkDone);
+        assert_eq!(presentation.body.as_deref(), Some("completed from preview"));
+        assert_eq!(presentation.summary, "Brief: completed from preview");
+    }
+
+    #[test]
     fn operator_display_mode_parse_accepts_names_and_numeric_aliases() {
         assert_eq!(
             OperatorDisplayMode::parse("3"),
@@ -2452,6 +2494,31 @@ mod tests {
             &context,
             OperatorDisplayMode::Info
         ));
+
+        let lightweight = json!({
+            "agent_id": "default",
+            "work_item_id": "wi-1",
+            "workspace_id": "agent_home",
+            "revision": 3,
+            "action": "completed",
+            "state": "completed",
+            "plan_status": "ready",
+            "readiness": "completed",
+            "updated_at": "2026-01-01T00:00:03Z",
+            "objective_preview": "ship lifecycle display",
+            "objective_len": 22,
+            "result_summary_preview": "merged slim PR"
+        });
+        let lightweight_presentation =
+            present_operator_event("work_item_written", &lightweight, "fallback", &context);
+        assert_eq!(
+            lightweight_presentation.visibility,
+            OperatorVisibility::WorkDone
+        );
+        assert_eq!(
+            lightweight_presentation.summary,
+            "Work completed: merged slim PR"
+        );
 
         let waiting = json!({
             "id": "wait-1",

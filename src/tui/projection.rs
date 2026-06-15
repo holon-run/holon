@@ -27,9 +27,10 @@ use crate::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         ActiveWorkspaceEntry, AgentModelOverrideAuditEvent, AgentState, AgentStateChangedEvent,
-        AgentSummary, BriefRecord, ClosureDecision, ExternalTriggerStateSnapshot, MessageEnvelope,
-        MessageOrigin, TaskLifecycleAuditEvent, TaskRecord, TimerRecord, TimerStatus,
-        WaitingIntentRecord, WorkItemRecord, WorkItemState, WorktreeSession,
+        AgentSummary, BriefCreatedAuditEvent, BriefRecord, ClosureDecision,
+        ExternalTriggerStateSnapshot, MessageEnvelope, MessageOrigin, TaskLifecycleAuditEvent,
+        TaskRecord, TimerRecord, TimerStatus, WaitingIntentRecord, WorkItemLifecycleAuditEvent,
+        WorkItemRecord, WorkItemState, WorktreeSession,
     },
 };
 
@@ -1429,6 +1430,10 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
             .unwrap_or_else(|| "operator message applied".into()),
         "brief_created" => decode_payload::<BriefRecord>(&event.data.payload)
             .map(|brief| trim_summary(&brief.text))
+            .or_else(|| {
+                decode_payload::<BriefCreatedAuditEvent>(&event.data.payload)
+                    .map(|brief| trim_summary(&brief.text_preview))
+            })
             .unwrap_or_else(|| event.data.event_type.clone()),
         "task_created" | "task_status_updated" | "task_result_received" => {
             decode_payload::<TaskRecord>(&event.data.payload)
@@ -1457,6 +1462,10 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
             .cloned()
             .and_then(decode_value::<WorkItemRecord>)
             .map(|record| format!("{} [{:?}]", record.objective, record.state))
+            .or_else(|| {
+                decode_payload::<WorkItemLifecycleAuditEvent>(&event.data.payload)
+                    .map(|record| format!("{} [{:?}]", record.objective_preview, record.state))
+            })
             .unwrap_or_else(|| event.data.event_type.clone()),
         "waiting_intent_created" => decode_payload::<WaitingIntentRecord>(&event.data.payload)
             .map(|waiting| format!("waiting: {}", trim_summary(&waiting.description)))
