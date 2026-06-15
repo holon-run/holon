@@ -161,6 +161,23 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
     });
 
     if let Some(projection) = app.projection.as_ref() {
+        for message in projection.hydrated_operator_messages() {
+            let Some(body) = render_operator_message_body(&message.body) else {
+                continue;
+            };
+            push_projected_conversation_cell(
+                &mut cells,
+                &mut durable_operator_message_bodies,
+                &mut projected_cell_keys,
+                &format!("message:{}", message.id),
+                ConversationCell::UserMessage {
+                    created_at: message.created_at,
+                    body,
+                    status: None,
+                },
+            );
+        }
+
         let level = app.display_mode.display_level();
         let agent_speaker = selected_agent_id.unwrap_or("agent");
         let events: Vec<ProjectionEventRecord> = projection

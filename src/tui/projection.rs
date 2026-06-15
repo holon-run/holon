@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     mem,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -99,6 +99,7 @@ pub(crate) struct TuiProjection {
     event_log: Vec<ProjectionEventRecord>,
     durable_conversation_log: Vec<ProjectionEventRecord>,
     live_working_activity_events: Vec<LiveWorkingActivityRecord>,
+    message_cache: BTreeMap<String, MessageEnvelope>,
 }
 
 impl TuiProjection {
@@ -127,6 +128,7 @@ impl TuiProjection {
             event_log: Vec::new(),
             durable_conversation_log: Vec::new(),
             live_working_activity_events: Vec::new(),
+            message_cache: BTreeMap::new(),
         };
         projection
     }
@@ -146,6 +148,7 @@ impl TuiProjection {
         refreshed.history_paging_active = self.history_paging_active;
         refreshed.event_log = mem::take(&mut self.event_log);
         refreshed.durable_conversation_log = mem::take(&mut self.durable_conversation_log);
+        refreshed.message_cache = mem::take(&mut self.message_cache);
         *self = refreshed;
     }
 
@@ -729,12 +732,85 @@ impl TuiProjection {
             .iter()
             .filter(|event| event.kind == "message_enqueued")
             .filter_map(|event| {
-                serde_json::from_value::<MessageEnvelope>(event.payload.clone())
-                    .ok()
-                    .filter(|message| matches!(message.origin, MessageOrigin::Operator { .. }))
-                    .map(|message| message.id)
+                if self
+                    .message_for_event(event)
+                    .is_some_and(|message| matches!(message.origin, MessageOrigin::Operator { .. }))
+                    || event
+                        .payload
+                        .get("origin")
+                        .and_then(|origin| origin.get("kind"))
+                        == Some(&Value::String("operator".into()))
+                {
+                    message_id_from_event(event).map(ToString::to_string)
+                } else {
+                    None
+                }
             })
             .collect()
+    }
+
+    pub(crate) fn missing_message_ids_for_hydration(&self) -> Vec<String> {
+        self.event_log
+            .iter()
+            .chain(self.durable_conversation_log.iter())
+            .filter(|event| event.kind == "message_enqueued")
+            .filter_map(message_id_from_event)
+            .filter(|message_id| !self.message_cache.contains_key(*message_id))
+            .filter(|message_id| {
+                self.event_log
+                    .iter()
+                    .chain(self.durable_conversation_log.iter())
+                    .filter(|event| event.kind == "message_enqueued")
+                    .filter(|event| message_id_from_event(event) == Some(*message_id))
+                    .all(|event| message_envelope_from_event_payload(event).is_none())
+            })
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    pub(crate) fn hydrate_messages(&mut self, messages: Vec<MessageEnvelope>) -> bool {
+        let mut changed = false;
+        for message in messages {
+            changed |= self
+                .message_cache
+                .insert(message.id.clone(), message)
+                .is_none();
+        }
+        changed
+    }
+
+    pub(crate) fn message_for_event(
+        &self,
+        event: &ProjectionEventRecord,
+    ) -> Option<&MessageEnvelope> {
+        message_id_from_event(event).and_then(|message_id| self.message_cache.get(message_id))
+    }
+
+    pub(crate) fn message_for_event_payload(
+        event: &ProjectionEventRecord,
+    ) -> Option<MessageEnvelope> {
+        message_envelope_from_event_payload(event)
+    }
+
+    pub(crate) fn hydrated_operator_messages(&self) -> Vec<&MessageEnvelope> {
+        let mut seen = BTreeSet::new();
+        let mut messages = self
+            .durable_conversation_log
+            .iter()
+            .filter(|event| event.kind == "message_enqueued")
+            .filter_map(|event| self.message_for_event(event))
+            .filter(|message| matches!(message.origin, MessageOrigin::Operator { .. }))
+            .filter(|message| seen.insert(message.id.clone()))
+            .collect::<Vec<_>>();
+        messages.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.message_seq.cmp(&right.message_seq))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        messages
     }
 
     pub(crate) fn recent_activity_events(&self) -> Vec<&ProjectionEventRecord> {
@@ -1260,6 +1336,18 @@ fn presentation_debug_items_for_event(
 
 fn is_activity_reset_kind(kind: &str) -> bool {
     is_activity_reset_event_kind(kind)
+}
+
+fn message_id_from_event(event: &ProjectionEventRecord) -> Option<&str> {
+    event
+        .payload
+        .get("message_id")
+        .and_then(Value::as_str)
+        .or_else(|| event.payload.get("id").and_then(Value::as_str))
+}
+
+fn message_envelope_from_event_payload(event: &ProjectionEventRecord) -> Option<MessageEnvelope> {
+    serde_json::from_value::<MessageEnvelope>(event.payload.clone()).ok()
 }
 
 fn classify_event_lane(presentation: &OperatorEventPresentation) -> ProjectionEventLane {
