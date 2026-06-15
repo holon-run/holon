@@ -26,9 +26,10 @@ use crate::{
     presentation::render_live_working_activity_text,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        ActiveWorkspaceEntry, AgentState, AgentSummary, BriefRecord, ClosureDecision,
-        ExternalTriggerStateSnapshot, MessageEnvelope, MessageOrigin, TaskRecord, TimerRecord,
-        TimerStatus, WaitingIntentRecord, WorkItemRecord, WorkItemState, WorktreeSession,
+        ActiveWorkspaceEntry, AgentState, AgentStateChangedEvent, AgentSummary, BriefRecord,
+        ClosureDecision, ExternalTriggerStateSnapshot, MessageEnvelope, MessageOrigin, TaskRecord,
+        TimerRecord, TimerStatus, WaitingIntentRecord, WorkItemRecord, WorkItemState,
+        WorktreeSession,
     },
 };
 
@@ -381,7 +382,18 @@ impl TuiProjection {
         self.cursor = Some(event.data.event_seq);
 
         match event.data.event_type.as_str() {
-            "agent_state_changed" | "session_state_changed" => {
+            "agent_state_changed" => {
+                if let Some(state) = decode_payload::<AgentState>(&event.data.payload) {
+                    self.apply_agent_state(state);
+                } else if let Some(state) =
+                    decode_payload::<AgentStateChangedEvent>(&event.data.payload)
+                {
+                    self.apply_agent_state_changed(state);
+                } else {
+                    self.mark_stale([ProjectionSlice::Agent, ProjectionSlice::Session]);
+                }
+            }
+            "session_state_changed" => {
                 if let Some(state) = decode_payload::<AgentState>(&event.data.payload) {
                     self.apply_agent_state(state);
                 } else {
@@ -911,6 +923,48 @@ impl TuiProjection {
         self.stale_slices.remove(&ProjectionSlice::Agent);
         self.stale_slices.remove(&ProjectionSlice::Session);
         self.stale_slices.insert(ProjectionSlice::Workspace);
+    }
+
+    fn apply_agent_state_changed(&mut self, state: AgentStateChangedEvent) {
+        self.session.current_run_id = state.current_run_id.clone();
+        self.session.pending_count = state.pending;
+
+        self.agent.agent.id = state.agent_id;
+        self.agent.agent.status = state.status;
+        self.agent.agent.sleeping_until = state.sleeping_until;
+        self.agent.agent.current_run_id = state.current_run_id;
+        self.agent.agent.pending = state.pending;
+        self.agent.agent.last_wake_reason = state.last_wake_reason;
+        self.agent.agent.turn_index = state.turn_index;
+        self.agent.agent.current_turn_id = state.current_turn_id;
+        self.agent.agent.current_turn_work_item_id = state.current_turn_work_item_id;
+        self.agent.agent.current_work_item_id = state.current_work_item_id;
+        self.agent.agent.attached_workspaces = state.attached_workspace_ids;
+
+        match state.active_workspace_id.as_deref() {
+            None => self.clear_workspace(),
+            Some(active_workspace_id)
+                if self
+                    .agent
+                    .agent
+                    .active_workspace_entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.workspace_id == active_workspace_id) => {}
+            Some(_) => {
+                self.workspace.active_workspace_entry = None;
+                self.workspace.active_workspace_occupancy = None;
+                self.workspace.worktree_session = None;
+                self.agent.agent.active_workspace_entry = None;
+                self.agent.active_workspace_occupancy = None;
+                self.agent.agent.worktree_session = None;
+            }
+        }
+
+        self.mark_stale([
+            ProjectionSlice::Agent,
+            ProjectionSlice::Session,
+            ProjectionSlice::Workspace,
+        ]);
     }
 
     fn apply_timer_fired(&mut self, payload: &Value, fired_at: DateTime<Utc>) -> bool {
@@ -1449,16 +1503,16 @@ mod tests {
         },
         types::{
             AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
-            AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentSummary,
-            AgentTokenUsageSummary, AgentVisibility, BriefKind, BriefRecord, CallbackDeliveryMode,
-            ChildAgentSummary, ClosureDecision, ClosureOutcome, ExternalTriggerScope,
-            ExternalTriggerStateSnapshot, ExternalTriggerStatus, LoadedAgentsMdView, MessageBody,
-            MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-            RuntimePosture, SkillsRuntimeView, TaskRecord, TaskStatus, TimerRecord, TimerStatus,
-            TodoItem, TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord,
-            WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WaitingIntentSummary,
-            WaitingReason, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
-            WorktreeSession,
+            AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState,
+            AgentStateChangedEvent, AgentSummary, AgentTokenUsageSummary, AgentVisibility,
+            BriefKind, BriefRecord, CallbackDeliveryMode, ChildAgentSummary, ClosureDecision,
+            ClosureOutcome, ExternalTriggerScope, ExternalTriggerStateSnapshot,
+            ExternalTriggerStatus, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
+            MessageEnvelope, MessageKind, MessageOrigin, Priority, RuntimePosture,
+            SkillsRuntimeView, TaskRecord, TaskStatus, TimerRecord, TimerStatus, TodoItem,
+            TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord, WaitingIntentRecord,
+            WaitingIntentScope, WaitingIntentStatus, WaitingIntentSummary, WaitingReason,
+            WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
         },
     };
     use chrono::Utc;
@@ -2713,6 +2767,100 @@ mod tests {
         assert!(projection
             .stale_slices
             .contains(&ProjectionSlice::ExternalTriggers));
+    }
+
+    #[test]
+    fn projection_applies_lightweight_agent_state_changed_and_marks_full_slices_stale() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let mut state = projection.agent.agent.clone();
+        state.status = crate::types::AgentStatus::AwakeRunning;
+        state.current_run_id = Some("run-updated".into());
+        state.pending = 7;
+        state.turn_index = 9;
+        state.current_turn_id = Some("turn-updated".into());
+        state.current_turn_work_item_id = Some("turn-work-updated".into());
+        state.current_work_item_id = Some("work-updated".into());
+        state.attached_workspaces = vec!["ws-updated".into()];
+        if let Some(entry) = &mut state.active_workspace_entry {
+            entry.workspace_id = "ws-updated".into();
+        }
+        state.last_turn_terminal = Some(TurnTerminalRecord {
+            turn_index: 8,
+            turn_id: "turn-previous".into(),
+            kind: TurnTerminalKind::Completed,
+            reason: None,
+            last_assistant_message: Some("full terminal text should not be in the event".into()),
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 10,
+        });
+
+        projection.apply_event(
+            sample_event(
+                "agent_state_changed",
+                serde_json::to_value(AgentStateChangedEvent::from_state(&state)).unwrap(),
+            ),
+            &test_log_writer(),
+        );
+
+        assert_eq!(
+            projection.agent.agent.status,
+            crate::types::AgentStatus::AwakeRunning
+        );
+        assert_eq!(
+            projection.session.current_run_id.as_deref(),
+            Some("run-updated")
+        );
+        assert_eq!(projection.session.pending_count, 7);
+        assert_eq!(projection.agent.agent.turn_index, 9);
+        assert_eq!(
+            projection.agent.agent.current_work_item_id.as_deref(),
+            Some("work-updated")
+        );
+        assert_eq!(
+            projection.agent.agent.attached_workspaces,
+            vec!["ws-updated".to_string()]
+        );
+        assert!(projection.agent.agent.active_workspace_entry.is_none());
+        assert!(projection.stale_slices.contains(&ProjectionSlice::Agent));
+        assert!(projection.stale_slices.contains(&ProjectionSlice::Session));
+        assert!(projection
+            .stale_slices
+            .contains(&ProjectionSlice::Workspace));
+    }
+
+    #[test]
+    fn projection_replays_legacy_session_state_changed_full_payload() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let mut state = projection.agent.agent.clone();
+        state.pending = 5;
+        state.current_run_id = Some("legacy-run".into());
+        if let Some(entry) = &mut state.active_workspace_entry {
+            entry.workspace_id = "legacy-ws".into();
+        }
+
+        projection.apply_event(
+            sample_event(
+                "session_state_changed",
+                serde_json::to_value(&state).unwrap(),
+            ),
+            &test_log_writer(),
+        );
+
+        assert_eq!(projection.session.pending_count, 5);
+        assert_eq!(
+            projection.session.current_run_id.as_deref(),
+            Some("legacy-run")
+        );
+        assert_eq!(
+            projection
+                .workspace
+                .active_workspace_entry
+                .as_ref()
+                .map(|entry| entry.workspace_id.as_str()),
+            Some("legacy-ws")
+        );
+        assert!(!projection.stale_slices.contains(&ProjectionSlice::Session));
     }
 
     #[test]

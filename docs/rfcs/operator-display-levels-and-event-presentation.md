@@ -652,9 +652,9 @@ Events:
 - `agent_model_override_set`
 - `agent_model_override_clear_requested`
 - `agent_model_override_cleared`
-- `agent_state_changed`
+- `agent_state_changed` (lightweight state sync)
 - `state_changed`
-- `session_state_changed`
+- `session_state_changed` (legacy replay only)
 
 Policy:
 

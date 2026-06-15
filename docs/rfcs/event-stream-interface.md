@@ -287,8 +287,9 @@ Important first-party event families currently include:
 
 ### Session and lifecycle
 
-- `agent_state_changed`
-- `session_state_changed`
+- `agent_state_changed` lightweight state-sync payload
+- `session_state_changed` legacy replay-only state-sync payload; new runtime state
+  transitions should not emit it
 - `closure_decided`
 - `control_applied`
 - `runtime_service_shutdown_requested`

@@ -56,6 +56,46 @@ fn task_result_message(task_id: &str) -> MessageEnvelope {
     )
 }
 
+#[test]
+fn append_state_changed_events_emits_single_lightweight_agent_event() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let mut state = AgentState::new("default");
+    state.status = AgentStatus::AwakeRunning;
+    state.current_run_id = Some("run-1".into());
+    state.pending = 2;
+    state.context_summary = Some("large summary must not be copied".into());
+    state.working_memory.archived_episode_count = 4;
+
+    runtime.append_state_changed_events(&state).unwrap();
+
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    let state_events = events
+        .iter()
+        .filter(|event| event.kind == "agent_state_changed")
+        .collect::<Vec<_>>();
+    assert_eq!(state_events.len(), 1);
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == "session_state_changed"));
+    let payload = &state_events[0].data;
+    assert_eq!(payload["agent_id"], "default");
+    assert_eq!(payload["status"], "awake_running");
+    assert_eq!(payload["pending"], 2);
+    assert!(payload.get("working_memory").is_none());
+    assert!(payload.get("context_summary").is_none());
+}
+
 #[async_trait]
 impl AgentProvider for BlockingProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
