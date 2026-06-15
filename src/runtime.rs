@@ -88,21 +88,22 @@ use crate::{
     },
     tool::{ToolRegistry, ToolResult},
     types::{
-        ActiveWorkspaceEntry, AdmissionContext, AgentIdentityView, AgentKind, AgentModelSource,
-        AgentModelState, AgentState, AgentStateChangedEvent, AgentStatus, AgentSummary, AuditEvent,
-        AuthorityClass, BriefRecord, CallbackDeliveryMode, CallbackDeliveryPayload,
-        CallbackDeliveryResult, CallbackIngressDisposition, CancelWaitingResult, ClosureDecision,
-        ContinuationResolution, ControlAction, ExecCommandBatchItemStatus, ExecCommandBatchResult,
+        ActiveWorkspaceEntry, AdmissionContext, AgentIdentityView, AgentKind,
+        AgentModelOverrideAuditEvent, AgentModelSource, AgentModelState, AgentState,
+        AgentStateChangedEvent, AgentStatus, AgentSummary, AuditEvent, AuthorityClass, BriefRecord,
+        CallbackDeliveryMode, CallbackDeliveryPayload, CallbackDeliveryResult,
+        CallbackIngressDisposition, CancelWaitingResult, ClosureDecision, ContinuationResolution,
+        ControlAction, ExecCommandBatchItemStatus, ExecCommandBatchResult,
         ExternalTriggerCapability, ExternalTriggerRecord, ExternalTriggerScope,
         ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, PendingWakeHint,
-        Priority, QueueEntryRecord, QueueEntryStatus, ResolvedModelAvailability,
-        RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture, SkillActivationSource,
-        SkillActivationState, SkillCatalogEntry, SkillLoadReason, SkillsRuntimeView, TaskKind,
-        TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord,
-        TranscriptEntry, TranscriptEntryKind, ViewImageObservation, WaitingIntentRecord,
-        WaitingIntentStatus, WaitingIntentSummary, WaitingReason, WorkspaceEntry,
-        AGENT_HOME_WORKSPACE_ID,
+        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageLifecycleAuditEvent,
+        MessageOrigin, PendingWakeHint, Priority, QueueEntryRecord, QueueEntryStatus,
+        ResolvedModelAvailability, RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture,
+        SkillActivationSource, SkillActivationState, SkillCatalogEntry, SkillLoadReason,
+        SkillsRuntimeView, TaskKind, TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec,
+        TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
+        TranscriptEntryKind, ViewImageObservation, WaitingIntentRecord, WaitingIntentStatus,
+        WaitingIntentSummary, WaitingReason, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
     web::{WebConfig, WebProviderKind},
 };
@@ -1058,7 +1059,7 @@ impl RuntimeHandle {
         ))?;
         self.inner.storage.append_event(&AuditEvent::new(
             "message_enqueued",
-            to_json_value(&message),
+            to_json_value(&MessageLifecycleAuditEvent::from_message(&message)),
         ))?;
         self.inner.notify.notify_one();
         Ok(message)

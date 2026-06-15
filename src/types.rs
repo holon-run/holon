@@ -3862,14 +3862,14 @@ pub struct QueueEntryRecord {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolExecutionStatus {
     Success,
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ToolExecutionRecord {
     pub id: String,
     #[serde(alias = "session_id")]
@@ -3894,6 +3894,209 @@ pub struct ToolExecutionRecord {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation_surface: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MessageLifecycleAuditEvent {
+    pub message_id: String,
+    #[serde(alias = "session_id")]
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    pub kind: MessageKind,
+    pub origin: MessageOrigin,
+    pub authority_class: AuthorityClass,
+    pub priority: Priority,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_kind: Option<ContinuationTriggerKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_refs: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_surface: Option<MessageDeliverySurface>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_context: Option<AdmissionContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub causation_id: Option<String>,
+}
+
+impl MessageLifecycleAuditEvent {
+    pub fn from_message(message: &MessageEnvelope) -> Self {
+        Self {
+            message_id: message.id.clone(),
+            agent_id: message.agent_id.clone(),
+            message_seq: message.message_seq,
+            turn_id: message.turn_id.clone(),
+            kind: message.kind.clone(),
+            origin: message.origin.clone(),
+            authority_class: message.authority_class,
+            priority: message.priority.clone(),
+            trigger_kind: message.trigger_kind,
+            work_item_id: message.work_item_id.clone(),
+            task_id: message.task_id.clone(),
+            source_refs: message.source_refs.clone(),
+            delivery_surface: message.delivery_surface,
+            admission_context: message.admission_context,
+            correlation_id: message.correlation_id.clone(),
+            causation_id: message.causation_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TaskLifecycleAuditEvent {
+    pub task_id: String,
+    #[serde(alias = "session_id")]
+    pub agent_id: String,
+    pub kind: TaskKind,
+    pub status: TaskStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_status: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_summary_preview: Option<String>,
+}
+
+impl TaskLifecycleAuditEvent {
+    pub fn from_task(task: &TaskRecord) -> Self {
+        let detail = task.detail.as_ref();
+        Self {
+            task_id: task.id.clone(),
+            agent_id: task.agent_id.clone(),
+            kind: task.kind.clone(),
+            status: task.status.clone(),
+            created_at: task.created_at,
+            updated_at: task.updated_at,
+            parent_message_id: task.parent_message_id.clone(),
+            work_item_id: task.work_item_id.clone(),
+            summary: task.summary.clone(),
+            task_status: detail_string(detail, "task_status"),
+            exit_status: detail_i64(detail, "exit_status"),
+            error: detail_string(detail, "error").map(|value| truncate_audit_preview(&value, 512)),
+            output_path: detail_string(detail, "output_path"),
+            output_summary_preview: detail_string(detail, "output_summary")
+                .map(|value| truncate_audit_preview(&value, 512)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolExecutionAuditEvent {
+    pub tool_call_id: String,
+    pub tool_execution_id: String,
+    #[serde(alias = "session_id")]
+    pub agent_id: String,
+    pub tool_name: String,
+    pub turn_index: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_item_id: Option<String>,
+    pub status: ToolExecutionStatus,
+    pub duration_ms: u64,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_command_cmd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_command_display: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_command_batch_items: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_command_cost: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_command_disposition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_status: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_handle: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentModelOverrideAuditEvent {
+    #[serde(alias = "session_id")]
+    pub agent_id: String,
+    pub source: AgentModelSource,
+    pub effective_model: ModelRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<ModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_model: Option<ModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_model: Option<ModelRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub fallback_active: bool,
+    #[serde(default)]
+    pub pending_next_turn: bool,
+}
+
+impl AgentModelOverrideAuditEvent {
+    pub fn from_model_state(
+        agent_id: impl Into<String>,
+        model: &AgentModelState,
+        pending_next_turn: bool,
+    ) -> Self {
+        Self {
+            agent_id: agent_id.into(),
+            source: model.source.clone(),
+            effective_model: model.effective_model.clone(),
+            requested_model: model.requested_model.clone(),
+            active_model: model.active_model.clone(),
+            override_model: model.override_model.clone(),
+            override_reasoning_effort: model.override_reasoning_effort.clone(),
+            fallback_active: model.fallback_active,
+            pending_next_turn,
+        }
+    }
+}
+
+fn detail_string(detail: Option<&Value>, field: &str) -> Option<String> {
+    detail
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn detail_i64(detail: Option<&Value>, field: &str) -> Option<i64> {
+    detail
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_i64)
+}
+
+fn truncate_audit_preview(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut preview = value.chars().take(max_chars).collect::<String>();
+    preview.push_str("...");
+    preview
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -5183,5 +5386,116 @@ mod tests {
         ] {
             assert!(AgentProfilePreset::PublicNamed.allows_tool_capability_family(family));
         }
+    }
+
+    #[test]
+    fn message_lifecycle_audit_event_omits_body_and_metadata() {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "large-message-body".repeat(1024),
+            },
+        );
+        message.metadata = Some(serde_json::json!({
+            "large_metadata": "large-message-metadata".repeat(1024)
+        }));
+
+        let payload =
+            serde_json::to_value(MessageLifecycleAuditEvent::from_message(&message)).unwrap();
+
+        assert_eq!(payload["message_id"], message.id);
+        assert!(payload.get("body").is_none());
+        assert!(payload.get("metadata").is_none());
+        assert!(!payload.to_string().contains("large-message-body"));
+        assert!(!payload.to_string().contains("large-message-metadata"));
+    }
+
+    #[test]
+    fn task_lifecycle_audit_event_omits_detail_and_recovery() {
+        let long_output = "large-task-output".repeat(1024);
+        let task = TaskRecord {
+            id: "task-large".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Completed,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: Some("work-1".into()),
+            summary: Some("run command".into()),
+            detail: Some(serde_json::json!({
+                "task_status": "completed",
+                "exit_status": 0,
+                "output_path": "/tmp/task-large.log",
+                "output_summary": long_output,
+                "initial_output": "large-initial-output".repeat(1024)
+            })),
+            recovery: Some(TaskRecoverySpec::CommandTask {
+                summary: "run command".into(),
+                spec: CommandTaskSpec {
+                    cmd: "cargo test".into(),
+                    workdir: None,
+                    shell: None,
+                    login: false,
+                    tty: false,
+                    yield_time_ms: 10_000,
+                    max_output_tokens: None,
+                    accepts_input: false,
+                    terminal_reentry: false,
+                },
+                authority_class: AuthorityClass::OperatorInstruction,
+                promoted_from_exec_command: false,
+            }),
+        };
+
+        let payload = serde_json::to_value(TaskLifecycleAuditEvent::from_task(&task)).unwrap();
+
+        assert_eq!(payload["task_id"], "task-large");
+        assert_eq!(payload["output_path"], "/tmp/task-large.log");
+        assert!(payload.get("detail").is_none());
+        assert!(payload.get("recovery").is_none());
+        assert!(!payload.to_string().contains("large-initial-output"));
+        assert!(payload.to_string().contains("large-task-output"));
+        assert!(
+            payload["output_summary_preview"].as_str().unwrap().len()
+                < "large-task-output".repeat(1024).len()
+        );
+    }
+
+    #[test]
+    fn tool_execution_audit_event_references_canonical_record_without_output() {
+        let payload = serde_json::to_value(ToolExecutionAuditEvent {
+            tool_call_id: "call-1".into(),
+            tool_execution_id: "tool-1".into(),
+            agent_id: "default".into(),
+            tool_name: "ExecCommand".into(),
+            turn_index: 7,
+            turn_id: Some("turn-1".into()),
+            run_id: Some("run-1".into()),
+            work_item_id: Some("work-1".into()),
+            status: ToolExecutionStatus::Success,
+            duration_ms: 42,
+            summary: "command completed".into(),
+            exec_command_cmd: Some("cargo test".into()),
+            exec_command_display: Some("cargo test".into()),
+            exec_command_batch_items: None,
+            exec_command_cost: None,
+            exec_command_disposition: Some("completed".into()),
+            exit_status: Some(0),
+            task_handle: None,
+            error: None,
+            error_kind: None,
+        })
+        .unwrap();
+
+        assert_eq!(payload["tool_execution_id"], "tool-1");
+        assert!(payload.get("output").is_none());
+        assert!(payload.get("tool_result").is_none());
+        assert!(payload.get("exec_command_result").is_none());
+        assert!(payload.get("apply_patch_result").is_none());
     }
 }

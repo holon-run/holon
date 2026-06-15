@@ -78,7 +78,7 @@ impl RuntimeHandle {
         message.normalize_admission_fields();
         self.inner.storage.append_event(&AuditEvent::new(
             "message_processing_started",
-            to_json_value(&message),
+            to_json_value(&MessageLifecycleAuditEvent::from_message(&message)),
         ))?;
         let MessageDispatchPlan {
             prior_closure,

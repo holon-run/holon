@@ -26,10 +26,10 @@ use crate::{
     presentation::render_live_working_activity_text,
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        ActiveWorkspaceEntry, AgentState, AgentStateChangedEvent, AgentSummary, BriefRecord,
-        ClosureDecision, ExternalTriggerStateSnapshot, MessageEnvelope, MessageOrigin, TaskRecord,
-        TimerRecord, TimerStatus, WaitingIntentRecord, WorkItemRecord, WorkItemState,
-        WorktreeSession,
+        ActiveWorkspaceEntry, AgentModelOverrideAuditEvent, AgentState, AgentStateChangedEvent,
+        AgentSummary, BriefRecord, ClosureDecision, ExternalTriggerStateSnapshot, MessageEnvelope,
+        MessageOrigin, TaskLifecycleAuditEvent, TaskRecord, TimerRecord, TimerStatus,
+        WaitingIntentRecord, WorkItemRecord, WorkItemState, WorktreeSession,
     },
 };
 
@@ -1080,14 +1080,27 @@ impl TuiProjection {
     }
 
     fn apply_model_state_event(&mut self, payload: &Value) -> bool {
-        let Some(model) = payload
+        // Historical audit replay may still contain the full AgentModelState under `model`.
+        // Remove this branch when legacy full-payload audit replay is retired.
+        if let Some(model) = payload
             .get("model")
             .cloned()
             .and_then(decode_value::<crate::types::AgentModelState>)
-        else {
+        {
+            self.agent.model = model;
+            return true;
+        }
+
+        let Some(event) = decode_value::<AgentModelOverrideAuditEvent>(payload.clone()) else {
             return false;
         };
-        self.agent.model = model;
+        self.agent.model.source = event.source;
+        self.agent.model.effective_model = event.effective_model;
+        self.agent.model.requested_model = event.requested_model;
+        self.agent.model.active_model = event.active_model;
+        self.agent.model.override_model = event.override_model;
+        self.agent.model.override_reasoning_effort = event.override_reasoning_effort;
+        self.agent.model.fallback_active = event.fallback_active;
         true
     }
 
@@ -1303,6 +1316,14 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
                 crate::types::MessageBody::Json { value } => trim_summary(&value.to_string()),
                 crate::types::MessageBody::Brief { text, .. } => trim_summary(&text),
             })
+            .or_else(|| {
+                event
+                    .data
+                    .payload
+                    .get("message_id")
+                    .and_then(Value::as_str)
+                    .map(|message_id| format!("message queued: {message_id}"))
+            })
             .unwrap_or_else(|| event.data.event_type.clone()),
         "turn_started" => event
             .data
@@ -1329,6 +1350,15 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
                         task.summary.as_deref().unwrap_or(task.kind.as_str()),
                         task.status
                     )
+                })
+                .or_else(|| {
+                    decode_payload::<TaskLifecycleAuditEvent>(&event.data.payload).map(|task| {
+                        format!(
+                            "{} [{:?}]",
+                            task.summary.as_deref().unwrap_or(task.kind.as_str()),
+                            task.status
+                        )
+                    })
                 })
                 .unwrap_or_else(|| event.data.event_type.clone())
         }
@@ -1489,8 +1519,8 @@ fn trim_summary(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OperatorDisplayMode, OperatorVisibility, ProjectionEventLane, ProjectionSlice,
-        TuiProjection, EVENT_LOG_LIMIT, TASK_TAIL_LIMIT,
+        summarize_event, OperatorDisplayMode, OperatorVisibility, ProjectionEventLane,
+        ProjectionSlice, TuiProjection, EVENT_LOG_LIMIT, TASK_TAIL_LIMIT,
     };
     use crate::{
         client::{
@@ -1509,10 +1539,11 @@ mod tests {
             ClosureOutcome, ExternalTriggerScope, ExternalTriggerStateSnapshot,
             ExternalTriggerStatus, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
             MessageEnvelope, MessageKind, MessageOrigin, Priority, RuntimePosture,
-            SkillsRuntimeView, TaskRecord, TaskStatus, TimerRecord, TimerStatus, TodoItem,
-            TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord, WaitingIntentRecord,
-            WaitingIntentScope, WaitingIntentStatus, WaitingIntentSummary, WaitingReason,
-            WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
+            SkillsRuntimeView, TaskLifecycleAuditEvent, TaskRecord, TaskStatus, TimerRecord,
+            TimerStatus, TodoItem, TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord,
+            WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WaitingIntentSummary,
+            WaitingReason, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
+            WorktreeSession,
         },
     };
     use chrono::Utc;
@@ -2647,6 +2678,24 @@ mod tests {
             .work_items
             .iter()
             .any(|record| record.id == "work-stream" && record.state == WorkItemState::Open));
+    }
+
+    #[test]
+    fn summarize_event_uses_lightweight_task_audit_payload() {
+        let mut task = sample_task();
+        task.id = "task-stream".into();
+        task.status = TaskStatus::Running;
+        task.summary = Some("running stream task".into());
+
+        let event = sample_event(
+            "task_status_updated",
+            serde_json::to_value(TaskLifecycleAuditEvent::from_task(&task)).unwrap(),
+        );
+
+        assert_eq!(
+            summarize_event(&event),
+            "running stream task [Running]".to_string()
+        );
     }
 
     #[test]

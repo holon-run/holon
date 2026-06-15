@@ -1764,7 +1764,7 @@ mod tests {
         let events = runtime.inner.storage.read_recent_events(20).unwrap();
         assert!(events.iter().any(|event| {
             event.kind == "command_task_terminal_persisted"
-                && event.data["id"].as_str() == Some(task.id.as_str())
+                && event.data["task_id"].as_str() == Some(task.id.as_str())
         }));
     }
 

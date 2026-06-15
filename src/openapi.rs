@@ -14,7 +14,7 @@ use crate::{
     },
     types::{
         TaskInputResult, TaskOutputResult, TaskStatusSnapshot, TaskStopResult, TimerRecord,
-        WorkItemRecord,
+        ToolExecutionRecord, WorkItemRecord,
     },
 };
 
@@ -74,6 +74,7 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/agents/{agent_id}/tasks", "agentTasks", "tasks", "List active tasks", "Return active task records. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/tasks/{task_id}", "agentTaskStatus", "tasks", "Task status", "Return a task lifecycle snapshot by id.", None, "TaskStatusSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/tasks/{task_id}/output", "agentTaskOutput", "tasks", "Task output", "Return a task output snapshot. Query parameters: block, timeout_ms.", None, "TaskOutputResult", AuthKind::RemoteAccess),
+    route_with_response("get", "/agents/{agent_id}/tool-executions/{tool_execution_id}", "agentToolExecution", "tools", "Tool execution detail", "Return a persisted tool execution record by id.", None, "ToolExecutionRecord", AuthKind::RemoteAccess),
     route_with_response("post", "/control/agents/{agent_id}/tasks/{task_id}/input", "taskInput", "control", "Task input", "Deliver text input to a managed task.", Some("TaskInputRequest"), "TaskInputResult", AuthKind::Control),
     route_with_response("post", "/control/agents/{agent_id}/tasks/{task_id}/stop", "taskStop", "control", "Task stop", "Request cancellation for a managed task.", Some("TaskStopRequest"), "TaskStopResult", AuthKind::Control),
     route("get", "/agents/{agent_id}/work-items", "agentWorkItems", "work-items", "List work items", "Return latest work item records for the agent. Query parameter: limit.", None, AuthKind::RemoteAccess),
@@ -374,6 +375,9 @@ fn path_parameters(path: &str) -> Vec<Value> {
     if path.contains("{timer_id}") {
         params.push(path_param("timer_id", "Timer id."));
     }
+    if path.contains("{tool_execution_id}") {
+        params.push(path_param("tool_execution_id", "Tool execution id."));
+    }
     if path.contains("{callback_token}") {
         params.push(path_param(
             "callback_token",
@@ -474,6 +478,10 @@ fn component_schemas() -> Value {
     schemas.insert(
         "TaskOutputResult".into(),
         component_schema::<TaskOutputResult>(),
+    );
+    schemas.insert(
+        "ToolExecutionRecord".into(),
+        component_schema::<ToolExecutionRecord>(),
     );
     schemas.insert(
         "TaskInputResult".into(),

@@ -22,8 +22,8 @@ use crate::{
         ActiveWorkspaceEntry, AgentListEntry, AgentSummary, AuthorityClass, BriefRecord,
         ExternalTriggerStateSnapshot, OperatorNotificationRecord, ResolvedModelAvailability,
         TaskInputResult, TaskOutputResult, TaskRecord, TaskStatusSnapshot, TaskStopResult,
-        TimerRecord, TranscriptEntry, TurnTerminalRecord, WaitingIntentRecord, WorkItemRecord,
-        WorkspaceOccupancyRecord, WorktreeSession,
+        TimerRecord, ToolExecutionRecord, TranscriptEntry, TurnTerminalRecord, WaitingIntentRecord,
+        WorkItemRecord, WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -475,6 +475,17 @@ impl LocalClient {
             path.push_str(&format!("&timeout_ms={timeout_ms}"));
         }
         self.get_json(&path).await
+    }
+
+    pub async fn tool_execution(
+        &self,
+        agent_id: &str,
+        tool_execution_id: &str,
+    ) -> Result<ToolExecutionRecord> {
+        self.get_json(&format!(
+            "/agents/{agent_id}/tool-executions/{tool_execution_id}"
+        ))
+        .await
     }
 
     pub async fn task_input(
