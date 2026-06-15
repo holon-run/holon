@@ -28,8 +28,8 @@ use crate::{
     types::{
         ActiveWorkspaceEntry, AgentModelOverrideAuditEvent, AgentState, AgentStateChangedEvent,
         AgentSummary, BriefRecord, ClosureDecision, ExternalTriggerStateSnapshot, MessageEnvelope,
-        MessageOrigin, TaskRecord, TimerRecord, TimerStatus, WaitingIntentRecord, WorkItemRecord,
-        WorkItemState, WorktreeSession,
+        MessageOrigin, TaskLifecycleAuditEvent, TaskRecord, TimerRecord, TimerStatus,
+        WaitingIntentRecord, WorkItemRecord, WorkItemState, WorktreeSession,
     },
 };
 
@@ -1080,6 +1080,8 @@ impl TuiProjection {
     }
 
     fn apply_model_state_event(&mut self, payload: &Value) -> bool {
+        // Historical audit replay may still contain the full AgentModelState under `model`.
+        // Remove this branch when legacy full-payload audit replay is retired.
         if let Some(model) = payload
             .get("model")
             .cloned()
@@ -1350,19 +1352,13 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
                     )
                 })
                 .or_else(|| {
-                    let summary = event
-                        .data
-                        .payload
-                        .get("summary")
-                        .and_then(Value::as_str)
-                        .or_else(|| event.data.payload.get("task_id").and_then(Value::as_str))?;
-                    let status = event
-                        .data
-                        .payload
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown");
-                    Some(format!("{summary} [{status}]"))
+                    decode_payload::<TaskLifecycleAuditEvent>(&event.data.payload).map(|task| {
+                        format!(
+                            "{} [{:?}]",
+                            task.summary.as_deref().unwrap_or(task.kind.as_str()),
+                            task.status
+                        )
+                    })
                 })
                 .unwrap_or_else(|| event.data.event_type.clone())
         }
@@ -1523,8 +1519,8 @@ fn trim_summary(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        OperatorDisplayMode, OperatorVisibility, ProjectionEventLane, ProjectionSlice,
-        TuiProjection, EVENT_LOG_LIMIT, TASK_TAIL_LIMIT,
+        summarize_event, OperatorDisplayMode, OperatorVisibility, ProjectionEventLane,
+        ProjectionSlice, TuiProjection, EVENT_LOG_LIMIT, TASK_TAIL_LIMIT,
     };
     use crate::{
         client::{
@@ -1543,10 +1539,11 @@ mod tests {
             ClosureOutcome, ExternalTriggerScope, ExternalTriggerStateSnapshot,
             ExternalTriggerStatus, LoadedAgentsMdView, MessageBody, MessageDeliverySurface,
             MessageEnvelope, MessageKind, MessageOrigin, Priority, RuntimePosture,
-            SkillsRuntimeView, TaskRecord, TaskStatus, TimerRecord, TimerStatus, TodoItem,
-            TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord, WaitingIntentRecord,
-            WaitingIntentScope, WaitingIntentStatus, WaitingIntentSummary, WaitingReason,
-            WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
+            SkillsRuntimeView, TaskLifecycleAuditEvent, TaskRecord, TaskStatus, TimerRecord,
+            TimerStatus, TodoItem, TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord,
+            WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WaitingIntentSummary,
+            WaitingReason, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
+            WorktreeSession,
         },
     };
     use chrono::Utc;
@@ -2681,6 +2678,24 @@ mod tests {
             .work_items
             .iter()
             .any(|record| record.id == "work-stream" && record.state == WorkItemState::Open));
+    }
+
+    #[test]
+    fn summarize_event_uses_lightweight_task_audit_payload() {
+        let mut task = sample_task();
+        task.id = "task-stream".into();
+        task.status = TaskStatus::Running;
+        task.summary = Some("running stream task".into());
+
+        let event = sample_event(
+            "task_status_updated",
+            serde_json::to_value(TaskLifecycleAuditEvent::from_task(&task)).unwrap(),
+        );
+
+        assert_eq!(
+            summarize_event(&event),
+            "running stream task [Running]".to_string()
+        );
     }
 
     #[test]
