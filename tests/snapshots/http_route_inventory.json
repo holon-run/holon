@@ -291,6 +291,33 @@
   },
   {
     "method": "get",
+    "path": "/agents/{agent_id}/tool-executions/{tool_execution_id}",
+    "handler": "tool_execution",
+    "operation_id": "agentToolExecution",
+    "tag": "tools",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "tool_execution_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/agents/{agent_id}/transcript",
     "handler": "transcript",
     "operation_id": "agentTranscript",
