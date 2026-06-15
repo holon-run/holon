@@ -216,7 +216,7 @@ export function App() {
           ) : (
             bootstrap.agents.map((agent) => {
               const status = deriveAgentDisplayStatus(agent);
-              const secondary = agentSecondaryStatus(agent);
+              const workSummary = agent.currentWork?.objective;
 
               return (
                 <button
@@ -234,11 +234,11 @@ export function App() {
                         {status.label}
                       </StatusBadge>
                     </span>
-                    <span className="agent-row-meta">
-                      {secondary.map((item, index) => (
-                        <span key={`${item}-${index}`}>{item}</span>
-                      ))}
-                    </span>
+                    {workSummary ? (
+                      <span className="agent-row-meta">
+                        <span>{workSummary}</span>
+                      </span>
+                    ) : null}
                   </span>
                 </button>
               );
@@ -428,11 +428,6 @@ function levelLabel(level: DisplayLevel): string {
   if (level === "info") return "Info";
   if (level === "verbose") return "Verbose";
   return "Debug";
-}
-
-function agentSecondaryStatus(agent: AgentSummary): string[] {
-  const items = [agent.lifecycle, agent.currentWork?.state ?? agent.posture].filter(Boolean);
-  return items.length > 0 ? items : ["unknown"];
 }
 
 function liveStatusLabel(status: string): string {
