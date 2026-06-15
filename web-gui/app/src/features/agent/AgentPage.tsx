@@ -3,6 +3,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormE
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
 import { debugAgentSessionEvents, filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import type {
   AgentDetail,
@@ -447,8 +448,7 @@ function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
 }
 
 function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean): boolean {
-  const lifecycle = agent.lifecycle.toLowerCase();
-  return sendingPrompt || Boolean(agent.currentRunId) || lifecycle === "awake-running";
+  return sendingPrompt || deriveAgentDisplayStatus(agent).label === "Running";
 }
 
 function collectWorkingActivitiesForCurrentTurn(timeline: AgentTimelineItem[]): AgentTimelineActivity[] {

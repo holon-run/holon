@@ -9,6 +9,7 @@ import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import { deriveAgentDisplayStatus } from "../runtime/agent-status";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
 import { useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
@@ -69,10 +70,8 @@ export function App() {
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
-  const selectedAgentContext =
-    route === "agent" && activeAgent
-      ? [activeAgent.lifecycle, activeAgent.posture].filter(Boolean).join(" · ")
-      : "loading agent";
+  const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent) : undefined;
+  const selectedAgentContext = selectedAgentStatus?.label ?? "loading agent";
   const selectedAgentSourceStatus =
     agentDetailLoading && !selectedAgentDetail
       ? "syncing"
@@ -216,7 +215,7 @@ export function App() {
             </div>
           ) : (
             bootstrap.agents.map((agent) => {
-              const status = agentDisplayStatus(agent);
+              const status = deriveAgentDisplayStatus(agent);
               const secondary = agentSecondaryStatus(agent);
 
               return (
@@ -276,7 +275,7 @@ export function App() {
               ) : null}
               <div>
                 <strong>{route === "agent" ? (selectedAgent?.id ?? selectedAgentId) || "Agent" : pageTitle(route)}</strong>
-                <span>
+                <span title={route === "agent" ? selectedAgentStatus?.title : undefined}>
                   {route === "agent"
                     ? selectedAgentContext
                     : pageSubtitle(route, bootstrap.attentionCount, bootstrap.agents.length)}
@@ -431,84 +430,9 @@ function levelLabel(level: DisplayLevel): string {
   return "Debug";
 }
 
-function agentDisplayStatus(agent: AgentSummary): { label: string; title: string; tone: string } {
-  const details = [
-    agent.posture ? `posture: ${agent.posture}` : undefined,
-    agent.lifecycle ? `lifecycle: ${agent.lifecycle}` : undefined,
-    agent.pending > 0 ? `${agent.pending} pending input${agent.pending === 1 ? "" : "s"}` : undefined,
-    agent.activeTaskCount > 0
-      ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}`
-      : undefined,
-    agent.waitingCount > 0 ? `${agent.waitingCount} waiting condition${agent.waitingCount === 1 ? "" : "s"}` : undefined,
-  ].filter(Boolean);
-  const title = details.join(" · ") || "No status details";
-
-  if (isStoppedOrArchived(agent.lifecycle) || isStoppedOrArchived(agent.posture)) {
-    return { label: "Stopped", title, tone: "stopped" };
-  }
-
-  if (agent.pending > 0) {
-    return { label: "Needs input", title, tone: "needs-input" };
-  }
-
-  if (agent.activeTaskCount > 0 || agent.currentRunId || isActivePosture(agent.posture)) {
-    return { label: "Running", title, tone: "running" };
-  }
-
-  if (isRunnablePosture(agent.posture)) {
-    return { label: "Runnable", title, tone: "running" };
-  }
-
-  if (agent.waitingCount > 0 || isWaitingPosture(agent.posture)) {
-    return { label: "Waiting", title, tone: "waiting" };
-  }
-
-  if (isBlockedPosture(agent.posture)) {
-    return { label: "Blocked", title, tone: "stopped" };
-  }
-
-  if (isIdlePosture(agent.posture) || isIdlePosture(agent.lifecycle)) {
-    return { label: "Ready", title, tone: "ready" };
-  }
-
-  return { label: "Unknown", title, tone: "muted" };
-}
-
 function agentSecondaryStatus(agent: AgentSummary): string[] {
   const items = [agent.lifecycle, agent.currentWork?.state ?? agent.posture].filter(Boolean);
   return items.length > 0 ? items : ["unknown"];
-}
-
-function normalizeAgentStatus(value?: string | null): string {
-  return (value ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
-}
-
-function isStoppedOrArchived(value?: string | null): boolean {
-  const status = normalizeAgentStatus(value);
-  return status === "stopped" || status === "archived";
-}
-
-function isActivePosture(value?: string | null): boolean {
-  const status = normalizeAgentStatus(value);
-  return status === "active-turn" || status === "awake-running" || status === "running";
-}
-
-function isRunnablePosture(value?: string | null): boolean {
-  const status = normalizeAgentStatus(value);
-  return status === "has-queued-input" || status === "has-runnable-work";
-}
-
-function isWaitingPosture(value?: string | null): boolean {
-  return normalizeAgentStatus(value).startsWith("waiting");
-}
-
-function isBlockedPosture(value?: string | null): boolean {
-  return normalizeAgentStatus(value) === "blocked";
-}
-
-function isIdlePosture(value?: string | null): boolean {
-  const status = normalizeAgentStatus(value);
-  return status === "idle" || status === "asleep" || status === "awake-idle" || status === "ready";
 }
 
 function liveStatusLabel(status: string): string {
