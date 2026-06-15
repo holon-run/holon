@@ -1765,9 +1765,8 @@ impl TranscriptRepository<'_> {
     }
 
     pub fn upsert(&self, entry: &TranscriptEntry) -> Result<()> {
-        let entry = entry.clone();
         self.db
-            .append(move |tx| upsert_transcript_entry_tx(tx, &entry))
+            .transaction(|tx| upsert_transcript_entry_tx(tx, entry))
     }
 
     pub fn upsert_many(&self, entries: &[TranscriptEntry]) -> Result<()> {
@@ -1904,33 +1903,28 @@ impl EvidenceRepository<'_> {
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
-        let message = message.clone();
         self.db
-            .append(move |tx| insert_message_evidence_tx(tx, &message))
+            .transaction(|tx| insert_message_evidence_tx(tx, message))
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
-        let entry = entry.clone();
         self.db
-            .append(move |tx| insert_transcript_evidence_tx(tx, &entry))
+            .transaction(|tx| insert_transcript_evidence_tx(tx, entry))
     }
 
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
-        let record = record.clone();
         self.db
-            .append(move |tx| insert_tool_evidence_tx(tx, &record))
+            .transaction(|tx| insert_tool_evidence_tx(tx, record))
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
-        let brief = brief.clone();
         self.db
-            .append(move |tx| insert_brief_evidence_tx(tx, &brief))
+            .transaction(|tx| insert_brief_evidence_tx(tx, brief))
     }
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
-        let record = record.clone();
         self.db
-            .append(move |tx| insert_delivery_summary_evidence_tx(tx, &record))
+            .transaction(|tx| insert_delivery_summary_evidence_tx(tx, record))
     }
 
     pub fn query(&self, kind: EvidenceKind, query: EvidenceQuery<'_>) -> Result<Vec<EvidenceRow>> {
@@ -2117,18 +2111,14 @@ impl EvidenceRepository<'_> {
 
 impl AuditEventSink<'_> {
     pub fn append(&self, agent_id: Option<&str>, event: &AuditEvent) -> Result<()> {
-        let agent_id = agent_id.map(str::to_owned);
-        let event = event.clone();
         self.db
-            .append(move |tx| insert_audit_event_tx(tx, agent_id.as_deref(), &event))
+            .transaction(|tx| insert_audit_event_tx(tx, agent_id, event))
     }
 
     pub fn append_many(&self, agent_id: Option<&str>, events: &[AuditEvent]) -> Result<()> {
-        let agent_id = agent_id.map(str::to_owned);
-        let events = events.to_vec();
-        self.db.append(move |tx| {
-            for event in &events {
-                insert_audit_event_tx(tx, agent_id.as_deref(), &event)?;
+        self.db.transaction(|tx| {
+            for event in events {
+                insert_audit_event_tx(tx, agent_id, event)?;
             }
             Ok(())
         })
@@ -5778,13 +5768,16 @@ INSERT INTO storage_domains (
             attempt_tx
                 .send(())
                 .map_err(|_| anyhow!("failed to signal writer attempt"))?;
-            writer.audit_events().append(
-                Some("agent-a"),
-                &AuditEvent::new(
-                    "runtime_db_locked_retry",
-                    serde_json::json!({ "source": "test" }),
-                ),
-            )
+            writer.append(|tx| {
+                insert_audit_event_tx(
+                    tx,
+                    Some("agent-a"),
+                    &AuditEvent::new(
+                        "runtime_db_locked_retry",
+                        serde_json::json!({ "source": "test" }),
+                    ),
+                )
+            })
         });
 
         attempt_rx
