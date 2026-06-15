@@ -1432,9 +1432,12 @@ code {
 }
 
 .operator .bubble {
+  width: fit-content;
+  max-width: min(760px, 82%);
   margin-left: auto;
-  border-radius: 0;
-  background: transparent;
+  padding: 8px 12px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--surface-strong);
   color: var(--text);
 }
 
