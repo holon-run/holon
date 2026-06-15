@@ -307,28 +307,31 @@ function item(draft: SessionItemDraft): AgentTimelineItem {
 
 export function compactAgentTimelineItems(items: AgentTimelineItem[]): AgentTimelineItem[] {
   const flattened = flattenTimelineActivities(items);
-  const deduped = flattened.filter((candidate, index) => !isAssistantPreviewDuplicate(candidate, flattened, index));
+  const finalBriefTexts = flattened.filter(isFinalBriefItem).map((item) => normalizeAssistantBriefText(item.body));
+  const deduped = flattened.filter((candidate) => !isAssistantPreviewDuplicate(candidate, finalBriefTexts));
   return deduped.sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
 }
 
-function isAssistantPreviewDuplicate(candidate: AgentTimelineItem, items: AgentTimelineItem[], candidateIndex: number): boolean {
+function isAssistantPreviewDuplicate(candidate: AgentTimelineItem, finalBriefTexts: string[]): boolean {
   if (candidate.kind !== "assistant" || candidate.label !== "Assistant round") return false;
-  const candidateText = normalizeTextKey(candidate.body);
-  if (candidateText.length < 80) return false;
+  const candidateText = normalizeAssistantBriefText(candidate.body);
+  if (!candidateText) return false;
 
-  return items.some((item, index) => {
-    if (index === candidateIndex || item.kind !== "assistant" || item.minDisplayLevel !== "info") return false;
-    return isSameAssistantText(candidateText, normalizeTextKey(item.body));
-  });
+  return finalBriefTexts.some((briefText) => isSameAssistantBriefText(candidateText, briefText));
 }
 
-function isSameAssistantText(left: string, right: string): boolean {
-  if (!left || !right) return false;
-  if (left === right) return true;
+function isFinalBriefItem(item: AgentTimelineItem): boolean {
+  return item.kind === "assistant" && item.minDisplayLevel === "info" && (item.label === "Result" || item.label === "Brief Created");
+}
 
-  const [shorter, longer] = left.length < right.length ? [left, right] : [right, left];
-  if (shorter.length < 160) return false;
-  return longer.startsWith(shorter);
+function isSameAssistantBriefText(previewText: string, briefText: string): boolean {
+  if (!previewText || !briefText) return false;
+  if (previewText === briefText) return true;
+  return briefText.startsWith(previewText);
+}
+
+function normalizeAssistantBriefText(text: string): string {
+  return normalizeTextKey(text).replace(/(?:\s*(?:\.{3}|…))+$/u, "").trim();
 }
 
 function flattenTimelineActivities(items: AgentTimelineItem[]): AgentTimelineItem[] {
