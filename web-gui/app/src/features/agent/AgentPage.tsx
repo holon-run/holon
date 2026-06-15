@@ -226,10 +226,7 @@ export function AgentPage({
                 turn={turn}
               />
             ))}
-            {displayLevel === "info" && isWorking && workingActivities.length > 0 ? (
-              <WorkingActivityPanel activities={workingActivities} />
-            ) : null}
-            {displayLevel !== "info" && isWorking ? <WorkingStatusMarker agent={activeAgent} /> : null}
+            {isWorking ? <WorkingIndicator activities={workingActivities} agent={activeAgent} displayLevel={displayLevel} /> : null}
             {timeline.length === 0 ? (
               <EmptyState
                 className="conversation-empty"
@@ -746,9 +743,33 @@ function activityIcon(activity: AgentTimelineActivity): string {
   return "·";
 }
 
-function WorkingActivityPanel({ activities }: { activities: AgentTimelineActivity[] }) {
+function WorkingIndicator({
+  activities,
+  agent,
+  displayLevel,
+}: {
+  activities: AgentTimelineActivity[];
+  agent: AgentSummary;
+  displayLevel: DisplayLevel;
+}) {
+  if (displayLevel !== "info" || activities.length === 0) {
+    const parts = [
+      agent.currentWork?.objective,
+      agent.activeTaskCount ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}` : undefined,
+      agent.pending ? `${agent.pending} queued` : undefined,
+    ].filter(Boolean);
+
+    return (
+      <div className="working-indicator compact" role="status">
+        <span className="working-activity-dot" aria-hidden="true" />
+        <strong>Working</strong>
+        {parts.length ? <span>{parts.join(" · ")}</span> : null}
+      </div>
+    );
+  }
+
   return (
-    <aside className="working-activity-panel" aria-label="Working activity">
+    <aside className="working-indicator detail" aria-label="Working activity">
       <div className="working-activity-header">
         <span>Working activity</span>
         <small>Runtime signals not shown in Info timeline</small>
@@ -783,22 +804,6 @@ function trimActivityLine(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
-function WorkingStatusMarker({ agent }: { agent: AgentSummary }) {
-  const parts = [
-    agent.currentWork?.objective,
-    agent.activeTaskCount ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}` : undefined,
-    agent.pending ? `${agent.pending} queued` : undefined,
-  ].filter(Boolean);
-
-  return (
-    <div className="working-status-marker" role="status">
-      <span className="working-activity-dot" aria-hidden="true" />
-      <strong>Working</strong>
-      {parts.length ? <span>{parts.join(" · ")}</span> : null}
-    </div>
-  );
 }
 
 function fallbackTimeline(agent: AgentSummary): AgentTimelineItem[] {

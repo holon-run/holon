@@ -1659,8 +1659,7 @@ code {
   font-size: 11px;
 }
 
-.working-activity-panel,
-.working-status-marker {
+.working-indicator {
   width: 100%;
   max-width: min(var(--conversation-content-max), 100%);
   align-self: center;
@@ -1671,7 +1670,7 @@ code {
     color-mix(in srgb, var(--surface) 94%, var(--surface-soft));
 }
 
-.working-activity-panel {
+.working-indicator.detail {
   display: grid;
   gap: 10px;
   padding: 12px;
@@ -1703,7 +1702,7 @@ code {
 }
 
 .working-activity-item,
-.working-status-marker {
+.working-indicator.compact {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
@@ -1718,7 +1717,7 @@ code {
   border-top: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
 }
 
-.working-status-marker {
+.working-indicator.compact {
   grid-template-columns: auto auto minmax(0, 1fr);
   padding: 10px 12px;
 }
@@ -1732,7 +1731,7 @@ code {
 }
 
 .working-activity-item strong,
-.working-status-marker strong {
+.working-indicator.compact strong {
   color: var(--faint);
   font-size: 11px;
   font-weight: 780;
@@ -1741,7 +1740,7 @@ code {
 }
 
 .working-activity-item span:not(.working-activity-dot),
-.working-status-marker span:not(.working-activity-dot) {
+.working-indicator.compact span:not(.working-activity-dot) {
   overflow: hidden;
   min-width: 0;
   text-overflow: ellipsis;
