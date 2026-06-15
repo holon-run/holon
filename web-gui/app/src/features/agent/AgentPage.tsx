@@ -73,7 +73,7 @@ export function AgentPage({
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
   const activeAgent = detail?.agent ?? agent;
-  const sourceTimeline = useMemo(() => timelineWithFallbackBrief(detail?.timeline, activeAgent), [activeAgent, detail?.timeline]);
+  const sourceTimeline = detail?.timeline ?? [];
   const timeline = useMemo(
     () =>
       filterTimelineByDisplayLevel(sourceTimeline, displayLevel, {
@@ -804,45 +804,6 @@ function trimActivityLine(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
-function fallbackTimeline(agent: AgentSummary): AgentTimelineItem[] {
-  if (!hasVisibleBrief(agent.lastBrief)) return [];
-
-  return [
-    {
-      id: `${agent.id}-fallback-brief`,
-      kind: "assistant",
-      label: "Latest brief",
-      body: agent.lastBrief,
-      timestamp: agent.lastTurnTime,
-      meta: "brief",
-      minDisplayLevel: "info",
-      sourceIds: [`${agent.id}-fallback-brief`],
-      debug: JSON.stringify(agent, null, 2),
-    },
-  ];
-}
-
-function timelineWithFallbackBrief(timeline: AgentTimelineItem[] | undefined, agent: AgentSummary): AgentTimelineItem[] {
-  const fallback = fallbackTimeline(agent);
-  if (!timeline?.length) return fallback;
-  const latestBrief = fallback[0];
-  if (!latestBrief) return timeline;
-
-  const hasLatestBrief = timeline.some(
-    (item) => item.kind === "assistant" && normalizeTimelineText(item.body) === normalizeTimelineText(latestBrief.body),
-  );
-  return hasLatestBrief ? timeline : [...timeline, latestBrief];
-}
-
-function normalizeTimelineText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function hasVisibleBrief(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  return Boolean(normalized) && !normalized.startsWith("no recent brief");
 }
 
 function formatDisplayTime(value: string): string {
