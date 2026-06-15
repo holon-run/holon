@@ -469,6 +469,7 @@ function timelineItemToWorkingActivity(item: AgentTimelineItem): AgentTimelineAc
     minDisplayLevel: item.minDisplayLevel,
     sourceIds: item.sourceIds,
     detail: item.detail,
+    rawEvent: item.rawEvent,
     debug: item.debug,
   };
 }
@@ -577,12 +578,21 @@ const TimelineMessage = memo(function TimelineMessage({
 
   const timelineMeta = formatTimelineMeta(item.meta, displayLevel);
   const canInspect = displayLevel !== "info" && canInspectTimelineItem(item);
+  const inspectItem = () => onInspectActivity(timelineItemToWorkingActivity(item));
 
   return (
     <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}`}>
       <div className="bubble">
         <TimelineItemContent item={item} />
         <TimelineItemDetail detail={item.detail} />
+      </div>
+      <div className="message-actions" aria-label="Message actions">
+        <button className="message-action" type="button" title="Copy message" onClick={() => copyMessageText(item.body)}>
+          ⧉
+        </button>
+        <button className="message-action" type="button" title="Inspect message" onClick={inspectItem}>
+          ⓘ
+        </button>
       </div>
       {activities.length ? (
         <ActivityTrail
@@ -597,7 +607,7 @@ const TimelineMessage = memo(function TimelineMessage({
         <div className="message-meta">
           {timelineMeta ? <span>{timelineMeta}</span> : null}
           {canInspect ? (
-            <button className="copy-action" type="button" onClick={onOpenInspector}>
+            <button className="copy-action" type="button" onClick={inspectItem}>
               inspect
             </button>
           ) : null}
@@ -606,6 +616,11 @@ const TimelineMessage = memo(function TimelineMessage({
     </article>
   );
 });
+
+function copyMessageText(text: string): void {
+  if (!navigator.clipboard) return;
+  void navigator.clipboard.writeText(text);
+}
 
 function TimelineItemContent({ item }: { item: AgentTimelineItem }) {
   return <MarkdownContent text={item.body} compact={false} />;

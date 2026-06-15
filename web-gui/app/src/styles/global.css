@@ -1405,6 +1405,10 @@ code {
   max-width: min(820px, 78%);
 }
 
+.message:not(.activity-message) {
+  position: relative;
+}
+
 .message.assistant {
   align-self: flex-start;
 }
@@ -1835,6 +1839,46 @@ code {
 .message.activity-message .message-meta {
   margin-left: 12px;
   font-size: 11px;
+}
+
+.message-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.message.operator .message-actions {
+  justify-content: flex-end;
+}
+
+.message:not(.activity-message):hover .message-actions,
+.message:not(.activity-message):focus-within .message-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.message-action {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  box-shadow: var(--shadow-card);
+}
+
+.message-action:hover,
+.message-action:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent);
 }
 
 .conversation-empty {
