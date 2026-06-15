@@ -13,8 +13,8 @@ use serde_json::Value;
 use crate::operator_event::OperatorEventCategory;
 use crate::tui::projection::ProjectionEventRecord;
 use crate::types::{
-    BriefKind, BriefRecord, MessageBody, MessageEnvelope, MessageOrigin, WaitingIntentRecord,
-    WaitingIntentScope, WorkItemRecord,
+    BriefCreatedAuditEvent, BriefKind, BriefRecord, MessageBody, MessageEnvelope, MessageOrigin,
+    WaitingIntentRecord, WaitingIntentScope, WorkItemLifecycleAuditEvent, WorkItemRecord,
 };
 
 pub(crate) const LIVE_WORKING_ACTIVITY_DISPLAY_LEVEL: u8 = 4;
@@ -1197,14 +1197,40 @@ fn brief_result_item(event: &ProjectionEventRecord) -> Option<(String, Presentat
                 },
             ))
         }
-        Err(_) => Some((
-            format!("summary:{}", normalize_text_key(&event.summary)),
-            PresentationItem::AssistantResult {
-                brief_id: None,
-                body: event.summary.clone(),
-                outcome: Outcome::Neutral,
-            },
-        )),
+        Err(_) => {
+            if let Ok(brief) =
+                serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone())
+            {
+                if brief.kind == BriefKind::Ack {
+                    return None;
+                }
+                let body = if brief.text_preview.trim().is_empty() {
+                    event.summary.clone()
+                } else {
+                    brief.text_preview
+                };
+                return Some((
+                    format!("id:{}", brief.brief_id),
+                    PresentationItem::AssistantResult {
+                        brief_id: Some(brief.brief_id),
+                        body,
+                        outcome: match brief.kind {
+                            BriefKind::Failure => Outcome::Failure,
+                            BriefKind::Result => Outcome::Success,
+                            BriefKind::Ack => Outcome::Neutral,
+                        },
+                    },
+                ));
+            }
+            Some((
+                format!("summary:{}", normalize_text_key(&event.summary)),
+                PresentationItem::AssistantResult {
+                    brief_id: None,
+                    body: event.summary.clone(),
+                    outcome: Outcome::Neutral,
+                },
+            ))
+        }
     }
 }
 
@@ -1223,16 +1249,23 @@ fn work_item_record(event: &ProjectionEventRecord) -> Option<WorkItemRecord> {
         .and_then(|value| serde_json::from_value(value).ok())
 }
 
+fn work_item_lifecycle_event(event: &ProjectionEventRecord) -> Option<WorkItemLifecycleAuditEvent> {
+    serde_json::from_value(event.payload.clone()).ok()
+}
+
 fn work_item_id_from_event(event: &ProjectionEventRecord) -> Option<String> {
-    work_item_record(event).map(|record| record.id).or_else(|| {
-        event
-            .payload
-            .get("work_item_id")
-            .or_else(|| event.payload.get("current_work_item_id"))
-            .or_else(|| event.payload.get("id"))
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-    })
+    work_item_record(event)
+        .map(|record| record.id)
+        .or_else(|| work_item_lifecycle_event(event).map(|record| record.work_item_id))
+        .or_else(|| {
+            event
+                .payload
+                .get("work_item_id")
+                .or_else(|| event.payload.get("current_work_item_id"))
+                .or_else(|| event.payload.get("id"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
 }
 
 fn work_item_objective_from_events(
@@ -1243,9 +1276,13 @@ fn work_item_objective_from_events(
         .iter()
         .rev()
         .filter(|event| event.kind == "work_item_written")
-        .filter_map(work_item_record)
-        .find(|record| record.id == work_item_id)
-        .map(|record| record.objective)
+        .find_map(|event| {
+            if let Some(record) = work_item_record(event) {
+                return (record.id == work_item_id).then_some(record.objective);
+            }
+            let record = work_item_lifecycle_event(event)?;
+            (record.work_item_id == work_item_id).then_some(record.objective_preview)
+        })
 }
 
 fn work_item_lifecycle_summary(event: &ProjectionEventRecord) -> String {
@@ -1257,6 +1294,15 @@ fn work_item_lifecycle_summary(event: &ProjectionEventRecord) -> String {
                 .unwrap_or(record.objective);
         }
         return record.objective;
+    }
+    if let Some(record) = work_item_lifecycle_event(event) {
+        if event.payload.get("action").and_then(Value::as_str) == Some("completed") {
+            return record
+                .result_summary_preview
+                .filter(|summary| !summary.trim().is_empty())
+                .unwrap_or(record.objective_preview);
+        }
+        return record.objective_preview;
     }
     event.summary.clone()
 }
@@ -1276,6 +1322,8 @@ fn work_item_bookkeeping_parts(
     let item_id = work_item_id_from_event(event).unwrap_or_else(|| "?".into());
     let summary = if let Some(record) = work_item_record(event) {
         record.objective
+    } else if let Some(record) = work_item_lifecycle_event(event) {
+        record.objective_preview
     } else if item_id != "?" {
         work_item_objective_from_events(&item_id, events).unwrap_or_else(|| event.summary.clone())
     } else {
@@ -1405,11 +1453,19 @@ fn final_brief_texts(events: &[ProjectionEventRecord]) -> Vec<FinalBriefText> {
     events
         .iter()
         .filter(|event| event.kind == "brief_created")
-        .filter_map(|event| serde_json::from_value::<BriefRecord>(event.payload.clone()).ok())
-        .filter(|brief| !brief.text.trim().is_empty())
-        .map(|brief| FinalBriefText {
-            agent_id: brief.agent_id,
-            text: normalized_text(brief.text.as_str()),
+        .filter_map(|event| {
+            if let Ok(brief) = serde_json::from_value::<BriefRecord>(event.payload.clone()) {
+                return (!brief.text.trim().is_empty()).then_some(FinalBriefText {
+                    agent_id: brief.agent_id,
+                    text: normalized_text(brief.text.as_str()),
+                });
+            }
+            let brief =
+                serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
+            (!brief.text_preview.trim().is_empty()).then_some(FinalBriefText {
+                agent_id: brief.agent_id,
+                text: normalized_text(brief.text_preview.as_str()),
+            })
         })
         .collect()
 }
@@ -2977,6 +3033,64 @@ mod tests {
     }
 
     #[test]
+    fn reducer_renders_lightweight_work_item_lifecycle_cards() {
+        let created = make_event(
+            "work_item_written",
+            "Work item Open: ship lightweight lifecycle",
+            json!({
+                "agent_id": "default",
+                "work_item_id": "wi-1",
+                "workspace_id": "agent_home",
+                "revision": 1,
+                "action": "created",
+                "state": "open",
+                "plan_status": "draft",
+                "readiness": "runnable",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "objective_preview": "ship lightweight lifecycle",
+                "objective_len": 26
+            }),
+        );
+        let completed = make_event(
+            "work_item_written",
+            "Work completed: merged lightweight PR",
+            json!({
+                "agent_id": "default",
+                "work_item_id": "wi-1",
+                "workspace_id": "agent_home",
+                "revision": 2,
+                "action": "completed",
+                "state": "completed",
+                "plan_status": "ready",
+                "readiness": "completed",
+                "updated_at": "2026-01-01T00:00:01Z",
+                "objective_preview": "ship lightweight lifecycle",
+                "objective_len": 26,
+                "result_summary_preview": "merged lightweight PR"
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[created, completed]);
+
+        assert_eq!(items.len(), 2);
+        match &items[0].item {
+            PresentationItem::WorkItemCard { action, summary } => {
+                assert_eq!(action, "tracking started");
+                assert_eq!(summary, "ship lightweight lifecycle");
+            }
+            other => panic!("expected WorkItemCard, got {:?}", other),
+        }
+        match &items[1].item {
+            PresentationItem::WorkItemCard { action, summary } => {
+                assert_eq!(action, "completed");
+                assert_eq!(summary, "merged lightweight PR");
+            }
+            other => panic!("expected WorkItemCard, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn reducer_renders_work_item_bookkeeping_at_verbose_level() {
         let updated = make_event(
             "work_item_written",
@@ -3356,6 +3470,40 @@ mod tests {
                 assert_eq!(body, "completed the task");
                 assert_eq!(*outcome, Outcome::Success);
                 assert!(!body.contains("Brief:"));
+            }
+            other => panic!("expected AssistantResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_brief_created_uses_lightweight_preview() {
+        let event = make_event(
+            "brief_created",
+            "Brief: completed from preview",
+            json!({
+                "brief_id": "brief-1",
+                "agent_id": "default",
+                "workspace_id": "agent_home",
+                "kind": "result",
+                "created_at": "2026-01-01T00:00:00Z",
+                "text_preview": "completed from preview",
+                "text_len": 22
+            }),
+        );
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event]);
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::AssistantResult {
+                brief_id,
+                body,
+                outcome,
+            } => {
+                assert_eq!(brief_id.as_deref(), Some("brief-1"));
+                assert_eq!(body, "completed from preview");
+                assert_eq!(*outcome, Outcome::Success);
             }
             other => panic!("expected AssistantResult, got {:?}", other),
         }

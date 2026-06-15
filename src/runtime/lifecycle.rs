@@ -127,13 +127,7 @@ impl RuntimeHandle {
                     }),
                 ))?;
             }
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_written",
-                serde_json::json!({
-                    "action": "turn_end_committed",
-                    "record": record,
-                }),
-            ))?;
+            self.append_work_item_written_event("turn_end_committed", &record, Value::Null)?;
             record
         } else {
             latest

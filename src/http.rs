@@ -218,6 +218,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{agent_id}/enqueue", post(enqueue))
         .route("/agents/{agent_id}/status", get(status))
         .route("/agents/{agent_id}/briefs", get(briefs))
+        .route("/agents/{agent_id}/briefs/{brief_id}", get(brief))
         .route("/agents/{agent_id}/state", get(agent_state))
         .route("/agents/{agent_id}/events", get(events))
         .route("/agents/{agent_id}/events/stream", get(events_stream))
@@ -1876,6 +1877,28 @@ pub async fn briefs(
         .await
         .map_err(error_response)?;
     Ok(Json(briefs))
+}
+
+pub async fn brief(
+    Path((agent_id, brief_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let Some(brief) = runtime
+        .brief_by_id(&brief_id)
+        .await
+        .map_err(error_response)?
+        .filter(|brief| brief.agent_id == agent_id)
+    else {
+        return Err(not_found(format!("brief {brief_id} not found")));
+    };
+    Ok(Json(brief))
 }
 
 pub async fn transcript_default(
