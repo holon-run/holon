@@ -330,7 +330,10 @@ export function App() {
             onClearModel={() => clearAgentModel(activeAgent.id, displayLevel)}
             onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, displayLevel)}
             onSendPrompt={(text) => sendOperatorPrompt(activeAgent.id, text, displayLevel)}
-            onOpenInspector={() => setInspectorOpen(true)}
+            onOpenInspector={() => {
+              clearInspectorSelection();
+              setInspectorOpen(true);
+            }}
             onInspectActivity={(activity) => inspectActivity(activeAgent.id, activity)}
             selectedActivityId={
               inspectorSelection?.kind === "activity" && inspectorSelection.agentId === activeAgent.id

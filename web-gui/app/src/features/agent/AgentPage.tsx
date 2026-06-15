@@ -226,7 +226,14 @@ export function AgentPage({
                 turn={turn}
               />
             ))}
-            {isWorking ? <WorkingIndicator activities={workingActivities} agent={activeAgent} displayLevel={displayLevel} /> : null}
+            {isWorking ? (
+              <WorkingIndicator
+                activities={workingActivities}
+                agent={activeAgent}
+                displayLevel={displayLevel}
+                onOpenOverview={onOpenInspector}
+              />
+            ) : null}
             {timeline.length === 0 ? (
               <EmptyState
                 className="conversation-empty"
@@ -747,49 +754,58 @@ function WorkingIndicator({
   activities,
   agent,
   displayLevel,
+  onOpenOverview,
 }: {
   activities: AgentTimelineActivity[];
   agent: AgentSummary;
   displayLevel: DisplayLevel;
+  onOpenOverview: () => void;
 }) {
-  if (displayLevel !== "info" || activities.length === 0) {
-    const parts = [
-      agent.currentWork?.objective,
-      agent.activeTaskCount ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}` : undefined,
-      agent.pending ? `${agent.pending} queued` : undefined,
-    ].filter(Boolean);
+  const parts = [
+    agent.currentWork?.objective,
+    agent.activeTaskCount ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}` : undefined,
+    agent.pending ? `${agent.pending} queued` : undefined,
+  ].filter(Boolean);
 
+  if (displayLevel !== "info" || activities.length === 0) {
     return (
-      <div className="working-indicator compact" role="status">
+      <button className="working-indicator compact" type="button" onClick={onOpenOverview}>
         <span className="working-activity-dot" aria-hidden="true" />
         <strong>Working</strong>
         {parts.length ? <span>{parts.join(" · ")}</span> : null}
-      </div>
+      </button>
     );
   }
 
   return (
-    <aside className="working-indicator detail" aria-label="Working activity">
+    <button className="working-indicator detail" type="button" onClick={onOpenOverview}>
       <div className="working-activity-header">
-        <span>Working activity</span>
-        <small>Runtime signals not shown in Info timeline</small>
+        <span className="working-activity-title">
+          <span className="working-activity-dot" aria-hidden="true" />
+          <strong>Working</strong>
+        </span>
+        {parts.length ? <small>{parts.join(" · ")}</small> : null}
       </div>
       <div className="working-activity-list">
         {activities.map((activity) => (
           <div className={`working-activity-item ${activity.kind}`} key={activity.id}>
-            <span className="working-activity-dot" aria-hidden="true" />
-            <strong>{workingActivityLabel(activity)}</strong>
+            <span className="working-activity-icon" aria-label={workingActivityLabel(activity)} title={workingActivityLabel(activity)}>
+              {workingActivityIcon(activity)}
+            </span>
             <span>{workingActivityBody(activity)}</span>
-            <time>{formatDisplayTime(activity.timestamp)}</time>
           </div>
         ))}
       </div>
-    </aside>
+    </button>
   );
 }
 
 function workingActivityLabel(activity: AgentTimelineActivity): string {
   return activity.kind === "assistant" ? "Assistant" : "Action";
+}
+
+function workingActivityIcon(activity: AgentTimelineActivity): string {
+  return activity.kind === "assistant" ? "✦" : "›";
 }
 
 function workingActivityBody(activity: AgentTimelineActivity): string {
