@@ -416,8 +416,8 @@ function projectToolExecution(
   const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status");
   const durationMs = numberField(payload, "duration_ms") ?? numberField(result, "duration_ms");
   const error = stringField(payload, "error");
-  const stringPreview = toolStringPreview(toolName, payload, commandPreview);
-  const toolSummary = projection?.body ?? stringPreview ?? summary ?? genericToolDescription(toolName, payload);
+  const stringPreview = toolStringPreview(toolName, payload, commandPreview) || undefined;
+  const toolSummary = projection?.body ?? stringPreview ?? summary ?? genericToolDescription(toolName, payload) ?? toolName;
   const body = compactJoin([
     toolSummary,
     exitStatus == null ? undefined : `exit ${exitStatus}`,
@@ -448,6 +448,7 @@ function projectKnownToolExecution(
   if (toolName === "ApplyPatch") return projectApplyPatchTool(payload);
   if (toolName === "ListWorkItems") return projectListWorkItemsTool(payload);
   if (toolName === "GetWorkItem") return projectGetWorkItemTool(payload);
+  if (toolName === "ViewImage") return projectViewImageTool(payload);
   return undefined;
 }
 
@@ -539,6 +540,28 @@ function projectGetWorkItemTool(payload: Record<string, unknown> | undefined): P
   return {
     body: summary || compactJoin(["Loaded work item", workItemId]) || "Loaded work item",
     detail: { label: "Work item", text: debugJson(result ?? payload ?? {}), tone: "data" },
+  };
+}
+
+function projectViewImageTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.view_image_result) ?? asRecord(payload?.result);
+  const dimensions = asRecord(result?.dimensions);
+  const width = numberField(result, "width") ?? numberField(dimensions, "width");
+  const height = numberField(result, "height") ?? numberField(dimensions, "height");
+  const imagePath = firstStringField(payload, ["path", "image_path"]) ?? firstStringField(result, ["path", "image_path"]);
+  const observation = firstStringField(result, ["visual_observation", "observation", "text_preview"]);
+  const body = compactJoin([
+    "Viewed image",
+    imagePath ? basename(imagePath) : undefined,
+    width != null && height != null ? `${width}×${height}` : undefined,
+    observation ? truncateText(observation, 120) : undefined,
+  ]);
+
+  return {
+    body,
+    detail: observation
+      ? { label: "Visual observation", text: observation, tone: "data" }
+      : { label: "Result", text: debugJson(result ?? payload ?? {}), tone: "data" },
   };
 }
 
@@ -640,6 +663,14 @@ function indentPreview(value: string): string {
     .split("\n")
     .slice(0, 6)
     .join("\n   ");
+}
+
+function basename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+function truncateText(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 }
 
 function execCommandPreview(payload: Record<string, unknown> | undefined): string | undefined {

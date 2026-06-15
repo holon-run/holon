@@ -82,6 +82,45 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
+  it("projects ViewImage tools with image context instead of duration-only summaries", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("view-image", "ViewImage", {
+            duration_ms: 9700,
+            path: "/Users/jolestar/Desktop/Screenshot.png",
+            view_image_result: {
+              dimensions: { width: 1200, height: 800 },
+              visual_observation: "A browser screenshot showing the conversation timeline.",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        label: "Tool finished",
+        body: "Viewed image · Screenshot.png · 1200×800 · A browser screenshot showing the conversation timeline. · 9.7s",
+      }),
+    );
+  });
+
+  it("falls back to the tool name when a tool has no readable summary", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [toolEvent("opaque-tool", "OpaqueTool", { duration_ms: 9700 })],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        body: "OpaqueTool · 9.7s",
+      }),
+    );
+  });
+
   it("renders work_item_picked objective and reason without internal ids", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
