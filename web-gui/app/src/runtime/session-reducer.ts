@@ -118,6 +118,7 @@ function projectEventEnvelope(
   const payload = asRecord(event.payload);
   const eventType = event.type ?? "runtime_event";
   const projection = projectRuntimeEvent(eventType, payload);
+  if (!projection) return undefined;
   const meta = eventMeta(eventType, payload, event.event_seq);
 
   return item({
@@ -153,7 +154,7 @@ function eventProjectionDisplayLevel(level: DisplayLevel, eventDisplayLevel: Dis
 function projectRuntimeEvent(
   eventType: string,
   payload: Record<string, unknown> | undefined,
-): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string } {
+): (Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string }) | undefined {
   if (eventType === "message_enqueued") {
     const message = messageEnvelopeProjection(payload);
     if (message?.origin === "operator") {
@@ -265,7 +266,7 @@ function runtimeEventDisplayLevel(eventType: string): DisplayLevel {
 
 function projectAssistantRoundRecorded(
   payload: Record<string, unknown> | undefined,
-): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> {
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> | undefined {
   const textPreview = stringField(payload, "text_preview");
   if (textPreview) {
     return {
@@ -276,22 +277,7 @@ function projectAssistantRoundRecorded(
     };
   }
 
-  const toolNames = toolNamesFromPayload(payload);
-  if (toolNames.length) {
-    return {
-      kind: "tool",
-      label: "Assistant requested tools",
-      body: toolNames.join(", "),
-      minDisplayLevel: toolNames.every(isLowValueToolRequest) ? "debug" : "verbose",
-    };
-  }
-
-  return {
-    kind: "assistant",
-    label: "Assistant round",
-    body: compactJoin(["Assistant round completed without text", cleanStringField(payload, "stop_reason")]),
-    minDisplayLevel: "debug",
-  };
+  return undefined;
 }
 
 function timelineDedupeKey(item: AgentTimelineItem): string {
@@ -444,10 +430,6 @@ function projectToolExecution(
 function toolTimelineDisplayLevel(toolName: string): DisplayLevel {
   if (debugOnlyToolNames.has(toolName)) return "debug";
   return "verbose";
-}
-
-function isLowValueToolRequest(toolName: string): boolean {
-  return toolName === "ExecCommandBatch" || toolName === "WaitFor";
 }
 
 function projectKnownToolExecution(
@@ -756,14 +738,6 @@ function readableTextWithoutSummary(value: unknown): string {
   }
 
   return "";
-}
-
-function toolNamesFromPayload(value: Record<string, unknown> | undefined): string[] {
-  const toolNames = arrayField(value, "tool_names");
-  if (!toolNames?.length) return [];
-  return toolNames
-    .map((name) => (typeof name === "string" ? name.trim() : ""))
-    .filter((name): name is string => Boolean(name));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
