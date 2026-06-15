@@ -635,8 +635,13 @@ fn serve_args_for_options(options: &ServeOptions) -> DaemonServeLaunchOptions {
 fn merge_serve_options(inherited: ServeOptions, explicit: ServeOptions) -> ServeOptions {
     let explicit_token = explicit.token.is_some();
     let explicit_token_file = explicit.token_file.is_some();
+    let explicit_access = explicit.access.is_some();
+    let explicit_host = explicit.host.is_some();
     let explicit_listen = explicit.listen.is_some();
     let explicit_port = explicit.port.is_some();
+    let explicit_advertise = explicit.advertise.is_some();
+    let clear_inherited_advertise =
+        explicit_access || explicit_host || explicit_listen || explicit_port;
     ServeOptions {
         access: explicit.access.or(inherited.access),
         host: explicit.host.or(inherited.host),
@@ -654,7 +659,13 @@ fn merge_serve_options(inherited: ServeOptions, explicit: ServeOptions) -> Serve
         } else {
             inherited.port
         },
-        advertise: explicit.advertise.or(inherited.advertise),
+        advertise: if explicit_advertise {
+            explicit.advertise
+        } else if clear_inherited_advertise {
+            None
+        } else {
+            inherited.advertise
+        },
         token: if explicit_token {
             explicit.token
         } else if explicit_token_file {
@@ -1341,6 +1352,8 @@ mod tests {
                 "192.168.1.10",
                 "--port",
                 "8787",
+                "--advertise",
+                "http://old.example.test:8787",
                 "--token-file",
                 token_file.to_str().unwrap(),
             ],
@@ -1379,6 +1392,59 @@ mod tests {
             ]
         );
         assert_eq!(launch.control_token_env, None);
+        assert!(!launch.args.iter().any(|arg| arg == "--advertise"));
+        assert!(!launch
+            .args
+            .iter()
+            .any(|arg| arg == "http://old.example.test:8787"));
+    }
+
+    #[test]
+    fn daemon_restart_explicit_local_access_clears_inherited_advertise_url() {
+        let mut config = test_config();
+        config.control_token = None;
+        let token_file = config.home_dir.join("control.token");
+        fs::write(&token_file, "file-secret").unwrap();
+        let metadata = runtime_metadata_with_serve_args(
+            &config,
+            vec![
+                "--access",
+                "lan",
+                "--host",
+                "192.168.1.10",
+                "--port",
+                "8787",
+                "--advertise",
+                "http://old.example.test:8787",
+                "--token-file",
+                token_file.to_str().unwrap(),
+            ],
+            false,
+        );
+
+        let launch = restart_serve_launch_options(
+            &mut config,
+            ServeOptions {
+                access: Some(ServeAccess::Local),
+                host: None,
+                listen: None,
+                port: None,
+                advertise: None,
+                token: None,
+                token_file: None,
+            },
+            Some(&metadata),
+        )
+        .unwrap();
+
+        assert_eq!(config.http_addr, "127.0.0.1:8787");
+        assert_ne!(config.callback_base_url, "http://old.example.test:8787");
+        assert_eq!(config.control_token.as_deref(), Some("file-secret"));
+        assert!(!launch.args.iter().any(|arg| arg == "--advertise"));
+        assert!(!launch
+            .args
+            .iter()
+            .any(|arg| arg == "http://old.example.test:8787"));
     }
 
     #[test]
