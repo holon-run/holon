@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    error::Error as StdError,
     fmt,
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
@@ -29,9 +30,48 @@ const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
 const TASK_PAYLOAD_ARRAY_LIMIT: usize = 64;
 const EVIDENCE_PREVIEW_LIMIT: usize = 2048;
 const CONTEXT_EPISODE_ANCHORS_DOMAIN: &str = "context_episode_anchors";
-const RUNTIME_DB_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
-const RUNTIME_DB_TRANSACTION_RETRY_DELAY: Duration = Duration::from_millis(25);
+const RUNTIME_DB_BUSY_TIMEOUT: Duration = Duration::from_millis(30_000);
+const RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(25);
+const RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY: Duration = Duration::from_millis(1_000);
+const RUNTIME_DB_APPEND_RETRY_MAX_DELAY: Duration = Duration::from_millis(5_000);
 const RUNTIME_DB_WRITE_QUEUE_CAPACITY: usize = 1024;
+
+#[derive(Debug)]
+pub struct RuntimeDbRetryableError {
+    operation: &'static str,
+    path: PathBuf,
+    source: String,
+}
+
+impl RuntimeDbRetryableError {
+    pub(crate) fn new(operation: &'static str, path: &Path, source: impl fmt::Display) -> Self {
+        Self {
+            operation,
+            path: path.to_path_buf(),
+            source: source.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for RuntimeDbRetryableError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "retryable runtime db error while {} for {}: {}",
+            self.operation,
+            self.path.display(),
+            self.source
+        )
+    }
+}
+
+impl StdError for RuntimeDbRetryableError {}
+
+pub fn is_retryable_db_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|source| source.downcast_ref::<RuntimeDbRetryableError>().is_some())
+}
 
 #[derive(Clone)]
 pub struct RuntimeDb {
@@ -78,7 +118,7 @@ struct RuntimeDbWriteTurn {
 }
 
 type RuntimeDbWriteJob =
-    Box<dyn for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<()> + Send + 'static>;
+    Box<dyn for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static>;
 
 struct RuntimeDbWriteRequest {
     job: RuntimeDbWriteJob,
@@ -238,12 +278,32 @@ impl RuntimeDbWriter {
             .name("holon-runtime-db-writer".to_string())
             .spawn(move || {
                 while let Ok(request) = append_rx.recv() {
-                    if let Err(error) = thread_state.append_wait(|tx| (request.job)(tx)) {
-                        tracing::warn!(
-                            error = %error,
-                            path = %thread_state.path.display(),
-                            "runtime db queued write failed"
-                        );
+                    let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
+                    loop {
+                        match thread_state.append_wait(|tx| (request.job)(tx)) {
+                            Ok(()) => break,
+                            Err(error) if is_retryable_db_error(&error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    path = %thread_state.path.display(),
+                                    retry_delay_ms = retry_delay.as_millis(),
+                                    "runtime db queued write retrying"
+                                );
+                                thread::sleep(retry_delay);
+                                retry_delay = next_runtime_db_retry_delay(
+                                    retry_delay,
+                                    RUNTIME_DB_APPEND_RETRY_MAX_DELAY,
+                                );
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    path = %thread_state.path.display(),
+                                    "runtime db queued write failed"
+                                );
+                                break;
+                            }
+                        }
                     }
                 }
             })
@@ -253,7 +313,7 @@ impl RuntimeDbWriter {
 
     fn append(
         &self,
-        f: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<()> + Send + 'static,
+        f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
     ) -> Result<()> {
         let request = RuntimeDbWriteRequest { job: Box::new(f) };
         match self.append_tx.try_send(request) {
@@ -1705,8 +1765,9 @@ impl TranscriptRepository<'_> {
     }
 
     pub fn upsert(&self, entry: &TranscriptEntry) -> Result<()> {
+        let entry = entry.clone();
         self.db
-            .transaction(|tx| upsert_transcript_entry_tx(tx, entry))
+            .append(move |tx| upsert_transcript_entry_tx(tx, &entry))
     }
 
     pub fn upsert_many(&self, entries: &[TranscriptEntry]) -> Result<()> {
@@ -1843,28 +1904,33 @@ impl EvidenceRepository<'_> {
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
+        let message = message.clone();
         self.db
-            .transaction(|tx| insert_message_evidence_tx(tx, message))
+            .append(move |tx| insert_message_evidence_tx(tx, &message))
     }
 
     pub fn append_transcript_entry(&self, entry: &TranscriptEntry) -> Result<()> {
+        let entry = entry.clone();
         self.db
-            .transaction(|tx| insert_transcript_evidence_tx(tx, entry))
+            .append(move |tx| insert_transcript_evidence_tx(tx, &entry))
     }
 
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
+        let record = record.clone();
         self.db
-            .transaction(|tx| insert_tool_evidence_tx(tx, record))
+            .append(move |tx| insert_tool_evidence_tx(tx, &record))
     }
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
+        let brief = brief.clone();
         self.db
-            .transaction(|tx| insert_brief_evidence_tx(tx, brief))
+            .append(move |tx| insert_brief_evidence_tx(tx, &brief))
     }
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
+        let record = record.clone();
         self.db
-            .transaction(|tx| insert_delivery_summary_evidence_tx(tx, record))
+            .append(move |tx| insert_delivery_summary_evidence_tx(tx, &record))
     }
 
     pub fn query(&self, kind: EvidenceKind, query: EvidenceQuery<'_>) -> Result<Vec<EvidenceRow>> {
@@ -2051,14 +2117,18 @@ impl EvidenceRepository<'_> {
 
 impl AuditEventSink<'_> {
     pub fn append(&self, agent_id: Option<&str>, event: &AuditEvent) -> Result<()> {
+        let agent_id = agent_id.map(str::to_owned);
+        let event = event.clone();
         self.db
-            .transaction(|tx| insert_audit_event_tx(tx, agent_id, event))
+            .append(move |tx| insert_audit_event_tx(tx, agent_id.as_deref(), &event))
     }
 
     pub fn append_many(&self, agent_id: Option<&str>, events: &[AuditEvent]) -> Result<()> {
-        self.db.transaction(|tx| {
-            for event in events {
-                insert_audit_event_tx(tx, agent_id, event)?;
+        let agent_id = agent_id.map(str::to_owned);
+        let events = events.to_vec();
+        self.db.append(move |tx| {
+            for event in &events {
+                insert_audit_event_tx(tx, agent_id.as_deref(), &event)?;
             }
             Ok(())
         })
@@ -4714,7 +4784,7 @@ impl RuntimeDb {
 
     pub fn append(
         &self,
-        f: impl for<'transaction> FnOnce(&Transaction<'transaction>) -> Result<()> + Send + 'static,
+        f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
     ) -> Result<()> {
         self.writer.append(f)
     }
@@ -5157,7 +5227,9 @@ fn run_transaction_on_connection<T>(
     let transaction = begin_immediate_transaction_with_retry(connection, path)?;
     match f(&transaction) {
         Ok(value) => {
-            transaction.commit()?;
+            transaction.commit().map_err(|error| {
+                map_runtime_db_sqlite_error("committing transaction", path, error)
+            })?;
             Ok(value)
         }
         Err(error) => {
@@ -5172,6 +5244,7 @@ fn begin_immediate_transaction_with_retry<'connection>(
     path: &Path,
 ) -> Result<Transaction<'connection>> {
     let started_at = Instant::now();
+    let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
     loop {
         // The writer mutex prevents concurrent transactions on this connection;
         // the retry loop absorbs transient locks from external processes or connections.
@@ -5180,7 +5253,19 @@ fn begin_immediate_transaction_with_retry<'connection>(
             Err(error)
                 if is_sqlite_locked(&error) && started_at.elapsed() < RUNTIME_DB_BUSY_TIMEOUT =>
             {
-                thread::sleep(RUNTIME_DB_TRANSACTION_RETRY_DELAY);
+                thread::sleep(retry_delay);
+                retry_delay = next_runtime_db_retry_delay(
+                    retry_delay,
+                    RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
+                );
+            }
+            Err(error) if is_sqlite_locked(&error) => {
+                return Err(RuntimeDbRetryableError::new(
+                    "starting immediate transaction",
+                    path,
+                    error,
+                )
+                .into());
             }
             Err(error) => {
                 return Err(error).with_context(|| {
@@ -5191,6 +5276,22 @@ fn begin_immediate_transaction_with_retry<'connection>(
                 });
             }
         }
+    }
+}
+
+fn next_runtime_db_retry_delay(current: Duration, max: Duration) -> Duration {
+    current.saturating_mul(2).min(max)
+}
+
+fn map_runtime_db_sqlite_error(
+    operation: &'static str,
+    path: &Path,
+    error: rusqlite::Error,
+) -> anyhow::Error {
+    if is_sqlite_locked(&error) {
+        RuntimeDbRetryableError::new(operation, path, error).into()
+    } else {
+        anyhow!(error).context(format!("{} for {}", operation, path.display()))
     }
 }
 
@@ -5370,6 +5471,34 @@ mod tests {
         let db_path = temp_dir.path().join("state/runtime.sqlite");
         let lock_path = temp_dir.path().join("state/runtime.lock");
         Ok((temp_dir, db_path, lock_path))
+    }
+
+    fn wait_until(mut condition: impl FnMut() -> Result<bool>, label: &str) -> Result<()> {
+        let started_at = Instant::now();
+        loop {
+            if condition()? {
+                return Ok(());
+            }
+            if started_at.elapsed() > Duration::from_secs(2) {
+                bail!("{label} did not become true");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn runtime_db_retryable_error_classification_survives_context() -> Result<()> {
+        let (_temp_dir, db_path, _lock_path) = temp_paths()?;
+        let error: anyhow::Error = RuntimeDbRetryableError::new(
+            "starting immediate transaction",
+            &db_path,
+            "database is locked",
+        )
+        .into();
+        let error = error.context("processing message");
+        assert!(is_retryable_db_error(&error));
+        assert!(!is_retryable_db_error(&anyhow!("not a db lock")));
+        Ok(())
     }
 
     fn task_record(id: &str, agent_id: &str, status: TaskStatus, offset: i64) -> TaskRecord {
@@ -5637,7 +5766,7 @@ INSERT INTO storage_domains (
     }
 
     #[test]
-    fn runtime_db_transaction_waits_for_temporarily_locked_writer() -> Result<()> {
+    fn runtime_db_async_append_retries_temporarily_locked_writer() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let mut external = open_connection(&db_path)?;
@@ -5667,9 +5796,13 @@ INSERT INTO storage_domains (
         handle
             .join()
             .map_err(|_| anyhow!("writer thread panicked"))??;
-        let events = db.audit_events().recent(Some("agent-a"), 1)?;
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind, "runtime_db_locked_retry");
+        wait_until(
+            || {
+                let events = db.audit_events().recent(Some("agent-a"), 1)?;
+                Ok(events.len() == 1 && events[0].kind == "runtime_db_locked_retry")
+            },
+            "locked async append retry",
+        )?;
         Ok(())
     }
 
@@ -5698,13 +5831,18 @@ INSERT INTO storage_domains (
                 .map_err(|_| anyhow!("writer thread panicked"))??;
         }
 
-        let connection = db.connection()?;
-        let count: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM audit_events WHERE agent_id = 'agent-a'",
-            [],
-            |row| row.get(0),
+        wait_until(
+            || {
+                let connection = db.connection()?;
+                let count: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE agent_id = 'agent-a'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok(count == 8)
+            },
+            "concurrent queued writes",
         )?;
-        assert_eq!(count, 8);
         Ok(())
     }
 
@@ -5740,10 +5878,13 @@ INSERT INTO storage_domains (
         let second_writer = second.clone();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let second_handle = std::thread::spawn(move || -> Result<()> {
-            second_writer.audit_events().append(
-                Some("agent-a"),
-                &AuditEvent::new("runtime_db_queue_second", serde_json::json!({})),
-            )?;
+            second_writer.transaction(|tx| {
+                insert_audit_event_tx(
+                    tx,
+                    Some("agent-a"),
+                    &AuditEvent::new("runtime_db_queue_second", serde_json::json!({})),
+                )
+            })?;
             done_tx
                 .send(())
                 .map_err(|_| anyhow!("failed to signal second write"))?;
@@ -5772,7 +5913,7 @@ INSERT INTO storage_domains (
             .collect::<Vec<_>>();
         assert_eq!(
             kinds,
-            vec!["runtime_db_queue_second", "runtime_db_queue_first"]
+            vec!["runtime_db_queue_first", "runtime_db_queue_second"]
         );
         Ok(())
     }
@@ -5983,6 +6124,10 @@ CREATE TABLE working_memory_deltas (
         db.evidence().append_brief(&later_id)?;
         db.evidence().append_brief(&earlier_id)?;
 
+        wait_until(
+            || Ok(db.evidence().recent_briefs("agent-a", 2)?.len() == 2),
+            "recent brief writes",
+        )?;
         let records = db.evidence().recent_briefs("agent-a", 2)?;
         assert_eq!(
             records
