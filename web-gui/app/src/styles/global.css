@@ -1843,15 +1843,21 @@ code {
 
 .message-actions {
   display: flex;
+  position: absolute;
+  top: 6px;
+  right: -34px;
+  z-index: 2;
+  flex-direction: column;
   gap: 6px;
-  margin-top: 6px;
+  margin-top: 0;
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
 }
 
 .message.operator .message-actions {
-  justify-content: flex-end;
+  right: auto;
+  left: -34px;
 }
 
 .message:not(.activity-message):hover .message-actions,
