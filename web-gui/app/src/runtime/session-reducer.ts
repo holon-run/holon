@@ -846,12 +846,12 @@ function readableTextWithoutSummary(value: unknown): string {
 
 function toolErrorMessage(payload: Record<string, unknown> | undefined): string | undefined {
   const direct = stringField(payload, "error");
-  if (direct) return direct;
+  if (direct) return structuredErrorMessage(direct) ?? direct;
 
   const error = payload?.error;
   if (typeof error === "string" && error.trim()) return error;
 
-  const errorRecord = asRecord(error);
+  const errorRecord = asRecord(error) ?? asRecord(payload?.tool_error);
   const message = firstStringField(errorRecord, ["message", "summary", "summary_text", "reason", "detail"]);
   if (message) return message;
 
@@ -859,6 +859,18 @@ function toolErrorMessage(payload: Record<string, unknown> | undefined): string 
   if (nested) return nested;
 
   return undefined;
+}
+
+function structuredErrorMessage(value: string): string | undefined {
+  const text = value.trim();
+  if (!text.startsWith("{") && !text.startsWith("[")) return undefined;
+
+  try {
+    const record = asRecord(JSON.parse(text));
+    return firstStringField(record, ["message", "summary", "summary_text", "reason", "detail"]);
+  } catch {
+    return undefined;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

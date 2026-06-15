@@ -150,6 +150,42 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
+  it("parses json-string tool errors before rendering failed tool details", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "patch-failed-json",
+            event_seq: 81783,
+            type: "tool_execution_failed",
+            payload: {
+              tool_name: "ApplyPatch",
+              error: JSON.stringify({
+                kind: "ambiguous_context",
+                message: "hunk context matches 8 locations in web-gui/app/src/runtime/session-reducer.ts",
+                details: { candidate_count: 8 },
+              }),
+              error_kind: "ambiguous_context",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        label: "Patch failed",
+        body: "ApplyPatch · hunk context matches 8 locations in web-gui/app/src/runtime/session-reducer.ts",
+        detail: {
+          label: "Error",
+          text: "hunk context matches 8 locations in web-gui/app/src/runtime/session-reducer.ts",
+          tone: "data",
+        },
+      }),
+    );
+  });
+
   it("renders work_item_picked objective and reason without internal ids", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
