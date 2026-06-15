@@ -50,6 +50,10 @@ export function App() {
   const runtimeConfigLoading = useRuntimeStore((state) => state.runtimeConfigLoading);
   const runtimeConfigSaving = useRuntimeStore((state) => state.runtimeConfigSaving);
   const runtimeConfigError = useRuntimeStore((state) => state.runtimeConfigError);
+  const search = useRuntimeStore((state) => state.search);
+  const searchLoading = useRuntimeStore((state) => state.searchLoading);
+  const searchError = useRuntimeStore((state) => state.searchError);
+  const runSearch = useRuntimeStore((state) => state.runSearch);
   const refreshModelCatalog = useRuntimeStore((state) => state.refreshModelCatalog);
   const refreshRuntimeConfig = useRuntimeStore((state) => state.refreshRuntimeConfig);
   const updateRuntimeConfig = useRuntimeStore((state) => state.updateRuntimeConfig);
@@ -108,9 +112,9 @@ export function App() {
     pushBrowserRoute(nextRoute, selectedAgentId);
   }
 
-  function navigateAgent(agentId: string) {
+  function navigateAgent(agentId: string, eventSeq?: number) {
     openAgent(agentId);
-    pushBrowserRoute("agent", agentId);
+    pushBrowserRoute("agent", agentId, eventSeq == null ? undefined : { event_seq: eventSeq });
   }
 
   if (isInitialBootstrapping) {
@@ -352,7 +356,16 @@ export function App() {
           />
         ) : null}
         {route === "agent" && !activeAgent ? <MissingAgentPage agentId={selectedAgentId} loading={loading} /> : null}
-        {route === "search" ? <SearchPage /> : null}
+        {route === "search" ? (
+          <SearchPage
+            agents={bootstrap.agents}
+            search={search}
+            loading={searchLoading}
+            error={searchError}
+            onSearch={runSearch}
+            onOpenAgent={navigateAgent}
+          />
+        ) : null}
         {route === "settings" ? (
           <SettingsPage
             connection={bootstrap.connection}

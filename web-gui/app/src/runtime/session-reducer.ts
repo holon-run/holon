@@ -270,8 +270,8 @@ function projectEventEnvelope(
   const id = event.id ?? `event-${event.event_seq}`;
   const payload = asRecord(event.payload);
   const eventType = event.type ?? "runtime_event";
-  if (eventType === "assistant_round_recorded") return undefined;
   const projection = projectRuntimeEvent(eventType, payload);
+  const meta = eventMeta(eventType, payload, event.event_seq);
 
   return item({
     id,
@@ -279,12 +279,20 @@ function projectEventEnvelope(
     label: projection.label,
     body: projection.body,
     timestamp: projection.timestamp ?? event.ts ?? "",
-    meta: event.event_seq == null ? eventType : `${eventType} · event #${event.event_seq}`,
+    meta,
     minDisplayLevel: capDisplayLevel(projection.minDisplayLevel, eventDisplayLevel),
     sourceIds: [id],
     detail: projection.detail,
     debug: includeDebug ? debugJson(event) : undefined,
   });
+}
+
+function eventMeta(eventType: string, payload: Record<string, unknown> | undefined, eventSeq: number | undefined): string {
+  const eventRef = eventSeq == null ? undefined : `event #${eventSeq}`;
+  if (eventType === "message_enqueued" && messageEnvelopeProjection(payload)?.origin === "operator") {
+    return compactJoin(["Sent", eventRef]);
+  }
+  return eventRef == null ? eventType : `${eventType} · ${eventRef}`;
 }
 
 function capDisplayLevel(level: DisplayLevel, maxLevel: DisplayLevel): DisplayLevel {
@@ -323,6 +331,10 @@ function projectRuntimeEvent(
       timestamp: stringField(payload, "created_at"),
       minDisplayLevel: "info",
     };
+  }
+
+  if (eventType === "assistant_round_recorded") {
+    return projectAssistantRoundRecorded(payload);
   }
 
   if (eventType === "tool_executed" || eventType === "tool_execution_failed") {
@@ -399,6 +411,37 @@ function projectRuntimeEvent(
   };
 }
 
+function projectAssistantRoundRecorded(
+  payload: Record<string, unknown> | undefined,
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> {
+  const textPreview = stringField(payload, "text_preview");
+  if (textPreview) {
+    return {
+      kind: "assistant",
+      label: "Assistant round",
+      body: textPreview,
+      minDisplayLevel: "verbose",
+    };
+  }
+
+  const toolNames = toolNamesFromPayload(payload);
+  if (toolNames.length) {
+    return {
+      kind: "tool",
+      label: "Assistant requested tools",
+      body: toolNames.join(", "),
+      minDisplayLevel: toolNames.every(isLowValueToolRequest) ? "debug" : "verbose",
+    };
+  }
+
+  return {
+    kind: "assistant",
+    label: "Assistant round",
+    body: compactJoin(["Assistant round completed without text", cleanStringField(payload, "stop_reason")]),
+    minDisplayLevel: "debug",
+  };
+}
+
 function timelineDedupeKey(item: AgentTimelineItem): string {
   if (item.kind === "operator") {
     return `operator:${normalizeTextKey(item.body)}`;
@@ -449,9 +492,24 @@ function isSameAssistantText(left: string, right: string): boolean {
 function flattenTimelineActivities(items: AgentTimelineItem[]): AgentTimelineItem[] {
   return items.flatMap((item) => {
     const base: AgentTimelineItem = { ...item, activities: undefined };
-    const activities = (item.activities ?? []).map(activityToTimelineItem);
+    const activities = (item.activities ?? []).filter(shouldFlattenActivity).map(activityToTimelineItem);
     return [base, ...activities];
   });
+}
+
+function shouldFlattenActivity(activity: AgentTimelineActivity): boolean {
+  if (isEphemeralRuntimeActivity(activity)) return false;
+  return true;
+}
+
+function isEphemeralRuntimeActivity(activity: Pick<AgentTimelineActivity, "kind" | "meta">): boolean {
+  if (activity.kind !== "tool" && activity.kind !== "event" && activity.kind !== "system") return false;
+  return (
+    activity.meta.startsWith("tool_executed") ||
+    activity.meta.startsWith("tool_execution_failed") ||
+    activity.meta.startsWith("wait_condition_registered") ||
+    activity.meta.startsWith("agent_waiting")
+  );
 }
 
 function activityToTimelineItem(activity: AgentTimelineActivity): AgentTimelineItem {
@@ -553,8 +611,16 @@ function projectToolExecution(
     label,
     body: body || (failed ? "Failed." : "Completed."),
     detail,
-    minDisplayLevel: "verbose",
+    minDisplayLevel: toolTimelineDisplayLevel(toolName),
   };
+}
+
+function toolTimelineDisplayLevel(toolName: string): DisplayLevel {
+  return "verbose";
+}
+
+function isLowValueToolRequest(toolName: string): boolean {
+  return toolName === "ExecCommandBatch" || toolName === "WaitFor";
 }
 
 function projectKnownToolExecution(

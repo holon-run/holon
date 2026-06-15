@@ -78,6 +78,7 @@ export interface RuntimeModelOption {
   displayName: string;
   available: boolean;
   unavailableReason?: string;
+  supportsImageInput: boolean;
   supportsReasoningEffort: boolean;
 }
 
@@ -102,6 +103,7 @@ export interface RuntimeProviderSummary {
 export interface RuntimeConfigSurface {
   modelDefault: string;
   modelFallbacks: string[];
+  visionDefault?: string;
   modelCatalog: string[];
   unknownModelFallbackConfigured: boolean;
   runtimeMaxOutputTokens: number;
@@ -143,6 +145,30 @@ export interface RuntimeConfigState {
   changed?: boolean;
   results?: RuntimeConfigUpdateResult[];
   error?: string;
+}
+
+export interface SearchResultLocator {
+  evidenceId?: string;
+  messageId?: string;
+  turnId?: string;
+  taskId?: string;
+  workItemId?: string;
+  eventSeq?: number;
+}
+
+export interface SearchResultItem {
+  resultType: "message";
+  agentId: string;
+  locator: SearchResultLocator;
+  createdAt?: string;
+  kind: string;
+  preview: string;
+}
+
+export interface SearchResponse {
+  query: string;
+  limit: number;
+  results: SearchResultItem[];
 }
 
 export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event" | "system";

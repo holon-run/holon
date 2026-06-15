@@ -60,6 +60,7 @@ export function SettingsPage({
   const surface = runtimeConfig.surface;
   const [modelDefault, setModelDefault] = useState("");
   const [modelFallbacks, setModelFallbacks] = useState("");
+  const [visionDefault, setVisionDefault] = useState("");
   const [runtimeMaxOutputTokens, setRuntimeMaxOutputTokens] = useState("");
   const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
   const [maxToolOutputTokens, setMaxToolOutputTokens] = useState("");
@@ -74,13 +75,16 @@ export function SettingsPage({
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({});
   const [saveMessage, setSaveMessage] = useState<string | undefined>();
   const [searchSaveMessage, setSearchSaveMessage] = useState<string | undefined>();
+  const [visionSaveMessage, setVisionSaveMessage] = useState<string | undefined>();
   const [providerSaveMessage, setProviderSaveMessage] = useState<string | undefined>();
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
+  const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
 
   useEffect(() => {
     if (!surface) return;
     setModelDefault(surface.modelDefault);
     setModelFallbacks(surface.modelFallbacks.join(", "));
+    setVisionDefault(surface.visionDefault ?? "");
     setRuntimeMaxOutputTokens(String(surface.runtimeMaxOutputTokens));
     setDefaultToolOutputTokens(String(surface.defaultToolOutputTokens));
     setMaxToolOutputTokens(String(surface.maxToolOutputTokens));
@@ -112,10 +116,14 @@ export function SettingsPage({
     );
     setSaveMessage(undefined);
     setSearchSaveMessage(undefined);
+    setVisionSaveMessage(undefined);
     setProviderSaveMessage(undefined);
   }, [surface]);
 
   const rejectedResults = runtimeConfig.results?.filter((result) => result.effect === "rejected") ?? [];
+  const configuredProviderCount = surface?.providers.filter((provider) => provider.credentialConfigured).length ?? 0;
+  const searchProviderCount = surface?.webSearchProviders.length ?? 0;
+  const visionProviderReady = visionDefault ? surface?.providers.find((provider) => provider.id === visionDefault.split("/")[0])?.credentialConfigured : undefined;
 
   async function saveRuntimeConfig() {
     setSaveMessage(undefined);
@@ -158,6 +166,21 @@ export function SettingsPage({
         : result.changed
           ? "Saved search settings to config.json. Restart the daemon for routing changes to take effect."
           : "No search config changes were persisted.",
+    );
+  }
+
+  async function saveVisionConfig() {
+    setVisionSaveMessage(undefined);
+    const trimmed = visionDefault.trim();
+    const result = await onUpdateRuntimeConfig([trimmed ? { key: "vision.default", value: trimmed } : { key: "vision.default", unset: true }]);
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setVisionSaveMessage(
+      rejected.length
+        ? `${rejected.length} vision setting${rejected.length === 1 ? "" : "s"} rejected.`
+        : result.changed
+          ? "Saved Vision default to config.json. Restart the daemon for ViewImage selection to take effect."
+          : "No Vision config changes were persisted.",
     );
   }
 
@@ -213,6 +236,32 @@ export function SettingsPage({
             Configure common runtime defaults from the Web GUI. Saved model defaults are persisted to config.json
             and take effect after the daemon is restarted.
           </p>
+          <div className="settings-quickstart" aria-label="Settings overview">
+            <div>
+              <span>Connection</span>
+              <strong>{connection.source === "http" ? "Live runtime" : "Preview data"}</strong>
+              <small>{connection.baseUrl ?? "No API base configured"}</small>
+            </div>
+            <div>
+              <span>Model providers</span>
+              <strong>
+                {configuredProviderCount}/{surface?.providers.length ?? 0} ready
+              </strong>
+              <small>Credentials and transports may require daemon restart.</small>
+            </div>
+            <div>
+              <span>Web search</span>
+              <strong>{surface?.webSearch?.enabled ? "Enabled" : "Disabled"}</strong>
+              <small>
+                {searchProviderCount ? `${searchProviderCount} configured provider${searchProviderCount === 1 ? "" : "s"}` : "Using builtin provider defaults"}
+              </small>
+            </div>
+            <div>
+              <span>Vision</span>
+              <strong>{surface?.visionDefault ? "Pinned model" : "Auto-discovery"}</strong>
+              <small>{surface?.visionDefault ?? `${visionModels.length} image-capable model${visionModels.length === 1 ? "" : "s"} ready`}</small>
+            </div>
+          </div>
         </Card>
 
         <div className="settings-grid">
@@ -272,6 +321,9 @@ export function SettingsPage({
                   void saveRuntimeConfig();
                 }}
               >
+                <p className="settings-muted">
+                  These defaults are written to config.json. Active agents keep their current runtime state until the daemon is restarted or an agent-level override is changed.
+                </p>
                 <label>
                   <span>Default model</span>
                   <input list="available-models" value={modelDefault} onChange={(event) => setModelDefault(event.target.value)} />
@@ -337,9 +389,67 @@ export function SettingsPage({
               </div>
               <div>
                 <dt>Providers configured</dt>
-                <dd>{surface?.providers.filter((provider) => provider.credentialConfigured).length ?? 0}</dd>
+                <dd>{configuredProviderCount}</dd>
               </div>
             </dl>
+          </Card>
+
+          <Card className="settings-card">
+            <div className="settings-card-head">
+              <div>
+                <span className="eyebrow">Runtime defaults</span>
+                <h2>Vision / ImageView</h2>
+              </div>
+            </div>
+            {!surface ? (
+              <div className="settings-callout">
+                <strong>Vision config unavailable</strong>
+                <span>Connect to a live runtime and refresh this page to edit ViewImage defaults.</span>
+              </div>
+            ) : (
+              <form
+                className="settings-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveVisionConfig();
+                }}
+              >
+                <p className="settings-muted">
+                  ViewImage uses <code>vision.default</code> when set. Leave it empty to let Holon auto-discover a configured model with image input support.
+                </p>
+                <label>
+                  <span>Vision default model</span>
+                  <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider/model or empty for auto" />
+                </label>
+                <dl className="settings-list compact settings-inline-summary">
+                  <div>
+                    <dt>Selection mode</dt>
+                    <dd>{visionDefault ? "explicit vision.default" : "auto-discover image-capable model"}</dd>
+                  </div>
+                  <div>
+                    <dt>Provider credential</dt>
+                    <dd>{visionDefault ? (visionProviderReady ? "ready" : "missing or unknown") : "checked during auto-discovery"}</dd>
+                  </div>
+                  <div>
+                    <dt>Image-capable models</dt>
+                    <dd>{visionModels.length ? visionModels.map((model) => model.model).join(", ") : "none reported by model catalog"}</dd>
+                  </div>
+                </dl>
+                <div className="settings-actions">
+                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                    {runtimeConfigSaving ? "Saving…" : "Save vision settings"}
+                  </Button>
+                  {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
+                </div>
+                <datalist id="vision-models">
+                  {visionModels.map((model) => (
+                    <option key={model.model} value={model.model}>
+                      {model.displayName}
+                    </option>
+                  ))}
+                </datalist>
+              </form>
+            )}
           </Card>
 
           <Card className="settings-card">
@@ -362,6 +472,9 @@ export function SettingsPage({
                   void saveSearchConfig();
                 }}
               >
+                <p className="settings-muted">
+                  Search routing controls whether Holon can call provider-native search and which external search providers are attempted first.
+                </p>
                 <label className="settings-checkbox">
                   <input type="checkbox" checked={searchEnabled} onChange={(event) => setSearchEnabled(event.target.checked)} />
                   <span>Enable WebSearch</span>
@@ -412,6 +525,18 @@ export function SettingsPage({
                   </Button>
                   {searchSaveMessage ? <span>{searchSaveMessage}</span> : null}
                 </div>
+                <dl className="settings-list compact settings-inline-summary">
+                  <div>
+                    <dt>Current route</dt>
+                    <dd>
+                      {searchProvider || "auto"} · {searchMode}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Provider list</dt>
+                    <dd>{searchProviders || "runtime default"}</dd>
+                  </div>
+                </dl>
                 <datalist id="web-search-providers">
                   <option value="auto">auto</option>
                   <option value="duckduckgo">duckduckgo</option>
@@ -455,7 +580,12 @@ export function SettingsPage({
                       }}
                     >
                       <header>
-                        <strong>{provider.id}</strong>
+                        <div>
+                          <strong>{provider.id}</strong>
+                          <small>
+                            {provider.transport} · {provider.credentialSource}/{provider.credentialKind}
+                          </small>
+                        </div>
                         <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"}>
                           {provider.credentialConfigured ? "credential ready" : "credential missing"}
                         </StatusChip>
@@ -528,7 +658,7 @@ export function SettingsPage({
           <div className="settings-card-head">
             <div>
               <span className="eyebrow">Models / Providers</span>
-              <h2>Model catalog</h2>
+              <h2>Model catalog diagnostics</h2>
             </div>
             <Button type="button" variant="secondary" disabled={modelCatalogLoading} onClick={() => void onRefreshModels()}>
               {modelCatalogLoading ? "Refreshing…" : "Refresh"}
@@ -540,39 +670,45 @@ export function SettingsPage({
             <EmptyState className="settings-empty" title="No models returned" description="The runtime has not returned a model catalog yet." />
           ) : null}
 
-          <div className="provider-list">
-            {groupedModels.map(([provider, models]) => (
-              <Card className="provider-card" key={provider}>
-                <header>
-                  <div>
-                    <h3>{provider}</h3>
-                    <span>
-                      {models.filter((model) => model.available).length}/{models.length} available
-                    </span>
-                  </div>
-                </header>
-                <div className="model-table" role="table" aria-label={`${provider} models`}>
-                  {models.map((model) => (
-                    <div className="model-table-row" role="row" key={model.model}>
-                      <div role="cell">
-                        <strong>{model.displayName}</strong>
-                        <span>{model.model}</span>
-                      </div>
-                      <div role="cell">
-                        <StatusChip className={`settings-status ${model.available ? "available" : "unavailable"}`} tone={model.available ? "success" : "error"}>
-                          {model.available ? "available" : "unavailable"}
-                        </StatusChip>
-                      </div>
-                      <div role="cell">
-                        {model.supportsReasoningEffort ? <span className="settings-pill">reasoning</span> : null}
-                        {model.unavailableReason ? <small>{model.unavailableReason}</small> : null}
-                      </div>
+          <p className="settings-muted">The editable provider accounts above are the primary configuration surface. Use this catalog only to inspect runtime model availability.</p>
+          <details className="settings-diagnostics">
+            <summary>
+              Show {modelCatalog.options.length} model{modelCatalog.options.length === 1 ? "" : "s"} across {groupedModels.length} provider{groupedModels.length === 1 ? "" : "s"}
+            </summary>
+            <div className="provider-list">
+              {groupedModels.map(([provider, models]) => (
+                <Card className="provider-card" key={provider}>
+                  <header>
+                    <div>
+                      <h3>{provider}</h3>
+                      <span>
+                        {models.filter((model) => model.available).length}/{models.length} available
+                      </span>
                     </div>
-                  ))}
-                </div>
-              </Card>
-            ))}
-          </div>
+                  </header>
+                  <div className="model-table" role="table" aria-label={`${provider} models`}>
+                    {models.map((model) => (
+                      <div className="model-table-row" role="row" key={model.model}>
+                        <div role="cell">
+                          <strong>{model.displayName}</strong>
+                          <span>{model.model}</span>
+                        </div>
+                        <div role="cell">
+                          <StatusChip className={`settings-status ${model.available ? "available" : "unavailable"}`} tone={model.available ? "success" : "error"}>
+                            {model.available ? "available" : "unavailable"}
+                          </StatusChip>
+                        </div>
+                        <div role="cell">
+                          {model.supportsReasoningEffort ? <span className="settings-pill">reasoning</span> : null}
+                          {model.unavailableReason ? <small>{model.unavailableReason}</small> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </details>
         </Card>
       </div>
     </section>

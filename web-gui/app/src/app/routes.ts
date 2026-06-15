@@ -20,16 +20,17 @@ export function routeFromLocation(location: Pick<Location, "pathname">): Browser
   return { route: "dashboard" };
 }
 
-export function pathForRoute(route: RouteKey, agentId?: string): string {
+export function pathForRoute(route: RouteKey, agentId?: string, query?: Record<string, string | number | undefined>): string {
+  const queryString = query ? new URLSearchParams(Object.entries(query).flatMap(([key, value]) => (value == null ? [] : [[key, String(value)]]))).toString() : "";
   if (route === "search") return "/search";
   if (route === "settings") return "/settings";
-  if (route === "agent" && agentId) return `/agents/${encodeURIComponent(agentId)}/conversation`;
+  if (route === "agent" && agentId) return `/agents/${encodeURIComponent(agentId)}/conversation${queryString ? `?${queryString}` : ""}`;
   return "/";
 }
 
-export function pushBrowserRoute(route: RouteKey, agentId?: string): void {
-  const nextPath = pathForRoute(route, agentId);
-  if (window.location.pathname === nextPath) return;
+export function pushBrowserRoute(route: RouteKey, agentId?: string, query?: Record<string, string | number | undefined>): void {
+  const nextPath = pathForRoute(route, agentId, query);
+  if (`${window.location.pathname}${window.location.search}` === nextPath) return;
   window.history.pushState(null, "", nextPath);
 }
 

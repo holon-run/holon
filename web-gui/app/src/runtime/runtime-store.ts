@@ -13,6 +13,7 @@ import type {
   RuntimeBootstrap,
   RuntimeConfigState,
   RuntimeModelCatalog,
+  SearchResponse,
 } from "./types";
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
@@ -31,12 +32,23 @@ function createLiveAgentDetail(agent: AgentSummary | undefined): AgentDetail | n
   };
 }
 
-function preserveLiveAgentRunState(httpAgent: AgentSummary, liveAgent: AgentSummary): AgentSummary {
-  if (!isLiveRunningAgent(liveAgent)) return httpAgent;
-  return {
+function mergeCachedAgentState(httpAgent: AgentSummary, cachedAgent: AgentSummary): AgentSummary {
+  const merged: AgentSummary = {
     ...httpAgent,
-    currentRunId: liveAgent.currentRunId,
-    lifecycle: liveAgent.lifecycle,
+    currentWork: cachedAgent.currentWork ?? httpAgent.currentWork,
+    workItems: cachedAgent.workItems?.length ? cachedAgent.workItems : httpAgent.workItems,
+    tasks: cachedAgent.tasks?.length ? cachedAgent.tasks : httpAgent.tasks,
+    activeTaskCount: Math.max(httpAgent.activeTaskCount, cachedAgent.activeTaskCount),
+    waitingCount: Math.max(httpAgent.waitingCount, cachedAgent.waitingCount),
+    pending: Math.max(httpAgent.pending, cachedAgent.pending),
+    workspaceSummary: cachedAgent.workspaceSummary ?? httpAgent.workspaceSummary,
+  };
+
+  if (!isLiveRunningAgent(cachedAgent)) return merged;
+  return {
+    ...merged,
+    currentRunId: cachedAgent.currentRunId,
+    lifecycle: cachedAgent.lifecycle,
   };
 }
 
@@ -46,6 +58,16 @@ function isLiveRunningAgent(agent: AgentSummary): boolean {
 
 function isAgentEventStreamActive(agentId: string, liveStatus: AgentLiveStatus | undefined): boolean {
   return activeEventStreams.has(agentId) && (liveStatus === "streaming" || liveStatus === "recovering");
+}
+
+function cachedAgentsByIdFromState(state: RuntimeStoreState): Record<string, AgentSummary> {
+  const agentsById: Record<string, AgentSummary> = Object.fromEntries(state.bootstrap.agents.map((agent) => [agent.id, agent]));
+  for (const session of Object.values(state.sessionsByAgentId)) {
+    const agent = session.detail?.agent;
+    if (!agent) continue;
+    agentsById[agent.id] = agentsById[agent.id] ? mergeCachedAgentState(agentsById[agent.id], agent) : agent;
+  }
+  return agentsById;
 }
 
 export interface AgentSessionState {
@@ -94,6 +116,22 @@ function appendOptimisticOperatorPrompt(detail: AgentDetail | null, agent: Agent
   };
 }
 
+function markOptimisticOperatorPromptsSent(detail: AgentDetail | null): AgentDetail | null {
+  if (!detail) return detail;
+  let changed = false;
+  const timeline = detail.timeline.map((item) => {
+    if (item.kind !== "operator" || item.meta !== "sending" || !item.sourceIds.includes("pending-operator-prompt")) {
+      return item;
+    }
+    changed = true;
+    return {
+      ...item,
+      meta: "Sent",
+    };
+  });
+  return changed ? { ...detail, timeline } : detail;
+}
+
 export interface RuntimeStoreState {
   route: RouteKey;
   selectedAgentId: string;
@@ -113,6 +151,9 @@ export interface RuntimeStoreState {
   runtimeConfigLoading: boolean;
   runtimeConfigSaving: boolean;
   runtimeConfigError?: string;
+  search: SearchResponse | null;
+  searchLoading: boolean;
+  searchError?: string;
   rosterActivityByAgentId: Record<string, AgentRosterActivity>;
   sessionsByAgentId: Record<string, AgentSessionState>;
 
@@ -128,6 +169,7 @@ export interface RuntimeStoreState {
   refreshModelCatalog: () => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
+  runSearch: (query: string, options?: { agentIds?: string[]; limit?: number }) => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
@@ -218,6 +260,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   runtimeConfig: emptyRuntimeConfig,
   runtimeConfigLoading: false,
   runtimeConfigSaving: false,
+  search: null,
+  searchLoading: false,
   rosterActivityByAgentId: {},
   sessionsByAgentId: {},
 
@@ -268,10 +312,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
               bootstrapError: bootstrap.connection.error,
             };
           }
-          const liveAgentsById = Object.fromEntries(state.bootstrap.agents.map((agent) => [agent.id, agent]));
+          const cachedAgentsById = cachedAgentsByIdFromState(state);
           const agents = bootstrap.agents.map((agent) => {
-            const liveAgent = liveAgentsById[agent.id];
-            return liveAgent ? preserveLiveAgentRunState(agent, liveAgent) : agent;
+            const cachedAgent = cachedAgentsById[agent.id];
+            return cachedAgent ? mergeCachedAgentState(agent, cachedAgent) : agent;
           });
           return {
             bootstrap: sortBootstrapAgents(
@@ -344,6 +388,21 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         runtimeConfigError: message,
       }));
       return undefined;
+    }
+  },
+
+  runSearch: async (query, options = {}) => {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      set({ search: null, searchLoading: false, searchError: undefined });
+      return;
+    }
+    set({ searchLoading: true, searchError: undefined });
+    try {
+      const search = await runtimeClient.search(trimmed, options);
+      set({ search, searchLoading: false });
+    } catch (error) {
+      set({ searchLoading: false, searchError: error instanceof Error ? error.message : String(error) });
     }
   },
 
@@ -464,6 +523,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
             ...state.sessionsByAgentId[agentId],
             sendingPrompt: false,
             promptError: undefined,
+            detail: markOptimisticOperatorPromptsSent(state.sessionsByAgentId[agentId]?.detail ?? null),
           },
         },
       }));
@@ -932,7 +992,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     eventDisplayLevel: "debug",
   });
   const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
-  const agent = liveDetailIsNewer && current.detail ? preserveLiveAgentRunState(detail.agent, current.detail.agent) : detail.agent;
+  const agent = liveDetailIsNewer && current.detail ? mergeCachedAgentState(detail.agent, current.detail.agent) : detail.agent;
   const mergedDetail: AgentDetail = {
     ...detail,
     agent,
