@@ -986,8 +986,6 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
   const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
   const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
   const pageTimeline = reduceAgentSessionTimeline({
-    transcript: [],
-    briefs: [],
     events: { events: pageEvents },
     eventDisplayLevel: "debug",
   });
@@ -1077,8 +1075,6 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
     };
     const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(uniqueEvents)])).sort((left, right) => left - right);
     const liveTimelineDelta = reduceAgentSessionTimeline({
-      transcript: [],
-      briefs: [],
       events: { events: uniqueEvents },
       eventDisplayLevel: "debug",
     });
@@ -1190,8 +1186,6 @@ function mergeEventPageIntoSession(
   };
   const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
   const pageTimeline = reduceAgentSessionTimeline({
-    transcript: [],
-    briefs: [],
     events: { events: pageEvents },
     eventDisplayLevel: displayLevel,
   });

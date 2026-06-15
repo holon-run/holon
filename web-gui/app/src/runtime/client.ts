@@ -76,7 +76,7 @@ async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentI
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const agent = projectAgent(fallbackEntry, state, newestBriefFromEvents(events.events ?? []));
-  const timeline = reduceAgentSessionTimeline({ transcript: [], briefs: [], events, eventDisplayLevel });
+  const timeline = reduceAgentSessionTimeline({ events, eventDisplayLevel });
 
   return {
     agent,

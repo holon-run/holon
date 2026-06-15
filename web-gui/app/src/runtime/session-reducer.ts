@@ -6,24 +6,6 @@ import type {
   DisplayLevel,
 } from "./types";
 
-export interface SessionTranscriptEntry {
-  id?: string;
-  created_at?: string;
-  kind?: string;
-  round?: number | null;
-  stop_reason?: string | null;
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  data?: unknown;
-}
-
-export interface SessionBriefRecord {
-  id?: string;
-  created_at?: string;
-  text?: string;
-  kind?: string;
-}
-
 export interface SessionEventEnvelope {
   id?: string;
   event_seq?: number;
@@ -33,8 +15,6 @@ export interface SessionEventEnvelope {
 }
 
 export interface ReduceAgentSessionInput {
-  transcript: SessionTranscriptEntry[];
-  briefs: SessionBriefRecord[];
   events: {
     events?: SessionEventEnvelope[];
   };
@@ -77,14 +57,12 @@ const debugRuntimeEvents = new Set([
 const debugOnlyToolNames = new Set(["WaitFor"]);
 
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
-  const transcriptItems = input.transcript.map(projectTranscriptEntry);
-  const briefItems = input.briefs.map(projectBriefRecord);
   const eventDisplayLevel = input.eventDisplayLevel ?? "debug";
   const eventItems = (input.events.events ?? []).map((event) =>
     projectEventEnvelope(event, eventDisplayLevel, input.includeDebug ?? false),
   );
 
-  const sorted = mergeAgentTimelineItems([], [...transcriptItems, ...briefItems, ...eventItems])
+  const sorted = mergeAgentTimelineItems([], eventItems)
     .filter((item): item is AgentTimelineItem => Boolean(item))
     .sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
 
@@ -128,151 +106,6 @@ export function filterTimelineByDisplayLevel(
     .filter((item) => displayLevelRank[item.minDisplayLevel] <= rank || Boolean(item.activities?.length));
   const limit = options.itemLimit ?? (displayLevel === "info" ? 12 : 160);
   return filtered.slice(-limit);
-}
-
-function projectTranscriptEntry(entry: SessionTranscriptEntry): AgentTimelineItem | undefined {
-  if (!entry.id) return undefined;
-  const kind = entry.kind ?? "transcript";
-  const data = asRecord(entry.data);
-  const timestamp = entry.created_at ?? "";
-
-  if (kind === "incoming_message") {
-    const message = messageEnvelopeProjection(data);
-    if (message?.origin !== "operator") {
-      return item({
-        id: entry.id,
-        kind: "system",
-        label: "Runtime input",
-        body: message?.body || readableText(entry.data) || "Runtime input received.",
-        timestamp,
-        meta: compactJoin([kind, roundMeta(entry.round)]),
-        minDisplayLevel: "verbose",
-        sourceIds: [entry.id],
-        debug: debugJson(entry),
-      });
-    }
-
-    return item({
-      id: entry.id,
-      kind: "operator",
-      label: labelForTranscriptKind(kind),
-      body: message.body || readableText(entry.data) || "Operator input.",
-      timestamp,
-      meta: compactJoin([kind, roundMeta(entry.round)]),
-      minDisplayLevel: "info",
-      sourceIds: [entry.id],
-      debug: debugJson(entry),
-    });
-  }
-
-  if (kind === "continuation_prompt" || kind === "subagent_prompt") {
-    return item({
-      id: entry.id,
-      kind: "system",
-      label: labelForTranscriptKind(kind),
-      body: readableText(entry.data) || labelForTranscriptKind(kind),
-      timestamp,
-      meta: compactJoin([kind, roundMeta(entry.round)]),
-      minDisplayLevel: "verbose",
-      sourceIds: [entry.id],
-      debug: debugJson(entry),
-    });
-  }
-
-  if (kind === "assistant_round") {
-    const text = textFromAssistantBlocks(data?.blocks);
-    const toolNames = toolNamesFromAssistantBlocks(data?.blocks);
-    if (!text && toolNames.length) {
-      return item({
-        id: entry.id,
-        kind: "tool",
-        label: "Assistant requested tools",
-        body: toolNames.join(", "),
-        timestamp,
-        meta: compactJoin([
-          "assistant round",
-          roundMeta(entry.round),
-          entry.stop_reason ?? undefined,
-          `tools: ${toolNames.join(", ")}`,
-        ]),
-        minDisplayLevel: "verbose",
-        sourceIds: [entry.id],
-        debug: debugJson(entry),
-      });
-    }
-    return item({
-      id: entry.id,
-      kind: "assistant",
-      label: "Assistant progress",
-      body: text || summarizeAssistantRound(toolNames),
-      timestamp,
-      meta: compactJoin([
-        "assistant round",
-        roundMeta(entry.round),
-        entry.stop_reason ?? undefined,
-        toolNames.length ? `tools: ${toolNames.join(", ")}` : undefined,
-      ]),
-      minDisplayLevel: "verbose",
-      sourceIds: [entry.id],
-      debug: debugJson(entry),
-    });
-  }
-
-  if (kind === "tool_results") {
-    return item({
-      id: entry.id,
-      kind: "tool",
-      label: "Tool result",
-      body: summarizeToolResults(data?.results),
-      timestamp,
-      meta: compactJoin(["tool results", roundMeta(entry.round)]),
-      minDisplayLevel: "verbose",
-      sourceIds: [entry.id],
-      debug: debugJson(entry),
-    });
-  }
-
-  if (kind === "runtime_failure") {
-    return item({
-      id: entry.id,
-      kind: "system",
-      label: "Runtime failure",
-      body: readableText(entry.data) || "Runtime failure recorded.",
-      timestamp,
-      meta: compactJoin([kind, roundMeta(entry.round)]),
-      minDisplayLevel: "info",
-      sourceIds: [entry.id],
-      debug: debugJson(entry),
-    });
-  }
-
-  return item({
-    id: entry.id,
-    kind: "system",
-    label: labelForTranscriptKind(kind),
-    body: readableText(entry.data) || "Transcript entry recorded.",
-    timestamp,
-    meta: compactJoin([kind, roundMeta(entry.round)]),
-    minDisplayLevel: "debug",
-    sourceIds: [entry.id],
-    debug: debugJson(entry),
-  });
-}
-
-function projectBriefRecord(brief: SessionBriefRecord): AgentTimelineItem | undefined {
-  if (!brief.id && !brief.text) return undefined;
-  const id = brief.id ?? `brief-${brief.created_at ?? brief.text}`;
-  return item({
-    id,
-    kind: "assistant",
-    label: brief.kind === "result" ? "Result" : brief.kind ?? "Brief",
-    body: brief.text ?? "Brief text unavailable.",
-    timestamp: brief.created_at ?? "",
-    meta: compactJoin(["brief", brief.kind]),
-    minDisplayLevel: "info",
-    sourceIds: [id],
-    debug: debugJson(brief),
-  });
 }
 
 function projectEventEnvelope(
@@ -572,32 +405,6 @@ function mergeTimelineActivities(
 
 function mergeSourceIds(sourceIds: string[]): string[] {
   return Array.from(new Set(sourceIds)).slice(0, maxTimelineSourceIds);
-}
-
-function labelForTranscriptKind(kind: string): string {
-  if (kind === "incoming_message") return "Operator input";
-  if (kind === "continuation_prompt") return "Continuation";
-  if (kind === "subagent_prompt") return "Delegation";
-  if (kind === "assistant_round") return "Assistant progress";
-  if (kind === "tool_results") return "Tool results";
-  if (kind === "runtime_failure") return "Runtime failure";
-  return humanizeEventType(kind);
-}
-
-function summarizeAssistantRound(toolNames: string[]): string {
-  if (toolNames.length === 0) return "Assistant round completed.";
-  return `Assistant requested ${toolNames.length} tool call${toolNames.length === 1 ? "" : "s"}: ${toolNames.join(", ")}.`;
-}
-
-function summarizeToolResults(value: unknown): string {
-  if (!Array.isArray(value)) return "Tool results recorded.";
-  const errorCount = value.filter((result) => asRecord(result)?.is_error === true).length;
-  const successCount = value.length - errorCount;
-  return compactJoin([
-    `${value.length} tool result${value.length === 1 ? "" : "s"} recorded`,
-    successCount ? `${successCount} ok` : undefined,
-    errorCount ? `${errorCount} error${errorCount === 1 ? "" : "s"}` : undefined,
-  ]);
 }
 
 function projectToolExecution(
@@ -951,27 +758,6 @@ function readableTextWithoutSummary(value: unknown): string {
   return "";
 }
 
-function textFromAssistantBlocks(value: unknown): string {
-  if (!Array.isArray(value)) return "";
-  return value
-    .map((block) => {
-      const record = asRecord(block);
-      return record?.type === "text" ? stringField(record, "text") : undefined;
-    })
-    .filter((text): text is string => Boolean(text?.trim()))
-    .join("\n\n");
-}
-
-function toolNamesFromAssistantBlocks(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((block) => {
-      const record = asRecord(block);
-      return record?.type === "tool_use" ? stringField(record, "name") : undefined;
-    })
-    .filter((name): name is string => Boolean(name?.trim()));
-}
-
 function toolNamesFromPayload(value: Record<string, unknown> | undefined): string[] {
   const toolNames = arrayField(value, "tool_names");
   if (!toolNames?.length) return [];
@@ -1018,10 +804,6 @@ function numberField(value: Record<string, unknown> | undefined, key: string): n
 function arrayField(value: Record<string, unknown> | undefined, key: string): unknown[] | undefined {
   const candidate = value?.[key];
   return Array.isArray(candidate) ? candidate : undefined;
-}
-
-function roundMeta(round: number | null | undefined): string | undefined {
-  return round == null ? undefined : `round ${round}`;
 }
 
 function humanizeEventType(value: string): string {
