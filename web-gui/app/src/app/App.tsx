@@ -79,6 +79,52 @@ export function App() {
       : selectedAgentDetail?.source === "http" && !selectedAgentDetail.error
         ? "live"
         : "preview";
+  const agentTopControls =
+    route === "agent" ? (
+      <div className="agent-top-controls" aria-label="Agent conversation controls">
+        <div className="agent-stream-controls" aria-label="Agent stream status">
+          <StatusBadge
+            kind="connection"
+            value={selectedAgentSourceStatus}
+            className={`source-chip ${selectedAgentSourceStatus}`}
+          >
+            {selectedAgentSourceStatus}
+          </StatusBadge>
+          <StatusBadge
+            kind="stream"
+            value={selectedAgentLiveStatus}
+            className={`source-chip live-status ${selectedAgentLiveStatus}`}
+            title={selectedAgentLiveTitle}
+          >
+            {liveStatusLabel(selectedAgentLiveStatus)}
+          </StatusBadge>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            aria-label={agentDetailLoading ? "Refreshing agent detail" : "Refresh agent detail"}
+            title={agentDetailLoading ? "Refreshing…" : "Refresh agent detail"}
+            disabled={agentDetailLoading}
+            onClick={() => void refreshAgentDetail()}
+          >
+            ↻
+          </Button>
+        </div>
+        <SegmentedControl className="display-level" label="Display level">
+          {(["info", "verbose", "debug"] as const).map((level) => (
+            <SegmentedControlButton
+              active={displayLevel === level}
+              className={displayLevel === level ? "is-active" : ""}
+              key={level}
+              type="button"
+              onClick={() => setDisplayLevel(level, activeAgentId)}
+            >
+              {levelLabel(level)}
+            </SegmentedControlButton>
+          ))}
+        </SegmentedControl>
+      </div>
+    ) : null;
   const isInitialBootstrapping = loading && bootstrap.connection.summary === "Connecting to local runtime…" && !bootstrap.connection.error;
 
   useLayoutEffect(() => {
@@ -238,6 +284,7 @@ export function App() {
               </div>
             </div>
             <div className="top-actions">
+              {agentTopControls}
               <Button
                 type="button"
                 size="icon"
@@ -250,54 +297,6 @@ export function App() {
               </Button>
             </div>
           </div>
-
-          {route === "agent" ? (
-            <div className="agent-top-context" aria-label="Agent conversation context">
-              <div className="agent-top-controls">
-                <div className="agent-stream-controls" aria-label="Agent stream status">
-                  <StatusBadge
-                    kind="connection"
-                    value={selectedAgentSourceStatus}
-                    className={`source-chip ${selectedAgentSourceStatus}`}
-                  >
-                    {selectedAgentSourceStatus}
-                  </StatusBadge>
-                  <StatusBadge
-                    kind="stream"
-                    value={selectedAgentLiveStatus}
-                    className={`source-chip live-status ${selectedAgentLiveStatus}`}
-                    title={selectedAgentLiveTitle}
-                  >
-                    {liveStatusLabel(selectedAgentLiveStatus)}
-                  </StatusBadge>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    aria-label={agentDetailLoading ? "Refreshing agent detail" : "Refresh agent detail"}
-                    title={agentDetailLoading ? "Refreshing…" : "Refresh agent detail"}
-                    disabled={agentDetailLoading}
-                    onClick={() => void refreshAgentDetail()}
-                  >
-                    ↻
-                  </Button>
-                </div>
-                <SegmentedControl className="display-level" label="Display level">
-                  {(["info", "verbose", "debug"] as const).map((level) => (
-                    <SegmentedControlButton
-                      active={displayLevel === level}
-                      className={displayLevel === level ? "is-active" : ""}
-                      key={level}
-                      type="button"
-                      onClick={() => setDisplayLevel(level, activeAgentId)}
-                    >
-                      {levelLabel(level)}
-                    </SegmentedControlButton>
-                  ))}
-                </SegmentedControl>
-              </div>
-            </div>
-          ) : null}
         </header>
 
         {route === "dashboard" ? (

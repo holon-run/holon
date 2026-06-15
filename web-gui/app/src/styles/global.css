@@ -476,26 +476,16 @@ button {
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
-.topbar-primary,
-.agent-top-context {
+.topbar-primary {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 56px;
-  padding: 0 22px;
+  min-height: 58px;
+  padding: 8px 22px;
 }
 
-.agent-top-context {
-  align-items: center;
-  justify-content: flex-end;
-  min-height: 0;
-  padding-block: 6px;
-  border-top: 1px solid var(--line);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface) 86%, transparent), color-mix(in srgb, var(--surface) 62%, transparent));
-}
-
+.top-actions,
 .agent-top-controls,
 .agent-stream-controls {
   display: flex;
@@ -504,15 +494,34 @@ button {
   gap: 8px;
 }
 
+.top-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.agent-top-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .top-title {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+}
+
+.top-title > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
 }
 
 .top-title strong,
 .top-title span {
-  display: block;
+  display: inline;
 }
 
 .top-title span {
