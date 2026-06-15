@@ -2762,11 +2762,13 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
             event.kind == "work_item_written" && event.data["action"].as_str() == Some("completed")
         })
         .expect("completion event should be recorded");
-    assert_eq!(completed_event.data["warning_count"].as_u64(), Some(1));
     assert_eq!(
-        completed_event.data["warnings"][0]["kind"].as_str(),
-        Some("unfinished_todos")
+        completed_event.data["work_item_id"].as_str(),
+        Some(work_item.id.as_str())
     );
+    assert_eq!(completed_event.data["warning_count"].as_u64(), Some(1));
+    assert!(completed_event.data.get("warnings").is_none());
+    assert!(completed_event.data.get("record").is_none());
 }
 
 #[tokio::test]

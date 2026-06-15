@@ -430,6 +430,11 @@ impl LocalClient {
             .await
     }
 
+    pub async fn agent_brief(&self, agent_id: &str, brief_id: &str) -> Result<BriefRecord> {
+        self.get_json(&format!("/agents/{agent_id}/briefs/{brief_id}"))
+            .await
+    }
+
     pub async fn agent_transcript(
         &self,
         agent_id: &str,

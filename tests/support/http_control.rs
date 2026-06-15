@@ -110,6 +110,48 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
     Ok(())
 }
 
+pub async fn agent_brief_route_returns_full_brief_by_id() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!("{base}/control/agents/default/prompt"))
+        .json(&serde_json::json!({ "text": "brief detail route" }))
+        .send()
+        .await?;
+    assert!(response.status().is_success());
+
+    wait_until(|| {
+        Ok(runtime
+            .storage()
+            .read_recent_briefs(10)?
+            .iter()
+            .any(|brief| !brief.text.trim().is_empty()))
+    })
+    .await?;
+    let brief = runtime
+        .storage()
+        .read_recent_briefs(10)?
+        .into_iter()
+        .find(|brief| !brief.text.trim().is_empty())
+        .expect("brief should be persisted");
+
+    let detail = client
+        .get(format!("{base}/agents/default/briefs/{}", brief.id))
+        .send()
+        .await?;
+    assert_eq!(detail.status(), reqwest::StatusCode::OK);
+    let returned: BriefRecord = detail.json().await?;
+
+    assert_eq!(returned.id, brief.id);
+    assert_eq!(returned.agent_id, "default");
+    assert_eq!(returned.text, brief.text);
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present() -> Result<()> {
     let mut config = test_config();
     let (host, base, server) = spawn_server_with_config(config.clone()).await?;
@@ -497,6 +539,7 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         "/agents/default/status",
         "/agents/default/state",
         "/agents/default/briefs",
+        "/agents/default/briefs/brief-test",
         "/agents/default/transcript",
         "/agents/default/tasks",
         "/agents/default/timers",

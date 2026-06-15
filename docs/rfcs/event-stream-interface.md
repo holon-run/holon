@@ -323,11 +323,15 @@ Important first-party event families currently include:
 
 ### Briefs and operator-visible outcomes
 
-- `brief_created`
+- `brief_created` lightweight brief lifecycle payload with `brief_id`,
+  provenance fields, `kind`, and `text_preview`; full brief text and
+  attachments are read from brief storage/API
 
 ### Work items and planning
 
-- `work_item_written`
+- `work_item_written` lightweight work-item lifecycle payload with
+  `work_item_id`, revision, action, state/readiness, and objective/result
+  previews; full work-item records are read from work-item storage/API
 - `work_item_turn_end_committed`
 - `work_item_turn_end_commit_skipped`
 - `work_plan_snapshot_written`

@@ -90,10 +90,10 @@ use crate::{
     types::{
         ActiveWorkspaceEntry, AdmissionContext, AgentIdentityView, AgentKind,
         AgentModelOverrideAuditEvent, AgentModelSource, AgentModelState, AgentState,
-        AgentStateChangedEvent, AgentStatus, AgentSummary, AuditEvent, AuthorityClass, BriefRecord,
-        CallbackDeliveryMode, CallbackDeliveryPayload, CallbackDeliveryResult,
-        CallbackIngressDisposition, CancelWaitingResult, ClosureDecision, ContinuationResolution,
-        ControlAction, ExecCommandBatchItemStatus, ExecCommandBatchResult,
+        AgentStateChangedEvent, AgentStatus, AgentSummary, AuditEvent, AuthorityClass,
+        BriefCreatedAuditEvent, BriefRecord, CallbackDeliveryMode, CallbackDeliveryPayload,
+        CallbackDeliveryResult, CallbackIngressDisposition, CancelWaitingResult, ClosureDecision,
+        ContinuationResolution, ControlAction, ExecCommandBatchItemStatus, ExecCommandBatchResult,
         ExternalTriggerCapability, ExternalTriggerRecord, ExternalTriggerScope,
         ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageLifecycleAuditEvent,
@@ -103,7 +103,8 @@ use crate::{
         SkillsRuntimeView, TaskKind, TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec,
         TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
         TranscriptEntryKind, ViewImageObservation, WaitingIntentRecord, WaitingIntentStatus,
-        WaitingIntentSummary, WaitingReason, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
+        WaitingIntentSummary, WaitingReason, WorkItemLifecycleAuditEvent, WorkspaceEntry,
+        AGENT_HOME_WORKSPACE_ID,
     },
     web::{WebConfig, WebProviderKind},
 };
@@ -436,6 +437,26 @@ impl CurrentRunAbortSnapshot {
             .lock()
             .map(|reason| reason.clone())
             .unwrap_or_else(|_| "operator_aborted".into())
+    }
+}
+
+impl RuntimeHandle {
+    pub(crate) fn append_work_item_written_event(
+        &self,
+        action: &str,
+        record: &crate::types::WorkItemRecord,
+        extra: Value,
+    ) -> Result<()> {
+        let mut payload =
+            to_json_value(&WorkItemLifecycleAuditEvent::from_work_item(action, record));
+        if let (Some(payload), Some(extra)) = (payload.as_object_mut(), extra.as_object()) {
+            for (key, value) in extra {
+                payload.insert(key.clone(), value.clone());
+            }
+        }
+        self.inner
+            .storage
+            .append_event(&AuditEvent::new("work_item_written", payload))
     }
 }
 
