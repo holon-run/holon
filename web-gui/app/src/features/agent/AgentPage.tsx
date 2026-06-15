@@ -295,45 +295,56 @@ export function AgentPage({
                         </span>
                         {changingModel === "runtime-default" ? <em>Saving…</em> : null}
                       </button>
-                      <div className="model-picker-section" aria-label="Providers">
-                        <span>Provider</span>
-                        <div className="model-provider-list">
-                          {groupedModelOptions.map((group) => (
-                            <button
-                              className={`model-provider-option ${group.provider === currentProvider ? "is-active" : ""}`}
-                              key={group.provider}
-                              type="button"
-                              onClick={() => setSelectedProvider(group.provider)}
-                            >
-                              <strong>{group.provider}</strong>
-                              <small>
-                                {group.availableCount}/{group.models.length} available
-                              </small>
-                            </button>
-                          ))}
+                      <div className="model-picker-grid">
+                        <div className="model-picker-section model-picker-providers" aria-label="Providers">
+                          <span>
+                            <b>Step 1</b>
+                            Provider
+                          </span>
+                          <div className="model-provider-list">
+                            {groupedModelOptions.map((group) => (
+                              <button
+                                className={`model-provider-option ${group.provider === currentProvider ? "is-active" : ""}`}
+                                key={group.provider}
+                                type="button"
+                                onClick={() => setSelectedProvider(group.provider)}
+                              >
+                                <strong>{group.provider}</strong>
+                                <small>
+                                  {group.availableCount}/{group.models.length} available
+                                </small>
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                      <div className="model-options" role="listbox" aria-label="Available models">
-                        {currentProviderModels.map((option) => (
-                          <button
-                            className={`model-option ${option.model === activeAgent.model ? "is-active" : ""}`}
-                            key={option.model}
-                            type="button"
-                            disabled={!option.available || changingModel !== null}
-                            title={option.unavailableReason ?? option.model}
-                            onClick={() => void handleSelectModel(option)}
-                          >
-                            <span>
-                              <strong>{option.displayName}</strong>
-                              <small>{option.model}</small>
-                            </span>
-                            <span className="model-option-meta">
-                              {option.supportsReasoningEffort ? <small>reasoning</small> : null}
-                              {!option.available ? <small>unavailable</small> : null}
-                              {changingModel === option.model ? <em>Saving…</em> : null}
-                            </span>
-                          </button>
-                        ))}
+                        <div className="model-picker-section model-picker-models" aria-label={`${currentProvider} models`}>
+                          <span>
+                            <b>Step 2</b>
+                            {currentProvider} models
+                          </span>
+                          <div className="model-options" role="listbox" aria-label={`${currentProvider} models`}>
+                            {currentProviderModels.map((option) => (
+                              <button
+                                className={`model-option ${option.model === activeAgent.model ? "is-active" : ""}`}
+                                key={option.model}
+                                type="button"
+                                disabled={!option.available || changingModel !== null}
+                                title={option.unavailableReason ?? option.model}
+                                onClick={() => void handleSelectModel(option)}
+                              >
+                                <span>
+                                  <strong>{option.displayName}</strong>
+                                  <small>{option.model}</small>
+                                </span>
+                                <span className="model-option-meta">
+                                  {option.supportsReasoningEffort ? <small>reasoning</small> : null}
+                                  {!option.available ? <small>unavailable</small> : null}
+                                  {changingModel === option.model ? <em>Saving…</em> : null}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       </div>
                       {activeModelOption?.supportsReasoningEffort || currentProviderModels.some((option) => option.supportsReasoningEffort) ? (
                         <div className="model-picker-section" aria-label="Thinking level">
