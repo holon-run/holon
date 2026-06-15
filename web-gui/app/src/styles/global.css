@@ -1681,18 +1681,12 @@ code {
 }
 
 .working-activity-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--faint);
-}
-
-.working-activity-title {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   min-width: 0;
+  color: var(--faint);
 }
 
 .working-activity-header small {
@@ -1706,6 +1700,7 @@ code {
 
 .working-activity-list {
   display: grid;
+  grid-template-rows: repeat(2, minmax(0, auto));
   gap: 7px;
 }
 
@@ -1723,6 +1718,14 @@ code {
 .working-activity-item {
   padding: 7px 0 0;
   border-top: 1px solid color-mix(in srgb, var(--line) 52%, transparent);
+}
+
+.working-activity-item.slot-assistant {
+  grid-row: 1;
+}
+
+.working-activity-item.slot-action {
+  grid-row: 2;
 }
 
 .working-indicator.compact {

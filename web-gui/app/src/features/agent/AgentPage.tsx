@@ -780,15 +780,13 @@ function WorkingIndicator({
   return (
     <button className="working-indicator detail" type="button" onClick={onOpenOverview}>
       <div className="working-activity-header">
-        <span className="working-activity-title">
-          <span className="working-activity-dot" aria-hidden="true" />
-          <strong>Working</strong>
-        </span>
+        <span className="working-activity-dot" aria-hidden="true" />
+        <strong>Working</strong>
         {parts.length ? <small>{parts.join(" · ")}</small> : null}
       </div>
       <div className="working-activity-list">
         {activities.map((activity) => (
-          <div className={`working-activity-item ${activity.kind}`} key={activity.id}>
+          <div className={`working-activity-item ${activity.kind} slot-${workingActivitySlot(activity)}`} key={activity.id}>
             <span className="working-activity-icon" aria-label={workingActivityLabel(activity)} title={workingActivityLabel(activity)}>
               {workingActivityIcon(activity)}
             </span>
@@ -800,12 +798,16 @@ function WorkingIndicator({
   );
 }
 
+function workingActivitySlot(activity: AgentTimelineActivity): "assistant" | "action" {
+  return activity.kind === "assistant" ? "assistant" : "action";
+}
+
 function workingActivityLabel(activity: AgentTimelineActivity): string {
-  return activity.kind === "assistant" ? "Assistant" : "Action";
+  return workingActivitySlot(activity) === "assistant" ? "Assistant message" : "Action";
 }
 
 function workingActivityIcon(activity: AgentTimelineActivity): string {
-  return activity.kind === "assistant" ? "✦" : "›";
+  return workingActivitySlot(activity) === "assistant" ? "✦" : "›";
 }
 
 function workingActivityBody(activity: AgentTimelineActivity): string {
