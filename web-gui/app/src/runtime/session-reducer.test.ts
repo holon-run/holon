@@ -4,6 +4,7 @@ import type { AgentTimelineItem } from "./types";
 import type { SessionEventEnvelope } from "./session-reducer";
 import {
   compactAgentTimelineItems,
+  debugAgentSessionEvents,
   filterTimelineByDisplayLevel,
   mergeAgentTimelineItems,
   reduceAgentSessionTimeline,
@@ -440,6 +441,66 @@ describe("filterTimelineByDisplayLevel", () => {
     );
 
     expect(filtered.map((item) => item.id)).toEqual(["second", "third"]);
+  });
+});
+
+describe("debugAgentSessionEvents", () => {
+  it("projects every identifiable raw event as a debug timeline item", () => {
+    const events = [
+      event({
+        id: "assistant-without-preview",
+        event_seq: 50,
+        type: "assistant_round_recorded",
+        payload: {
+          turn_id: "turn-1",
+        },
+      }),
+      toolEvent("work-item-mutation", "CreateWorkItem", {
+        objective: "Track debug visibility",
+      }),
+      event({
+        type: "no-identity",
+        payload: {
+          text: "missing id and sequence",
+        },
+      }),
+    ];
+
+    const timeline = debugAgentSessionEvents(events);
+
+    expect(timeline.map((item) => item.id)).toEqual(["debug:assistant-without-preview", "debug:work-item-mutation"]);
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        label: "Assistant Round Recorded",
+        meta: "assistant_round_recorded · event #50",
+        detail: expect.objectContaining({
+          label: "Event payload",
+          text: expect.stringContaining('"assistant_round_recorded"'),
+        }),
+        rawEvent: events[0],
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        label: "Tool finished",
+        body: expect.stringContaining("Track debug visibility"),
+        detail: expect.objectContaining({
+          text: expect.stringContaining('"CreateWorkItem"'),
+        }),
+      }),
+    );
+  });
+
+  it("applies item limits to the newest debug events", () => {
+    const timeline = debugAgentSessionEvents(
+      [
+        event({ id: "old", ts: "2026-06-15T10:00:00Z", type: "brief_created", payload: { text: "old" } }),
+        event({ id: "new", ts: "2026-06-15T10:01:00Z", type: "brief_created", payload: { text: "new" } }),
+      ],
+      { itemLimit: 1 },
+    );
+
+    expect(timeline.map((item) => item.id)).toEqual(["debug:new"]);
   });
 });
 

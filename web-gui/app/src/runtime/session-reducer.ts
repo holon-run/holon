@@ -14,6 +14,16 @@ export interface SessionEventEnvelope {
   payload?: unknown;
 }
 
+function projectDebugEvent(
+  eventType: string,
+  payload: Record<string, unknown> | undefined,
+): (Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string }) | undefined {
+  if (eventType === "tool_executed" || eventType === "tool_execution_failed") {
+    return projectToolExecution(eventType, payload, { includeHiddenWorkItemMutations: true });
+  }
+  return projectRuntimeEvent(eventType, payload);
+}
+
 export interface ReduceAgentSessionInput {
   events: {
     events?: SessionEventEnvelope[];
@@ -110,6 +120,14 @@ export function filterTimelineByDisplayLevel(
   return filtered.slice(-limit);
 }
 
+export function debugAgentSessionEvents(events: SessionEventEnvelope[], options: { itemLimit?: number } = {}): AgentTimelineItem[] {
+  const projected = events
+    .filter((event) => event.id || event.event_seq != null)
+    .map((event) => debugEventTimelineItem(event))
+    .sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
+  return projected.slice(-(options.itemLimit ?? 220));
+}
+
 function projectEventEnvelope(
   event: SessionEventEnvelope,
   eventDisplayLevel: DisplayLevel,
@@ -135,6 +153,32 @@ function projectEventEnvelope(
     detail: projection.detail,
     rawEvent: event,
     debug: includeDebug ? debugJson(event) : undefined,
+  });
+}
+
+function debugEventTimelineItem(event: SessionEventEnvelope): AgentTimelineItem {
+  const id = event.id ?? `event-${event.event_seq}`;
+  const payload = asRecord(event.payload);
+  const eventType = event.type ?? "runtime_event";
+  const projection = projectDebugEvent(eventType, payload);
+  const meta = eventMeta(eventType, payload, event.event_seq);
+  const body = projection?.body || readableText(payload) || summarizeDebugEvent(eventType, payload) || humanizeEventType(eventType);
+  return item({
+    id: `debug:${id}`,
+    kind: projection?.kind ?? "event",
+    label: projection?.label ?? humanizeEventType(eventType),
+    body,
+    timestamp: projection?.timestamp ?? event.ts ?? "",
+    meta,
+    minDisplayLevel: "debug",
+    sourceIds: [id],
+    detail: {
+      label: "Event payload",
+      text: debugJson(event),
+      tone: eventType.includes("failed") || eventType.includes("error") ? "data" : (projection?.detail?.tone ?? "data"),
+    },
+    rawEvent: event,
+    debug: debugJson(event),
   });
 }
 
@@ -404,10 +448,11 @@ function mergeSourceIds(sourceIds: string[]): string[] {
 function projectToolExecution(
   eventType: string,
   payload: Record<string, unknown> | undefined,
+  options: { includeHiddenWorkItemMutations?: boolean } = {},
 ): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> | undefined {
   const toolName = stringField(payload, "tool_name") ?? "tool";
   const failed = eventType === "tool_execution_failed" || Boolean(payload?.error);
-  if (!failed && isWorkItemMutationTool(toolName)) return undefined;
+  if (!failed && isWorkItemMutationTool(toolName) && !options.includeHiddenWorkItemMutations) return undefined;
   const projection = projectKnownToolExecution(toolName, payload);
   const label = toolFriendlyLabel(toolName, failed);
   const summary = stringField(payload, "summary");

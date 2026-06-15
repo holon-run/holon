@@ -3,7 +3,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormE
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
+import { debugAgentSessionEvents, filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import type {
   AgentDetail,
   AgentSummary,
@@ -74,12 +74,19 @@ export function AgentPage({
   const stickToBottomRef = useRef(true);
   const activeAgent = detail?.agent ?? agent;
   const sourceTimeline = detail?.timeline ?? [];
+  const sourceEvents = detail?.events ?? [];
   const timeline = useMemo(
-    () =>
-      filterTimelineByDisplayLevel(sourceTimeline, displayLevel, {
+    () => {
+      if (displayLevel === "debug" && sourceEvents.length > 0) {
+        return debugAgentSessionEvents(sourceEvents, {
+          itemLimit: visibleTimelineItemLimit,
+        });
+      }
+      return filterTimelineByDisplayLevel(sourceTimeline, displayLevel, {
         itemLimit: visibleTimelineItemLimit,
-      }),
-    [displayLevel, sourceTimeline, visibleTimelineItemLimit],
+      });
+    },
+    [displayLevel, sourceEvents, sourceTimeline, visibleTimelineItemLimit],
   );
   const isWorking = isAgentWorking(activeAgent, sendingPrompt);
   const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
@@ -725,7 +732,7 @@ function ActivityTrail({
             {displayLevel === "debug" ? (
               <div className="activity-meta">
                 <span>{activity.meta}</span>
-                <button className="copy-action" type="button" onClick={onOpenInspector}>
+                <button className="copy-action" type="button" onClick={() => onInspectActivity(activity)}>
                   inspect
                 </button>
               </div>
