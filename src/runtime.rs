@@ -30,6 +30,11 @@ pub use tasks::{
 };
 pub(crate) use waiting::{WaitForScope, WaitForWakeKind};
 
+#[cfg(test)]
+const RUNTIME_DB_REQUEUE_BACKOFF: Duration = Duration::from_millis(10);
+#[cfg(not(test))]
+const RUNTIME_DB_REQUEUE_BACKOFF: Duration = Duration::from_secs(5);
+
 use std::{
     collections::HashMap,
     fs,
@@ -48,7 +53,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[cfg(test)]
 use crate::provider::{ConversationMessage, ProviderTurnRequest};
@@ -71,7 +76,7 @@ use crate::{
         ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
     },
     queue::RuntimeQueue,
-    runtime_db::RuntimeDb,
+    runtime_db::{is_retryable_db_error, RuntimeDb},
     skills::{
         find_skill_by_entrypoint, find_skill_by_script_path, load_skills_runtime_view,
         SkillVisibility,
@@ -1066,32 +1071,81 @@ impl RuntimeHandle {
     }
 
     pub(crate) fn persist_message_evidence(&self, message: &MessageEnvelope) -> Result<()> {
-        self.inner.storage.append_message(message)?;
-        self.inner.runtime_db.evidence().append_message(message)
+        self.inner.storage.append_message(message)
     }
 
     pub(crate) fn persist_transcript_evidence(&self, entry: &TranscriptEntry) -> Result<()> {
-        self.inner.storage.append_transcript_entry(entry)?;
-        self.inner
-            .runtime_db
-            .evidence()
-            .append_transcript_entry(entry)
+        self.inner.storage.append_transcript_entry(entry)
     }
 
     pub(crate) fn persist_tool_execution_evidence(
         &self,
         record: &ToolExecutionRecord,
     ) -> Result<()> {
-        self.inner.storage.append_tool_execution(record)?;
-        self.inner
-            .runtime_db
-            .evidence()
-            .append_tool_execution(record)
+        self.inner.storage.append_tool_execution(record)
     }
 
     pub(crate) fn persist_brief_evidence(&self, brief: &BriefRecord) -> Result<()> {
-        self.inner.storage.append_brief(brief)?;
-        self.inner.runtime_db.evidence().append_brief(brief)
+        self.inner.storage.append_brief(brief)
+    }
+
+    async fn requeue_retryable_db_error(
+        &self,
+        message: &MessageEnvelope,
+        err: &anyhow::Error,
+    ) -> Result<()> {
+        warn!(
+            message_id = %message.id,
+            error = %err,
+            "retryable runtime db error; requeueing message"
+        );
+
+        if let Err(queue_err) = self.inner.storage.append_queue_entry(&QueueEntryRecord {
+            message_id: message.id.clone(),
+            agent_id: message.agent_id.clone(),
+            priority: message.priority.clone(),
+            status: QueueEntryStatus::Queued,
+            created_at: message.created_at,
+            updated_at: Utc::now(),
+        }) {
+            if is_retryable_db_error(&queue_err) {
+                warn!(
+                    message_id = %message.id,
+                    error = %queue_err,
+                    "runtime db remained locked while recording retry queue entry"
+                );
+            } else {
+                return Err(queue_err);
+            }
+        }
+
+        {
+            let mut guard = self.inner.agent.lock().await;
+            guard.current_run_abort = None;
+            if !matches!(guard.state.status, AgentStatus::Stopped) {
+                guard.queue.push_front(message.clone());
+                guard.state.pending = guard.queue.len();
+            }
+        }
+
+        if let Err(event_err) = self.inner.storage.append_event(&AuditEvent::new(
+            "runtime_db_retry_scheduled",
+            serde_json::json!({
+                "message_id": message.id.clone(),
+                "message_kind": message.kind.clone(),
+                "error": err.to_string(),
+            }),
+        )) {
+            warn!(
+                message_id = %message.id,
+                error = %event_err,
+                "failed to record runtime db retry audit event"
+            );
+        }
+
+        tokio::time::sleep(RUNTIME_DB_REQUEUE_BACKOFF).await;
+        self.inner.notify.notify_one();
+        Ok(())
     }
 
     pub async fn run(self) -> Result<()> {
@@ -1184,6 +1238,11 @@ impl RuntimeHandle {
                 )
                 .await
             {
+                if is_retryable_db_error(&err) {
+                    self.requeue_retryable_db_error(&message, &err).await?;
+                    continue;
+                }
+
                 let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
                 if let Some(aborted) = aborted.as_ref() {
                     self.inner.storage.append_queue_entry(&QueueEntryRecord {

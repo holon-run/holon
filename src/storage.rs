@@ -2981,6 +2981,20 @@ mod tests {
 
     use super::*;
 
+    fn wait_until(mut condition: impl FnMut() -> bool, label: &str) {
+        let started_at = std::time::Instant::now();
+        loop {
+            if condition() {
+                return;
+            }
+            assert!(
+                started_at.elapsed() <= std::time::Duration::from_secs(2),
+                "{label} did not become true"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn append_event_assigns_monotonic_event_seq() {
         let dir = tempdir().unwrap();
@@ -3086,6 +3100,10 @@ mod tests {
             ))
             .unwrap();
 
+        wait_until(
+            || storage.read_recent_events(10).unwrap().len() == 1,
+            "runtime db audit event write",
+        );
         let events = storage.read_recent_events(10).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "db_canonical_event");
@@ -3124,6 +3142,10 @@ mod tests {
             ))
             .unwrap();
 
+        wait_until(
+            || storage.read_recent_events(10).unwrap().len() == 1,
+            "runtime db audit event write before sink",
+        );
         let events = storage.read_recent_events(10).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "db_canonical_bootstrap_event");
@@ -3872,6 +3894,18 @@ mod tests {
             .ledger_dir()
             .join("delivery_summaries.jsonl")
             .exists());
+        wait_until(
+            || {
+                storage.read_recent_briefs(10).unwrap() == vec![brief.clone()]
+                    && storage.read_recent_tool_executions(10).unwrap() == vec![tool.clone()]
+                    && storage
+                        .latest_delivery_summary("work-db-evidence")
+                        .unwrap()
+                        .map(|record| record.text)
+                        == Some("delivery evidence".into())
+            },
+            "runtime db evidence writes",
+        );
         assert_eq!(storage.read_recent_briefs(10).unwrap(), vec![brief]);
         assert_eq!(storage.read_recent_tool_executions(10).unwrap(), vec![tool]);
         assert_eq!(
