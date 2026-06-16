@@ -11,6 +11,7 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
   const workspaceName = workspace?.name ?? agent.workspace;
   const workspaceRoot = workspace?.cwd ?? workspace?.executionRoot ?? workspace?.worktree?.path ?? workspace?.anchor;
   const modeLabel = workspace?.worktree ? "Managed worktree" : workspace?.projectionKind;
+  const showCwd = Boolean(workspace?.cwd && workspace.cwd !== workspace.executionRoot);
 
   return (
     <div className="inspector-stack">
@@ -80,10 +81,12 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
                 <dt>Execution root</dt>
                 <dd>{workspace.executionRoot ?? "—"}</dd>
               </div>
-              <div>
-                <dt>Cwd</dt>
-                <dd>{workspace.cwd ?? "—"}</dd>
-              </div>
+              {showCwd ? (
+                <div>
+                  <dt>Cwd</dt>
+                  <dd>{workspace.cwd}</dd>
+                </div>
+              ) : null}
               {workspace.worktree ? (
                 <>
                   <div>
@@ -93,10 +96,6 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
                   <div>
                     <dt>Original branch</dt>
                     <dd>{workspace.worktree.originalBranch ?? "—"}</dd>
-                  </div>
-                  <div>
-                    <dt>Original cwd</dt>
-                    <dd>{workspace.worktree.originalCwd ?? "—"}</dd>
                   </div>
                 </>
               ) : null}
