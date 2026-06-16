@@ -204,7 +204,9 @@ export interface RuntimeStoreState {
   stopAgentEventStream: (agentId: string | undefined) => void;
 }
 
-const RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1";
+const LEGACY_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1";
+const ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.activeRuntimeConnection.v1";
+const RUNTIME_CONNECTION_PROFILES_STORAGE_KEY = "holon.webGui.runtimeConnectionProfiles.v1";
 const DISPLAY_LEVEL_STORAGE_KEY = "holon.webGui.displayLevelsByAgentId.v1";
 let runtimeConnectionConfig = readStoredRuntimeConnectionConfig();
 let runtimeClient = createRuntimeClient(runtimeClientOptions(runtimeConnectionConfig));
@@ -227,31 +229,107 @@ function runtimeClientOptions(config: RuntimeConnectionConfig) {
   return config.mode === "remote" ? { mode: "remote" as const, baseUrl: config.baseUrl, token: config.token } : { mode: "local" as const };
 }
 
-function readStoredRuntimeConnectionConfig(): RuntimeConnectionConfig {
+export function readStoredRuntimeConnectionConfig(): RuntimeConnectionConfig {
   if (typeof window === "undefined") return { mode: "local" };
+  const activeConfig = coerceRuntimeConnectionConfig(readStoredJson(window.sessionStorage, ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY));
+  if (activeConfig) return withStoredRemoteProfileToken(activeConfig);
+
+  const legacyConfig = coerceRuntimeConnectionConfig(readStoredJson(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY));
+  if (legacyConfig?.mode === "remote") {
+    writeStoredRuntimeConnectionConfig(legacyConfig);
+    removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
+    return withStoredRemoteProfileToken(legacyConfig);
+  }
+
+  if (legacyConfig?.mode === "local") {
+    writeActiveRuntimeConnectionConfig(legacyConfig);
+    removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
+  }
+
+  return { mode: "local" };
+}
+
+export function writeStoredRuntimeConnectionConfig(config: RuntimeConnectionConfig): void {
   try {
-    const raw = window.localStorage.getItem(RUNTIME_CONNECTION_STORAGE_KEY);
-    if (!raw) return { mode: "local" };
-    const parsed = JSON.parse(raw) as Partial<RuntimeConnectionConfig>;
-    if (parsed.mode !== "remote") return { mode: "local" };
-    return {
-      mode: "remote",
-      baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
-      token: typeof parsed.token === "string" ? parsed.token : "",
-    };
+    removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
+    writeActiveRuntimeConnectionConfig(config);
+    if (config.mode === "remote") writeStoredRemoteProfile(config);
   } catch {
-    return { mode: "local" };
+    // Ignore storage failures; the in-memory connection still applies.
   }
 }
 
-function writeStoredRuntimeConnectionConfig(config: RuntimeConnectionConfig): void {
-  if (typeof window === "undefined") return;
+function coerceRuntimeConnectionConfig(value: unknown): RuntimeConnectionConfig | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const parsed = value as Partial<RuntimeConnectionConfig>;
+  if (parsed.mode === "local") return { mode: "local" };
+  if (parsed.mode !== "remote") return undefined;
+  const baseUrl = normalizeConnectionBaseUrl(parsed.baseUrl);
+  if (!baseUrl) return undefined;
+  return {
+    mode: "remote",
+    baseUrl,
+    token: typeof parsed.token === "string" && parsed.token.trim() ? parsed.token.trim() : undefined,
+  };
+}
+
+function readStoredJson(storage: Storage, key: string): unknown {
   try {
-    if (config.mode === "local") {
-      window.localStorage.removeItem(RUNTIME_CONNECTION_STORAGE_KEY);
-      return;
+    const raw = storage.getItem(key);
+    return raw ? JSON.parse(raw) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function removeStoredItem(storage: Storage, key: string): void {
+  try {
+    storage.removeItem(key);
+  } catch {
+    // Ignore storage failures; the in-memory connection still applies.
+  }
+}
+
+function writeActiveRuntimeConnectionConfig(config: RuntimeConnectionConfig): void {
+  if (typeof window === "undefined") return;
+  const activeConfig = coerceRuntimeConnectionConfig(config) ?? { mode: "local" };
+  try {
+    window.sessionStorage.setItem(ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY, JSON.stringify(activeConfig));
+  } catch {
+    // Ignore storage failures; the in-memory connection still applies.
+  }
+}
+
+function readStoredRemoteProfiles(): Record<string, RuntimeConnectionConfig> {
+  if (typeof window === "undefined") return {};
+  const parsed = readStoredJson(window.localStorage, RUNTIME_CONNECTION_PROFILES_STORAGE_KEY);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const profiles: Record<string, RuntimeConnectionConfig> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    const profile = coerceRuntimeConnectionConfig(value);
+    const profileBaseUrl = profile?.baseUrl;
+    if (profile?.mode === "remote" && profileBaseUrl && key === remoteProfileKey(profileBaseUrl)) {
+      profiles[key] = profile;
     }
-    window.localStorage.setItem(RUNTIME_CONNECTION_STORAGE_KEY, JSON.stringify(config));
+  }
+  return profiles;
+}
+
+function writeStoredRemoteProfile(config: RuntimeConnectionConfig): void {
+  if (typeof window === "undefined" || config.mode !== "remote") return;
+  const profile = coerceRuntimeConnectionConfig(config);
+  if (profile?.mode !== "remote") return;
+  const profileBaseUrl = profile.baseUrl;
+  if (!profileBaseUrl) return;
+  const profiles = readStoredRemoteProfiles();
+  const key = remoteProfileKey(profileBaseUrl);
+  const existingProfile = profiles[key];
+  profiles[key] = {
+    ...profile,
+    token: profile.token ?? (existingProfile?.mode === "remote" ? existingProfile.token : undefined),
+  };
+  try {
+    window.localStorage.setItem(RUNTIME_CONNECTION_PROFILES_STORAGE_KEY, JSON.stringify(profiles));
   } catch {
     // Ignore storage failures; the in-memory connection still applies.
   }
@@ -259,6 +337,19 @@ function writeStoredRuntimeConnectionConfig(config: RuntimeConnectionConfig): vo
 
 function normalizeConnectionBaseUrl(value: string | undefined): string {
   return value?.trim().replace(/\/+$/, "") ?? "";
+}
+
+function remoteProfileKey(baseUrl: string): string {
+  return normalizeConnectionBaseUrl(baseUrl);
+}
+
+function withStoredRemoteProfileToken(config: RuntimeConnectionConfig): RuntimeConnectionConfig {
+  if (config.mode !== "remote" || config.token) return config;
+  const baseUrl = config.baseUrl;
+  if (!baseUrl) return config;
+  const profile = readStoredRemoteProfiles()[remoteProfileKey(baseUrl)];
+  if (profile?.mode !== "remote" || !profile.token) return config;
+  return { ...config, token: profile.token };
 }
 
 function readStoredDisplayLevels(): Record<string, DisplayLevel> {
