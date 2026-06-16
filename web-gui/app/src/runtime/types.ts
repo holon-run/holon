@@ -243,6 +243,7 @@ export interface RuntimeToolExecutionRecord {
   status?: string;
   summary?: string;
   input?: unknown;
+  output?: unknown;
   result?: unknown;
   error?: unknown;
   duration_ms?: number;

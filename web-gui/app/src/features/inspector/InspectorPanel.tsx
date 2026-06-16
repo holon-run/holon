@@ -51,15 +51,83 @@ function HydratedActivityDetails({ detailState }: { detailState?: InspectorActiv
 }
 
 function ToolExecutionDetail({ record }: { record: RuntimeToolExecutionRecord }) {
+  const detail = formatToolExecutionDetail(record);
+  const rawText = formatInspectorJson(record);
+
   return (
-    <section className="context-card inspector-card inspector-detail data">
-      <div className="context-head">
-        <span className="eyebrow">Tool execution</span>
-        <strong>{compactMeta([record.tool_name, record.status])}</strong>
-      </div>
-      <pre>{formatInspectorJson(record)}</pre>
-    </section>
+    <>
+      <section className={`context-card inspector-card inspector-detail ${detail.tone}`}>
+        <div className="context-head">
+          <span className="eyebrow">Tool execution</span>
+          <strong>{compactMeta([record.tool_name, record.status])}</strong>
+        </div>
+        <pre>{detail.text}</pre>
+      </section>
+      {rawText ? (
+        <details className="context-card inspector-card inspector-raw-detail">
+          <summary>Raw tool execution JSON</summary>
+          <pre>{rawText}</pre>
+        </details>
+      ) : null}
+    </>
   );
+}
+
+export function formatToolExecutionDetail(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+  const output = record.output ?? record.result;
+  const lines = [
+    labelledText("Summary", record.summary),
+    labelledText("Command", commandText(record.input)),
+    labelledText("Stdout", nestedText(output, ["stdout", "stdout_preview", "output", "output_preview", "combined_output_preview"])),
+    labelledText("Stderr", nestedText(output, ["stderr", "stderr_preview"])),
+    labelledText("Initial output", nestedText(output, ["initial_output_preview"])),
+    labelledText("Result", nestedText(output, ["summary", "summary_text", "result_summary", "result_summary_preview"])),
+    labelledText("Error", record.error ?? nestedValue(output, ["error"])),
+    labelledText("Exit", nestedValue(output, ["exit_status", "status", "disposition"])),
+  ].filter(Boolean);
+
+  return {
+    text: lines.join("\n\n") || formatInspectorJson(record),
+    tone: lines.length ? "output" : "data",
+  };
+}
+
+function labelledText(label: string, value: unknown): string {
+  const text = textField(value) || scalarText(value);
+  return text ? `${label}:\n${text}` : "";
+}
+
+function commandText(input: unknown): string {
+  const value = nestedValue(input, ["cmd", "command", "cmd_preview"]);
+  if (typeof value === "string") return value;
+  return "";
+}
+
+function nestedText(value: unknown, keys: string[]): string {
+  const found = nestedValue(value, keys);
+  return textField(found) || scalarText(found);
+}
+
+function nestedValue(value: unknown, keys: string[]): unknown {
+  if (!isRecord(value)) return undefined;
+  for (const key of keys) {
+    const field = value[key];
+    if (field != null && (!isBlankString(field))) return field;
+  }
+  return undefined;
+}
+
+function scalarText(value: unknown): string {
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value != null && !Array.isArray(value);
+}
+
+function isBlankString(value: unknown): boolean {
+  return typeof value === "string" && value.trim() === "";
 }
 
 function TaskOutputDetail({ output }: { output: RuntimeTaskOutputResult }) {

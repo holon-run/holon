@@ -2817,6 +2817,32 @@ code {
   color: #fef3c7;
 }
 
+.inspector-raw-detail {
+  overflow: hidden;
+}
+
+.inspector-raw-detail summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.inspector-raw-detail pre {
+  overflow: auto;
+  max-height: 42vh;
+  margin: 12px 0 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, #000 24%, transparent);
+  border-radius: 12px;
+  background: #0f172a;
+  color: #dbeafe;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .search-inner {
   display: grid;
   gap: 16px;
