@@ -4558,7 +4558,7 @@ pub struct AgentSummary {
     pub active_wait_conditions: Vec<WaitConditionSummary>,
     #[serde(default)]
     pub active_external_triggers: Vec<ExternalTriggerSummary>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent_operator_notifications: Vec<OperatorNotificationRecord>,
     pub recent_brief_count: usize,
     pub recent_event_count: usize,

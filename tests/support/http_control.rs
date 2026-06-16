@@ -104,6 +104,8 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
     assert!(state_payload["waiting_intents"].is_array());
     assert!(state_payload["external_triggers"].is_array());
     assert!(state_payload["workspace"].is_object());
+    assert!(state_payload.get("operator_notifications").is_none());
+    assert!(state_payload.get("execution").is_none());
     assert!(state_payload.get("cursor").is_none());
 
     server.abort();
@@ -229,10 +231,22 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
             .map(|items| items.iter().any(|item| {
                 item["id"] == serde_json::Value::String(work_item.id.clone())
                     && item["state"] != serde_json::Value::String("completed".into())
+                    && item.get("todo_list").is_none()
+                    && item.get("plan_artifact").is_none()
+                    && item.get("work_refs").is_none()
             }))
             .unwrap_or(false),
         "raw snapshot missing expected work item: {}",
         raw_snapshot
+    );
+    assert!(raw_snapshot.get("operator_notifications").is_none());
+    assert!(raw_snapshot.get("execution").is_none());
+    assert!(
+        raw_snapshot["agent"]
+            .as_object()
+            .is_some_and(|agent| !agent.contains_key("recent_operator_notifications")),
+        "state agent should not embed recent operator notifications: {}",
+        raw_snapshot["agent"]
     );
 
     let snapshot = local_client.agent_state_snapshot("default").await?;

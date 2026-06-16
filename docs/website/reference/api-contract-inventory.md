@@ -162,7 +162,7 @@ response directly.
 |--------|------|--------|------------------|-----------|-------|
 | `GET` | `/agents/list` | Auth header when bearer mode is active. | `AgentListEntry[]` | Candidate stable | Lightweight list for selection/navigation. |
 | `GET` | `/agents/:agent_id/status` | Path `agent_id`; auth header when bearer mode is active. | `AgentSummary` | Candidate stable | Main read model for one agent. |
-| `GET` | `/agents/:agent_id/state` | Path `agent_id`; auth header when bearer mode is active. | `AgentStateSnapshot` | Experimental | Broad bootstrap snapshot; includes agent, session, tasks, timers, work items, waiting intents, external triggers, notifications, workspace, execution. |
+| `GET` | `/agents/:agent_id/state` | Path `agent_id`; auth header when bearer mode is active. | `AgentStateSnapshot` | Experimental | Lightweight bootstrap snapshot; omits operator notifications, duplicate execution details, task details, and full work-item internals. |
 | `GET` | `/agents/:agent_id/briefs` | Path `agent_id`; query `limit?`. | `BriefRecord[]` | Candidate stable | Defaults to `20`. |
 | `GET` | `/agents/:agent_id/tasks` | Path `agent_id`; query `limit?`. | `TaskRecord[]` | Candidate stable for list; DTO schema still broad | Defaults to `50`; active/recent task listing. |
 | `GET` | `/agents/:agent_id/tasks/:task_id` | Path `agent_id`, `task_id`. | `TaskStatusSnapshot` | Candidate stable route; DTO schema still broad | Returns a single task lifecycle snapshot. |

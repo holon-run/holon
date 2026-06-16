@@ -4737,7 +4737,7 @@
     },
     "/agents/{agent_id}/state": {
       "get": {
-        "description": "Return the current bootstrap snapshot for an agent.",
+        "description": "Return the lightweight bootstrap snapshot for an agent. Heavy task, work-item, operator notification, and execution details are available through dedicated routes and events.",
         "operationId": "agentState",
         "parameters": [
           {
