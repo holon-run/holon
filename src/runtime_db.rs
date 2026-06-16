@@ -126,6 +126,8 @@ type RuntimeDbWriteJob =
 struct RuntimeDbWriteRequest {
     context: RuntimeDbWriteContext,
     job: RuntimeDbWriteJob,
+    #[cfg(test)]
+    completion: Option<mpsc::Sender<Result<(), String>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -322,19 +324,29 @@ impl RuntimeDbWriter {
             .name("holon-runtime-db-writer".to_string())
             .spawn(move || {
                 while let Ok(request) = append_rx.recv() {
+                    let RuntimeDbWriteRequest {
+                        context,
+                        job,
+                        #[cfg(test)]
+                        mut completion,
+                    } = request;
                     let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
                     loop {
-                        match thread_state
-                            .append_wait_with_context(request.context, |tx| (request.job)(tx))
-                        {
-                            Ok(()) => break,
+                        match thread_state.append_wait_with_context(context, |tx| job(tx)) {
+                            Ok(()) => {
+                                #[cfg(test)]
+                                if let Some(completion) = completion.take() {
+                                    let _ = completion.send(Ok(()));
+                                }
+                                break;
+                            }
                             Err(error) if is_retryable_db_error(&error) => {
                                 tracing::warn!(
                                     error = %error,
                                     path = %thread_state.path.display(),
-                                    operation = request.context.operation,
-                                    table = request.context.table,
-                                    mode = request.context.mode.as_str(),
+                                    operation = context.operation,
+                                    table = context.table,
+                                    mode = context.mode.as_str(),
                                     retry_delay_ms = retry_delay.as_millis(),
                                     "runtime db queued write retrying"
                                 );
@@ -348,11 +360,15 @@ impl RuntimeDbWriter {
                                 tracing::warn!(
                                     error = %error,
                                     path = %thread_state.path.display(),
-                                    operation = request.context.operation,
-                                    table = request.context.table,
-                                    mode = request.context.mode.as_str(),
+                                    operation = context.operation,
+                                    table = context.table,
+                                    mode = context.mode.as_str(),
                                     "runtime db queued write failed"
                                 );
+                                #[cfg(test)]
+                                if let Some(completion) = completion.take() {
+                                    let _ = completion.send(Err(error.to_string()));
+                                }
                                 break;
                             }
                         }
@@ -381,6 +397,8 @@ impl RuntimeDbWriter {
         let request = RuntimeDbWriteRequest {
             context,
             job: Box::new(f),
+            #[cfg(test)]
+            completion: None,
         };
         match self.append_tx.try_send(request) {
             Ok(()) => Ok(()),
@@ -393,6 +411,23 @@ impl RuntimeDbWriter {
 
     fn append_wait<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.state.append_wait(f)
+    }
+
+    #[cfg(test)]
+    fn flush_background_writes_for_tests(&self) -> Result<()> {
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let request = RuntimeDbWriteRequest {
+            context: RuntimeDbWriteContext::background("runtime_db.flush_for_tests", "unknown"),
+            job: Box::new(|_| Ok(())),
+            completion: Some(completion_tx),
+        };
+        self.append_tx
+            .send(request)
+            .map_err(|_| anyhow!("runtime db write queue is disconnected"))?;
+        completion_rx
+            .recv_timeout(Duration::from_secs(5))
+            .context("timed out waiting for runtime db background writes to flush")?
+            .map_err(|error| anyhow!(error))
     }
 
     fn append_wait_with_context<T>(
@@ -4919,6 +4954,11 @@ impl RuntimeDb {
         f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
     ) -> Result<()> {
         self.writer.append_with_context(context, f)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn flush_background_writes_for_tests(&self) -> Result<()> {
+        self.writer.flush_background_writes_for_tests()
     }
 
     pub fn current_schema_version(&self) -> Result<i64> {

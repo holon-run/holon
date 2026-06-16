@@ -4965,7 +4965,19 @@ async fn pick_from_runnable_current_yields_and_complete_resumes_caller() {
     );
     let frames = runtime.storage().latest_work_item_continuations().unwrap();
     assert_eq!(frames[0].state, WorkItemContinuationState::Resumed);
-    let events = runtime.storage().read_recent_events(20).unwrap();
+    let events = wait_for_audit_events(
+        &runtime,
+        20,
+        |events| {
+            events.iter().any(|event| {
+                event.kind == "work_item_continuation_scheduler_evidence"
+                    && event.data["reason"].as_str() == Some("continuation_resumed")
+                    && event.data["work_item_id"].as_str() == Some(current.id.as_str())
+            })
+        },
+        "work item continuation scheduler evidence event",
+    )
+    .await;
     assert!(events.iter().any(|event| {
         event.kind == "work_item_continuation_scheduler_evidence"
             && event.data["reason"].as_str() == Some("continuation_resumed")

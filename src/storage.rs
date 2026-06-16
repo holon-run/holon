@@ -996,6 +996,8 @@ impl AppStorage {
 
     pub fn read_recent_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            #[cfg(test)]
+            runtime_db.flush_background_writes_for_tests()?;
             return runtime_db
                 .audit_events()
                 .recent(self.current_agent_id()?.as_deref(), limit);
@@ -1009,6 +1011,8 @@ impl AppStorage {
 
     pub fn latest_event_seq(&self) -> Result<Option<u64>> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            #[cfg(test)]
+            runtime_db.flush_background_writes_for_tests()?;
             return runtime_db
                 .audit_events()
                 .latest_event_seq(self.current_agent_id()?.as_deref());
