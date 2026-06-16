@@ -68,9 +68,12 @@ impl fmt::Display for RuntimeDbRetryableError {
 impl StdError for RuntimeDbRetryableError {}
 
 pub fn is_retryable_db_error(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .any(|source| source.downcast_ref::<RuntimeDbRetryableError>().is_some())
+    error.chain().any(|source| {
+        source.downcast_ref::<RuntimeDbRetryableError>().is_some()
+            || source
+                .downcast_ref::<rusqlite::Error>()
+                .is_some_and(is_sqlite_locked)
+    })
 }
 
 #[derive(Clone)]
@@ -121,7 +124,48 @@ type RuntimeDbWriteJob =
     Box<dyn for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static>;
 
 struct RuntimeDbWriteRequest {
+    context: RuntimeDbWriteContext,
     job: RuntimeDbWriteJob,
+}
+
+#[derive(Clone, Copy)]
+struct RuntimeDbWriteContext {
+    operation: &'static str,
+    table: &'static str,
+    mode: RuntimeDbWriteMode,
+}
+
+impl RuntimeDbWriteContext {
+    const fn new(operation: &'static str, table: &'static str, mode: RuntimeDbWriteMode) -> Self {
+        Self {
+            operation,
+            table,
+            mode,
+        }
+    }
+
+    const fn sync(operation: &'static str, table: &'static str) -> Self {
+        Self::new(operation, table, RuntimeDbWriteMode::Sync)
+    }
+
+    const fn background(operation: &'static str, table: &'static str) -> Self {
+        Self::new(operation, table, RuntimeDbWriteMode::Background)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RuntimeDbWriteMode {
+    Sync,
+    Background,
+}
+
+impl RuntimeDbWriteMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sync => "sync",
+            Self::Background => "background",
+        }
+    }
 }
 
 pub struct WorkItemRepository<'a> {
@@ -280,12 +324,17 @@ impl RuntimeDbWriter {
                 while let Ok(request) = append_rx.recv() {
                     let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
                     loop {
-                        match thread_state.append_wait(|tx| (request.job)(tx)) {
+                        match thread_state
+                            .append_wait_with_context(request.context, |tx| (request.job)(tx))
+                        {
                             Ok(()) => break,
                             Err(error) if is_retryable_db_error(&error) => {
                                 tracing::warn!(
                                     error = %error,
                                     path = %thread_state.path.display(),
+                                    operation = request.context.operation,
+                                    table = request.context.table,
+                                    mode = request.context.mode.as_str(),
                                     retry_delay_ms = retry_delay.as_millis(),
                                     "runtime db queued write retrying"
                                 );
@@ -299,6 +348,9 @@ impl RuntimeDbWriter {
                                 tracing::warn!(
                                     error = %error,
                                     path = %thread_state.path.display(),
+                                    operation = request.context.operation,
+                                    table = request.context.table,
+                                    mode = request.context.mode.as_str(),
                                     "runtime db queued write failed"
                                 );
                                 break;
@@ -315,7 +367,21 @@ impl RuntimeDbWriter {
         &self,
         f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
     ) -> Result<()> {
-        let request = RuntimeDbWriteRequest { job: Box::new(f) };
+        self.append_with_context(
+            RuntimeDbWriteContext::background("runtime_db.append", "unknown"),
+            f,
+        )
+    }
+
+    fn append_with_context(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
+    ) -> Result<()> {
+        let request = RuntimeDbWriteRequest {
+            context,
+            job: Box::new(f),
+        };
         match self.append_tx.try_send(request) {
             Ok(()) => Ok(()),
             Err(mpsc::TrySendError::Full(_)) => bail!("runtime db write queue is full"),
@@ -328,16 +394,39 @@ impl RuntimeDbWriter {
     fn append_wait<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.state.append_wait(f)
     }
+
+    fn append_wait_with_context<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.state.append_wait_with_context(context, f)
+    }
 }
 
 impl RuntimeDbWriterState {
     fn append_wait<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        self.append_wait_with_context(
+            RuntimeDbWriteContext::sync("runtime_db.transaction", "unknown"),
+            f,
+        )
+    }
+
+    fn append_wait_with_context<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let queue_wait_started_at = Instant::now();
         let _turn = self.queue.wait_turn()?;
+        let queue_wait = queue_wait_started_at.elapsed();
+        let mutex_wait_started_at = Instant::now();
         let connection = self
             .connection
             .lock()
             .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
-        run_transaction_on_connection(&connection, &self.path, f)
+        let mutex_wait = mutex_wait_started_at.elapsed();
+        run_transaction_on_connection(&connection, &self.path, context, queue_wait, mutex_wait, f)
     }
 }
 
@@ -2141,17 +2230,24 @@ impl EvidenceRepository<'_> {
 
 impl AuditEventSink<'_> {
     pub fn append(&self, agent_id: Option<&str>, event: &AuditEvent) -> Result<()> {
-        self.db
-            .transaction(|tx| insert_audit_event_tx(tx, agent_id, event))
+        let agent_id = agent_id.map(str::to_string);
+        let event = event.clone();
+        self.db.append_with_context(
+            RuntimeDbWriteContext::background("audit_events.append", "audit_events"),
+            move |tx| insert_audit_event_tx(tx, agent_id.as_deref(), &event),
+        )
     }
 
     pub fn append_many(&self, agent_id: Option<&str>, events: &[AuditEvent]) -> Result<()> {
-        self.db.transaction(|tx| {
-            for event in events {
-                insert_audit_event_tx(tx, agent_id, event)?;
-            }
-            Ok(())
-        })
+        self.db.transaction_with_context(
+            RuntimeDbWriteContext::sync("audit_events.append_many", "audit_events"),
+            |tx| {
+                for event in events {
+                    insert_audit_event_tx(tx, agent_id, event)?;
+                }
+                Ok(())
+            },
+        )
     }
 
     pub fn import_legacy(&self, agent_id: Option<&str>, events: Vec<AuditEvent>) -> Result<()> {
@@ -4802,11 +4898,27 @@ impl RuntimeDb {
         self.writer.append_wait(f)
     }
 
+    fn transaction_with_context<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.writer.append_wait_with_context(context, f)
+    }
+
     pub fn append(
         &self,
         f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
     ) -> Result<()> {
         self.writer.append(f)
+    }
+
+    fn append_with_context(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
+    ) -> Result<()> {
+        self.writer.append_with_context(context, f)
     }
 
     pub fn current_schema_version(&self) -> Result<i64> {
@@ -5242,18 +5354,60 @@ PRAGMA journal_mode = WAL;
 fn run_transaction_on_connection<T>(
     connection: &Connection,
     path: &Path,
+    context: RuntimeDbWriteContext,
+    queue_wait: Duration,
+    mutex_wait: Duration,
     f: impl FnOnce(&Transaction<'_>) -> Result<T>,
 ) -> Result<T> {
-    let transaction = begin_immediate_transaction_with_retry(connection, path)?;
+    let started_at = Instant::now();
+    tracing::trace!(
+        path = %path.display(),
+        operation = context.operation,
+        table = context.table,
+        mode = context.mode.as_str(),
+        queue_wait_ms = queue_wait.as_millis(),
+        mutex_wait_ms = mutex_wait.as_millis(),
+        "runtime db write starting"
+    );
+    let (transaction, begin_retry_count, begin_wait) =
+        begin_immediate_transaction_with_retry(connection, path)?;
     match f(&transaction) {
         Ok(value) => {
             transaction.commit().map_err(|error| {
                 map_runtime_db_sqlite_error("committing transaction", path, error)
             })?;
+            let elapsed = started_at.elapsed();
+            tracing::trace!(
+                path = %path.display(),
+                operation = context.operation,
+                table = context.table,
+                mode = context.mode.as_str(),
+                queue_wait_ms = queue_wait.as_millis(),
+                mutex_wait_ms = mutex_wait.as_millis(),
+                begin_wait_ms = begin_wait.as_millis(),
+                begin_retry_count,
+                elapsed_ms = elapsed.as_millis(),
+                "runtime db write committed"
+            );
             Ok(value)
         }
         Err(error) => {
             let _ = transaction.rollback();
+            let elapsed = started_at.elapsed();
+            tracing::warn!(
+                error = %error,
+                retryable = is_retryable_db_error(&error),
+                path = %path.display(),
+                operation = context.operation,
+                table = context.table,
+                mode = context.mode.as_str(),
+                queue_wait_ms = queue_wait.as_millis(),
+                mutex_wait_ms = mutex_wait.as_millis(),
+                begin_wait_ms = begin_wait.as_millis(),
+                begin_retry_count,
+                elapsed_ms = elapsed.as_millis(),
+                "runtime db write rolled back"
+            );
             Err(error)
         }
     }
@@ -5262,17 +5416,26 @@ fn run_transaction_on_connection<T>(
 fn begin_immediate_transaction_with_retry<'connection>(
     connection: &'connection Connection,
     path: &Path,
-) -> Result<Transaction<'connection>> {
+) -> Result<(Transaction<'connection>, u32, Duration)> {
     let started_at = Instant::now();
     let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
+    let mut retry_count = 0;
     loop {
         // The writer mutex prevents concurrent transactions on this connection;
         // the retry loop absorbs transient locks from external processes or connections.
         match Transaction::new_unchecked(connection, TransactionBehavior::Immediate) {
-            Ok(transaction) => return Ok(transaction),
+            Ok(transaction) => return Ok((transaction, retry_count, started_at.elapsed())),
             Err(error)
                 if is_sqlite_locked(&error) && started_at.elapsed() < RUNTIME_DB_BUSY_TIMEOUT =>
             {
+                retry_count += 1;
+                tracing::trace!(
+                    error = %error,
+                    path = %path.display(),
+                    retry_count,
+                    retry_delay_ms = retry_delay.as_millis(),
+                    "runtime db begin immediate transaction retrying"
+                );
                 thread::sleep(retry_delay);
                 retry_delay = next_runtime_db_retry_delay(
                     retry_delay,
@@ -5519,6 +5682,42 @@ mod tests {
         assert!(is_retryable_db_error(&error));
         assert!(!is_retryable_db_error(&anyhow!("not a db lock")));
         Ok(())
+    }
+
+    #[test]
+    fn runtime_db_raw_sqlite_lock_errors_are_retryable() {
+        let locked: anyhow::Error = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: ErrorCode::DatabaseLocked,
+                extended_code: 0,
+            },
+            Some("database is locked".to_string()),
+        )
+        .into();
+        let busy: anyhow::Error = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: ErrorCode::DatabaseBusy,
+                extended_code: 0,
+            },
+            Some("database is busy".to_string()),
+        )
+        .into();
+        let constraint: anyhow::Error = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: ErrorCode::ConstraintViolation,
+                extended_code: 0,
+            },
+            None,
+        )
+        .into();
+
+        assert!(is_retryable_db_error(
+            &locked.context("inserting audit event")
+        ));
+        assert!(is_retryable_db_error(
+            &busy.context("updating transcript entry")
+        ));
+        assert!(!is_retryable_db_error(&constraint));
     }
 
     fn task_record(id: &str, agent_id: &str, status: TaskStatus, offset: i64) -> TaskRecord {

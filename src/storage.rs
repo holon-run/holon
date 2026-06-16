@@ -524,16 +524,38 @@ impl AppStorage {
             .map_err(|_| anyhow::anyhow!("audit event index mutex poisoned"))?
             .clone()
         {
-            sink.runtime_db
+            if let Err(error) = sink
+                .runtime_db
                 .audit_events()
-                .append(sink.agent_id.as_deref(), &event)?;
+                .append(sink.agent_id.as_deref(), &event)
+            {
+                tracing::warn!(
+                    error = %error,
+                    event_id = %event.id,
+                    event_kind = %event.kind,
+                    event_seq = event.event_seq,
+                    agent_id = sink.agent_id.as_deref().unwrap_or("<global>"),
+                    "failed to enqueue runtime db audit event"
+                );
+            }
             return Ok(());
         }
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             if runtime_db.storage_domain_is_complete("audit_events", "db")? {
-                runtime_db
+                let agent_id = self.current_agent_id()?;
+                if let Err(error) = runtime_db
                     .audit_events()
-                    .append(self.current_agent_id()?.as_deref(), &event)?;
+                    .append(agent_id.as_deref(), &event)
+                {
+                    tracing::warn!(
+                        error = %error,
+                        event_id = %event.id,
+                        event_kind = %event.kind,
+                        event_seq = event.event_seq,
+                        agent_id = agent_id.as_deref().unwrap_or("<global>"),
+                        "failed to enqueue runtime db audit event"
+                    );
+                }
                 return Ok(());
             }
         }
@@ -3082,6 +3104,17 @@ mod tests {
             ))
             .unwrap();
 
+        wait_until(
+            || {
+                runtime_db
+                    .audit_events()
+                    .page_after(Some("agent-test"), 0, 10)
+                    .unwrap()
+                    .len()
+                    == 1
+            },
+            "live audit event index write",
+        );
         let indexed = runtime_db
             .audit_events()
             .page_after(Some("agent-test"), 0, 10)
