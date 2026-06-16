@@ -795,7 +795,7 @@ impl TuiProjection {
                 let brief =
                     serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
                 match &brief.content_source {
-                    BriefContentSource::TranscriptEntry { entry_id } => {
+                    BriefContentSource::TranscriptEntry { entry_id, .. } => {
                         if self.brief_text_cache.contains_key(entry_id) {
                             return None;
                         }
@@ -824,7 +824,7 @@ impl TuiProjection {
     pub(crate) fn brief_text_for_event(&self, event: &ProjectionEventRecord) -> Option<&str> {
         let brief = serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
         match &brief.content_source {
-            BriefContentSource::TranscriptEntry { entry_id } => {
+            BriefContentSource::TranscriptEntry { entry_id, .. } => {
                 self.brief_text_cache.get(entry_id).map(String::as_str)
             }
             BriefContentSource::Inline => None,

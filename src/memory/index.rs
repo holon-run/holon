@@ -2905,6 +2905,7 @@ mod tests {
         let mut brief = brief_with_workspace("default", BriefKind::Result, "preview", "ws-holon");
         brief.content_source = BriefContentSource::TranscriptEntry {
             entry_id: entry.id.clone(),
+            relation: crate::types::BriefContentSourceRelation::DerivedFrom,
         };
         let brief_ref = format!("brief:{}", brief.id);
         storage.append_brief(&brief).unwrap();

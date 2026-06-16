@@ -3996,16 +3996,50 @@ impl BriefCreatedAuditEvent {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BriefContentSourceRelation {
+    DerivedFrom,
+    Finalizes,
+    Excerpt,
+}
+
+impl Default for BriefContentSourceRelation {
+    fn default() -> Self {
+        Self::DerivedFrom
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BriefContentSource {
-    TranscriptEntry { entry_id: String },
+    TranscriptEntry {
+        entry_id: String,
+        #[serde(default)]
+        relation: BriefContentSourceRelation,
+    },
     Inline,
 }
 
 impl Default for BriefContentSource {
     fn default() -> Self {
         Self::Inline
+    }
+}
+
+impl BriefContentSource {
+    pub fn transcript_entry_id(&self) -> Option<&str> {
+        match self {
+            Self::TranscriptEntry { entry_id, .. } => Some(entry_id),
+            Self::Inline => None,
+        }
+    }
+
+    pub fn relation(&self) -> Option<BriefContentSourceRelation> {
+        match self {
+            Self::TranscriptEntry { relation, .. } => Some(*relation),
+            Self::Inline => None,
+        }
     }
 }
 
