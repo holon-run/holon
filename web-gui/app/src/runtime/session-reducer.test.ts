@@ -101,6 +101,35 @@ describe("reduceAgentSessionTimeline", () => {
     ]);
   });
 
+  it("does not dedupe distinct pending slim operator messages by placeholder body", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "event-1",
+            event_seq: 1,
+            type: "message_enqueued",
+            payload: {
+              message_id: "msg-1",
+              origin: { kind: "operator" },
+            },
+          }),
+          event({
+            id: "event-2",
+            event_seq: 2,
+            type: "message_enqueued",
+            payload: {
+              message_id: "msg-2",
+              origin: { kind: "operator" },
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline.map((item) => item.id)).toEqual(["event-1", "event-2"]);
+  });
+
   it("keeps the raw event on projected timeline items", () => {
     const rawEvent = event({
       id: "event-raw",
@@ -279,6 +308,60 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
+  it("renders slim work item payloads from preview and top-level fields", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "work-item-updated",
+            event_seq: 15,
+            type: "work_item_updated",
+            payload: {
+              work_item_id: "work_123",
+              objective_preview: "Improve slim event display",
+              plan_status: "ready",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "work-item-updated",
+        kind: "system",
+        label: "Work item",
+        body: "Work Item Updated · Improve slim event display · ready",
+        minDisplayLevel: "verbose",
+      }),
+    );
+  });
+
+  it("renders current work item focus from slim top-level ids", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "focus-released",
+            event_seq: 16,
+            type: "work_item_focus_released",
+            payload: {
+              current_work_item_id: "work_456",
+              reason: "yielded",
+              readiness: "runnable",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        body: "Released work item focus · yielded · runnable",
+      }),
+    );
+  });
+
   it("renders focus release details from top-level work item fields", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
@@ -365,6 +448,90 @@ describe("reduceAgentSessionTimeline", () => {
         kind: "system",
         label: "Work item",
         body: "Promoted completion report candidate · Candidate completion text.",
+      }),
+    );
+  });
+
+  it("projects task lifecycle events with readable status and output previews", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "task-created",
+            event_seq: 30,
+            type: "task_created",
+            payload: {
+              task_id: "task_123",
+              status: "queued",
+              summary: "Run command: npm test",
+            },
+          }),
+          event({
+            id: "task-result",
+            event_seq: 31,
+            type: "task_result_received",
+            payload: {
+              task_id: "task_123",
+              status: "completed",
+              summary: "Run command: npm test",
+              exit_status: 0,
+              output_summary_preview: "42 tests passed",
+              output_path: "/tmp/task.log",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "task-created",
+        kind: "event",
+        label: "Task queued",
+        body: "Run command: npm test",
+        minDisplayLevel: "verbose",
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        id: "task-result",
+        kind: "event",
+        label: "Task completed",
+        body: "Run command: npm test · exit 0 · 42 tests passed",
+        detail: {
+          label: "Task details",
+          text: "task: task_123 · output: /tmp/task.log · 42 tests passed",
+          tone: "output",
+        },
+      }),
+    );
+  });
+
+  it("promotes failed task lifecycle events to info", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "task-failed",
+            event_seq: 32,
+            type: "task_result_received",
+            payload: {
+              task_id: "task_failed",
+              status: "failed",
+              summary: "Run command: cargo test",
+              exit_status: 101,
+              error: "tests failed",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        label: "Task failed",
+        body: "Run command: cargo test · exit 101 · tests failed",
+        minDisplayLevel: "info",
       }),
     );
   });

@@ -290,6 +290,10 @@ function projectRuntimeEvent(
     };
   }
 
+  if (eventType === "task_created" || eventType === "task_status_updated" || eventType === "task_result_received") {
+    return projectTaskLifecycleEvent(eventType, payload);
+  }
+
   if (eventType.startsWith("work_item_")) {
     return {
       kind: "system",
@@ -373,7 +377,7 @@ function projectAssistantRoundRecorded(
 
 function timelineDedupeKey(item: AgentTimelineItem): string {
   if (item.kind === "operator") {
-    return `operator:${normalizeTextKey(item.body)}`;
+    return `operator:${item.sourceIds[0] ?? item.id}`;
   }
   if (item.kind === "assistant") {
     return `assistant:${item.id}`;
@@ -675,9 +679,11 @@ function summarizeWorkItemRecords(items: unknown[] | undefined): string[] {
 
 function summarizeWorkItemRecord(record: Record<string, unknown> | undefined): string {
   const id = stringField(record, "id") ?? stringField(record, "work_item_id");
-  const objective = stringField(record, "objective");
-  const lifecycle = stringField(record, "lifecycle") ?? stringField(record, "status");
-  return compactJoin([objective, lifecycle, id]);
+  const objective = firstStringField(record, ["objective", "objective_preview"]);
+  const lifecycle = firstStringField(record, ["lifecycle", "state", "status"]);
+  const planStatus = stringField(record, "plan_status");
+  const readiness = stringField(record, "readiness");
+  return compactJoin([objective, lifecycle, planStatus, readiness, id]);
 }
 
 function applyPatchDetailText(
@@ -841,10 +847,12 @@ function formatDuration(milliseconds: number): string {
 function summarizeWorkItemEvent(eventType: string, payload: Record<string, unknown> | undefined): string {
   const action = stringField(payload, "action") ?? eventType.replace(/^work_item_/, "");
   const record = asRecord(payload?.record);
-  const objective = stringField(record, "objective");
+  const objective = firstStringField(record, ["objective", "objective_preview"]) ?? stringField(payload, "objective_preview");
+  const workItemId = firstStringField(payload, ["work_item_id", "current_work_item_id"]);
   const reason = stringField(payload, "reason");
+  const state = firstStringField(payload, ["state", "plan_status", "readiness"]);
   if (eventType === "work_item_picked") {
-    return compactJoin(["Picked work item", objective, reason]);
+    return compactJoin(["Picked work item", objective, reason, state]);
   }
   if (eventType === "work_item_focus_released") {
     return compactJoin(["Released work item focus", objective, reason, stringField(payload, "readiness")]);
@@ -855,7 +863,63 @@ function summarizeWorkItemEvent(eventType: string, payload: Record<string, unkno
   if (eventType === "work_item_completion_report_candidate_promoted") {
     return compactJoin(["Promoted completion report candidate", objective, stringField(payload, "text_preview")]);
   }
-  return compactJoin([humanizeEventType(`work_item_${action}`), objective]);
+  return compactJoin([humanizeEventType(`work_item_${action}`), objective, state, objective ? undefined : workItemId]);
+}
+
+function projectTaskLifecycleEvent(
+  eventType: string,
+  payload: Record<string, unknown> | undefined,
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> {
+  const status = firstStringField(payload, ["task_status", "status"]);
+  const summary = stringField(payload, "summary");
+  const outputPreview = stringField(payload, "output_summary_preview");
+  const error = stringField(payload, "error");
+  const taskId = stringField(payload, "task_id");
+  const exitStatus = numberField(payload, "exit_status");
+  const outputPath = stringField(payload, "output_path");
+  const label = taskLifecycleLabel(eventType, status);
+  const body = compactJoin([
+    summary || taskId,
+    status && !label.toLowerCase().includes(status.toLowerCase()) ? status : undefined,
+    exitStatus == null ? undefined : `exit ${exitStatus}`,
+    error,
+    outputPreview,
+  ]) || humanizeEventType(eventType);
+  const detailText = compactJoin([
+    taskId ? `task: ${taskId}` : undefined,
+    outputPath ? `output: ${outputPath}` : undefined,
+    outputPreview,
+  ]);
+
+  return {
+    kind: "event",
+    label,
+    body,
+    minDisplayLevel: error || isFailedTaskStatus(status) ? "info" : "verbose",
+    detail: detailText ? { label: "Task details", text: detailText, tone: outputPreview ? "output" : "data" } : undefined,
+  };
+}
+
+function taskLifecycleLabel(eventType: string, status: string | undefined): string {
+  if (eventType === "task_created") return "Task queued";
+  if (eventType === "task_result_received") {
+    if (status === "completed") return "Task completed";
+    if (status === "failed") return "Task failed";
+    if (status === "cancelled") return "Task cancelled";
+    if (status === "interrupted") return "Task interrupted";
+    return "Task result received";
+  }
+  if (status === "running") return "Task running";
+  if (status === "cancelling") return "Task cancelling";
+  if (status === "completed") return "Task completed";
+  if (status === "failed") return "Task failed";
+  if (status === "cancelled") return "Task cancelled";
+  if (status === "interrupted") return "Task interrupted";
+  return "Task updated";
+}
+
+function isFailedTaskStatus(status: string | undefined): boolean {
+  return status === "failed" || status === "cancelled" || status === "interrupted";
 }
 
 function summarizeDebugEvent(eventType: string, payload: Record<string, unknown> | undefined): string {
@@ -1007,8 +1071,12 @@ function collectReadableEventFacts(value: Record<string, unknown>, facts: Map<st
     "status",
     "priority",
     "objective",
+    "objective_preview",
     "work_item_id",
+    "current_work_item_id",
     "task_id",
+    "task_status",
+    "output_summary_preview",
     "agent_id",
     "turn_id",
     "run_id",
