@@ -10,7 +10,6 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
   const currentWorkLabel = currentWorkItems[0]?.objective ?? agent.currentWork?.objective ?? "No current work item";
   const workspaceName = workspace?.name ?? agent.workspace;
   const workspaceRoot = workspace?.cwd ?? workspace?.executionRoot ?? workspace?.worktree?.path ?? workspace?.anchor;
-  const branchLabel = workspace?.worktree?.branch ?? workspace?.worktree?.originalBranch;
   const modeLabel = workspace?.worktree ? "Managed worktree" : workspace?.projectionKind;
 
   return (
@@ -53,8 +52,8 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
             <dd>{workspaceRoot ?? (agent.workspace === "not bound" ? "No active workspace" : "—")}</dd>
           </div>
           <div>
-            <dt>Branch</dt>
-            <dd>{branchLabel ?? "—"}</dd>
+            <dt>Anchor</dt>
+            <dd>{workspace?.anchor ?? "—"}</dd>
           </div>
           <div>
             <dt>Mode</dt>
@@ -72,10 +71,6 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
               <div>
                 <dt>ID</dt>
                 <dd>{workspace.id}</dd>
-              </div>
-              <div>
-                <dt>Anchor</dt>
-                <dd>{workspace.anchor}</dd>
               </div>
               <div>
                 <dt>Projection</dt>
