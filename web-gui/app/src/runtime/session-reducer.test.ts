@@ -915,3 +915,35 @@ function timelineItem(overrides: Partial<AgentTimelineItem> = {}): AgentTimeline
     ...overrides,
   };
 }
+
+describe("turn_started projection", () => {
+  it("projects turn_started events as info-level system items with turn index and trigger", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          {
+            id: "evt-turn-1",
+            event_seq: 1,
+            type: "turn_started",
+            ts: "2026-06-15T10:00:00Z",
+            payload: {
+              turn_index: 42,
+              message_kind: "InternalFollowup",
+              agent_id: "agent-1",
+              message_id: "msg-1",
+              run_id: "run-1",
+            },
+          },
+        ],
+      },
+    });
+
+    expect(timeline).toHaveLength(1);
+    const item = timeline[0]!;
+    expect(item.kind).toBe("system");
+    expect(item.minDisplayLevel).toBe("info");
+    expect(item.body).toContain("Turn #42");
+    expect(item.body).toContain("internal followup");
+    expect(item.meta.startsWith("turn_started")).toBe(true);
+  });
+});

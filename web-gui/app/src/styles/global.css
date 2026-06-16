@@ -1424,6 +1424,12 @@ code {
   text-transform: none;
 }
 
+.timeline-turn-label {
+  color: var(--faint);
+  text-transform: capitalize;
+  letter-spacing: 0.04em;
+}
+
 .message {
   max-width: 100%;
 }

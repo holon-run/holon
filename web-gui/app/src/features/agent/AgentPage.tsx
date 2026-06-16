@@ -492,7 +492,7 @@ function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean): boolean {
 function collectWorkingActivitiesForCurrentTurn(timeline: AgentTimelineItem[]): AgentTimelineActivity[] {
   let currentTurnStart = -1;
   for (let index = timeline.length - 1; index >= 0; index -= 1) {
-    if (timeline[index]?.kind === "operator") {
+    if (timeline[index]?.kind === "operator" || isTurnStartedItem(timeline[index]!)) {
       currentTurnStart = index;
       break;
     }
@@ -564,19 +564,33 @@ function groupTimelineTurns(timeline: AgentTimelineItem[]): TimelineTurn[] {
   let current: TimelineTurn | undefined;
 
   for (const item of timeline) {
-    if (!current || item.kind === "operator") {
+    const isTurnBoundary = isTurnStartedItem(item);
+    const isOperatorBoundary = item.kind === "operator";
+    if (!current || isOperatorBoundary || isTurnBoundary) {
+      const triggerLabel = isTurnBoundary ? item.body : undefined;
       current = {
-        id: item.kind === "operator" ? `turn:${item.id}` : `activity:${item.id}`,
-        label: item.kind === "operator" ? "Operator turn" : "Runtime activity",
+        id: isOperatorBoundary || isTurnBoundary ? `turn:${item.id}` : `activity:${item.id}`,
+        label: isOperatorBoundary
+          ? "Operator turn"
+          : isTurnBoundary
+            ? triggerLabel || "Turn"
+            : "Runtime activity",
         timestamp: item.timestamp,
-        items: [],
+        items: isTurnBoundary ? [] : [item],
       };
       turns.push(current);
+      continue;
     }
+    if (isTurnStartedItem(item)) continue;
     current.items.push(item);
   }
 
-  return turns;
+  const nonEmpty = turns.filter((turn) => turn.items.length > 0);
+  return nonEmpty.length === turns.length ? turns : nonEmpty;
+}
+
+function isTurnStartedItem(item: AgentTimelineItem): boolean {
+  return item.meta.startsWith("turn_started");
 }
 
 const TimelineTurnGroup = memo(function TimelineTurnGroup({
@@ -597,7 +611,7 @@ const TimelineTurnGroup = memo(function TimelineTurnGroup({
       <div className="timeline-turn-rail" aria-hidden="true" />
       <div className="timeline-turn-body">
         <div className="timeline-turn-header">
-          <span className="sr-only">{turn.label}</span>
+          <span className="timeline-turn-label">{turn.label}</span>
           <time>{formatDisplayTime(turn.timestamp)}</time>
         </div>
         {turn.items.map((item, index) => (

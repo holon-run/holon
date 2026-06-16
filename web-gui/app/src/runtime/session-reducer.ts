@@ -290,6 +290,22 @@ function projectRuntimeEvent(
     };
   }
 
+  if (eventType === "turn_started") {
+    const turnIndex = numberField(payload, "turn_index");
+    const messageKind = stringField(payload, "message_kind");
+    const triggerLabel = messageKind ? turnTriggerLabel(messageKind) : undefined;
+    return {
+      kind: "system",
+      label: "Turn started",
+      body: compactJoin([
+        turnIndex != null ? `Turn #${turnIndex}` : undefined,
+        triggerLabel,
+      ]) || "Turn started",
+      timestamp: stringField(payload, "created_at"),
+      minDisplayLevel: "info",
+    };
+  }
+
   if (debugRuntimeEvents.has(eventType)) {
     return {
       kind: "system",
@@ -1002,9 +1018,24 @@ function summarizeSystemRuntimeEvent(eventType: string, payload: Record<string, 
 
 function systemRuntimeLabel(eventType: string): string {
   if (eventType.startsWith("turn_local_checkpoint_")) return "Context checkpoint";
+  if (eventType === "turn_started") return "Turn started";
   if (eventType.startsWith("continuation_")) return "Continuation";
   if (eventType === "closure_decided") return "Closure";
   return humanizeEventType(eventType);
+}
+
+function turnTriggerLabel(messageKind: string): string | undefined {
+  switch (messageKind) {
+    case "OperatorPrompt": return "operator";
+    case "InternalFollowup": return "internal followup";
+    case "SystemTick": return "system tick";
+    case "TimerTick": return "timer";
+    case "CallbackEvent": return "callback";
+    case "WebhookEvent": return "webhook";
+    case "ChannelEvent": return "channel event";
+    case "TaskResultContinuation": return "task result";
+    default: return undefined;
+  }
 }
 
 function messageEnvelopeProjection(
