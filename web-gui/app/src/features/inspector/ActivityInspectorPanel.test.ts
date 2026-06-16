@@ -18,8 +18,28 @@ describe("formatToolExecutionDetail", () => {
       }),
     ).toEqual({
       tone: "output",
-      text: ["Summary:\ncommand completed", "Command:\ncargo test", "Stdout:\ntest result: ok", "Exit:\n0"].join("\n\n"),
+      text: ["Command:\ncargo test", "Stdout:\ntest result: ok", "Result:\ncommand completed", "Exit:\n0"].join("\n\n"),
     });
+  });
+
+  it("shows ApplyPatch input as the full patch when available", () => {
+    const detail = formatToolExecutionDetail({
+      tool_name: "ApplyPatch",
+      status: "success",
+      summary: "updated files",
+      input: "*** Begin Patch\n*** Update File: app.ts\n@@\n-old\n+new\n*** End Patch\n",
+      output: {
+        envelope: {
+          result: {
+            changed_files: [{ path: "app.ts", action: "M", diff_preview: "@@\n-old\n+new" }],
+          },
+        },
+      },
+    });
+
+    expect(detail.text).toContain("Changed files:\nM · app.ts");
+    expect(detail.text).toContain("Patch:\n*** Begin Patch");
+    expect(detail.text).not.toContain("Patch preview");
   });
 
   it("falls back to result and error fields for legacy records", () => {
