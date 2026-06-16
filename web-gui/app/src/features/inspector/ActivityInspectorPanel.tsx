@@ -101,6 +101,7 @@ function formatKnownToolExecutionDetail(record: RuntimeToolExecutionRecord): { t
   if (record.tool_name === "ApplyPatch") return formatApplyPatchToolExecution(record);
   if (record.tool_name === "ExecCommand") return formatExecCommandToolExecution(record);
   if (record.tool_name === "ExecCommandBatch") return formatExecCommandBatchToolExecution(record);
+  if (record.tool_name === "ListTasks") return formatListTasksToolExecution(record);
   if (record.tool_name === "WaitFor") return formatWaitForToolExecution(record);
   if (record.tool_name === "ViewImage") return formatViewImageToolExecution(record);
   if (isWorkItemTool(record.tool_name)) return formatWorkItemToolExecution(record);
@@ -158,6 +159,24 @@ function formatExecCommandBatchToolExecution(record: RuntimeToolExecutionRecord)
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
 }
 
+function formatListTasksToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const result = asResultRecord(output, "list_tasks_result") ?? (isRecord(output) ? output : undefined);
+  const tasks = arrayRecords(result?.tasks ?? result?.active_tasks);
+  const taskLines = tasks.map(formatTaskRecord).filter(Boolean);
+  const total = result?.total_active ?? result?.total ?? tasks.length;
+  const returned = result?.returned ?? tasks.length;
+  const lines = [
+    labelledText("Summary", record.summary),
+    labelledText("Tasks", taskLines.join("\n")),
+    labelledText("Total active", total),
+    labelledText("Returned", returned),
+    labelledText("Error", record.error),
+  ].filter(Boolean);
+
+  return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
+}
+
 function formatWaitForToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
   const input = isRecord(record.input) ? record.input : record;
   const lines = [
@@ -188,22 +207,15 @@ function formatViewImageToolExecution(record: RuntimeToolExecutionRecord): { tex
 
 function formatWorkItemToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
   const output = unwrapToolOutput(record.output ?? record.result);
-  const result = asResultRecord(output, `${uncapitalize(record.tool_name ?? "")}_result`) ?? (isRecord(output) ? output : undefined);
+  const result = workItemToolResultRecord(output, record.tool_name) ?? (isRecord(output) ? output : undefined);
   if (record.tool_name === "ListWorkItems") {
     const items = arrayRecords(result?.work_items ?? result?.items);
-    const itemLines = items
-      .map((item) =>
-        compactMeta([
-          textField(item.objective) || textField(item.objective_preview),
-          textField(item.lifecycle) || textField(item.state) || textField(item.status),
-          textField(item.plan_status),
-          textField(item.id) || textField(item.work_item_id),
-        ]),
-      )
-      .filter(Boolean);
+    const itemLines = items.map(formatWorkItemRecord).filter(Boolean);
     const lines = [
+      labelledText("Filter", nestedValue(record.input, ["filter"]) ?? result?.filter),
       labelledText("Work items", itemLines.join("\n")),
       labelledText("Total", result?.total ?? result?.total_open ?? items.length),
+      labelledText("Returned", result?.returned ?? items.length),
       labelledText("Result", record.summary || result?.summary_text),
       labelledText("Error", record.error),
     ].filter(Boolean);
@@ -211,10 +223,14 @@ function formatWorkItemToolExecution(record: RuntimeToolExecutionRecord): { text
   }
 
   const workItem = isRecord(result?.work_item) ? result.work_item : result;
+  const planArtifact = isRecord(workItem?.plan_artifact) ? workItem.plan_artifact : undefined;
   const lines = [
     labelledText("Objective", nestedValue(workItem, ["objective", "objective_preview"]) ?? nestedValue(record.input, ["objective"])),
     labelledText("Work item", nestedValue(workItem, ["id", "work_item_id"]) ?? nestedValue(record.input, ["work_item_id"])),
-    labelledText("State", compactMeta([textField(workItem?.lifecycle), textField(workItem?.plan_status), textField(workItem?.readiness)])),
+    labelledText("State", compactMeta([textField(workItem?.lifecycle), textField(workItem?.state), textField(workItem?.plan_status), textField(workItem?.readiness)])),
+    labelledText("Focus", truthyText(workItem?.current) || truthyText(workItem?.current_focus)),
+    labelledText("Plan", nestedValue(planArtifact, ["path"]) ?? nestedValue(workItem, ["plan_path"])),
+    labelledText("Todo", formatTodoItems(arrayRecords(workItem?.todo_list))),
     labelledText("Result", record.summary || result?.summary_text),
     labelledText("Error", record.error),
   ].filter(Boolean);
@@ -241,6 +257,39 @@ function formatBatchToolOutput(input: unknown, output: unknown): string[] {
       return lines.length ? `Batch item ${item.index ?? index + 1}:\n${lines.join("\n\n")}` : "";
     })
     .filter(Boolean);
+}
+
+function formatWorkItemRecord(item: Record<string, unknown>): string {
+  const status = compactMeta([
+    textField(item.lifecycle) || textField(item.state) || textField(item.status),
+    textField(item.plan_status),
+    textField(item.readiness),
+    truthyText(item.current) || truthyText(item.current_focus),
+  ]);
+  return compactMeta([
+    textField(item.objective) || textField(item.objective_preview) || textField(item.title),
+    status,
+    textField(item.id) || textField(item.work_item_id),
+  ]);
+}
+
+function formatTaskRecord(task: Record<string, unknown>): string {
+  const command = isRecord(task.command) ? commandText(task.command) || textField(task.command.cmd_preview) : "";
+  const retrieval = isRecord(task.retrieval) ? textField(task.retrieval.status) || textField(task.retrieval.output) : "";
+  return compactMeta([
+    textField(task.summary) || command || textField(task.kind),
+    textField(task.status),
+    textField(task.kind),
+    textField(task.task_id) || textField(task.id),
+    retrieval,
+  ]);
+}
+
+function formatTodoItems(items: Record<string, unknown>[]): string {
+  return items
+    .map((item) => compactMeta([textField(item.state), textField(item.text) || textField(item.title)]))
+    .filter(Boolean)
+    .join("\n");
 }
 
 function labelledText(label: string, value: unknown): string {
@@ -291,13 +340,29 @@ function isWorkItemTool(toolName: string | undefined): boolean {
   return Boolean(toolName && ["ListWorkItems", "GetWorkItem", "CreateWorkItem", "UpdateWorkItem", "PickWorkItem", "CompleteWorkItem"].includes(toolName));
 }
 
-function uncapitalize(value: string): string {
-  return value ? `${value[0].toLowerCase()}${value.slice(1)}` : value;
+function workItemToolResultRecord(output: unknown, toolName: string | undefined): Record<string, unknown> | undefined {
+  if (!isRecord(output)) return undefined;
+  const resultKeyByTool: Record<string, string> = {
+    ListWorkItems: "list_work_items_result",
+    GetWorkItem: "get_work_item_result",
+    CreateWorkItem: "create_work_item_result",
+    UpdateWorkItem: "update_work_item_result",
+    PickWorkItem: "pick_work_item_result",
+    CompleteWorkItem: "complete_work_item_result",
+  };
+  const resultKey = toolName ? resultKeyByTool[toolName] : undefined;
+  if (resultKey && isRecord(output[resultKey])) return output[resultKey] as Record<string, unknown>;
+  if (isRecord(output.result)) return output.result;
+  return undefined;
 }
 
 function scalarText(value: unknown): string {
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return "";
+}
+
+function truthyText(value: unknown): string {
+  return value === true ? "current" : "";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

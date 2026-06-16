@@ -198,6 +198,41 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
+  it("projects ListTasks tools as readable active task summaries", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("list-tasks", "ListTasks", {
+            list_tasks_result: {
+              total_active: 1,
+              returned: 1,
+              tasks: [
+                {
+                  task_id: "task_1",
+                  kind: "command_task",
+                  status: "running",
+                  summary: "Run command: npm run dev",
+                },
+              ],
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        body: "1 active task · Run command: npm run dev · running · command_task · task_1 · 11ms",
+        detail: {
+          label: "Tasks",
+          text: "Run command: npm run dev · running · command_task · task_1",
+          tone: "data",
+        },
+      }),
+    );
+  });
+
   it("falls back to the tool name when a tool has no readable summary", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {

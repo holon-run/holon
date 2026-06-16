@@ -109,4 +109,80 @@ describe("formatToolExecutionDetail", () => {
     expect(detail.text).toContain("Batch item 1:\nCommand:\ngit status\n\nStdout:\n## main");
     expect(detail.text).toContain("Batch item 2:\nCommand:\nrg TODO src\n\nStderr:\nno matches");
   });
+
+  it("formats ListTasks as an active task list", () => {
+    const detail = formatToolExecutionDetail({
+      tool_name: "ListTasks",
+      status: "success",
+      output: {
+        envelope: {
+          result: {
+            total_active: 1,
+            returned: 1,
+            tasks: [
+              {
+                task_id: "task_1",
+                kind: "command_task",
+                status: "running",
+                summary: "Run command: npm run dev",
+                command: { cmd_preview: "npm run dev" },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(detail.text).toContain("Tasks:\nRun command: npm run dev · running · command_task · task_1");
+    expect(detail.text).toContain("Total active:\n1");
+  });
+
+  it("formats ListWorkItems as a readable work item list", () => {
+    const detail = formatToolExecutionDetail({
+      tool_name: "ListWorkItems",
+      status: "success",
+      input: { filter: "current" },
+      output: {
+        list_work_items_result: {
+          total: 1,
+          returned: 1,
+          work_items: [
+            {
+              id: "work_1",
+              objective: "Improve inspector details",
+              lifecycle: "open",
+              plan_status: "ready",
+              current: true,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(detail.text).toContain("Filter:\ncurrent");
+    expect(detail.text).toContain("Work items:\nImprove inspector details · open · ready · current · work_1");
+  });
+
+  it("formats single work item tool records with state, plan, and todo context", () => {
+    const detail = formatToolExecutionDetail({
+      tool_name: "GetWorkItem",
+      status: "success",
+      output: {
+        get_work_item_result: {
+          work_item: {
+            id: "work_2",
+            objective: "Track global stream",
+            lifecycle: "open",
+            plan_status: "needs_input",
+            plan_artifact: { path: "/agent/work-items/work_2/plan.md" },
+            todo_list: [{ state: "pending", text: "Decide API shape" }],
+          },
+        },
+      },
+    });
+
+    expect(detail.text).toContain("Objective:\nTrack global stream");
+    expect(detail.text).toContain("State:\nopen · needs_input");
+    expect(detail.text).toContain("Todo:\npending · Decide API shape");
+  });
 });

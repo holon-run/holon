@@ -547,6 +547,7 @@ function projectKnownToolExecution(
   payload: Record<string, unknown> | undefined,
 ): Pick<SessionItemDraft, "body" | "detail"> | undefined {
   if (toolName === "ApplyPatch") return projectApplyPatchTool(payload);
+  if (toolName === "ListTasks") return projectListTasksTool(payload);
   if (toolName === "ListWorkItems") return projectListWorkItemsTool(payload);
   if (toolName === "GetWorkItem") return projectGetWorkItemTool(payload);
   if (isWorkItemMutationTool(toolName)) return projectWorkItemMutationTool(payload);
@@ -613,6 +614,24 @@ function projectApplyPatchTool(payload: Record<string, unknown> | undefined): Pi
           tone: "diff",
         }
       : undefined,
+  };
+}
+
+function projectListTasksTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.list_tasks_result) ?? asRecord(payload?.result);
+  const tasks = arrayField(result, "tasks") ?? arrayField(result, "active_tasks");
+  const total = numberField(result, "total_active") ?? numberField(result, "total") ?? tasks?.length;
+  const returned = numberField(result, "returned") ?? tasks?.length;
+  const taskSummaries = summarizeTaskRecords(tasks);
+  return {
+    body: compactJoin([
+      total == null ? "Listed tasks" : `${total} active task${total === 1 ? "" : "s"}`,
+      returned != null && total != null && returned !== total ? `${returned} returned` : undefined,
+      taskSummaries.length ? taskSummaries.slice(0, 3).join("; ") : undefined,
+    ]),
+    detail: taskSummaries.length
+      ? { label: "Tasks", text: taskSummaries.join("\n"), tone: "data" }
+      : { label: "Result", text: debugJson(result ?? payload ?? {}), tone: "data" },
   };
 }
 
@@ -683,6 +702,24 @@ function summarizeWorkItemRecords(items: unknown[] | undefined): string[] {
     .map(asRecord)
     .filter((item): item is Record<string, unknown> => Boolean(item))
     .map(summarizeWorkItemRecord)
+    .filter(Boolean);
+}
+
+function summarizeTaskRecords(tasks: unknown[] | undefined): string[] {
+  return (tasks ?? [])
+    .map(asRecord)
+    .filter((task): task is Record<string, unknown> => Boolean(task))
+    .map((task) => {
+      const command = firstStringField(asRecord(task.command), ["cmd_preview", "cmd"]);
+      const retrieval = firstStringField(asRecord(task.retrieval), ["status", "output"]);
+      return compactJoin([
+        stringField(task, "summary") ?? command ?? stringField(task, "kind"),
+        stringField(task, "status"),
+        stringField(task, "kind"),
+        firstStringField(task, ["task_id", "id"]),
+        retrieval,
+      ]);
+    })
     .filter(Boolean);
 }
 
