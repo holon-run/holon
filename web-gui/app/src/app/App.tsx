@@ -37,6 +37,7 @@ export function App() {
   const setRightPanelOpen = useRuntimeStore((state) => state.setRightPanelOpen);
   const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
   const showAgentOverview = useRuntimeStore((state) => state.showAgentOverview);
+  const showWorkItemDetail = useRuntimeStore((state) => state.showWorkItemDetail);
   const toggleRightPanel = useRuntimeStore((state) => state.toggleRightPanel);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const setRuntimeConnection = useRuntimeStore((state) => state.setRuntimeConnection);
@@ -380,6 +381,10 @@ export function App() {
           view={rightPanelView?.agentId === selectedAgent.id ? rightPanelView : undefined}
           open={rightPanelOpen}
           onLoadWorkItemDetail={(workItemId) => loadAgentWorkItemDetail(selectedAgent.id, workItemId)}
+          onOpenWorkItemDetail={(workItem) => {
+            showWorkItemDetail(selectedAgent.id, workItem);
+            loadAgentWorkItemDetail(selectedAgent.id, workItem.id);
+          }}
           onShowAgentOverview={showAgentOverview}
           onClose={() => setRightPanelOpen(false)}
         />

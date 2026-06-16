@@ -330,6 +330,11 @@ export type RightPanelView =
       agentId: string;
     }
   | {
+      kind: "work_item_detail";
+      agentId: string;
+      workItem: WorkItemSummary;
+    }
+  | {
       kind: "activity_inspector";
       agentId: string;
       activity: AgentTimelineActivity;

@@ -188,6 +188,7 @@ export interface RuntimeStoreState {
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
   setRightPanelOpen: (open: boolean) => void;
   showAgentOverview: (agentId?: string) => void;
+  showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
   toggleRightPanel: () => void;
   toggleNavCollapsed: () => void;
@@ -471,6 +472,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       rightPanelOpen: true,
       rightPanelView: { kind: "agent_overview", agentId: agentId ?? state.selectedAgentId },
     })),
+  showWorkItemDetail: (agentId, workItem) =>
+    set({
+      rightPanelOpen: true,
+      rightPanelView: { kind: "work_item_detail", agentId, workItem },
+    }),
   inspectActivity: (agentId, activity) => {
     set({
       rightPanelOpen: true,

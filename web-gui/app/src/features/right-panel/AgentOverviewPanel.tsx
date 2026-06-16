@@ -1,28 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
-
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
 import type { AgentSummary, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 
 interface AgentOverviewPanelProps {
   agent: AgentSummary;
-  workItemDetailsById: Record<string, WorkItemDetailState>;
   onLoadWorkItemDetail: (workItemId: string) => void;
+  onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
 }
 
-export function AgentOverviewPanel({ agent, workItemDetailsById, onLoadWorkItemDetail }: AgentOverviewPanelProps) {
+export function AgentOverviewPanel({ agent, onLoadWorkItemDetail, onOpenWorkItemDetail }: AgentOverviewPanelProps) {
   const workspace = agent.workspaceSummary;
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
-  const [selectedWorkItemId, setSelectedWorkItemId] = useState<string | undefined>(workItems[0]?.id);
   const currentWorkItems = workItems.filter((item) => item.current);
   const openWorkItems = workItems.filter((item) => !item.current && item.state !== "completed");
   const completedWorkItems = workItems.filter((item) => item.state === "completed");
-  const selectedWorkItemSummary = useMemo(
-    () => workItems.find((item) => item.id === selectedWorkItemId) ?? workItems[0],
-    [selectedWorkItemId, workItems],
-  );
-  const selectedWorkItemDetail = selectedWorkItemSummary ? workItemDetailsById[selectedWorkItemSummary.id] : undefined;
-  const selectedWorkItem = selectedWorkItemDetail?.workItem ?? selectedWorkItemSummary;
   const currentWorkLabel = currentWorkItems[0]?.objective ?? agent.currentWork?.objective ?? "No current work item";
   const workspaceName = workspace?.name ?? agent.workspace;
   const workspaceRoot = workspace?.cwd ?? workspace?.executionRoot ?? workspace?.worktree?.path ?? workspace?.anchor;
@@ -30,25 +21,9 @@ export function AgentOverviewPanel({ agent, workItemDetailsById, onLoadWorkItemD
   const showCwd = Boolean(workspace?.cwd && workspace.cwd !== workspace.executionRoot);
   const hasActiveTasks = agent.activeTaskCount > 0 || Boolean(agent.tasks?.length);
 
-  useEffect(() => {
-    if (!workItems.length) {
-      setSelectedWorkItemId(undefined);
-      return;
-    }
-    if (selectedWorkItemId && workItems.some((item) => item.id === selectedWorkItemId)) return;
-    setSelectedWorkItemId(workItems[0]?.id);
-  }, [selectedWorkItemId, workItems]);
-
-  useEffect(() => {
-    if (!selectedWorkItemSummary || selectedWorkItemDetail?.workItem || selectedWorkItemDetail?.loading) return;
-    onLoadWorkItemDetail(selectedWorkItemSummary.id);
-  }, [onLoadWorkItemDetail, selectedWorkItemDetail?.loading, selectedWorkItemDetail?.workItem, selectedWorkItemSummary]);
-
   const selectWorkItem = (workItem: WorkItemSummary) => {
-    setSelectedWorkItemId(workItem.id);
-    if (!workItemDetailsById[workItem.id]?.workItem) {
-      onLoadWorkItemDetail(workItem.id);
-    }
+    onOpenWorkItemDetail(workItem);
+    onLoadWorkItemDetail(workItem.id);
   };
 
   return (
@@ -173,22 +148,21 @@ export function AgentOverviewPanel({ agent, workItemDetailsById, onLoadWorkItemD
             <StatusBadge className="state-chip" kind="work" value={`${openWorkItems.length + currentWorkItems.length} open`} />
           </div>
           {currentWorkItems.map((workItem) => (
-            <WorkItemCard key={workItem.id} workItem={workItem} featured selected={workItem.id === selectedWorkItem?.id} onSelect={selectWorkItem} />
+            <WorkItemCard key={workItem.id} workItem={workItem} featured onSelect={selectWorkItem} />
           ))}
           {openWorkItems.length ? (
             <div className="inspector-nested-stack">
               {openWorkItems.map((workItem) => (
-                <WorkItemCard key={workItem.id} workItem={workItem} selected={workItem.id === selectedWorkItem?.id} onSelect={selectWorkItem} />
+                <WorkItemCard key={workItem.id} workItem={workItem} onSelect={selectWorkItem} />
               ))}
             </div>
           ) : null}
-          {selectedWorkItem ? <WorkItemDetailPanel workItem={selectedWorkItem} detailState={selectedWorkItemDetail} /> : null}
           {completedWorkItems.length ? (
             <details className="inspector-details-list">
               <summary>{completedWorkItems.length} completed</summary>
               <div className="inspector-nested-stack">
                 {completedWorkItems.map((workItem) => (
-                  <WorkItemCard key={workItem.id} workItem={workItem} selected={workItem.id === selectedWorkItem?.id} onSelect={selectWorkItem} />
+                  <WorkItemCard key={workItem.id} workItem={workItem} onSelect={selectWorkItem} />
                 ))}
               </div>
             </details>
@@ -209,19 +183,16 @@ export function AgentOverviewPanel({ agent, workItemDetailsById, onLoadWorkItemD
 function WorkItemCard({
   workItem,
   featured = false,
-  selected = false,
   onSelect,
 }: {
   workItem: WorkItemSummary;
   featured?: boolean;
-  selected?: boolean;
   onSelect: (workItem: WorkItemSummary) => void;
 }) {
   return (
     <button
       type="button"
-      className={`inspector-list-item work-item-button${featured ? " featured" : ""}${selected ? " selected" : ""}`}
-      aria-pressed={selected}
+      className={`inspector-list-item work-item-button${featured ? " featured" : ""}`}
       onClick={() => onSelect(workItem)}
     >
       <div className="inspector-list-head">
@@ -234,7 +205,7 @@ function WorkItemCard({
   );
 }
 
-function WorkItemDetailPanel({ workItem, detailState }: { workItem: WorkItemSummary; detailState?: WorkItemDetailState }) {
+export function WorkItemDetailPanel({ workItem, detailState }: { workItem: WorkItemSummary; detailState?: WorkItemDetailState }) {
   const loading = detailState?.loading && !detailState.workItem;
   const plan = workItem.planArtifact;
   return (

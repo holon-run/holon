@@ -1,6 +1,6 @@
-import type { AgentSummary, RightPanelView, WorkItemDetailState } from "../../runtime/types";
+import type { AgentSummary, RightPanelView, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
-import { AgentOverviewPanel } from "./AgentOverviewPanel";
+import { AgentOverviewPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
@@ -8,13 +8,30 @@ interface RightSidePanelProps {
   view?: RightPanelView;
   open: boolean;
   onLoadWorkItemDetail: (workItemId: string) => void;
+  onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
   onShowAgentOverview: () => void;
   onClose: () => void;
 }
 
-export function RightSidePanel({ agent, workItemDetailsById = {}, view, open, onLoadWorkItemDetail, onShowAgentOverview, onClose }: RightSidePanelProps) {
+export function RightSidePanel({
+  agent,
+  workItemDetailsById = {},
+  view,
+  open,
+  onLoadWorkItemDetail,
+  onOpenWorkItemDetail,
+  onShowAgentOverview,
+  onClose,
+}: RightSidePanelProps) {
   const activeView = view?.agentId === agent.id ? view : { kind: "agent_overview" as const, agentId: agent.id };
-  const title = activeView.kind === "activity_inspector" ? activityInspectorTitle(activeView.activity) : "Agent overview";
+  const title =
+    activeView.kind === "activity_inspector"
+      ? activityInspectorTitle(activeView.activity)
+      : activeView.kind === "work_item_detail"
+        ? "Work item detail"
+        : "Agent overview";
+  const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
+  const detailWorkItem = activeView.kind === "work_item_detail" ? detailState?.workItem ?? activeView.workItem : undefined;
 
   return (
     <aside className="side-panel" aria-label="Context side panel" hidden={!open}>
@@ -37,8 +54,12 @@ export function RightSidePanel({ agent, workItemDetailsById = {}, view, open, on
       <div className="panel-body">
         {activeView.kind === "activity_inspector" ? (
           <ActivityInspectorPanel activity={activeView.activity} detailState={activeView.detailState} />
+        ) : activeView.kind === "work_item_detail" && detailWorkItem ? (
+          <div className="inspector-stack">
+            <WorkItemDetailPanel workItem={detailWorkItem} detailState={detailState} />
+          </div>
         ) : (
-          <AgentOverviewPanel agent={agent} workItemDetailsById={workItemDetailsById} onLoadWorkItemDetail={onLoadWorkItemDetail} />
+          <AgentOverviewPanel agent={agent} onLoadWorkItemDetail={onLoadWorkItemDetail} onOpenWorkItemDetail={onOpenWorkItemDetail} />
         )}
       </div>
     </aside>
