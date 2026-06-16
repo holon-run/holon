@@ -394,6 +394,28 @@
   },
   {
     "method": "get",
+    "path": "/agents/{agent_id}/transcript/{entry_id}",
+    "handler": "transcript_entry",
+    "operation_id": "agentTranscriptEntry",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/agents/{agent_id}/work-items",
     "handler": "work_items",
     "operation_id": "agentWorkItems",
@@ -718,6 +740,28 @@
       }
     ],
     "request_schema": "BatchGetMessagesRequest",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/agents/{agent_id}/transcript:batchGet",
+    "handler": "transcript_batch_get",
+    "operation_id": "agentTranscriptBatchGet",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "BatchGetTranscriptEntriesRequest",
     "request_strict": null,
     "response_content_types": [
       "application/json"

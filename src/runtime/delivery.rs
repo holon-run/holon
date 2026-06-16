@@ -89,10 +89,7 @@ impl RuntimeHandle {
             }
         }
         let event_payload = BriefCreatedAuditEvent::from_brief(&bound_brief);
-        let mut evidence_brief = bound_brief.clone();
-        if evidence_brief.finalizes_assistant_round_id.is_some() {
-            evidence_brief.text.clear();
-        }
+        let evidence_brief = bound_brief.clone();
         self.persist_brief_evidence(&evidence_brief)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "brief_created",
