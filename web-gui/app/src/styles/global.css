@@ -2785,6 +2785,15 @@ code {
   text-transform: uppercase;
 }
 
+.work-item-detail-section summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .work-item-detail-section pre {
   overflow: auto;
   max-height: 220px;

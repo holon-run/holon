@@ -276,8 +276,8 @@ export function WorkItemDetailPanel({ workItem, detailState }: { workItem: WorkI
         </section>
       ) : null}
       {workItem.workRefs?.length ? (
-        <section className="work-item-detail-section">
-          <h3>Refs</h3>
+        <details className="work-item-detail-section work-item-detail-refs">
+          <summary>Refs</summary>
           <ul className="inspector-list">
             {workItem.workRefs.map((ref) => (
               <li key={`${ref.kind}-${ref.ref}`}>
@@ -290,7 +290,7 @@ export function WorkItemDetailPanel({ workItem, detailState }: { workItem: WorkI
               </li>
             ))}
           </ul>
-        </section>
+        </details>
       ) : null}
     </article>
   );
