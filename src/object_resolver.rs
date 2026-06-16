@@ -90,6 +90,17 @@ impl<'a> RuntimeObjectResolver<'a> {
         self.storage.read_transcript_entry_by_id(entry_id)
     }
 
+    pub fn resolve_transcript_text(&self, entry: &TranscriptEntry) -> Result<Option<String>> {
+        if entry.kind == TranscriptEntryKind::IncomingMessage {
+            if let Some(message_id) = entry.related_message_id.as_deref() {
+                if let Some(message) = self.resolve_message(message_id)? {
+                    return Ok(message_body_text(&message.body));
+                }
+            }
+        }
+        Ok(transcript_text(entry))
+    }
+
     pub fn resolve_brief(&self, brief_id: &str) -> Result<Option<ResolvedBrief>> {
         let Some(record) = self.storage.read_brief_by_id(brief_id)? else {
             return Ok(None);
@@ -105,7 +116,9 @@ impl<'a> RuntimeObjectResolver<'a> {
                 let Some(entry) = self.resolve_transcript_entry(entry_id)? else {
                     return Ok(brief.text.clone());
                 };
-                Ok(transcript_text(&entry).unwrap_or_else(|| brief.text.clone()))
+                Ok(self
+                    .resolve_transcript_text(&entry)?
+                    .unwrap_or_else(|| brief.text.clone()))
             }
         }
     }
@@ -190,6 +203,16 @@ fn text_from_message_body(data: &Value) -> Option<String> {
         })
         .map(str::to_string)
         .filter(|text| !text.trim().is_empty())
+}
+
+fn message_body_text(body: &crate::types::MessageBody) -> Option<String> {
+    match body {
+        crate::types::MessageBody::Text { text }
+        | crate::types::MessageBody::Brief { text, .. } => {
+            (!text.trim().is_empty()).then(|| text.clone())
+        }
+        crate::types::MessageBody::Json { value } => serde_json::to_string(value).ok(),
+    }
 }
 
 #[cfg(test)]
@@ -295,6 +318,34 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(resolved.content, "full content");
+    }
+
+    #[test]
+    fn resolves_incoming_transcript_text_from_related_message() {
+        let (_dir, storage) = storage();
+        let message = MessageEnvelope::new(
+            "agent-a",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "canonical input".into(),
+            },
+        );
+        storage.append_message(&message).unwrap();
+        let entry = TranscriptEntry::new(
+            "agent-a",
+            TranscriptEntryKind::IncomingMessage,
+            None,
+            Some(message.id.clone()),
+            json!({"delivery_surface": "api"}),
+        );
+
+        let resolved = RuntimeObjectResolver::new(&storage)
+            .resolve_transcript_text(&entry)
+            .unwrap();
+        assert_eq!(resolved.as_deref(), Some("canonical input"));
     }
 
     #[test]
