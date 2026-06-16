@@ -30,6 +30,7 @@ larger read caches or batch hydration layers.
 
 ## Related Documents
 
+- Tracking issue: [#1820](https://github.com/holon-run/holon/issues/1820)
 - [Runtime Ledger Files and Relations](./runtime-ledger-files-and-relations.md)
 - [Runtime Ref Resolution and MemoryGet](./runtime-ref-resolution-and-memory-get.md)
 - [Turn-Based Context Projection](./turn-based-context-projection.md)
@@ -562,7 +563,26 @@ Recommended cache layers:
 Caches should not hide object ownership. A cached transcript marker that points
 to a message should not become a second cached message body.
 
+The cache work is split into two implementation tracks:
+
+- [#1812](https://github.com/holon-run/holon/issues/1812) owns the current
+  runtime projection cache for mutable agent state, prompt current-work
+  sections, scheduler closure, waits, tasks, external triggers, and related
+  counters. It must not become a cache of historical evidence payloads.
+- [#1819](https://github.com/holon-run/holon/issues/1819) owns canonical object
+  query caching and batch hydration for message, transcript, brief, tool
+  execution, and turn refs. It should sit behind resolver/storage read paths
+  and must preserve each object's source-of-truth boundary and visibility
+  checks.
+
+Both tracks should expose trace or diagnostic metrics for hits, misses, bytes,
+DB reads avoided, and remaining storage-backed reads.
+
 ## Migration Plan
+
+The implementation track is coordinated by
+[#1820](https://github.com/holon-run/holon/issues/1820). The issue split below
+is the intended ordering unless a hot path justifies pulling cache work earlier.
 
 ### Phase 1: Document And Add Resolvers
 
@@ -572,12 +592,16 @@ to a message should not become a second cached message body.
   resolvers for prompt/TUI/memory consumers.
 - Add trace metrics for resolver reads and payload sizes.
 
+Tracked by [#1813](https://github.com/holon-run/holon/issues/1813).
+
 ### Phase 2: Slim Incoming Transcript Entries
 
 - Change new `IncomingMessage` transcript entries to store `related_message_id`
   and bounded provenance only.
 - Update consumers to resolve message body from `MessageEnvelope`.
 - Keep legacy transcript rows readable.
+
+Tracked by [#1814](https://github.com/holon-run/holon/issues/1814).
 
 ### Phase 3: Slim Transcript-Backed Briefs
 
@@ -586,6 +610,11 @@ to a message should not become a second cached message body.
 - For transcript-backed briefs, store preview/summary instead of full text when
   the source transcript is available.
 - Keep inline briefs unchanged.
+- Add the richer transcript-backed source relation and migrate consumers away
+  from relying only on `finalizes_assistant_round_id`.
+
+Tracked by [#1815](https://github.com/holon-run/holon/issues/1815) and
+[#1818](https://github.com/holon-run/holon/issues/1818).
 
 ### Phase 4: Ref-Back Tool Result Transcript Entries
 
@@ -594,6 +623,8 @@ to a message should not become a second cached message body.
 - Store provider-visible bounded result/ref notices in transcript.
 - Remove full duplicated tool result output from transcript entries.
 - Keep `ToolExecutionRecord` as the full output owner.
+
+Tracked by [#1816](https://github.com/holon-run/holon/issues/1816).
 
 ### Phase 5: Tighten Events And Indexes
 
@@ -607,6 +638,20 @@ to a message should not become a second cached message body.
   agent id, searchable text, kind, preview, created time, sequence, and ranking
   metadata. Full payload resolution should go back to the canonical object
   table.
+
+Tracked by [#1817](https://github.com/holon-run/holon/issues/1817).
+
+### Phase 6: Add Read-Side Caches After Ownership Is Clear
+
+- Add the current runtime projection cache for state, prompt current-work, and
+  scheduler closure paths.
+- Add bounded canonical object query caches and batch hydration APIs behind
+  resolvers.
+- Use tracing and diagnostics to verify query count, latency, payload size, and
+  cache efficiency before and after the change.
+
+Tracked by [#1812](https://github.com/holon-run/holon/issues/1812) and
+[#1819](https://github.com/holon-run/holon/issues/1819).
 
 ## Compatibility
 
