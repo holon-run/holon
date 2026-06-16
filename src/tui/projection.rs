@@ -812,7 +812,7 @@ impl TuiProjection {
     pub(crate) fn hydrate_brief_texts(&mut self, entries: Vec<TranscriptEntry>) -> bool {
         let mut changed = false;
         for entry in entries {
-            if let Some(text) = assistant_round_text_from_entry(&entry) {
+            if let Some(text) = crate::object_resolver::transcript_text(&entry) {
                 // Key by the transcript entry id so multiple briefs sharing
                 // the same transcript entry resolve to the same text.
                 changed |= self.brief_text_cache.insert(entry.id, text).is_none();
@@ -1664,28 +1664,6 @@ fn trim_summary(value: &str) -> String {
         trimmed.push('…');
         trimmed
     }
-}
-
-/// Extract concatenated text blocks from an `AssistantRound` transcript entry.
-/// Returns `None` if the entry is not an assistant round or has no text.
-fn assistant_round_text_from_entry(entry: &TranscriptEntry) -> Option<String> {
-    let blocks = entry.data.get("blocks")?.as_array()?;
-    let text = blocks
-        .iter()
-        .filter_map(|block| {
-            let kind = block.get("type").and_then(Value::as_str)?;
-            if kind != "text" {
-                return None;
-            }
-            block
-                .get("Text")
-                .and_then(|v| v.get("text"))
-                .or_else(|| block.get("text"))
-                .and_then(Value::as_str)
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    (!text.trim().is_empty()).then_some(text)
 }
 
 #[cfg(test)]

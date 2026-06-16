@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     agent_template::{agent_memory_operator_path, agent_memory_self_path},
     memory::refs::{RuntimeRef, ToolExecutionRefSelector, ToolOutputSelector},
+    object_resolver::RuntimeObjectResolver,
     runtime_db::{EvidenceKind, RuntimeDb},
     storage::AppStorage,
     tool::helpers::{
@@ -1105,6 +1106,9 @@ fn semantic_brief_is_retrievable(brief: &BriefRecord) -> bool {
 }
 
 fn brief_document(storage: &AppStorage, brief: BriefRecord) -> MemoryDocument {
+    let body = RuntimeObjectResolver::new(storage)
+        .resolve_brief_content(&brief)
+        .unwrap_or_else(|_| brief.text.clone());
     MemoryDocument {
         source_ref: format!("brief:{}", brief.id),
         source_kind: "brief".into(),
@@ -1113,8 +1117,8 @@ fn brief_document(storage: &AppStorage, brief: BriefRecord) -> MemoryDocument {
         agent_id: brief.agent_id,
         source_path: None,
         title: format!("Brief {:?}", brief.kind),
-        sanitized_excerpt: excerpt(&brief.text),
-        body: brief.text,
+        sanitized_excerpt: excerpt(&body),
+        body,
         metadata: json!({
             "work_item_id": brief.work_item_id,
             "related_message_id": brief.related_message_id,
@@ -2339,9 +2343,9 @@ mod tests {
     use crate::{
         agent_template::ensure_agent_home_layout,
         types::{
-            AgentState, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason, TaskKind,
-            TaskRecord, TaskStatus, TodoItem, TodoItemState, TurnRecord, WorkItemPlanStatus,
-            WorkItemState,
+            AgentState, BriefContentSource, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason,
+            TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState, TranscriptEntry,
+            TranscriptEntryKind, TurnRecord, WorkItemPlanStatus, WorkItemState,
         },
     };
     use serde_json::json;
@@ -2876,6 +2880,39 @@ mod tests {
             .expect("DB-backed runtime evidence should be directly retrievable");
         assert_eq!(memory.content, body);
         assert!(!memory.truncated);
+    }
+
+    #[test]
+    fn memory_get_hydrates_transcript_backed_brief_content() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+
+        let entry = TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::AssistantRound,
+            Some(1),
+            None,
+            json!({
+                "blocks": [
+                    {"type": "text", "Text": {"text": "full transcript"}},
+                    {"type": "text", "text": "brief body sentinel_4839"}
+                ]
+            }),
+        );
+        storage.append_transcript_entry(&entry).unwrap();
+
+        let mut brief = brief_with_workspace("default", BriefKind::Result, "preview", "ws-holon");
+        brief.content_source = BriefContentSource::TranscriptEntry {
+            entry_id: entry.id.clone(),
+        };
+        let brief_ref = format!("brief:{}", brief.id);
+        storage.append_brief(&brief).unwrap();
+
+        let memory = get_memory(&storage, &brief_ref, None, Some("ws-holon"))
+            .unwrap()
+            .expect("transcript-backed brief should be retrievable");
+        assert_eq!(memory.content, "full transcript brief body sentinel_4839");
     }
 
     #[test]
