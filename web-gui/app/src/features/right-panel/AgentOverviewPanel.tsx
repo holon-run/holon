@@ -8,6 +8,10 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
   const currentWorkItems = openWorkItems.filter((item) => item.current);
   const otherWorkItems = openWorkItems.filter((item) => !item.current);
   const currentWorkLabel = currentWorkItems[0]?.objective ?? agent.currentWork?.objective ?? "No current work item";
+  const workspaceName = workspace?.name ?? agent.workspace;
+  const workspaceRoot = workspace?.cwd ?? workspace?.executionRoot ?? workspace?.worktree?.path ?? workspace?.anchor;
+  const branchLabel = workspace?.worktree?.branch ?? workspace?.worktree?.originalBranch;
+  const modeLabel = workspace?.worktree ? "Managed worktree" : workspace?.projectionKind;
 
   return (
     <div className="inspector-stack">
@@ -39,56 +43,71 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
 
       <section className="context-card inspector-card">
         <div className="context-head">
-          <span className="eyebrow">Workspace context</span>
+          <span className="eyebrow">Workspace</span>
           <StatusBadge className="state-chip" kind="connection" value={agent.workspace === "not bound" ? "unbound" : "active"} />
         </div>
-        <h2>{workspace?.name ?? agent.workspace}</h2>
+        <h2>{workspaceName}</h2>
         <dl className="inspector-facts">
           <div>
-            <dt>Name</dt>
-            <dd>{workspace?.name ?? (agent.workspace === "not bound" ? "No active workspace" : agent.workspace)}</dd>
+            <dt>Working directory</dt>
+            <dd>{workspaceRoot ?? (agent.workspace === "not bound" ? "No active workspace" : "—")}</dd>
           </div>
           <div>
-            <dt>Anchor</dt>
-            <dd>{workspace?.anchor ?? "—"}</dd>
+            <dt>Branch</dt>
+            <dd>{branchLabel ?? "—"}</dd>
           </div>
           <div>
-            <dt>ID</dt>
-            <dd>{workspace?.id ?? "—"}</dd>
+            <dt>Mode</dt>
+            <dd>{compactMeta([modeLabel, workspace?.accessMode])}</dd>
           </div>
-          <div>
-            <dt>Projection</dt>
-            <dd>{compactMeta([workspace?.projectionKind, workspace?.accessMode])}</dd>
-          </div>
-          <div>
-            <dt>Execution root</dt>
-            <dd>{workspace?.executionRoot ?? workspace?.anchor ?? "—"}</dd>
-          </div>
-          <div>
-            <dt>Cwd</dt>
-            <dd>{workspace?.cwd ?? "—"}</dd>
-          </div>
-          {workspace?.worktree ? (
-            <>
-              <div>
-                <dt>Managed branch</dt>
-                <dd>{workspace.worktree.branch ?? "—"}</dd>
-              </div>
-              <div>
-                <dt>Worktree</dt>
-                <dd>{workspace.worktree.path ?? "—"}</dd>
-              </div>
-              <div>
-                <dt>Original branch</dt>
-                <dd>{workspace.worktree.originalBranch ?? "—"}</dd>
-              </div>
-              <div>
-                <dt>Original cwd</dt>
-                <dd>{workspace.worktree.originalCwd ?? "—"}</dd>
-              </div>
-            </>
-          ) : null}
         </dl>
+        {workspace ? (
+          <details className="inspector-details-list workspace-technical-details">
+            <summary>Technical details</summary>
+            <dl className="inspector-facts">
+              <div>
+                <dt>Name</dt>
+                <dd>{workspace.name}</dd>
+              </div>
+              <div>
+                <dt>ID</dt>
+                <dd>{workspace.id}</dd>
+              </div>
+              <div>
+                <dt>Anchor</dt>
+                <dd>{workspace.anchor}</dd>
+              </div>
+              <div>
+                <dt>Projection</dt>
+                <dd>{compactMeta([workspace.projectionKind, workspace.accessMode])}</dd>
+              </div>
+              <div>
+                <dt>Execution root</dt>
+                <dd>{workspace.executionRoot ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>Cwd</dt>
+                <dd>{workspace.cwd ?? "—"}</dd>
+              </div>
+              {workspace.worktree ? (
+                <>
+                  <div>
+                    <dt>Worktree</dt>
+                    <dd>{workspace.worktree.path ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Original branch</dt>
+                    <dd>{workspace.worktree.originalBranch ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Original cwd</dt>
+                    <dd>{workspace.worktree.originalCwd ?? "—"}</dd>
+                  </div>
+                </>
+              ) : null}
+            </dl>
+          </details>
+        ) : null}
       </section>
 
       <section className="context-card inspector-card">
