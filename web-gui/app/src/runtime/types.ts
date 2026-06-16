@@ -10,6 +10,12 @@ export interface RuntimeConnection {
   error?: string;
 }
 
+export interface RuntimeConnectionConfig {
+  mode: "local" | "remote";
+  baseUrl?: string;
+  token?: string;
+}
+
 export interface WorkItemSummary {
   id: string;
   objective: string;
@@ -56,6 +62,7 @@ export interface AgentSummary {
   attention: string;
   model: string;
   modelSource?: "runtime_default" | "agent_override";
+  modelReasoningEffort?: string;
   footer: string;
   subtitle: string;
   lastBrief: string;
@@ -171,6 +178,14 @@ export interface SearchResponse {
   results: SearchResultItem[];
 }
 
+export interface RuntimeMessageEnvelope {
+  id?: string;
+  agent_id?: string;
+  origin?: unknown;
+  body?: unknown;
+  [key: string]: unknown;
+}
+
 export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event" | "system";
 
 export interface AgentTimelineItemDetail {
@@ -189,6 +204,7 @@ export interface AgentTimelineActivity {
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
   detail?: AgentTimelineItemDetail;
+  rawEvent?: unknown;
   debug?: string;
 }
 
@@ -209,6 +225,7 @@ export interface AgentTimelineItem {
   sourceIds: string[];
   detail?: AgentTimelineItemDetail;
   activities?: AgentTimelineActivity[];
+  rawEvent?: unknown;
   debug?: string;
 }
 

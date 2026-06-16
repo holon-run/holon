@@ -8,6 +8,7 @@ import type {
   RuntimeConfigState,
   RuntimeConfigSurface,
   RuntimeConnection,
+  RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeModelOption,
   SearchResponse,
@@ -19,6 +20,7 @@ import type {
 
 export interface RuntimeClientOptions {
   baseUrl?: string;
+  token?: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -42,6 +44,7 @@ function disconnectedAgentDetail(agentId: string, error: string): AgentDetail {
       workspace: "unavailable",
       attention: "API disconnected",
       model: "unavailable",
+      modelReasoningEffort: undefined,
       footer: "disconnected",
       subtitle: "Runtime API unavailable",
       lastBrief: "",
@@ -61,22 +64,28 @@ function disconnectedAgentDetail(agentId: string, error: string): AgentDetail {
   };
 }
 
-async function fetchAgentDetail(baseUrl: string, fetchImpl: typeof fetch, agentId: string, displayLevel: DisplayLevel): Promise<AgentDetail> {
+async function fetchAgentDetail(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+  displayLevel: DisplayLevel,
+): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
   const eventDisplayLevel = displayLevel;
   const [entry, state, events] = await Promise.all([
-    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS })
+    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers })
       .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
       .catch(() => undefined),
-    getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`),
-    fetchAgentEvents(baseUrl, fetchImpl, agentId, { limit: 80, order: "desc", displayLevel: eventDisplayLevel }).catch((): EventPageResponseDto => ({
+    getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers }),
+    fetchAgentEvents(baseUrl, fetchImpl, headers, agentId, { limit: 80, order: "desc", displayLevel: eventDisplayLevel }).catch((): EventPageResponseDto => ({
       events: [],
       has_older: false,
     })),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const agent = projectAgent(fallbackEntry, state, newestBriefFromEvents(events.events ?? []));
-  const timeline = reduceAgentSessionTimeline({ transcript: [], briefs: [], events, eventDisplayLevel });
+  const timeline = reduceAgentSessionTimeline({ events, eventDisplayLevel });
 
   return {
     agent,
@@ -110,6 +119,7 @@ interface AgentListEntryDto {
     source?: "runtime_default" | "agent_override";
     effective_model?: string;
     active_model?: string | null;
+    override_reasoning_effort?: string | null;
   };
   active_workspace_entry?: {
     workspace_id?: string;
@@ -225,8 +235,26 @@ export interface AgentEventPageOptions {
 }
 
 interface RuntimeModelsDto {
-  available_models?: string[];
+  available_models?: Array<string | RuntimeAvailableModelDto>;
   model_availability?: ModelAvailabilityDto[];
+}
+
+interface RuntimeAvailableModelDto {
+  model?: string;
+  provider?: string;
+  display_name?: string;
+  capabilities?: {
+    image_input?: boolean;
+    reasoning_summaries?: boolean;
+  };
+  policy?: {
+    supported_parameters?: string[];
+    capabilities?: {
+      image_input?: boolean;
+      reasoning_summaries?: boolean;
+    };
+  };
+  supported_parameters?: string[];
 }
 
 interface ModelAvailabilityDto {
@@ -239,6 +267,7 @@ interface ModelAvailabilityDto {
     supported_parameters?: string[];
     capabilities?: {
       image_input?: boolean;
+      reasoning_summaries?: boolean;
     };
   };
 }
@@ -247,6 +276,7 @@ interface AgentModelStateDto {
   source?: "runtime_default" | "agent_override";
   effective_model?: string;
   active_model?: string | null;
+  override_reasoning_effort?: string | null;
 }
 
 interface AgentModelResponseDto {
@@ -334,6 +364,11 @@ interface SearchResultItemDto {
   preview?: string;
 }
 
+interface AgentMessagesBatchGetResponseDto {
+  messages?: RuntimeMessageEnvelope[];
+  missing_message_ids?: string[];
+}
+
 export interface RuntimeConfigUpdateEntry {
   key: string;
   value?: unknown;
@@ -344,6 +379,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const defaultBaseUrl = import.meta.env.DEV ? DEFAULT_DEV_API_BASE : undefined;
   const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
   const fetchImpl = options.fetchImpl ?? fetch;
+  const requestHeaders = authorizationHeaders(options.token);
 
   return {
     async getBootstrap(): Promise<RuntimeBootstrap> {
@@ -352,7 +388,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
 
       try {
-        return await fetchRuntimeBootstrap(baseUrl, fetchImpl);
+        return await fetchRuntimeBootstrap(baseUrl, fetchImpl, requestHeaders);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return buildDisconnectedBootstrap(baseUrl, message);
@@ -364,7 +400,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
 
       try {
-        return await fetchAgentDetail(baseUrl, fetchImpl, agentId, displayLevel);
+        return await fetchAgentDetail(baseUrl, fetchImpl, requestHeaders, agentId, displayLevel);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return disconnectedAgentDetail(agentId, message);
@@ -374,13 +410,25 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) {
         return { events: [], has_older: false };
       }
-      return fetchAgentEvents(baseUrl, fetchImpl, agentId, options);
+      return fetchAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
+    },
+    async getAgentMessagesBatch(agentId: string, messageIds: string[]): Promise<AgentMessagesBatchGetResponseDto> {
+      if (!baseUrl || !messageIds.length) {
+        return { messages: [], missing_message_ids: [] };
+      }
+      return postJson<AgentMessagesBatchGetResponseDto>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/messages:batchGet`,
+        { message_ids: messageIds },
+        requestHeaders,
+      );
     },
     async getModels(): Promise<RuntimeModelCatalog> {
       if (!baseUrl) {
         return { source: "fixture", options: [] };
       }
-      const response = await getJson<RuntimeModelsDto>(fetchImpl, baseUrl, "/models");
+      const response = await getJson<RuntimeModelsDto>(fetchImpl, baseUrl, "/models", { headers: requestHeaders });
       return {
         source: "http",
         options: projectModelOptions(response),
@@ -390,14 +438,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) {
         return { source: "fixture" };
       }
-      const response = await getJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config");
+      const response = await getJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { headers: requestHeaders });
       return projectRuntimeConfigState(response);
     },
     async updateRuntimeConfig(updates: RuntimeConfigUpdateEntry[]): Promise<RuntimeConfigState> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      const response = await patchJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { updates });
+      const response = await patchJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { updates }, requestHeaders);
       return projectRuntimeConfigState(response);
     },
     async search(query: string, options: { agentIds?: string[]; limit?: number } = {}): Promise<SearchResponse> {
@@ -409,18 +457,18 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         agent_ids: options.agentIds,
         limit: options.limit,
         types: ["message"],
-      });
+      }, requestHeaders);
       return projectSearchResponse(response);
     },
     streamAgentEvents(agentId: string, options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
       if (!baseUrl) return undefined;
-      return streamAgentEvents(baseUrl, fetchImpl, agentId, options);
+      return streamAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
     },
     async sendOperatorPrompt(agentId: string, text: string): Promise<void> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, { text });
+      await postJson<unknown>(fetchImpl, baseUrl, `/control/agents/${encodeURIComponent(agentId)}/prompt`, { text }, requestHeaders);
     },
     async setAgentModel(agentId: string, model: string, reasoningEffort?: string): Promise<AgentModelStateDto | undefined> {
       if (!baseUrl) {
@@ -431,6 +479,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         baseUrl,
         `/control/agents/${encodeURIComponent(agentId)}/model`,
         { model, reasoning_effort: reasoningEffort, authority_class: "operator_instruction" },
+        requestHeaders,
       );
       return response.model;
     },
@@ -443,6 +492,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         baseUrl,
         `/control/agents/${encodeURIComponent(agentId)}/model/clear`,
         { authority_class: "operator_instruction" },
+        requestHeaders,
       );
       return response.model;
     },
@@ -452,6 +502,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
 async function fetchAgentEvents(
   baseUrl: string,
   fetchImpl: typeof fetch,
+  headers: Record<string, string>,
   agentId: string,
   options: AgentEventPageOptions,
 ): Promise<EventPageResponseDto> {
@@ -463,12 +514,13 @@ async function fetchAgentEvents(
   if (options.displayLevel) query.set("max_level", options.displayLevel);
   const queryString = query.toString();
   const path = `/agents/${encodeURIComponent(agentId)}/events${queryString ? `?${queryString}` : ""}`;
-  return getJson<EventPageResponseDto>(fetchImpl, baseUrl, path);
+  return getJson<EventPageResponseDto>(fetchImpl, baseUrl, path, { headers });
 }
 
 function streamAgentEvents(
   baseUrl: string,
   fetchImpl: typeof fetch,
+  headers: Record<string, string>,
   agentId: string,
   options: AgentEventStreamOptions,
 ): AgentEventStreamSubscription {
@@ -480,7 +532,7 @@ function streamAgentEvents(
   const queryString = query.toString();
   const path = `/agents/${encodedAgentId}/events/stream${queryString ? `?${queryString}` : ""}`;
 
-  void readEventStream(fetchImpl, `${baseUrl}${path}`, controller.signal, options);
+  void readEventStream(fetchImpl, `${baseUrl}${path}`, headers, controller.signal, options);
 
   return {
     close: () => controller.abort(),
@@ -490,12 +542,13 @@ function streamAgentEvents(
 async function readEventStream(
   fetchImpl: typeof fetch,
   url: string,
+  headers: Record<string, string>,
   signal: AbortSignal,
   options: AgentEventStreamOptions,
 ): Promise<void> {
   try {
     const response = await fetchImpl(url, {
-      headers: { Accept: "text/event-stream" },
+      headers: { Accept: "text/event-stream", ...headers },
       signal,
     });
     if (!response.ok) {
@@ -561,10 +614,10 @@ function parseSseEventFrame(frame: string): StreamEventEnvelopeDto | undefined {
   return JSON.parse(dataLines.join("\n")) as StreamEventEnvelopeDto;
 }
 
-async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch): Promise<RuntimeBootstrap> {
+async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch, headers: Record<string, string>): Promise<RuntimeBootstrap> {
   const [handshake, agentEntries] = await Promise.all([
-    getJson<{ auth?: { mode?: string } }>(fetchImpl, baseUrl, "/handshake"),
-    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list"),
+    getJson<{ auth?: { mode?: string } }>(fetchImpl, baseUrl, "/handshake", { headers }),
+    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { headers }),
   ]);
 
   const agents = agentEntries.map((entry) => projectAgent(entry));
@@ -590,12 +643,12 @@ async function getJson<T>(
   fetchImpl: typeof fetch,
   baseUrl: string,
   path: string,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; headers?: Record<string, string> } = {},
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
-    headers: { Accept: "application/json" },
+    headers: { Accept: "application/json", ...options.headers },
     signal: controller.signal,
   }).finally(() => window.clearTimeout(timeout));
   if (!response.ok) {
@@ -604,7 +657,13 @@ async function getJson<T>(
   return (await response.json()) as T;
 }
 
-async function postJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: string, body: unknown): Promise<T> {
+async function postJson<T>(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
@@ -612,6 +671,7 @@ async function postJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: strin
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
+      ...headers,
     },
     body: JSON.stringify(body),
     signal: controller.signal,
@@ -624,7 +684,13 @@ async function postJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: strin
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
-async function patchJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: string, body: unknown): Promise<T> {
+async function patchJson<T>(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
@@ -632,6 +698,7 @@ async function patchJson<T>(fetchImpl: typeof fetch, baseUrl: string, path: stri
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
+      ...headers,
     },
     body: JSON.stringify(body),
     signal: controller.signal,
@@ -739,6 +806,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const postureReason = state?.agent?.scheduling_posture?.reason ?? entry.scheduling_posture?.reason ?? "posture unavailable";
   const model = state?.agent?.model?.active_model ?? state?.agent?.model?.effective_model ?? entry.model?.active_model ?? entry.model?.effective_model ?? "runtime default";
   const modelSource = state?.agent?.model?.source ?? entry.model?.source;
+  const modelReasoningEffort = state?.agent?.model?.override_reasoning_effort ?? entry.model?.override_reasoning_effort ?? undefined;
   const lifecycle = stringifyLifecycle(state?.agent?.lifecycle ?? entry.lifecycle ?? status);
   const currentRunId = state?.session?.current_run_id ?? entry.current_run_id ?? null;
 
@@ -752,6 +820,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     attention: attentionLabel(pending, waitingCount),
     model,
     modelSource,
+    modelReasoningEffort: modelReasoningEffort ?? undefined,
     footer: `${lifecycle} · ${posture}`,
     subtitle: `${status} · ${workspace}`,
     lastBrief: brief?.text ?? "",
@@ -833,7 +902,7 @@ function sortableTime(value: string | undefined): number {
   return Number.isNaN(time) ? 0 : time;
 }
 
-function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOption[] {
+export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOption[] {
   if (response.model_availability?.length) {
     return response.model_availability
       .filter((entry): entry is ModelAvailabilityDto & { model: string } => Boolean(entry.model))
@@ -844,21 +913,36 @@ function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOption[] {
         available: entry.available ?? false,
         unavailableReason: entry.unavailable_reason,
         supportsImageInput: entry.policy?.capabilities?.image_input ?? false,
-        supportsReasoningEffort: entry.policy?.supported_parameters?.includes("reasoning_effort") ?? false,
+        supportsReasoningEffort: supportsReasoningEffort(entry),
       }))
       .sort(compareModelOptions);
   }
 
   return (response.available_models ?? [])
-    .map((model) => ({
-      model,
-      provider: model.split("/")[0] ?? "unknown",
-      displayName: model,
-      available: true,
-      supportsImageInput: false,
-      supportsReasoningEffort: false,
-    }))
+    .map((entry) => {
+      const model = typeof entry === "string" ? entry : entry.model;
+      if (!model) return undefined;
+      return {
+        model,
+        provider: typeof entry === "string" ? (model.split("/")[0] ?? "unknown") : (entry.provider ?? model.split("/")[0] ?? "unknown"),
+        displayName: typeof entry === "string" ? model : (entry.display_name ?? model),
+        available: true,
+        supportsImageInput: typeof entry === "string" ? false : (entry.capabilities?.image_input ?? false),
+        supportsReasoningEffort: typeof entry === "string" ? false : supportsReasoningEffort(entry),
+      };
+    })
+    .filter((entry): entry is RuntimeModelOption => Boolean(entry))
     .sort(compareModelOptions);
+}
+
+function supportsReasoningEffort(entry: ModelAvailabilityDto | RuntimeAvailableModelDto): boolean {
+  return (
+    entry.policy?.supported_parameters?.includes("reasoning_effort") ||
+    ("supported_parameters" in entry && entry.supported_parameters?.includes("reasoning_effort")) ||
+    entry.policy?.capabilities?.reasoning_summaries ||
+    ("capabilities" in entry && entry.capabilities?.reasoning_summaries) ||
+    false
+  );
 }
 
 function compareModelOptions(left: RuntimeModelOption, right: RuntimeModelOption): number {
@@ -938,6 +1022,11 @@ function normalizeBaseUrl(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   return trimmed.replace(/\/+$/, "");
+}
+
+function authorizationHeaders(token: string | undefined): Record<string, string> {
+  const trimmed = token?.trim();
+  return trimmed ? { Authorization: `Bearer ${trimmed}` } : {};
 }
 
 function compactJoin(parts: Array<string | undefined | null>): string {

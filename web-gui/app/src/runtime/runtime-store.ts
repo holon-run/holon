@@ -11,7 +11,9 @@ import type {
   InspectorSelection,
   RouteKey,
   RuntimeBootstrap,
+  RuntimeConnectionConfig,
   RuntimeConfigState,
+  RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   SearchResponse,
 } from "./types";
@@ -78,6 +80,8 @@ export interface AgentSessionState {
   detail: AgentDetail | null;
   eventsBySeq: Record<number, unknown>;
   eventSeqs: number[];
+  messagesById: Record<string, RuntimeMessageEnvelope>;
+  missingMessageIds: Record<string, true>;
   newestSeq?: number;
   oldestSeq?: number;
   hasOlder?: boolean;
@@ -165,6 +169,7 @@ export interface RuntimeStoreState {
   clearInspectorSelection: () => void;
   toggleInspector: () => void;
   toggleNavCollapsed: () => void;
+  setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
   refreshModelCatalog: () => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
@@ -179,19 +184,60 @@ export interface RuntimeStoreState {
   stopAgentEventStream: (agentId: string | undefined) => void;
 }
 
-const runtimeClient = createRuntimeClient();
+const RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1";
+const DISPLAY_LEVEL_STORAGE_KEY = "holon.webGui.displayLevelsByAgentId.v1";
+let runtimeConnectionConfig = readStoredRuntimeConnectionConfig();
+let runtimeClient = createRuntimeClient(runtimeClientOptions(runtimeConnectionConfig));
 const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
 const pendingStreamEvents = new Map<string, StreamEventEnvelopeDto[]>();
 const streamFlushTimers = new Map<string, number>();
 const reconnectTimers = new Map<string, number>();
 const staleTimers = new Map<string, number>();
+const messageHydrationInFlight = new Map<string, Set<string>>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
 const STREAM_FLUSH_INTERVAL_MS = 100;
 const STREAM_STALE_TIMEOUT_MS = 45_000;
 const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
-const DISPLAY_LEVEL_STORAGE_KEY = "holon.webGui.displayLevelsByAgentId.v1";
+
+function runtimeClientOptions(config: RuntimeConnectionConfig) {
+  return config.mode === "remote" ? { baseUrl: config.baseUrl, token: config.token } : {};
+}
+
+function readStoredRuntimeConnectionConfig(): RuntimeConnectionConfig {
+  if (typeof window === "undefined") return { mode: "local" };
+  try {
+    const raw = window.localStorage.getItem(RUNTIME_CONNECTION_STORAGE_KEY);
+    if (!raw) return { mode: "local" };
+    const parsed = JSON.parse(raw) as Partial<RuntimeConnectionConfig>;
+    if (parsed.mode !== "remote") return { mode: "local" };
+    return {
+      mode: "remote",
+      baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
+      token: typeof parsed.token === "string" ? parsed.token : "",
+    };
+  } catch {
+    return { mode: "local" };
+  }
+}
+
+function writeStoredRuntimeConnectionConfig(config: RuntimeConnectionConfig): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (config.mode === "local") {
+      window.localStorage.removeItem(RUNTIME_CONNECTION_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(RUNTIME_CONNECTION_STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // Ignore storage failures; the in-memory connection still applies.
+  }
+}
+
+function normalizeConnectionBaseUrl(value: string | undefined): string {
+  return value?.trim().replace(/\/+$/, "") ?? "";
+}
 
 function readStoredDisplayLevels(): Record<string, DisplayLevel> {
   if (typeof window === "undefined") return {};
@@ -235,6 +281,18 @@ const emptyBootstrap: RuntimeBootstrap = {
   agents: [],
 };
 
+function pendingBootstrap(config: RuntimeConnectionConfig): RuntimeBootstrap {
+  return {
+    ...emptyBootstrap,
+    connection: {
+      mode: config.mode,
+      source: "fixture",
+      baseUrl: config.mode === "remote" ? config.baseUrl : undefined,
+      summary: config.mode === "remote" ? "Connecting to remote runtime…" : "Connecting to local runtime…",
+    },
+  };
+}
+
 const emptyModelCatalog: RuntimeModelCatalog = {
   source: "fixture",
   options: [],
@@ -253,7 +311,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   inspectorSelection: undefined,
   navCollapsed: false,
 
-  bootstrap: emptyBootstrap,
+  bootstrap: pendingBootstrap(runtimeConnectionConfig),
   bootstrapLoading: true,
   modelCatalog: emptyModelCatalog,
   modelCatalogLoading: false,
@@ -292,6 +350,46 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   clearInspectorSelection: () => set({ inspectorSelection: undefined }),
   toggleInspector: () => set((state) => ({ inspectorOpen: !state.inspectorOpen })),
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
+
+  setRuntimeConnection: async (config) => {
+    const normalizedConfig: RuntimeConnectionConfig =
+      config.mode === "remote"
+        ? {
+            mode: "remote",
+            baseUrl: normalizeConnectionBaseUrl(config.baseUrl),
+            token: config.token?.trim() || undefined,
+          }
+        : { mode: "local" };
+    runtimeConnectionConfig = normalizedConfig;
+    runtimeClient = createRuntimeClient(runtimeClientOptions(normalizedConfig));
+    writeStoredRuntimeConnectionConfig(normalizedConfig);
+    bootstrapRefreshInFlight = undefined;
+    for (const subscription of activeEventStreams.values()) subscription.close();
+    activeEventStreams.clear();
+    pendingStreamEvents.clear();
+    messageHydrationInFlight.clear();
+    for (const timer of streamFlushTimers.values()) window.clearTimeout(timer);
+    for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
+    for (const timer of staleTimers.values()) window.clearTimeout(timer);
+    streamFlushTimers.clear();
+    reconnectTimers.clear();
+    staleTimers.clear();
+    set({
+      bootstrap: pendingBootstrap(normalizedConfig),
+      bootstrapLoading: true,
+      bootstrapError: undefined,
+      modelCatalog: emptyModelCatalog,
+      modelCatalogError: undefined,
+      runtimeConfig: emptyRuntimeConfig,
+      runtimeConfigError: undefined,
+      search: null,
+      searchError: undefined,
+      sessionsByAgentId: {},
+      selectedAgentId: "",
+      route: "dashboard",
+    });
+    await get().refreshBootstrap();
+  },
 
   refreshBootstrap: async (options = {}) => {
     if (bootstrapRefreshInFlight) return bootstrapRefreshInFlight;
@@ -426,6 +524,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     try {
       const detail = await runtimeClient.getAgentDetail(agentId, displayLevel);
       set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
+      scheduleMessageHydration(get, set, agentId, displayLevel);
     } catch (error) {
       set((state) => ({
         sessionsByAgentId: {
@@ -468,6 +567,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       });
 
       set((state) => mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq, page.has_older, displayLevel));
+      scheduleMessageHydration(get, set, agentId, displayLevel);
     } catch (error) {
       set((state) => ({
         sessionsByAgentId: {
@@ -557,6 +657,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         updateAgentModelInState(state, agentId, {
           model: modelState?.active_model ?? modelState?.effective_model ?? model,
           modelSource: modelState?.source ?? "agent_override",
+          modelReasoningEffort: modelState?.override_reasoning_effort ?? undefined,
         }),
       );
       await get().refreshAgentDetail(agentId, displayLevel);
@@ -580,6 +681,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         updateAgentModelInState(state, agentId, {
           model: modelState?.active_model ?? modelState?.effective_model ?? "runtime default",
           modelSource: modelState?.source ?? "runtime_default",
+          modelReasoningEffort: modelState?.override_reasoning_effort ?? undefined,
         }),
       );
       await get().refreshAgentDetail(agentId, displayLevel);
@@ -652,6 +754,8 @@ function emptyAgentSession(): AgentSessionState {
     detail: null,
     eventsBySeq: {},
     eventSeqs: [],
+    messagesById: {},
+    missingMessageIds: {},
   };
 }
 
@@ -918,6 +1022,10 @@ function messageOrigin(payload: unknown): string | undefined {
   return stringField(origin, "kind") ?? stringField(origin, "role") ?? stringField(asRecord(payload), "origin");
 }
 
+function messageIdFromEventPayload(payload: unknown): string | undefined {
+  return stringField(asRecord(payload), "message_id");
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
@@ -947,7 +1055,7 @@ function buildBootstrapMetrics(agents: AgentSummary[]): RuntimeBootstrap["metric
 function updateAgentModelInState(
   state: RuntimeStoreState,
   agentId: string,
-  modelPatch: Pick<AgentSummary, "model"> & Partial<Pick<AgentSummary, "modelSource">>,
+  modelPatch: Pick<AgentSummary, "model"> & Partial<Pick<AgentSummary, "modelSource" | "modelReasoningEffort">>,
 ): Partial<RuntimeStoreState> {
   const session = state.sessionsByAgentId[agentId];
   const detail = session?.detail
@@ -986,10 +1094,9 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
   const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
   const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
   const pageTimeline = reduceAgentSessionTimeline({
-    transcript: [],
-    briefs: [],
     events: { events: pageEvents },
     eventDisplayLevel: "debug",
+    messagesById: current.messagesById,
   });
   const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
   const agent = liveDetailIsNewer && current.detail ? mergeCachedAgentState(detail.agent, current.detail.agent) : detail.agent;
@@ -1046,6 +1153,7 @@ async function catchUpAgentEvents(
       append: true,
     }),
   );
+  scheduleMessageHydration(get, set, agentId, "debug");
 }
 
 function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEnvelopeDto[]): void {
@@ -1077,16 +1185,16 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
     };
     const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(uniqueEvents)])).sort((left, right) => left - right);
     const liveTimelineDelta = reduceAgentSessionTimeline({
-      transcript: [],
-      briefs: [],
       events: { events: uniqueEvents },
       eventDisplayLevel: "debug",
+      messagesById: current.messagesById,
     });
     const detailEvents = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
     const baseDetail = current.detail ?? createLiveAgentDetail(state.bootstrap.agents.find((agent) => agent.id === agentId));
     const highestIncomingSeq = highestSeq(eventSeqs) ?? 0;
     const runPatch = agentRunPatchFromEvents(uniqueEvents);
-    const patchedBaseDetail = baseDetail && runPatch ? patchAgentDetailRunState(baseDetail, runPatch) : baseDetail;
+    const briefPatch = agentBriefPatchFromEvents(uniqueEvents);
+    const patchedBaseDetail = patchAgentDetail(baseDetail, runPatch, briefPatch);
     const detail = patchedBaseDetail
       ? {
           ...patchedBaseDetail,
@@ -1099,7 +1207,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
 
     return {
       bootstrap: sortBootstrapAgents(
-        runPatch ? patchBootstrapAgentRunState(state.bootstrap, agentId, runPatch) : state.bootstrap,
+        patchBootstrapAgent(state.bootstrap, agentId, runPatch, briefPatch),
         rosterActivityByAgentId,
       ),
       rosterActivityByAgentId,
@@ -1118,6 +1226,132 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
       },
     };
   });
+  scheduleMessageHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
+}
+
+function scheduleMessageHydration(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  displayLevel: DisplayLevel,
+): void {
+  const session = get().sessionsByAgentId[agentId];
+  const messageIds = missingMessageIdsForHydration(session);
+  if (!messageIds.length) return;
+
+  let inFlight = messageHydrationInFlight.get(agentId);
+  if (!inFlight) {
+    inFlight = new Set<string>();
+    messageHydrationInFlight.set(agentId, inFlight);
+  }
+  const requestIds = messageIds.filter((messageId) => !inFlight.has(messageId));
+  if (!requestIds.length) return;
+  requestIds.forEach((messageId) => inFlight.add(messageId));
+
+  void runtimeClient
+    .getAgentMessagesBatch(agentId, requestIds)
+    .then((response) => {
+      set((state) => mergeHydratedMessagesIntoSession(state, agentId, response.messages ?? [], response.missing_message_ids ?? [], displayLevel));
+    })
+    .catch((error) => {
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...(state.sessionsByAgentId[agentId] ?? emptyAgentSession()),
+            historyError: error instanceof Error ? error.message : String(error),
+          },
+        },
+      }));
+    })
+    .finally(() => {
+      const current = messageHydrationInFlight.get(agentId);
+      if (!current) return;
+      requestIds.forEach((messageId) => current.delete(messageId));
+      if (!current.size) messageHydrationInFlight.delete(agentId);
+    });
+}
+
+function agentBriefPatchFromEvents(events: StreamEventEnvelopeDto[]): Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined {
+  let patch: Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined;
+  for (const event of events) {
+    if (event.type !== "brief_created") continue;
+    const payload = asRecord(event.payload);
+    const text = stringField(payload, "text");
+    if (!text) continue;
+    const createdAt = stringField(payload, "created_at") ?? event.ts;
+    patch = {
+      lastBrief: text,
+      lastTurnTime: formatTime(createdAt),
+    };
+  }
+  return patch;
+}
+
+function missingMessageIdsForHydration(session: AgentSessionState | undefined): string[] {
+  if (!session) return [];
+  const seen = new Set<string>();
+  const missing: string[] = [];
+  for (const eventSeq of session.eventSeqs) {
+    const event = session.eventsBySeq[eventSeq];
+    if (!isStreamEventEnvelope(event) || event.type !== "message_enqueued") continue;
+    const messageId = messageIdFromEventPayload(event.payload);
+    if (!messageId || seen.has(messageId) || session.messagesById[messageId] || session.missingMessageIds[messageId]) continue;
+    seen.add(messageId);
+    missing.push(messageId);
+  }
+  return missing;
+}
+
+function mergeHydratedMessagesIntoSession(
+  state: RuntimeStoreState,
+  agentId: string,
+  messages: RuntimeMessageEnvelope[],
+  missingMessageIds: string[],
+  displayLevel: DisplayLevel,
+): Partial<RuntimeStoreState> {
+  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  const messagesById = { ...current.messagesById };
+  let changed = false;
+  for (const message of messages) {
+    const messageId = typeof message.id === "string" && message.id.trim() ? message.id : undefined;
+    if (!messageId) continue;
+    messagesById[messageId] = message;
+    changed = true;
+  }
+
+  const missingById = { ...current.missingMessageIds };
+  for (const messageId of missingMessageIds) {
+    if (!messageId) continue;
+    missingById[messageId] = true;
+    changed = true;
+  }
+  if (!changed) return {};
+
+  const events = current.eventSeqs.map((eventSeq) => current.eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
+  const timeline = reduceAgentSessionTimeline({
+    events: { events },
+    eventDisplayLevel: displayLevel,
+    messagesById,
+  });
+  const detail = current.detail
+    ? {
+        ...current.detail,
+        timeline,
+      }
+    : current.detail;
+
+  return {
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...current,
+        detail,
+        messagesById,
+        missingMessageIds: missingById,
+      },
+    },
+  };
 }
 
 function agentRunPatchFromEvents(events: StreamEventEnvelopeDto[]): Pick<AgentSummary, "currentRunId" | "lifecycle"> | undefined {
@@ -1150,26 +1384,31 @@ function runIdFromPayload(payload: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function patchBootstrapAgentRunState(
+function patchBootstrapAgent(
   bootstrap: RuntimeBootstrap,
   agentId: string,
-  patch: Pick<AgentSummary, "currentRunId" | "lifecycle">,
+  runPatch: Pick<AgentSummary, "currentRunId" | "lifecycle"> | undefined,
+  briefPatch: Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined,
 ): RuntimeBootstrap {
+  if (!runPatch && !briefPatch) return bootstrap;
   return {
     ...bootstrap,
-    agents: bootstrap.agents.map((agent) => (agent.id === agentId ? { ...agent, ...patch } : agent)),
+    agents: bootstrap.agents.map((agent) => (agent.id === agentId ? { ...agent, ...runPatch, ...briefPatch } : agent)),
   };
 }
 
-function patchAgentDetailRunState(
-  detail: AgentDetail,
-  patch: Pick<AgentSummary, "currentRunId" | "lifecycle">,
-): AgentDetail {
+function patchAgentDetail(
+  detail: AgentDetail | null,
+  runPatch: Pick<AgentSummary, "currentRunId" | "lifecycle"> | undefined,
+  briefPatch: Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined,
+): AgentDetail | null {
+  if (!detail || (!runPatch && !briefPatch)) return detail;
   return {
     ...detail,
     agent: {
       ...detail.agent,
-      ...patch,
+      ...runPatch,
+      ...briefPatch,
     },
   };
 }
@@ -1190,10 +1429,9 @@ function mergeEventPageIntoSession(
   };
   const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
   const pageTimeline = reduceAgentSessionTimeline({
-    transcript: [],
-    briefs: [],
     events: { events: pageEvents },
     eventDisplayLevel: displayLevel,
+    messagesById: current.messagesById,
   });
   const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
   const detail = current.detail
@@ -1262,4 +1500,11 @@ function mergeTimeline(existing: AgentTimelineItem[], incoming: AgentTimelineIte
 function sortableTime(value: string): number {
   const timestamp = Date.parse(value);
   return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function formatTime(value: string | null | undefined): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
 }

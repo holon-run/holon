@@ -3,7 +3,8 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormE
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
+import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
+import { debugAgentSessionEvents, filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import type {
   AgentDetail,
   AgentSummary,
@@ -73,13 +74,20 @@ export function AgentPage({
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const stickToBottomRef = useRef(true);
   const activeAgent = detail?.agent ?? agent;
-  const sourceTimeline = useMemo(() => detail?.timeline ?? fallbackTimeline(activeAgent), [activeAgent, detail?.timeline]);
+  const sourceTimeline = detail?.timeline ?? [];
+  const sourceEvents = detail?.events ?? [];
   const timeline = useMemo(
-    () =>
-      filterTimelineByDisplayLevel(sourceTimeline, displayLevel, {
+    () => {
+      if (displayLevel === "debug" && sourceEvents.length > 0) {
+        return debugAgentSessionEvents(sourceEvents, {
+          itemLimit: visibleTimelineItemLimit,
+        });
+      }
+      return filterTimelineByDisplayLevel(sourceTimeline, displayLevel, {
         itemLimit: visibleTimelineItemLimit,
-      }),
-    [displayLevel, sourceTimeline, visibleTimelineItemLimit],
+      });
+    },
+    [displayLevel, sourceEvents, sourceTimeline, visibleTimelineItemLimit],
   );
   const isWorking = isAgentWorking(activeAgent, sendingPrompt);
   const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
@@ -91,6 +99,9 @@ export function AgentPage({
   const hasHiddenTimelineItems = timeline.length >= visibleTimelineItemLimit && sourceTimeline.length > visibleTimelineItemLimit;
   const groupedModelOptions = useMemo(() => groupModelOptionsByProvider(modelCatalog.options), [modelCatalog.options]);
   const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.model === activeAgent.model), [activeAgent.model, modelCatalog.options]);
+  const activeModelSupportsReasoning = activeModelOption?.supportsReasoningEffort ?? Boolean(activeAgent.modelReasoningEffort);
+  const activeReasoningBadge = activeModelSupportsReasoning ? (activeAgent.modelReasoningEffort ?? "auto") : undefined;
+  const activeModelTitle = modelButtonTitle(activeAgent.model, activeReasoningBadge, activeAgent.modelSource === "agent_override");
   const currentProvider = selectedProvider ?? activeModelOption?.provider ?? groupedModelOptions[0]?.provider ?? "runtime";
   const currentProviderModels = groupedModelOptions.find((group) => group.provider === currentProvider)?.models ?? [];
 
@@ -98,6 +109,7 @@ export function AgentPage({
     setVisibleTimelineItemLimit(defaultTimelineItemLimit(displayLevel));
     setModelPickerOpen(false);
     setSelectedProvider(null);
+    setSelectedReasoningEffort(activeAgent.modelReasoningEffort ?? "auto");
   }, [activeAgent.id, displayLevel]);
 
   useLayoutEffect(() => {
@@ -222,10 +234,15 @@ export function AgentPage({
                 turn={turn}
               />
             ))}
-            {displayLevel === "info" && isWorking && workingActivities.length > 0 ? (
-              <WorkingActivityPanel activities={workingActivities} />
+            {isWorking ? (
+              <WorkingIndicator
+                activities={workingActivities}
+                agent={activeAgent}
+                displayLevel={displayLevel}
+                onInspectActivity={onInspectActivity}
+                onOpenOverview={onOpenInspector}
+              />
             ) : null}
-            {displayLevel !== "info" && isWorking ? <WorkingStatusMarker agent={activeAgent} /> : null}
             {timeline.length === 0 ? (
               <EmptyState
                 className="conversation-empty"
@@ -255,16 +272,19 @@ export function AgentPage({
               </div>
             ) : null}
             <div className="composer-toolbar">
-              <div className="composer-left">
-                <Button type="button" size="icon" variant="ghost" aria-label="Attach">
-                  ＋
-                </Button>
-              </div>
               <div className="composer-right">
                 <div className="model-picker">
-                  <Button className="model-button" type="button" variant="secondary" aria-expanded={modelPickerOpen} onClick={toggleModelPicker}>
-                    <span>{shortModelLabel(activeAgent.model)}</span>
-                    {activeAgent.modelSource === "agent_override" ? <small>override</small> : null}
+                  <Button
+                    className="model-button"
+                    type="button"
+                    variant="secondary"
+                    aria-expanded={modelPickerOpen}
+                    aria-label={activeModelTitle}
+                    title={activeModelTitle}
+                    onClick={toggleModelPicker}
+                  >
+                    <span className="model-button-label">{shortModelLabel(activeAgent.model)}</span>
+                    {activeReasoningBadge ? <small className="model-button-badge">{activeReasoningBadge}</small> : null}
                     <span aria-hidden="true">⌄</span>
                   </Button>
                   {modelPickerOpen ? (
@@ -295,63 +315,77 @@ export function AgentPage({
                         </span>
                         {changingModel === "runtime-default" ? <em>Saving…</em> : null}
                       </button>
-                      <div className="model-picker-section" aria-label="Providers">
-                        <span>Provider</span>
-                        <div className="model-provider-list">
-                          {groupedModelOptions.map((group) => (
-                            <button
-                              className={`model-provider-option ${group.provider === currentProvider ? "is-active" : ""}`}
-                              key={group.provider}
-                              type="button"
-                              onClick={() => setSelectedProvider(group.provider)}
-                            >
-                              <strong>{group.provider}</strong>
-                              <small>
-                                {group.availableCount}/{group.models.length} available
-                              </small>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="model-options" role="listbox" aria-label="Available models">
-                        {currentProviderModels.map((option) => (
-                          <button
-                            className={`model-option ${option.model === activeAgent.model ? "is-active" : ""}`}
-                            key={option.model}
-                            type="button"
-                            disabled={!option.available || changingModel !== null}
-                            title={option.unavailableReason ?? option.model}
-                            onClick={() => void handleSelectModel(option)}
-                          >
-                            <span>
-                              <strong>{option.displayName}</strong>
-                              <small>{option.model}</small>
-                            </span>
-                            <span className="model-option-meta">
-                              {option.supportsReasoningEffort ? <small>reasoning</small> : null}
-                              {!option.available ? <small>unavailable</small> : null}
-                              {changingModel === option.model ? <em>Saving…</em> : null}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                      {activeModelOption?.supportsReasoningEffort || currentProviderModels.some((option) => option.supportsReasoningEffort) ? (
-                        <div className="model-picker-section" aria-label="Thinking level">
-                          <span>Thinking</span>
-                          <div className="reasoning-options">
-                            {["auto", "low", "medium", "high"].map((effort) => (
+                      <div className="model-picker-grid">
+                        <div className="model-picker-section model-picker-providers" aria-label="Providers">
+                          <span>
+                            <b>Step 1</b>
+                            Provider
+                          </span>
+                          <div className="model-provider-list">
+                            {groupedModelOptions.map((group) => (
                               <button
-                                className={selectedReasoningEffort === effort ? "is-active" : ""}
-                                key={effort}
+                                className={`model-provider-option ${group.provider === currentProvider ? "is-active" : ""}`}
+                                key={group.provider}
                                 type="button"
-                                onClick={() => setSelectedReasoningEffort(effort)}
+                                onClick={() => setSelectedProvider(group.provider)}
                               >
-                                {titleCase(effort)}
+                                <strong>{group.provider}</strong>
+                                <small>
+                                  {group.availableCount}/{group.models.length} available
+                                </small>
                               </button>
                             ))}
                           </div>
                         </div>
-                      ) : null}
+                        <div className="model-picker-section model-picker-models" aria-label={`${currentProvider} models`}>
+                          <span>
+                            <b>Step 2</b>
+                            {currentProvider} models
+                          </span>
+                          {activeModelSupportsReasoning || currentProviderModels.some((option) => option.supportsReasoningEffort) ? (
+                            <div className="model-picker-reasoning" aria-label="Thinking level">
+                              <span>
+                                <b>Thinking</b>
+                                Choose before selecting a reasoning model
+                              </span>
+                              <div className="reasoning-options">
+                                {["auto", "low", "medium", "high", "xhigh"].map((effort) => (
+                                  <button
+                                    className={selectedReasoningEffort === effort ? "is-active" : ""}
+                                    key={effort}
+                                    type="button"
+                                    onClick={() => setSelectedReasoningEffort(effort)}
+                                  >
+                                    {titleCase(effort)}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+                          <div className="model-options" role="listbox" aria-label={`${currentProvider} models`}>
+                            {currentProviderModels.map((option) => (
+                              <button
+                                className={`model-option ${option.model === activeAgent.model ? "is-active" : ""}`}
+                                key={option.model}
+                                type="button"
+                                disabled={!option.available || changingModel !== null}
+                                title={option.unavailableReason ?? option.model}
+                                onClick={() => void handleSelectModel(option)}
+                              >
+                                <span>
+                                  <strong>{option.displayName}</strong>
+                                  <small>{option.model}</small>
+                                </span>
+                                <span className="model-option-meta">
+                                  {option.supportsReasoningEffort ? <small>reasoning</small> : null}
+                                  {!option.available ? <small>unavailable</small> : null}
+                                  {changingModel === option.model ? <em>Saving…</em> : null}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
                       {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
                         <EmptyState
                           className="model-picker-empty"
@@ -378,6 +412,13 @@ export function AgentPage({
 function shortModelLabel(model: string): string {
   const parts = model.split("/");
   return parts[parts.length - 1] || model;
+}
+
+function modelButtonTitle(model: string, reasoningEffort: string | undefined, isModelOverride: boolean): string {
+  const details = [model];
+  if (reasoningEffort) details.push(`reasoning effort: ${reasoningEffort}`);
+  if (isModelOverride) details.push("model override");
+  return details.join(" · ");
 }
 
 function groupModelOptionsByProvider(options: RuntimeModelOption[]): Array<{ provider: string; availableCount: number; models: RuntimeModelOption[] }> {
@@ -407,8 +448,7 @@ function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
 }
 
 function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean): boolean {
-  const lifecycle = agent.lifecycle.toLowerCase();
-  return sendingPrompt || Boolean(agent.currentRunId) || lifecycle === "awake-running";
+  return sendingPrompt || deriveAgentDisplayStatus(agent).label === "Running";
 }
 
 function collectWorkingActivitiesForCurrentTurn(timeline: AgentTimelineItem[]): AgentTimelineActivity[] {
@@ -469,6 +509,7 @@ function timelineItemToWorkingActivity(item: AgentTimelineItem): AgentTimelineAc
     minDisplayLevel: item.minDisplayLevel,
     sourceIds: item.sourceIds,
     detail: item.detail,
+    rawEvent: item.rawEvent,
     debug: item.debug,
   };
 }
@@ -576,13 +617,21 @@ const TimelineMessage = memo(function TimelineMessage({
   }
 
   const timelineMeta = formatTimelineMeta(item.meta, displayLevel);
-  const canInspect = displayLevel !== "info" && canInspectTimelineItem(item);
+  const inspectItem = () => onInspectActivity(timelineItemToWorkingActivity(item));
 
   return (
     <article className={`message ${item.kind}${compactAssistant ? " is-compact" : ""}`}>
       <div className="bubble">
         <TimelineItemContent item={item} />
         <TimelineItemDetail detail={item.detail} />
+      </div>
+      <div className="message-actions" aria-label="Message actions">
+        <button className="message-action" type="button" title="Copy message" onClick={() => copyMessageText(item.body)}>
+          ⧉
+        </button>
+        <button className="message-action" type="button" title="Inspect message" onClick={inspectItem}>
+          ⓘ
+        </button>
       </div>
       {activities.length ? (
         <ActivityTrail
@@ -593,19 +642,19 @@ const TimelineMessage = memo(function TimelineMessage({
           selectedActivityId={selectedActivityId}
         />
       ) : null}
-      {!compactAssistant && (timelineMeta || canInspect) ? (
+      {!compactAssistant && timelineMeta ? (
         <div className="message-meta">
-          {timelineMeta ? <span>{timelineMeta}</span> : null}
-          {canInspect ? (
-            <button className="copy-action" type="button" onClick={onOpenInspector}>
-              inspect
-            </button>
-          ) : null}
+          <span>{timelineMeta}</span>
         </div>
       ) : null}
     </article>
   );
 });
+
+function copyMessageText(text: string): void {
+  if (!navigator.clipboard) return;
+  void navigator.clipboard.writeText(text);
+}
 
 function TimelineItemContent({ item }: { item: AgentTimelineItem }) {
   return <MarkdownContent text={item.body} compact={false} />;
@@ -631,11 +680,6 @@ function TimelineItemDetail({ detail, compact = false }: { detail?: AgentTimelin
 
 function isRuntimeActivityItem(item: Pick<AgentTimelineItem, "kind">): boolean {
   return item.kind === "tool" || item.kind === "event" || item.kind === "system";
-}
-
-function canInspectTimelineItem(item: AgentTimelineItem): boolean {
-  if (item.kind === "operator" && isSentMessageMeta(item.meta)) return false;
-  return !(item.kind === "assistant" && isLowValueAssistantEventMeta(item.meta));
 }
 
 function ActivityTrail({
@@ -677,9 +721,6 @@ function ActivityTrail({
             {displayLevel === "debug" ? (
               <div className="activity-meta">
                 <span>{activity.meta}</span>
-                <button className="copy-action" type="button" onClick={onOpenInspector}>
-                  inspect
-                </button>
               </div>
             ) : null}
             {displayLevel === "debug" ? <TimelineItemDetail detail={activity.detail} /> : null}
@@ -703,32 +744,76 @@ function activityIcon(activity: AgentTimelineActivity): string {
   return "·";
 }
 
-function WorkingActivityPanel({ activities }: { activities: AgentTimelineActivity[] }) {
+function WorkingIndicator({
+  activities,
+  agent,
+  displayLevel,
+  onInspectActivity,
+  onOpenOverview,
+}: {
+  activities: AgentTimelineActivity[];
+  agent: AgentSummary;
+  displayLevel: DisplayLevel;
+  onInspectActivity: (activity: AgentTimelineActivity) => void;
+  onOpenOverview: () => void;
+}) {
+  const parts = [
+    agent.currentWork?.objective,
+    agent.activeTaskCount ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}` : undefined,
+  ].filter(Boolean);
+
+  if (displayLevel !== "info" || activities.length === 0) {
+    return (
+      <button className="working-indicator compact" type="button" onClick={onOpenOverview}>
+        <span className="working-activity-dot" aria-hidden="true" />
+        <strong>Working</strong>
+        {parts.length ? <span>{parts.join(" · ")}</span> : null}
+      </button>
+    );
+  }
+
   return (
-    <aside className="working-activity-panel" aria-label="Working activity">
-      <div className="working-activity-header">
-        <span>Working activity</span>
-        <small>Runtime signals not shown in Info timeline</small>
-      </div>
+    <div className="working-indicator detail">
+      <button className="working-activity-header" type="button" onClick={onOpenOverview}>
+        <span className="working-activity-dot" aria-hidden="true" />
+        <strong>Working</strong>
+        {parts.length ? <small>{parts.join(" · ")}</small> : null}
+      </button>
       <div className="working-activity-list">
         {activities.map((activity) => (
-          <div className={`working-activity-item ${activity.kind}`} key={activity.id}>
-            <span className="working-activity-dot" aria-hidden="true" />
-            <strong>{workingActivityLabel(activity)}</strong>
+          <button
+            className={`working-activity-item ${activity.kind} slot-${workingActivitySlot(activity)}`}
+            key={activity.id}
+            type="button"
+            onClick={() => onInspectActivity(activity)}
+          >
+            <span className="working-activity-icon" aria-label={workingActivityLabel(activity)} title={workingActivityLabel(activity)}>
+              {workingActivityIcon(activity)}
+            </span>
             <span>{workingActivityBody(activity)}</span>
-            <time>{formatDisplayTime(activity.timestamp)}</time>
-          </div>
+          </button>
         ))}
       </div>
-    </aside>
+    </div>
   );
 }
 
+function workingActivitySlot(activity: AgentTimelineActivity): "assistant" | "action" {
+  return activity.kind === "assistant" ? "assistant" : "action";
+}
+
 function workingActivityLabel(activity: AgentTimelineActivity): string {
-  return activity.kind === "assistant" ? "Assistant" : "Action";
+  return workingActivitySlot(activity) === "assistant" ? "Assistant message" : "Action";
+}
+
+function workingActivityIcon(activity: AgentTimelineActivity): string {
+  return workingActivitySlot(activity) === "assistant" ? "✦" : "›";
 }
 
 function workingActivityBody(activity: AgentTimelineActivity): string {
+  if (workingActivitySlot(activity) === "action") {
+    return trimActivityLine(activity.body || activity.label, 120);
+  }
   const detail = activity.detail?.text
     ?.split("\n")
     .map((line) => line.trim())
@@ -740,45 +825,6 @@ function trimActivityLine(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
-function WorkingStatusMarker({ agent }: { agent: AgentSummary }) {
-  const parts = [
-    agent.currentWork?.objective,
-    agent.activeTaskCount ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}` : undefined,
-    agent.pending ? `${agent.pending} queued` : undefined,
-  ].filter(Boolean);
-
-  return (
-    <div className="working-status-marker" role="status">
-      <span className="working-activity-dot" aria-hidden="true" />
-      <strong>Working</strong>
-      {parts.length ? <span>{parts.join(" · ")}</span> : null}
-    </div>
-  );
-}
-
-function fallbackTimeline(agent: AgentSummary): AgentTimelineItem[] {
-  if (!hasVisibleBrief(agent.lastBrief)) return [];
-
-  return [
-    {
-      id: `${agent.id}-fallback-brief`,
-      kind: "assistant",
-      label: "Latest brief",
-      body: agent.lastBrief,
-      timestamp: agent.lastTurnTime,
-      meta: "brief",
-      minDisplayLevel: "info",
-      sourceIds: [`${agent.id}-fallback-brief`],
-      debug: JSON.stringify(agent, null, 2),
-    },
-  ];
-}
-
-function hasVisibleBrief(value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  return Boolean(normalized) && !normalized.startsWith("no recent brief");
 }
 
 function formatDisplayTime(value: string): string {
@@ -805,10 +851,6 @@ function formatTimelineMeta(meta: string, displayLevel: DisplayLevel): string {
     .filter((part) => part && !/^event #\d+$/i.test(part));
   if (displayLevel === "verbose") return parts.join(" · ") || meta.split(" · ")[0] || meta;
   return parts[0] || meta;
-}
-
-function isSentMessageMeta(meta: string): boolean {
-  return meta === "Sent" || meta.startsWith("Sent · ");
 }
 
 function isLowValueAssistantEventMeta(meta: string): boolean {

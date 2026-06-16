@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 
 import { AgentPage } from "../features/agent/AgentPage";
 import { Button } from "../components/ui/Button";
@@ -9,11 +9,12 @@ import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { InspectorPanel } from "../features/inspector/InspectorPanel";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import { deriveAgentDisplayStatus } from "../runtime/agent-status";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
 import { useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
-import type { AgentSummary, DisplayLevel, RouteKey } from "../runtime/types";
+import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig } from "../runtime/types";
 import { pushBrowserRoute, routeFromLocation } from "./routes";
 
 const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
@@ -38,6 +39,7 @@ export function App() {
   const clearInspectorSelection = useRuntimeStore((state) => state.clearInspectorSelection);
   const toggleInspector = useRuntimeStore((state) => state.toggleInspector);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
+  const setRuntimeConnection = useRuntimeStore((state) => state.setRuntimeConnection);
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
   const activeAgentId = route === "agent" ? selectedAgent?.id ?? selectedAgentId : undefined;
   const selectedAgentSession = useRuntimeStore((state) =>
@@ -69,18 +71,61 @@ export function App() {
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
-  const selectedAgentCurrentWork = activeAgent?.currentWork;
-  const selectedAgentContext =
-    route === "agent" && activeAgent
-      ? [activeAgent.lifecycle, activeAgent.posture].filter(Boolean).join(" · ")
-      : "loading agent";
+  const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent) : undefined;
+  const selectedAgentContext = selectedAgentStatus?.label ?? "loading agent";
   const selectedAgentSourceStatus =
     agentDetailLoading && !selectedAgentDetail
       ? "syncing"
       : selectedAgentDetail?.source === "http" && !selectedAgentDetail.error
         ? "live"
         : "preview";
-  const isInitialBootstrapping = loading && bootstrap.connection.summary === "Connecting to local runtime…" && !bootstrap.connection.error;
+  const agentTopControls =
+    route === "agent" ? (
+      <div className="agent-top-controls" aria-label="Agent conversation controls">
+        <div className="agent-stream-controls" aria-label="Agent stream status">
+          <StatusBadge
+            kind="connection"
+            value={selectedAgentSourceStatus}
+            className={`source-chip ${selectedAgentSourceStatus}`}
+          >
+            {selectedAgentSourceStatus}
+          </StatusBadge>
+          <StatusBadge
+            kind="stream"
+            value={selectedAgentLiveStatus}
+            className={`source-chip live-status ${selectedAgentLiveStatus}`}
+            title={selectedAgentLiveTitle}
+          >
+            {liveStatusLabel(selectedAgentLiveStatus)}
+          </StatusBadge>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            aria-label={agentDetailLoading ? "Refreshing agent detail" : "Refresh agent detail"}
+            title={agentDetailLoading ? "Refreshing…" : "Refresh agent detail"}
+            disabled={agentDetailLoading}
+            onClick={() => void refreshAgentDetail()}
+          >
+            ↻
+          </Button>
+        </div>
+        <SegmentedControl className="display-level" label="Display level">
+          {(["info", "verbose", "debug"] as const).map((level) => (
+            <SegmentedControlButton
+              active={displayLevel === level}
+              className={displayLevel === level ? "is-active" : ""}
+              key={level}
+              type="button"
+              onClick={() => setDisplayLevel(level, activeAgentId)}
+            >
+              {levelLabel(level)}
+            </SegmentedControlButton>
+          ))}
+        </SegmentedControl>
+      </div>
+    ) : null;
+  const isInitialBootstrapping = loading && bootstrap.agents.length === 0 && !bootstrap.connection.error;
 
   useLayoutEffect(() => {
     const applyBrowserRoute = () => {
@@ -118,7 +163,7 @@ export function App() {
   }
 
   if (isInitialBootstrapping) {
-    return <BootstrappingPage />;
+    return <BootstrappingPage connection={bootstrap.connection} onSetConnection={setRuntimeConnection} />;
   }
 
   return (
@@ -171,8 +216,8 @@ export function App() {
             </div>
           ) : (
             bootstrap.agents.map((agent) => {
-              const status = agentDisplayStatus(agent);
-              const secondary = agentSecondaryStatus(agent);
+              const status = deriveAgentDisplayStatus(agent);
+              const workSummary = agent.currentWork?.objective;
 
               return (
                 <button
@@ -190,11 +235,11 @@ export function App() {
                         {status.label}
                       </StatusBadge>
                     </span>
-                    <span className="agent-row-meta">
-                      {secondary.map((item, index) => (
-                        <span key={`${item}-${index}`}>{item}</span>
-                      ))}
-                    </span>
+                    {workSummary ? (
+                      <span className="agent-row-meta">
+                        <span>{workSummary}</span>
+                      </span>
+                    ) : null}
                   </span>
                 </button>
               );
@@ -203,13 +248,7 @@ export function App() {
         </section>
 
         <div className="sidebar-bottom">
-          <button className="connection-status" type="button">
-            <span className="runtime-dot" />
-            <span>
-              <strong>{bootstrap.connection.mode}</strong>
-              <small>{bootstrap.connection.summary}</small>
-            </span>
-          </button>
+          <ConnectionSwitcher connection={bootstrap.connection} onSetConnection={setRuntimeConnection} />
         </div>
       </aside>
 
@@ -231,7 +270,7 @@ export function App() {
               ) : null}
               <div>
                 <strong>{route === "agent" ? (selectedAgent?.id ?? selectedAgentId) || "Agent" : pageTitle(route)}</strong>
-                <span>
+                <span title={route === "agent" ? selectedAgentStatus?.title : undefined}>
                   {route === "agent"
                     ? selectedAgentContext
                     : pageSubtitle(route, bootstrap.attentionCount, bootstrap.agents.length)}
@@ -239,6 +278,7 @@ export function App() {
               </div>
             </div>
             <div className="top-actions">
+              {agentTopControls}
               <Button
                 type="button"
                 size="icon"
@@ -251,69 +291,6 @@ export function App() {
               </Button>
             </div>
           </div>
-
-          {route === "agent" ? (
-            <div className="agent-top-context" aria-label="Agent conversation context">
-              <div className="agent-context-main">
-                <button
-                  className={`work-summary ${selectedAgentCurrentWork ? "has-work" : "is-empty"}`}
-                  type="button"
-                  onClick={() => setInspectorOpen(true)}
-                >
-                  <span className="work-summary-label">Current work</span>
-                  <strong>{selectedAgentCurrentWork?.objective ?? "No active work item"}</strong>
-                  <span className="work-summary-meta">
-                    {selectedAgentCurrentWork
-                      ? `${selectedAgentCurrentWork.state} · ${selectedAgentCurrentWork.id}`
-                      : "Ready for operator input"}
-                  </span>
-                </button>
-              </div>
-              <div className="agent-top-controls">
-                <div className="agent-stream-controls" aria-label="Agent stream status">
-                  <StatusBadge
-                    kind="connection"
-                    value={selectedAgentSourceStatus}
-                    className={`source-chip ${selectedAgentSourceStatus}`}
-                  >
-                    {selectedAgentSourceStatus}
-                  </StatusBadge>
-                  <StatusBadge
-                    kind="stream"
-                    value={selectedAgentLiveStatus}
-                    className={`source-chip live-status ${selectedAgentLiveStatus}`}
-                    title={selectedAgentLiveTitle}
-                  >
-                    {liveStatusLabel(selectedAgentLiveStatus)}
-                  </StatusBadge>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    aria-label={agentDetailLoading ? "Refreshing agent detail" : "Refresh agent detail"}
-                    title={agentDetailLoading ? "Refreshing…" : "Refresh agent detail"}
-                    disabled={agentDetailLoading}
-                    onClick={() => void refreshAgentDetail()}
-                  >
-                    ↻
-                  </Button>
-                </div>
-                <SegmentedControl className="display-level" label="Display level">
-                  {(["info", "verbose", "debug"] as const).map((level) => (
-                    <SegmentedControlButton
-                      active={displayLevel === level}
-                      className={displayLevel === level ? "is-active" : ""}
-                      key={level}
-                      type="button"
-                      onClick={() => setDisplayLevel(level, activeAgentId)}
-                    >
-                      {levelLabel(level)}
-                    </SegmentedControlButton>
-                  ))}
-                </SegmentedControl>
-              </div>
-            </div>
-          ) : null}
         </header>
 
         {route === "dashboard" ? (
@@ -346,7 +323,10 @@ export function App() {
             onClearModel={() => clearAgentModel(activeAgent.id, displayLevel)}
             onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, displayLevel)}
             onSendPrompt={(text) => sendOperatorPrompt(activeAgent.id, text, displayLevel)}
-            onOpenInspector={() => setInspectorOpen(true)}
+            onOpenInspector={() => {
+              clearInspectorSelection();
+              setInspectorOpen(true);
+            }}
             onInspectActivity={(activity) => inspectActivity(activeAgent.id, activity)}
             selectedActivityId={
               inspectorSelection?.kind === "activity" && inspectorSelection.agentId === activeAgent.id
@@ -396,7 +376,13 @@ export function App() {
   );
 }
 
-function BootstrappingPage() {
+function BootstrappingPage({
+  connection,
+  onSetConnection,
+}: {
+  connection: RuntimeConnection;
+  onSetConnection: (config: RuntimeConnectionConfig) => Promise<void>;
+}) {
   return (
     <main className="boot-page" aria-label="Holon is loading">
       <section className="boot-card" role="status" aria-live="polite">
@@ -405,9 +391,93 @@ function BootstrappingPage() {
           <p>Starting Holon Web GUI</p>
           <h1>Preparing runtime data…</h1>
           <span>Loading the runtime handshake and agent roster before rendering the workspace.</span>
+          <ConnectionSwitcher connection={connection} onSetConnection={onSetConnection} compact={false} />
         </div>
       </section>
     </main>
+  );
+}
+
+function ConnectionSwitcher({
+  connection,
+  onSetConnection,
+  compact = true,
+}: {
+  connection: RuntimeConnection;
+  onSetConnection: (config: RuntimeConnectionConfig) => Promise<void>;
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(!compact || Boolean(connection.error));
+  const [baseUrl, setBaseUrl] = useState(connection.mode === "remote" ? connection.baseUrl ?? "" : "");
+  const [token, setToken] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | undefined>();
+
+  async function applyConnection(config: RuntimeConnectionConfig) {
+    setSaving(true);
+    setFormError(undefined);
+    try {
+      await onSetConnection(config);
+      if (compact) setOpen(false);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className={`connection-switcher ${open ? "is-open" : ""}`}>
+      <button className="connection-status" type="button" onClick={() => setOpen((value) => !value)}>
+        <span className={`runtime-dot ${connection.error ? "error" : ""}`} />
+        <span>
+          <strong>{connection.mode}</strong>
+          <small>{connection.summary}</small>
+        </span>
+      </button>
+      {open ? (
+        <form
+          className="connection-panel"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const trimmedBaseUrl = baseUrl.trim();
+            if (!trimmedBaseUrl) {
+              setFormError("Remote URL is required.");
+              return;
+            }
+            void applyConnection({ mode: "remote", baseUrl: trimmedBaseUrl, token });
+          }}
+        >
+          <label>
+            Remote URL
+            <input
+              value={baseUrl}
+              onChange={(event) => setBaseUrl(event.target.value)}
+              placeholder="http://192.168.1.10:7878"
+              inputMode="url"
+            />
+          </label>
+          <label>
+            Bearer token
+            <input
+              value={token}
+              onChange={(event) => setToken(event.target.value)}
+              placeholder="optional for trusted local networks"
+              type="password"
+            />
+          </label>
+          {formError ? <span className="connection-error">{formError}</span> : null}
+          <div className="connection-actions">
+            <Button type="button" size="sm" variant="secondary" disabled={saving} onClick={() => void applyConnection({ mode: "local" })}>
+              Localhost
+            </Button>
+            <Button type="submit" size="sm" disabled={saving}>
+              {saving ? "Connecting…" : "Use remote"}
+            </Button>
+          </div>
+        </form>
+      ) : null}
+    </div>
   );
 }
 
@@ -443,86 +513,6 @@ function levelLabel(level: DisplayLevel): string {
   if (level === "info") return "Info";
   if (level === "verbose") return "Verbose";
   return "Debug";
-}
-
-function agentDisplayStatus(agent: AgentSummary): { label: string; title: string; tone: string } {
-  const details = [
-    agent.posture ? `posture: ${agent.posture}` : undefined,
-    agent.lifecycle ? `lifecycle: ${agent.lifecycle}` : undefined,
-    agent.pending > 0 ? `${agent.pending} pending input${agent.pending === 1 ? "" : "s"}` : undefined,
-    agent.activeTaskCount > 0
-      ? `${agent.activeTaskCount} active task${agent.activeTaskCount === 1 ? "" : "s"}`
-      : undefined,
-    agent.waitingCount > 0 ? `${agent.waitingCount} waiting condition${agent.waitingCount === 1 ? "" : "s"}` : undefined,
-  ].filter(Boolean);
-  const title = details.join(" · ") || "No status details";
-
-  if (isStoppedOrArchived(agent.lifecycle) || isStoppedOrArchived(agent.posture)) {
-    return { label: "Stopped", title, tone: "stopped" };
-  }
-
-  if (agent.pending > 0) {
-    return { label: "Needs input", title, tone: "needs-input" };
-  }
-
-  if (agent.activeTaskCount > 0 || agent.currentRunId || isActivePosture(agent.posture)) {
-    return { label: "Running", title, tone: "running" };
-  }
-
-  if (isRunnablePosture(agent.posture)) {
-    return { label: "Runnable", title, tone: "running" };
-  }
-
-  if (agent.waitingCount > 0 || isWaitingPosture(agent.posture)) {
-    return { label: "Waiting", title, tone: "waiting" };
-  }
-
-  if (isBlockedPosture(agent.posture)) {
-    return { label: "Blocked", title, tone: "stopped" };
-  }
-
-  if (isIdlePosture(agent.posture) || isIdlePosture(agent.lifecycle)) {
-    return { label: "Ready", title, tone: "ready" };
-  }
-
-  return { label: "Unknown", title, tone: "muted" };
-}
-
-function agentSecondaryStatus(agent: AgentSummary): string[] {
-  const items = [agent.lifecycle, agent.currentWork?.state ?? agent.posture].filter(Boolean);
-  return items.length > 0 ? items : ["unknown"];
-}
-
-function normalizeAgentStatus(value?: string | null): string {
-  return (value ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
-}
-
-function isStoppedOrArchived(value?: string | null): boolean {
-  const status = normalizeAgentStatus(value);
-  return status === "stopped" || status === "archived";
-}
-
-function isActivePosture(value?: string | null): boolean {
-  const status = normalizeAgentStatus(value);
-  return status === "active-turn" || status === "awake-running" || status === "running";
-}
-
-function isRunnablePosture(value?: string | null): boolean {
-  const status = normalizeAgentStatus(value);
-  return status === "has-queued-input" || status === "has-runnable-work";
-}
-
-function isWaitingPosture(value?: string | null): boolean {
-  return normalizeAgentStatus(value).startsWith("waiting");
-}
-
-function isBlockedPosture(value?: string | null): boolean {
-  return normalizeAgentStatus(value) === "blocked";
-}
-
-function isIdlePosture(value?: string | null): boolean {
-  const status = normalizeAgentStatus(value);
-  return status === "idle" || status === "asleep" || status === "awake-idle" || status === "ready";
 }
 
 function liveStatusLabel(status: string): string {

@@ -4,25 +4,8 @@ import type {
   AgentTimelineItemDetail,
   AgentTimelineItemKind,
   DisplayLevel,
+  RuntimeMessageEnvelope,
 } from "./types";
-
-export interface SessionTranscriptEntry {
-  id?: string;
-  created_at?: string;
-  kind?: string;
-  round?: number | null;
-  stop_reason?: string | null;
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  data?: unknown;
-}
-
-export interface SessionBriefRecord {
-  id?: string;
-  created_at?: string;
-  text?: string;
-  kind?: string;
-}
 
 export interface SessionEventEnvelope {
   id?: string;
@@ -32,14 +15,23 @@ export interface SessionEventEnvelope {
   payload?: unknown;
 }
 
+function projectDebugEvent(
+  eventType: string,
+  payload: Record<string, unknown> | undefined,
+): (Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string }) | undefined {
+  if (eventType === "tool_executed" || eventType === "tool_execution_failed") {
+    return projectToolExecution(eventType, payload, { includeHiddenWorkItemMutations: true });
+  }
+  return projectRuntimeEvent(eventType, payload);
+}
+
 export interface ReduceAgentSessionInput {
-  transcript: SessionTranscriptEntry[];
-  briefs: SessionBriefRecord[];
   events: {
     events?: SessionEventEnvelope[];
   };
   eventDisplayLevel?: DisplayLevel;
   includeDebug?: boolean;
+  messagesById?: Record<string, RuntimeMessageEnvelope>;
 }
 
 interface SessionItemDraft {
@@ -52,6 +44,7 @@ interface SessionItemDraft {
   minDisplayLevel: DisplayLevel;
   sourceIds: string[];
   detail?: AgentTimelineItemDetail;
+  rawEvent?: unknown;
   debug?: string;
 }
 
@@ -61,16 +54,29 @@ const displayLevelRank: Record<DisplayLevel, number> = {
   debug: 2,
 };
 const maxTimelineSourceIds = 200;
+const infoRuntimeEvents = new Set(["brief_created", "agent_waiting"]);
+const verboseRuntimeEventPrefixes = ["work_item_"];
+const debugRuntimeEventNames = new Set(["work_item_focus_released", "work_item_stale_reminder_injected"]);
+const debugRuntimeEventPrefixes = ["provider_", "task_"];
+const debugRuntimeEvents = new Set([
+  "message_enqueued",
+  "message_processing_started",
+  "turn_local_checkpoint_resume_requested",
+  "turn_local_checkpoint_requested",
+  "turn_local_checkpoint_recorded",
+  "continuation_trigger_received",
+  "continuation_resolved",
+  "closure_decided",
+]);
+const debugOnlyToolNames = new Set(["WaitFor"]);
 
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
-  const transcriptItems = input.transcript.map(projectTranscriptEntry);
-  const briefItems = input.briefs.map(projectBriefRecord);
   const eventDisplayLevel = input.eventDisplayLevel ?? "debug";
   const eventItems = (input.events.events ?? []).map((event) =>
-    projectEventEnvelope(event, eventDisplayLevel, input.includeDebug ?? false),
+    projectEventEnvelope(event, eventDisplayLevel, input.includeDebug ?? false, input.messagesById),
   );
 
-  const sorted = mergeAgentTimelineItems([], [...transcriptItems, ...briefItems, ...eventItems])
+  const sorted = mergeAgentTimelineItems([], eventItems)
     .filter((item): item is AgentTimelineItem => Boolean(item))
     .sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
 
@@ -116,161 +122,26 @@ export function filterTimelineByDisplayLevel(
   return filtered.slice(-limit);
 }
 
-function projectTranscriptEntry(entry: SessionTranscriptEntry): AgentTimelineItem | undefined {
-  if (!entry.id) return undefined;
-  const kind = entry.kind ?? "transcript";
-  const data = asRecord(entry.data);
-  const timestamp = entry.created_at ?? "";
-
-  if (kind === "incoming_message") {
-    const message = messageEnvelopeProjection(data);
-    if (message?.origin !== "operator") {
-      return item({
-        id: entry.id,
-        kind: "system",
-        label: "Runtime input",
-        body: message?.body || readableText(entry.data) || "Runtime input received.",
-        timestamp,
-        meta: compactJoin([kind, roundMeta(entry.round)]),
-        minDisplayLevel: "verbose",
-        sourceIds: [entry.id],
-        debug: debugJson(entry),
-      });
-    }
-
-    return item({
-      id: entry.id,
-      kind: "operator",
-      label: labelForTranscriptKind(kind),
-      body: message.body || readableText(entry.data) || "Operator input.",
-      timestamp,
-      meta: compactJoin([kind, roundMeta(entry.round)]),
-      minDisplayLevel: "info",
-      sourceIds: [entry.id],
-      debug: debugJson(entry),
-    });
-  }
-
-  if (kind === "continuation_prompt" || kind === "subagent_prompt") {
-    return item({
-      id: entry.id,
-      kind: "system",
-      label: labelForTranscriptKind(kind),
-      body: readableText(entry.data) || labelForTranscriptKind(kind),
-      timestamp,
-      meta: compactJoin([kind, roundMeta(entry.round)]),
-      minDisplayLevel: "verbose",
-      sourceIds: [entry.id],
-      debug: debugJson(entry),
-    });
-  }
-
-  if (kind === "assistant_round") {
-    const text = textFromAssistantBlocks(data?.blocks);
-    const toolNames = toolNamesFromAssistantBlocks(data?.blocks);
-    if (!text && toolNames.length) {
-      return item({
-        id: entry.id,
-        kind: "tool",
-        label: "Assistant requested tools",
-        body: toolNames.join(", "),
-        timestamp,
-        meta: compactJoin([
-          "assistant round",
-          roundMeta(entry.round),
-          entry.stop_reason ?? undefined,
-          `tools: ${toolNames.join(", ")}`,
-        ]),
-        minDisplayLevel: "verbose",
-        sourceIds: [entry.id],
-        debug: debugJson(entry),
-      });
-    }
-    return item({
-      id: entry.id,
-      kind: "assistant",
-      label: "Assistant progress",
-      body: text || summarizeAssistantRound(toolNames),
-      timestamp,
-      meta: compactJoin([
-        "assistant round",
-        roundMeta(entry.round),
-        entry.stop_reason ?? undefined,
-        toolNames.length ? `tools: ${toolNames.join(", ")}` : undefined,
-      ]),
-      minDisplayLevel: "verbose",
-      sourceIds: [entry.id],
-      debug: debugJson(entry),
-    });
-  }
-
-  if (kind === "tool_results") {
-    return item({
-      id: entry.id,
-      kind: "tool",
-      label: "Tool result",
-      body: summarizeToolResults(data?.results),
-      timestamp,
-      meta: compactJoin(["tool results", roundMeta(entry.round)]),
-      minDisplayLevel: "verbose",
-      sourceIds: [entry.id],
-      debug: debugJson(entry),
-    });
-  }
-
-  if (kind === "runtime_failure") {
-    return item({
-      id: entry.id,
-      kind: "system",
-      label: "Runtime failure",
-      body: readableText(entry.data) || "Runtime failure recorded.",
-      timestamp,
-      meta: compactJoin([kind, roundMeta(entry.round)]),
-      minDisplayLevel: "info",
-      sourceIds: [entry.id],
-      debug: debugJson(entry),
-    });
-  }
-
-  return item({
-    id: entry.id,
-    kind: "system",
-    label: labelForTranscriptKind(kind),
-    body: readableText(entry.data) || "Transcript entry recorded.",
-    timestamp,
-    meta: compactJoin([kind, roundMeta(entry.round)]),
-    minDisplayLevel: "debug",
-    sourceIds: [entry.id],
-    debug: debugJson(entry),
-  });
-}
-
-function projectBriefRecord(brief: SessionBriefRecord): AgentTimelineItem | undefined {
-  if (!brief.id && !brief.text) return undefined;
-  const id = brief.id ?? `brief-${brief.created_at ?? brief.text}`;
-  return item({
-    id,
-    kind: "assistant",
-    label: brief.kind === "result" ? "Result" : brief.kind ?? "Brief",
-    body: brief.text ?? "Brief text unavailable.",
-    timestamp: brief.created_at ?? "",
-    meta: compactJoin(["brief", brief.kind]),
-    minDisplayLevel: "info",
-    sourceIds: [id],
-    debug: debugJson(brief),
-  });
+export function debugAgentSessionEvents(events: SessionEventEnvelope[], options: { itemLimit?: number } = {}): AgentTimelineItem[] {
+  const projected = events
+    .filter((event) => event.id || event.event_seq != null)
+    .map((event) => debugEventTimelineItem(event))
+    .sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
+  return projected.slice(-(options.itemLimit ?? 220));
 }
 
 function projectEventEnvelope(
   event: SessionEventEnvelope,
   eventDisplayLevel: DisplayLevel,
   includeDebug: boolean,
+  messagesById: Record<string, RuntimeMessageEnvelope> | undefined,
 ): AgentTimelineItem | undefined {
   if (!event.id && event.event_seq == null) return undefined;
   const id = event.id ?? `event-${event.event_seq}`;
   const payload = asRecord(event.payload);
   const eventType = event.type ?? "runtime_event";
-  const projection = projectRuntimeEvent(eventType, payload);
+  const projection = projectRuntimeEvent(eventType, payload, messagesById);
+  if (!projection) return undefined;
   const meta = eventMeta(eventType, payload, event.event_seq);
 
   return item({
@@ -280,11 +151,56 @@ function projectEventEnvelope(
     body: projection.body,
     timestamp: projection.timestamp ?? event.ts ?? "",
     meta,
-    minDisplayLevel: capDisplayLevel(projection.minDisplayLevel, eventDisplayLevel),
+    minDisplayLevel: eventProjectionDisplayLevel(projection.minDisplayLevel, eventDisplayLevel),
     sourceIds: [id],
     detail: projection.detail,
+    rawEvent: event,
     debug: includeDebug ? debugJson(event) : undefined,
   });
+}
+
+function debugEventTimelineItem(event: SessionEventEnvelope): AgentTimelineItem {
+  const id = event.id ?? `event-${event.event_seq}`;
+  const payload = asRecord(event.payload);
+  const eventType = event.type ?? "runtime_event";
+  const projection = projectDebugEvent(eventType, payload);
+  const meta = eventMeta(eventType, payload, event.event_seq);
+  const body = projection?.body || readableText(payload) || summarizeDebugEvent(eventType, payload) || humanizeEventType(eventType);
+  const detail = debugEventDetail(eventType, payload, projection?.detail);
+  return item({
+    id: `debug:${id}`,
+    kind: projection?.kind ?? "event",
+    label: projection?.label ?? humanizeEventType(eventType),
+    body,
+    timestamp: projection?.timestamp ?? event.ts ?? "",
+    meta,
+    minDisplayLevel: "debug",
+    sourceIds: [id],
+    detail,
+    rawEvent: event,
+    debug: debugJson(event),
+  });
+}
+
+function debugEventDetail(
+  eventType: string,
+  payload: Record<string, unknown> | undefined,
+  projectedDetail: AgentTimelineItemDetail | undefined,
+): AgentTimelineItemDetail | undefined {
+  if (projectedDetail) return projectedDetail;
+
+  const facts = readableEventFacts(payload);
+  if (facts.length) {
+    return {
+      label: "Event details",
+      text: facts.join("\n"),
+      tone: eventType.includes("failed") || eventType.includes("error") ? "data" : "data",
+    };
+  }
+
+  const readable = readableText(payload);
+  if (readable) return { label: "Details", text: readable, tone: "data" };
+  return undefined;
 }
 
 function eventMeta(eventType: string, payload: Record<string, unknown> | undefined, eventSeq: number | undefined): string {
@@ -295,22 +211,26 @@ function eventMeta(eventType: string, payload: Record<string, unknown> | undefin
   return eventRef == null ? eventType : `${eventType} · ${eventRef}`;
 }
 
-function capDisplayLevel(level: DisplayLevel, maxLevel: DisplayLevel): DisplayLevel {
-  void maxLevel;
+function eventProjectionDisplayLevel(level: DisplayLevel, eventDisplayLevel: DisplayLevel): DisplayLevel {
+  // `eventDisplayLevel` describes the API page that supplied the event. It must
+  // not promote or demote a semantic projection: display filtering is applied
+  // later against each item's intrinsic `minDisplayLevel`.
+  void eventDisplayLevel;
   return level;
 }
 
 function projectRuntimeEvent(
   eventType: string,
   payload: Record<string, unknown> | undefined,
-): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string } {
+  messagesById?: Record<string, RuntimeMessageEnvelope>,
+): (Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string }) | undefined {
   if (eventType === "message_enqueued") {
-    const message = messageEnvelopeProjection(payload);
+    const message = messageEnvelopeProjection(payload, messagesById);
     if (message?.origin === "operator") {
       return {
         kind: "operator",
         label: "Operator input",
-        body: message.body || "Operator input.",
+        body: message.body || "Loading operator input…",
         minDisplayLevel: "info",
       };
     }
@@ -319,7 +239,7 @@ function projectRuntimeEvent(
       kind: "system",
       label: "Message queued",
       body: message?.body || readableText(payload) || "Runtime message queued.",
-      minDisplayLevel: "debug",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -329,7 +249,7 @@ function projectRuntimeEvent(
       label: stringField(payload, "kind") === "result" ? "Result" : "Brief Created",
       body: stringField(payload, "text") ?? "Brief text unavailable.",
       timestamp: stringField(payload, "created_at"),
-      minDisplayLevel: "info",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -347,23 +267,16 @@ function projectRuntimeEvent(
       label: "Started processing",
       body: compactJoin([stringField(payload, "origin") === "operator" ? "Operator input" : undefined, stringField(payload, "run_id")]) ||
         "Agent started processing input.",
-      minDisplayLevel: "debug",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
-  if (
-    eventType === "turn_local_checkpoint_resume_requested" ||
-    eventType === "turn_local_checkpoint_requested" ||
-    eventType === "turn_local_checkpoint_recorded" ||
-    eventType === "continuation_trigger_received" ||
-    eventType === "continuation_resolved" ||
-    eventType === "closure_decided"
-  ) {
+  if (debugRuntimeEvents.has(eventType)) {
     return {
       kind: "system",
       label: systemRuntimeLabel(eventType),
       body: summarizeSystemRuntimeEvent(eventType, payload),
-      minDisplayLevel: "debug",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -372,7 +285,7 @@ function projectRuntimeEvent(
       kind: "system",
       label: "Work item",
       body: summarizeWorkItemEvent(eventType, payload),
-      minDisplayLevel: "verbose",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -381,7 +294,7 @@ function projectRuntimeEvent(
       kind: "system",
       label: "Waiting",
       body: readableText(payload) || "Agent is waiting for an external condition.",
-      minDisplayLevel: "info",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -399,7 +312,7 @@ function projectRuntimeEvent(
       kind: "event",
       label: humanizeEventType(eventType),
       body: summarizeDebugEvent(eventType, payload),
-      minDisplayLevel: "debug",
+      minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
@@ -411,9 +324,19 @@ function projectRuntimeEvent(
   };
 }
 
+function runtimeEventDisplayLevel(eventType: string): DisplayLevel {
+  if (infoRuntimeEvents.has(eventType)) return "info";
+  if (eventType.includes("failed") || eventType.includes("error")) return "info";
+  if (debugRuntimeEventNames.has(eventType)) return "debug";
+  if (debugRuntimeEvents.has(eventType)) return "debug";
+  if (debugRuntimeEventPrefixes.some((prefix) => eventType.startsWith(prefix))) return "debug";
+  if (verboseRuntimeEventPrefixes.some((prefix) => eventType.startsWith(prefix))) return "verbose";
+  return "debug";
+}
+
 function projectAssistantRoundRecorded(
   payload: Record<string, unknown> | undefined,
-): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> {
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> | undefined {
   const textPreview = stringField(payload, "text_preview");
   if (textPreview) {
     return {
@@ -424,22 +347,7 @@ function projectAssistantRoundRecorded(
     };
   }
 
-  const toolNames = toolNamesFromPayload(payload);
-  if (toolNames.length) {
-    return {
-      kind: "tool",
-      label: "Assistant requested tools",
-      body: toolNames.join(", "),
-      minDisplayLevel: toolNames.every(isLowValueToolRequest) ? "debug" : "verbose",
-    };
-  }
-
-  return {
-    kind: "assistant",
-    label: "Assistant round",
-    body: compactJoin(["Assistant round completed without text", cleanStringField(payload, "stop_reason")]),
-    minDisplayLevel: "debug",
-  };
+  return undefined;
 }
 
 function timelineDedupeKey(item: AgentTimelineItem): string {
@@ -447,7 +355,7 @@ function timelineDedupeKey(item: AgentTimelineItem): string {
     return `operator:${normalizeTextKey(item.body)}`;
   }
   if (item.kind === "assistant") {
-    return `assistant:${normalizeTextKey(item.body)}`;
+    return `assistant:${item.id}`;
   }
   return `item:${item.id}`;
 }
@@ -465,28 +373,31 @@ function item(draft: SessionItemDraft): AgentTimelineItem {
 
 export function compactAgentTimelineItems(items: AgentTimelineItem[]): AgentTimelineItem[] {
   const flattened = flattenTimelineActivities(items);
-  const deduped = flattened.filter((candidate, index) => !isAssistantPreviewDuplicate(candidate, flattened, index));
+  const finalBriefTexts = flattened.filter(isFinalBriefItem).map((item) => normalizeAssistantBriefText(item.body));
+  const deduped = flattened.filter((candidate) => !isAssistantPreviewDuplicate(candidate, finalBriefTexts));
   return deduped.sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
 }
 
-function isAssistantPreviewDuplicate(candidate: AgentTimelineItem, items: AgentTimelineItem[], candidateIndex: number): boolean {
+function isAssistantPreviewDuplicate(candidate: AgentTimelineItem, finalBriefTexts: string[]): boolean {
   if (candidate.kind !== "assistant" || candidate.label !== "Assistant round") return false;
-  const candidateText = normalizeTextKey(candidate.body);
-  if (candidateText.length < 80) return false;
+  const candidateText = normalizeAssistantBriefText(candidate.body);
+  if (!candidateText) return false;
 
-  return items.some((item, index) => {
-    if (index === candidateIndex || item.kind !== "assistant" || item.minDisplayLevel !== "info") return false;
-    return isSameAssistantText(candidateText, normalizeTextKey(item.body));
-  });
+  return finalBriefTexts.some((briefText) => isSameAssistantBriefText(candidateText, briefText));
 }
 
-function isSameAssistantText(left: string, right: string): boolean {
-  if (!left || !right) return false;
-  if (left === right) return true;
+function isFinalBriefItem(item: AgentTimelineItem): boolean {
+  return item.kind === "assistant" && item.minDisplayLevel === "info" && (item.label === "Result" || item.label === "Brief Created");
+}
 
-  const [shorter, longer] = left.length < right.length ? [left, right] : [right, left];
-  if (shorter.length < 160) return false;
-  return longer.startsWith(shorter);
+function isSameAssistantBriefText(previewText: string, briefText: string): boolean {
+  if (!previewText || !briefText) return false;
+  if (previewText === briefText) return true;
+  return briefText.startsWith(previewText);
+}
+
+function normalizeAssistantBriefText(text: string): string {
+  return normalizeTextKey(text).replace(/(?:\s*(?:\.{3}|…))+$/u, "").trim();
 }
 
 function flattenTimelineActivities(items: AgentTimelineItem[]): AgentTimelineItem[] {
@@ -523,6 +434,7 @@ function activityToTimelineItem(activity: AgentTimelineActivity): AgentTimelineI
     minDisplayLevel: activity.minDisplayLevel,
     sourceIds: activity.sourceIds,
     detail: activity.detail,
+    rawEvent: activity.rawEvent,
     debug: activity.debug,
   };
 }
@@ -555,38 +467,14 @@ function mergeSourceIds(sourceIds: string[]): string[] {
   return Array.from(new Set(sourceIds)).slice(0, maxTimelineSourceIds);
 }
 
-function labelForTranscriptKind(kind: string): string {
-  if (kind === "incoming_message") return "Operator input";
-  if (kind === "continuation_prompt") return "Continuation";
-  if (kind === "subagent_prompt") return "Delegation";
-  if (kind === "assistant_round") return "Assistant progress";
-  if (kind === "tool_results") return "Tool results";
-  if (kind === "runtime_failure") return "Runtime failure";
-  return humanizeEventType(kind);
-}
-
-function summarizeAssistantRound(toolNames: string[]): string {
-  if (toolNames.length === 0) return "Assistant round completed.";
-  return `Assistant requested ${toolNames.length} tool call${toolNames.length === 1 ? "" : "s"}: ${toolNames.join(", ")}.`;
-}
-
-function summarizeToolResults(value: unknown): string {
-  if (!Array.isArray(value)) return "Tool results recorded.";
-  const errorCount = value.filter((result) => asRecord(result)?.is_error === true).length;
-  const successCount = value.length - errorCount;
-  return compactJoin([
-    `${value.length} tool result${value.length === 1 ? "" : "s"} recorded`,
-    successCount ? `${successCount} ok` : undefined,
-    errorCount ? `${errorCount} error${errorCount === 1 ? "" : "s"}` : undefined,
-  ]);
-}
-
 function projectToolExecution(
   eventType: string,
   payload: Record<string, unknown> | undefined,
-): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> {
+  options: { includeHiddenWorkItemMutations?: boolean } = {},
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> | undefined {
   const toolName = stringField(payload, "tool_name") ?? "tool";
   const failed = eventType === "tool_execution_failed" || Boolean(payload?.error);
+  if (!failed && isWorkItemMutationTool(toolName) && !options.includeHiddenWorkItemMutations) return undefined;
   const projection = projectKnownToolExecution(toolName, payload);
   const label = toolFriendlyLabel(toolName, failed);
   const summary = stringField(payload, "summary");
@@ -594,9 +482,9 @@ function projectToolExecution(
   const result = asRecord(payload?.exec_command_result);
   const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status");
   const durationMs = numberField(payload, "duration_ms") ?? numberField(result, "duration_ms");
-  const error = stringField(payload, "error");
-  const stringPreview = toolStringPreview(toolName, payload, commandPreview);
-  const toolSummary = projection?.body ?? stringPreview ?? summary ?? genericToolDescription(toolName, payload);
+  const error = toolErrorMessage(payload);
+  const stringPreview = toolStringPreview(toolName, payload, commandPreview) || undefined;
+  const toolSummary = projection?.body ?? stringPreview ?? summary ?? genericToolDescription(toolName, payload) ?? toolName;
   const body = compactJoin([
     toolSummary,
     exitStatus == null ? undefined : `exit ${exitStatus}`,
@@ -604,7 +492,7 @@ function projectToolExecution(
     error,
   ]);
   const outputPreview = commandOutputPreview(payload);
-  const detail = projection?.detail ?? toolExecutionDetail(toolName, payload, commandPreview, outputPreview, toolSummary);
+  const detail = projection?.detail ?? toolExecutionDetail(toolName, payload, commandPreview, outputPreview, toolSummary, failed ? error : undefined);
 
   return {
     kind: "tool",
@@ -616,11 +504,8 @@ function projectToolExecution(
 }
 
 function toolTimelineDisplayLevel(toolName: string): DisplayLevel {
+  if (debugOnlyToolNames.has(toolName)) return "debug";
   return "verbose";
-}
-
-function isLowValueToolRequest(toolName: string): boolean {
-  return toolName === "ExecCommandBatch" || toolName === "WaitFor";
 }
 
 function projectKnownToolExecution(
@@ -628,7 +513,15 @@ function projectKnownToolExecution(
   payload: Record<string, unknown> | undefined,
 ): Pick<SessionItemDraft, "body" | "detail"> | undefined {
   if (toolName === "ApplyPatch") return projectApplyPatchTool(payload);
+  if (toolName === "ListWorkItems") return projectListWorkItemsTool(payload);
+  if (toolName === "GetWorkItem") return projectGetWorkItemTool(payload);
+  if (isWorkItemMutationTool(toolName)) return projectWorkItemMutationTool(payload);
+  if (toolName === "ViewImage") return projectViewImageTool(payload);
   return undefined;
+}
+
+function isWorkItemMutationTool(toolName: string): boolean {
+  return toolName === "CreateWorkItem" || toolName === "UpdateWorkItem" || toolName === "PickWorkItem" || toolName === "CompleteWorkItem";
 }
 
 function toolStringPreview(
@@ -689,6 +582,83 @@ function projectApplyPatchTool(payload: Record<string, unknown> | undefined): Pi
   };
 }
 
+function projectListWorkItemsTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.list_work_items_result) ?? asRecord(payload?.result);
+  const items = arrayField(result, "work_items") ?? arrayField(result, "items");
+  const total = numberField(result, "total") ?? numberField(result, "total_open") ?? items?.length;
+  const filter = stringField(payload, "filter") ?? stringField(result, "filter");
+  const itemSummaries = summarizeWorkItemRecords(items);
+  return {
+    body: compactJoin([
+      total == null ? "Listed work items" : `${total} work item${total === 1 ? "" : "s"}`,
+      filter ? `filter: ${filter}` : undefined,
+      itemSummaries.length ? itemSummaries.slice(0, 3).join("; ") : undefined,
+    ]),
+    detail: itemSummaries.length
+      ? { label: "Work items", text: itemSummaries.join("\n"), tone: "data" }
+      : { label: "Result", text: debugJson(result ?? payload ?? {}), tone: "data" },
+  };
+}
+
+function projectGetWorkItemTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.get_work_item_result) ?? asRecord(payload?.result);
+  const workItem = asRecord(result?.work_item) ?? asRecord(result);
+  const summary = summarizeWorkItemRecord(workItem);
+  const workItemId = stringField(payload, "work_item_id") ?? stringField(workItem, "id");
+  return {
+    body: summary || compactJoin(["Loaded work item", workItemId]) || "Loaded work item",
+    detail: { label: "Work item", text: debugJson(result ?? payload ?? {}), tone: "data" },
+  };
+}
+
+function projectWorkItemMutationTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.result);
+  const workItem = asRecord(result?.work_item) ?? asRecord(result) ?? payload;
+  const summary = summarizeWorkItemRecord(workItem);
+  const facts = readableEventFacts(payload);
+  return {
+    body: summary || genericToolDescription(stringField(payload, "tool_name") ?? "WorkItem", payload),
+    detail: facts.length ? { label: "Work item change", text: facts.join("\n"), tone: "data" } : undefined,
+  };
+}
+
+function projectViewImageTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.view_image_result) ?? asRecord(payload?.result);
+  const dimensions = asRecord(result?.dimensions);
+  const width = numberField(result, "width") ?? numberField(dimensions, "width");
+  const height = numberField(result, "height") ?? numberField(dimensions, "height");
+  const imagePath = firstStringField(payload, ["path", "image_path"]) ?? firstStringField(result, ["path", "image_path"]);
+  const observation = firstStringField(result, ["visual_observation", "observation", "text_preview"]);
+  const body = compactJoin([
+    "Viewed image",
+    imagePath ? basename(imagePath) : undefined,
+    width != null && height != null ? `${width}×${height}` : undefined,
+    observation ? truncateText(observation, 120) : undefined,
+  ]);
+
+  return {
+    body,
+    detail: observation
+      ? { label: "Visual observation", text: observation, tone: "data" }
+      : { label: "Result", text: debugJson(result ?? payload ?? {}), tone: "data" },
+  };
+}
+
+function summarizeWorkItemRecords(items: unknown[] | undefined): string[] {
+  return (items ?? [])
+    .map(asRecord)
+    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .map(summarizeWorkItemRecord)
+    .filter(Boolean);
+}
+
+function summarizeWorkItemRecord(record: Record<string, unknown> | undefined): string {
+  const id = stringField(record, "id") ?? stringField(record, "work_item_id");
+  const objective = stringField(record, "objective");
+  const lifecycle = stringField(record, "lifecycle") ?? stringField(record, "status");
+  return compactJoin([objective, lifecycle, id]);
+}
+
 function applyPatchDetailText(
   result: Record<string, unknown>,
   changedFiles: Record<string, unknown>[] | undefined,
@@ -719,12 +689,14 @@ function toolExecutionDetail(
   commandPreview: string | undefined,
   outputPreview: string | undefined,
   summary: string | undefined,
+  error: string | undefined,
 ): AgentTimelineItemDetail | undefined {
   if (toolName === "ExecCommandBatch") {
     const batchDetail = commandBatchDetail(payload);
     if (batchDetail) return { label: "Commands", text: batchDetail, tone: "command" };
   }
 
+  if (error) return { label: "Error", text: error, tone: "data" };
   if (commandPreview && outputPreview) return { label: "Output", text: outputPreview, tone: "command" };
   if (commandPreview) {
     return { label: toolName === "ExecCommandBatch" ? "Commands" : "Command", text: commandPreview, tone: "command" };
@@ -772,6 +744,14 @@ function indentPreview(value: string): string {
     .split("\n")
     .slice(0, 6)
     .join("\n   ");
+}
+
+function basename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+function truncateText(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 }
 
 function execCommandPreview(payload: Record<string, unknown> | undefined): string | undefined {
@@ -841,8 +821,20 @@ function summarizeWorkItemEvent(eventType: string, payload: Record<string, unkno
   const action = stringField(payload, "action") ?? eventType.replace(/^work_item_/, "");
   const record = asRecord(payload?.record);
   const objective = stringField(record, "objective");
-  const id = stringField(record, "id");
-  return compactJoin([humanizeEventType(`work_item_${action}`), objective, id]);
+  const reason = stringField(payload, "reason");
+  if (eventType === "work_item_picked") {
+    return compactJoin(["Picked work item", objective, reason]);
+  }
+  if (eventType === "work_item_focus_released") {
+    return compactJoin(["Released work item focus", objective, reason, stringField(payload, "readiness")]);
+  }
+  if (eventType === "work_item_completion_report_promoted") {
+    return compactJoin(["Promoted completion report", objective, stringField(payload, "text_preview")]);
+  }
+  if (eventType === "work_item_completion_report_candidate_promoted") {
+    return compactJoin(["Promoted completion report candidate", objective, stringField(payload, "text_preview")]);
+  }
+  return compactJoin([humanizeEventType(`work_item_${action}`), objective]);
 }
 
 function summarizeDebugEvent(eventType: string, payload: Record<string, unknown> | undefined): string {
@@ -884,15 +876,27 @@ function systemRuntimeLabel(eventType: string): string {
   return humanizeEventType(eventType);
 }
 
-function messageEnvelopeProjection(payload: Record<string, unknown> | undefined): { origin: "operator" | "runtime"; body: string } | undefined {
+function messageEnvelopeProjection(
+  payload: Record<string, unknown> | undefined,
+  messagesById?: Record<string, RuntimeMessageEnvelope>,
+): { origin: "operator" | "runtime"; body: string } | undefined {
   if (!payload) return undefined;
-  const origin = asRecord(payload.origin);
+  const source = hydratedMessageForPayload(payload, messagesById) ?? payload;
+  const origin = asRecord(source.origin);
   const originKind = stringField(origin, "kind")?.toLowerCase();
-  const body = asRecord(payload.body);
+  const body = asRecord(source.body);
   return {
     origin: originKind === "operator" ? "operator" : "runtime",
     body: messageBodyText(body),
   };
+}
+
+function hydratedMessageForPayload(
+  payload: Record<string, unknown>,
+  messagesById: Record<string, RuntimeMessageEnvelope> | undefined,
+): RuntimeMessageEnvelope | undefined {
+  const messageId = stringField(payload, "message_id");
+  return messageId ? messagesById?.[messageId] : undefined;
 }
 
 function messageBodyText(body: Record<string, unknown> | undefined): string {
@@ -931,33 +935,82 @@ function readableTextWithoutSummary(value: unknown): string {
   return "";
 }
 
-function textFromAssistantBlocks(value: unknown): string {
-  if (!Array.isArray(value)) return "";
-  return value
-    .map((block) => {
-      const record = asRecord(block);
-      return record?.type === "text" ? stringField(record, "text") : undefined;
-    })
-    .filter((text): text is string => Boolean(text?.trim()))
-    .join("\n\n");
+function readableEventFacts(payload: Record<string, unknown> | undefined): string[] {
+  if (!payload) return [];
+  const facts = new Map<string, string>();
+  collectReadableEventFacts(payload, facts);
+  return Array.from(facts.entries())
+    .map(([key, value]) => `${humanizeEventType(key)}: ${truncateText(value, 240)}`)
+    .slice(0, 12);
 }
 
-function toolNamesFromAssistantBlocks(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((block) => {
-      const record = asRecord(block);
-      return record?.type === "tool_use" ? stringField(record, "name") : undefined;
-    })
-    .filter((name): name is string => Boolean(name?.trim()));
+function collectReadableEventFacts(value: Record<string, unknown>, facts: Map<string, string>, prefix = "", depth = 0): void {
+  const preferredKeys = [
+    "summary",
+    "summary_text",
+    "text_preview",
+    "output_preview",
+    "stdout_preview",
+    "stderr_preview",
+    "diff_preview",
+    "message",
+    "reason",
+    "status",
+    "priority",
+    "objective",
+    "work_item_id",
+    "task_id",
+    "agent_id",
+    "turn_id",
+    "run_id",
+    "active_model",
+    "stop_reason",
+  ];
+
+  for (const key of preferredKeys) {
+    const factKey = prefix ? `${prefix}_${key}` : key;
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim()) facts.set(factKey, candidate.trim());
+    if (typeof candidate === "number" || typeof candidate === "boolean") facts.set(factKey, String(candidate));
+  }
+
+  if (depth >= 2 || facts.size >= 12) return;
+
+  for (const [key, candidate] of Object.entries(value)) {
+    if (facts.size >= 12) return;
+    const record = asRecord(candidate);
+    if (!record) continue;
+    collectReadableEventFacts(record, facts, prefix ? `${prefix}_${key}` : key, depth + 1);
+  }
 }
 
-function toolNamesFromPayload(value: Record<string, unknown> | undefined): string[] {
-  const toolNames = arrayField(value, "tool_names");
-  if (!toolNames?.length) return [];
-  return toolNames
-    .map((name) => (typeof name === "string" ? name.trim() : ""))
-    .filter((name): name is string => Boolean(name));
+function toolErrorMessage(payload: Record<string, unknown> | undefined): string | undefined {
+  const direct = stringField(payload, "error");
+  if (direct) return structuredErrorMessage(direct) ?? direct;
+
+  const error = payload?.error;
+  if (typeof error === "string" && error.trim()) return error;
+
+  const errorRecord = asRecord(error) ?? asRecord(payload?.tool_error);
+  const message = firstStringField(errorRecord, ["message", "summary", "summary_text", "reason", "detail"]);
+  if (message) return message;
+
+  const nested = firstStringField(asRecord(errorRecord?.error), ["message", "summary", "summary_text", "reason", "detail"]);
+  if (nested) return nested;
+
+  return undefined;
+}
+
+function structuredErrorMessage(value: string): string | undefined {
+  const text = value.trim();
+  if (!text.startsWith("{") && !text.startsWith("[")) return undefined;
+
+  try {
+    const record = asRecord(JSON.parse(text));
+    return firstStringField(record, ["message", "summary", "summary_text", "reason", "detail"]);
+  } catch {
+    return undefined;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -998,10 +1051,6 @@ function numberField(value: Record<string, unknown> | undefined, key: string): n
 function arrayField(value: Record<string, unknown> | undefined, key: string): unknown[] | undefined {
   const candidate = value?.[key];
   return Array.isArray(candidate) ? candidate : undefined;
-}
-
-function roundMeta(round: number | null | undefined): string | undefined {
-  return round == null ? undefined : `round ${round}`;
 }
 
 function humanizeEventType(value: string): string {
