@@ -1835,6 +1835,36 @@ impl TranscriptRepository<'_> {
         }
     }
 
+    pub fn by_id(&self, agent_id: Option<&str>, entry_id: &str) -> Result<Option<TranscriptEntry>> {
+        let connection = self.db.connection()?;
+        let payload: Option<String> = if let Some(agent_id) = agent_id {
+            connection
+                .query_row(
+                    "SELECT payload_json
+                     FROM transcript_entries
+                     WHERE agent_id = ?1 AND evidence_id = ?2
+                     LIMIT 1",
+                    params![agent_id, entry_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+        } else {
+            connection
+                .query_row(
+                    "SELECT payload_json
+                     FROM transcript_entries
+                     WHERE evidence_id = ?1
+                     LIMIT 1",
+                    [entry_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+        };
+        payload
+            .map(|payload| decode_transcript_entry_payload(&payload))
+            .transpose()
+    }
+
     pub fn max_transcript_seq(&self, agent_id: Option<&str>) -> Result<u64> {
         let connection = self.db.connection()?;
         let max_seq: Option<i64> = if let Some(agent_id) = agent_id {

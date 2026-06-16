@@ -3964,8 +3964,12 @@ pub struct BriefCreatedAuditEvent {
     pub turn_id: Option<String>,
     pub kind: BriefKind,
     pub created_at: DateTime<Utc>,
-    pub text_preview: String,
-    pub text_len: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalizes_assistant_round_id: Option<String>,
+    #[serde(default)]
+    pub content_source: BriefContentSource,
+    #[serde(default)]
+    pub content_char_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub related_message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3983,11 +3987,25 @@ impl BriefCreatedAuditEvent {
             turn_id: brief.turn_id.clone(),
             kind: brief.kind,
             created_at: brief.created_at,
-            text_preview: truncate_audit_preview(&brief.text, 600),
-            text_len: brief.text.chars().count(),
+            finalizes_assistant_round_id: brief.finalizes_assistant_round_id.clone(),
+            content_source: brief.content_source.clone(),
+            content_char_count: brief.text.chars().count(),
             related_message_id: brief.related_message_id.clone(),
             related_task_id: brief.related_task_id.clone(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BriefContentSource {
+    TranscriptEntry { entry_id: String },
+    Inline,
+}
+
+impl Default for BriefContentSource {
+    fn default() -> Self {
+        Self::Inline
     }
 }
 
@@ -4300,6 +4318,10 @@ pub struct BriefRecord {
     pub turn_id: Option<String>,
     pub kind: BriefKind,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub content_source: BriefContentSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finalizes_assistant_round_id: Option<String>,
     pub text: String,
     pub attachments: Option<Vec<BriefAttachment>>,
     pub related_message_id: Option<String>,
@@ -4324,6 +4346,8 @@ impl BriefRecord {
             turn_id: None,
             kind,
             created_at: Utc::now(),
+            content_source: BriefContentSource::Inline,
+            finalizes_assistant_round_id: None,
             text: text.into(),
             attachments: None,
             related_message_id,
@@ -5534,8 +5558,12 @@ mod tests {
         assert_eq!(payload["brief_id"], brief.id);
         assert_eq!(payload["work_item_id"], "wi-1");
         assert!(payload.get("text").is_none());
+        assert!(payload.get("text_preview").is_none());
         assert!(payload.get("attachments").is_none());
-        assert!(payload["text_preview"].as_str().unwrap().len() < brief.text.len());
+        assert_eq!(
+            payload["content_char_count"].as_u64().unwrap(),
+            brief.text.chars().count() as u64
+        );
         assert!(!payload.to_string().contains("large-attachment-value"));
     }
 

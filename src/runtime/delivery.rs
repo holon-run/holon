@@ -88,10 +88,15 @@ impl RuntimeHandle {
                 bound_brief.turn_id = guard.state.current_turn_id.clone();
             }
         }
-        self.persist_brief_evidence(&bound_brief)?;
+        let event_payload = BriefCreatedAuditEvent::from_brief(&bound_brief);
+        let mut evidence_brief = bound_brief.clone();
+        if evidence_brief.finalizes_assistant_round_id.is_some() {
+            evidence_brief.text.clear();
+        }
+        self.persist_brief_evidence(&evidence_brief)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "brief_created",
-            to_json_value(&BriefCreatedAuditEvent::from_brief(&bound_brief)),
+            to_json_value(&event_payload),
         ))?;
         let mut guard = self.inner.agent.lock().await;
         guard.state.last_brief_at = Some(bound_brief.created_at);

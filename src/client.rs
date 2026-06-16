@@ -12,6 +12,7 @@ use crate::{
     diagnostics::PerformanceDiagnosticsSnapshot,
     http::{
         AttachWorkspaceRequest, BatchGetMessagesRequest, BatchGetMessagesResponse,
+        BatchGetTranscriptEntriesRequest, BatchGetTranscriptEntriesResponse,
         ClearAgentModelRequest, ControlPromptRequest, CreateAgentRequest, DebugPromptRequest,
         DetachWorkspaceRequest, ExitWorkspaceRequest, RuntimeConfigReadResponse,
         RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SetAgentModelRequest,
@@ -444,6 +445,27 @@ impl LocalClient {
     ) -> Result<Vec<TranscriptEntry>> {
         self.get_json(&format!("/agents/{agent_id}/transcript?limit={limit}"))
             .await
+    }
+
+    pub async fn agent_transcript_entry(
+        &self,
+        agent_id: &str,
+        entry_id: &str,
+    ) -> Result<TranscriptEntry> {
+        self.get_json(&format!("/agents/{agent_id}/transcript/{entry_id}"))
+            .await
+    }
+
+    pub async fn agent_transcript_entries_batch_get(
+        &self,
+        agent_id: &str,
+        entry_ids: Vec<String>,
+    ) -> Result<BatchGetTranscriptEntriesResponse> {
+        self.post_json(
+            &format!("/agents/{agent_id}/transcript:batchGet"),
+            &BatchGetTranscriptEntriesRequest { entry_ids },
+        )
+        .await
     }
 
     pub async fn agent_tasks(&self, agent_id: &str, limit: usize) -> Result<Vec<TaskRecord>> {

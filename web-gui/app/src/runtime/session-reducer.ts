@@ -5,6 +5,7 @@ import type {
   AgentTimelineItemKind,
   DisplayLevel,
   RuntimeMessageEnvelope,
+  RuntimeTranscriptEntry,
 } from "./types";
 
 export interface SessionEventEnvelope {
@@ -32,6 +33,7 @@ export interface ReduceAgentSessionInput {
   eventDisplayLevel?: DisplayLevel;
   includeDebug?: boolean;
   messagesById?: Record<string, RuntimeMessageEnvelope>;
+  transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>;
 }
 
 interface SessionItemDraft {
@@ -73,7 +75,13 @@ const debugOnlyToolNames = new Set(["WaitFor"]);
 export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): AgentTimelineItem[] {
   const eventDisplayLevel = input.eventDisplayLevel ?? "debug";
   const eventItems = (input.events.events ?? []).map((event) =>
-    projectEventEnvelope(event, eventDisplayLevel, input.includeDebug ?? false, input.messagesById),
+    projectEventEnvelope(
+      event,
+      eventDisplayLevel,
+      input.includeDebug ?? false,
+      input.messagesById,
+      input.transcriptEntriesById,
+    ),
   );
 
   const sorted = mergeAgentTimelineItems([], eventItems)
@@ -135,12 +143,13 @@ function projectEventEnvelope(
   eventDisplayLevel: DisplayLevel,
   includeDebug: boolean,
   messagesById: Record<string, RuntimeMessageEnvelope> | undefined,
+  transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
 ): AgentTimelineItem | undefined {
   if (!event.id && event.event_seq == null) return undefined;
   const id = event.id ?? `event-${event.event_seq}`;
   const payload = asRecord(event.payload);
   const eventType = event.type ?? "runtime_event";
-  const projection = projectRuntimeEvent(eventType, payload, messagesById);
+  const projection = projectRuntimeEvent(eventType, payload, messagesById, transcriptEntriesById);
   if (!projection) return undefined;
   const meta = eventMeta(eventType, payload, event.event_seq);
 
@@ -223,6 +232,7 @@ function projectRuntimeEvent(
   eventType: string,
   payload: Record<string, unknown> | undefined,
   messagesById?: Record<string, RuntimeMessageEnvelope>,
+  transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
 ): (Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string }) | undefined {
   if (eventType === "message_enqueued") {
     const message = messageEnvelopeProjection(payload, messagesById);
@@ -247,14 +257,14 @@ function projectRuntimeEvent(
     return {
       kind: "assistant",
       label: stringField(payload, "kind") === "result" ? "Result" : "Brief Created",
-      body: stringField(payload, "text") ?? "Brief text unavailable.",
+      body: transcriptTextForPayload(payload, transcriptEntriesById) || readableTextWithoutSummary(payload) || "Brief text unavailable.",
       timestamp: stringField(payload, "created_at"),
       minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
   }
 
   if (eventType === "assistant_round_recorded") {
-    return projectAssistantRoundRecorded(payload);
+    return projectAssistantRoundRecorded(payload, transcriptEntriesById);
   }
 
   if (eventType === "tool_executed" || eventType === "tool_execution_failed") {
@@ -336,7 +346,18 @@ function runtimeEventDisplayLevel(eventType: string): DisplayLevel {
 
 function projectAssistantRoundRecorded(
   payload: Record<string, unknown> | undefined,
+  transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
 ): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> | undefined {
+  const transcriptText = transcriptTextForPayload(payload, transcriptEntriesById);
+  if (transcriptText) {
+    return {
+      kind: "assistant",
+      label: "Assistant round",
+      body: transcriptText,
+      minDisplayLevel: "verbose",
+    };
+  }
+
   const textPreview = stringField(payload, "text_preview");
   if (textPreview) {
     return {
@@ -897,6 +918,34 @@ function hydratedMessageForPayload(
 ): RuntimeMessageEnvelope | undefined {
   const messageId = stringField(payload, "message_id");
   return messageId ? messagesById?.[messageId] : undefined;
+}
+
+function transcriptTextForPayload(
+  payload: Record<string, unknown> | undefined,
+  transcriptEntriesById: Record<string, RuntimeTranscriptEntry> | undefined,
+): string | undefined {
+  const entryId = transcriptEntryIdForPayload(payload);
+  const entry = entryId ? transcriptEntriesById?.[entryId] : undefined;
+  return transcriptEntryText(entry);
+}
+
+export function transcriptEntryIdForPayload(payload: Record<string, unknown> | undefined): string | undefined {
+  const directId = stringField(payload, "assistant_round_id") ?? stringField(payload, "finalizes_assistant_round_id");
+  if (directId) return directId;
+  const contentSource = asRecord(payload?.content_source);
+  return stringField(contentSource, "entry_id");
+}
+
+function transcriptEntryText(entry: RuntimeTranscriptEntry | undefined): string | undefined {
+  const data = asRecord(entry?.data);
+  const text = stringField(data, "text");
+  if (text) return text;
+  const blocks = Array.isArray(data?.blocks) ? data.blocks : [];
+  const parts = blocks.flatMap((block) => {
+    const record = asRecord(block);
+    return stringField(record, "text") ?? stringField(record, "content") ?? [];
+  });
+  return compactJoin(parts);
 }
 
 function messageBodyText(body: Record<string, unknown> | undefined): string {

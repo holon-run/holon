@@ -43,6 +43,7 @@ use super::{
 
 pub(super) struct AgentLoopOutcome {
     pub(super) final_text: String,
+    pub(super) final_text_source_assistant_round_id: Option<String>,
     pub(super) turn_index: u64,
     pub(super) terminal: TurnTerminalRecord,
     pub(super) should_sleep: bool,
@@ -1612,6 +1613,7 @@ impl RuntimeHandle {
             .await?;
         Ok(Some(AgentLoopOutcome {
             final_text,
+            final_text_source_assistant_round_id: None,
             turn_index: terminal.turn_index,
             terminal,
             should_sleep: false,
@@ -1871,6 +1873,7 @@ impl RuntimeHandle {
         ))?;
         Ok(Some(AgentLoopOutcome {
             final_text,
+            final_text_source_assistant_round_id: None,
             turn_index: terminal.turn_index,
             terminal,
             should_sleep: false,
@@ -2153,6 +2156,7 @@ impl TurnExecution<'_> {
         let mut round = 0usize;
         let mut truncated_text_history = Vec::new();
         let mut last_assistant_message: Option<String> = None;
+        let mut last_assistant_round_id: Option<String>;
         let mut max_output_recovery_count = 0usize;
         let mut rounds_since_work_item_update = 0usize;
         let mut rounds_since_work_item_reminder = work_item_stale_reminder_cooldown_rounds();
@@ -2231,6 +2235,7 @@ impl TurnExecution<'_> {
                         .await?;
                     return Ok(AgentLoopOutcome {
                         final_text,
+                        final_text_source_assistant_round_id: None,
                         turn_index: terminal.turn_index,
                         terminal,
                         should_sleep: false,
@@ -2464,6 +2469,7 @@ impl TurnExecution<'_> {
                             .await?;
                         return Ok(AgentLoopOutcome {
                             final_text,
+                            final_text_source_assistant_round_id: None,
                             turn_index: terminal.turn_index,
                             terminal,
                             should_sleep: false,
@@ -2786,46 +2792,45 @@ impl TurnExecution<'_> {
                     }),
                 ))?;
             }
-            runtime.persist_transcript_evidence(&TranscriptEntry {
-                    stop_reason: stop_reason.clone(),
-                    input_tokens: Some(response.input_tokens),
-                    output_tokens: Some(response.output_tokens),
-                    ..TranscriptEntry::new(
-                        agent_id.to_string(),
-                        TranscriptEntryKind::AssistantRound,
-                        Some(round),
-                        None,
-                        serde_json::json!({
-                            "blocks": &completed_round_assistant_blocks,
-                            "work_item_id": round_work_item_id.clone(),
-                            "token_usage": token_usage,
-                            "provider_cache_usage": cache_usage,
-                            "prompt_cache_key": effective_prompt.cache_identity.prompt_cache_key.clone(),
-                            "context_fingerprint": effective_prompt.cache_identity.context_fingerprint.clone(),
-                            "compression_epoch": effective_prompt.cache_identity.compression_epoch,
-                            "requested_model": model_attempt_state.requested_model,
-                            "active_model": model_attempt_state.active_model,
-                            "fallback_active": model_attempt_state.fallback_active,
-                            "context_management": context_management,
-                            "provider_request_diagnostics": request_diagnostics,
-                            "provider_attempt_timeline": attempt_timeline,
-                        }),
-                    )
-                })?;
+            let assistant_round_transcript_entry = TranscriptEntry {
+                stop_reason: stop_reason.clone(),
+                input_tokens: Some(response.input_tokens),
+                output_tokens: Some(response.output_tokens),
+                ..TranscriptEntry::new(
+                    agent_id.to_string(),
+                    TranscriptEntryKind::AssistantRound,
+                    Some(round),
+                    None,
+                    serde_json::json!({
+                        "blocks": &completed_round_assistant_blocks,
+                        "work_item_id": round_work_item_id.clone(),
+                        "token_usage": token_usage,
+                        "provider_cache_usage": cache_usage,
+                        "prompt_cache_key": effective_prompt.cache_identity.prompt_cache_key.clone(),
+                        "context_fingerprint": effective_prompt.cache_identity.context_fingerprint.clone(),
+                        "compression_epoch": effective_prompt.cache_identity.compression_epoch,
+                        "requested_model": model_attempt_state.requested_model,
+                        "active_model": model_attempt_state.active_model,
+                        "fallback_active": model_attempt_state.fallback_active,
+                        "context_management": context_management,
+                        "provider_request_diagnostics": request_diagnostics,
+                        "provider_attempt_timeline": attempt_timeline,
+                    }),
+                )
+            };
+            let assistant_round_id = assistant_round_transcript_entry.id.clone();
+            runtime.persist_transcript_evidence(&assistant_round_transcript_entry)?;
+            last_assistant_round_id = Some(assistant_round_id.clone());
             runtime.inner.storage.append_event(&AuditEvent::new(
                 "assistant_round_recorded",
                 serde_json::json!({
+                    "assistant_round_id": assistant_round_id,
                     "agent_id": agent_id,
                     "turn_index": turn_index,
                     "run_id": run_id,
                     "round": round,
                     "work_item_id": round_work_item_id.clone(),
                     "stop_reason": stop_reason,
-                    "text_preview": if combined_text.is_empty() {
-                        None::<String>
-                    } else {
-                        Some(truncate_preview(&combined_text, ROUND_TEXT_PREVIEW_LIMIT))
-                    },
                     "text_block_count": text_blocks.len(),
                     "text_char_count": combined_text.chars().count(),
                     "tool_call_count": tool_calls.len(),
@@ -2973,6 +2978,7 @@ impl TurnExecution<'_> {
                     .await?;
                 return Ok(AgentLoopOutcome {
                     final_text,
+                    final_text_source_assistant_round_id: last_assistant_round_id.clone(),
                     turn_index: terminal.turn_index,
                     terminal,
                     should_sleep: true,
@@ -3351,6 +3357,7 @@ impl TurnExecution<'_> {
                     .await?;
                 return Ok(AgentLoopOutcome {
                     final_text,
+                    final_text_source_assistant_round_id: last_assistant_round_id.clone(),
                     turn_index: terminal.turn_index,
                     terminal,
                     should_sleep: true,

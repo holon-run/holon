@@ -522,6 +522,10 @@ impl RuntimeHandle {
         self.inner.storage.read_recent_transcript(limit)
     }
 
+    pub async fn transcript_entry_by_id(&self, entry_id: &str) -> Result<Option<TranscriptEntry>> {
+        self.inner.storage.read_transcript_entry_by_id(entry_id)
+    }
+
     pub(crate) async fn child_agent_observability(
         &self,
     ) -> Result<ChildAgentObservabilitySnapshot> {

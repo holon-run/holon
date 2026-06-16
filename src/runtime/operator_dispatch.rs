@@ -100,12 +100,20 @@ impl RuntimeHandle {
             let mut brief =
                 brief::make_failure(&message.agent_id, message, outcome.final_text.clone());
             brief.turn_index = Some(outcome.turn_index);
+            bind_brief_to_assistant_round(
+                &mut brief,
+                outcome.final_text_source_assistant_round_id.as_deref(),
+            );
             self.persist_brief(&brief).await?;
         } else {
             if !outcome.terminal_delivery.suppress_normal_brief {
                 let mut brief =
                     brief::make_result(&message.agent_id, message, outcome.final_text.clone());
                 brief.turn_index = Some(outcome.turn_index);
+                bind_brief_to_assistant_round(
+                    &mut brief,
+                    outcome.final_text_source_assistant_round_id.as_deref(),
+                );
                 self.persist_brief(&brief).await?;
             }
             for promotion in &outcome.terminal_delivery.promoted_completion_reports {
@@ -692,6 +700,15 @@ fn builtin_web_search_selection_diagnostics(
         backend_kind: capability.map(|capability| capability.backend_kind.clone()),
         probe_status,
         probe_cache_hit,
+    }
+}
+
+fn bind_brief_to_assistant_round(brief: &mut BriefRecord, entry_id: Option<&str>) {
+    if let Some(entry_id) = entry_id {
+        brief.finalizes_assistant_round_id = Some(entry_id.to_string());
+        brief.content_source = crate::types::BriefContentSource::TranscriptEntry {
+            entry_id: entry_id.to_string(),
+        };
     }
 }
 
