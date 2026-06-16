@@ -22,9 +22,11 @@ import type {
   CredentialProfileStatus,
   CredentialStoreState,
   RuntimeBriefRecord,
+  RuntimeTaskOutputResult,
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeTranscriptEntry,
+  RuntimeToolExecutionRecord,
   SearchResponse,
 } from "./types";
 
@@ -218,6 +220,7 @@ const staleTimers = new Map<string, number>();
 const messageHydrationInFlight = new Map<string, Set<string>>();
 const transcriptHydrationInFlight = new Map<string, Set<string>>();
 const briefHydrationInFlight = new Map<string, Set<string>>();
+const inspectorDetailInFlight = new Set<string>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
 const STREAM_FLUSH_INTERVAL_MS = 100;
@@ -456,11 +459,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       return { displayLevel, displayLevelsByAgentId };
     }),
   setInspectorOpen: (open) => set({ inspectorOpen: open }),
-  inspectActivity: (agentId, activity) =>
+  inspectActivity: (agentId, activity) => {
     set({
       inspectorOpen: true,
       inspectorSelection: { kind: "activity", agentId, activity },
-    }),
+    });
+    hydrateInspectorActivityDetail(get, set, agentId, activity);
+  },
   clearInspectorSelection: () => set({ inspectorSelection: undefined }),
   toggleInspector: () => set((state) => ({ inspectorOpen: !state.inspectorOpen })),
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
@@ -492,6 +497,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     messageHydrationInFlight.clear();
     transcriptHydrationInFlight.clear();
     briefHydrationInFlight.clear();
+    inspectorDetailInFlight.clear();
     for (const timer of streamFlushTimers.values()) window.clearTimeout(timer);
     for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
     for (const timer of staleTimers.values()) window.clearTimeout(timer);
@@ -956,6 +962,89 @@ function stopAgentEventStream(agentId: string, set?: StoreSet): void {
     window.clearTimeout(staleTimer);
     staleTimers.delete(agentId);
   }
+}
+
+function hydrateInspectorActivityDetail(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  activity: AgentTimelineActivity,
+): void {
+  const refs = inspectorDetailRefs(activity);
+  if (!refs.toolExecutionId && !refs.taskId) return;
+
+  const key = `${agentId}:${activity.id}:${refs.toolExecutionId ?? ""}:${refs.taskId ?? ""}`;
+  if (inspectorDetailInFlight.has(key)) return;
+  inspectorDetailInFlight.add(key);
+  setInspectorActivityDetailState(set, agentId, activity.id, { loading: true });
+
+  void Promise.all([
+    refs.toolExecutionId ? runtimeClient.getToolExecution(agentId, refs.toolExecutionId) : Promise.resolve(undefined),
+    refs.taskId ? runtimeClient.getTaskOutput(agentId, refs.taskId) : Promise.resolve(undefined),
+  ])
+    .then(([toolExecution, taskOutput]) => {
+      setInspectorActivityDetailState(set, agentId, activity.id, {
+        loading: false,
+        toolExecution,
+        taskOutput,
+      });
+    })
+    .catch((error) => {
+      setInspectorActivityDetailState(set, agentId, activity.id, {
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })
+    .finally(() => {
+      inspectorDetailInFlight.delete(key);
+      const selection = get().inspectorSelection;
+      if (selection?.kind === "activity" && selection.agentId === agentId && selection.activity.id === activity.id) {
+        set({ inspectorSelection: selection });
+      }
+    });
+}
+
+function setInspectorActivityDetailState(
+  set: StoreSet,
+  agentId: string,
+  activityId: string,
+  detailState: {
+    loading?: boolean;
+    error?: string;
+    toolExecution?: RuntimeToolExecutionRecord;
+    taskOutput?: RuntimeTaskOutputResult;
+  },
+): void {
+  set((state) => {
+    const selection = state.inspectorSelection;
+    if (selection?.kind !== "activity" || selection.agentId !== agentId || selection.activity.id !== activityId) return {};
+    return {
+      inspectorSelection: {
+        ...selection,
+        detailState: {
+          ...selection.detailState,
+          ...detailState,
+        },
+      },
+    };
+  });
+}
+
+function inspectorDetailRefs(activity: AgentTimelineActivity): { toolExecutionId?: string; taskId?: string } {
+  const rawEvent = asRecord(activity.rawEvent);
+  const payload = asRecord(rawEvent?.payload) ?? asRecord(activity.rawEvent);
+  return {
+    toolExecutionId: firstStringField(payload, ["tool_execution_id", "toolExecutionId"]),
+    taskId: firstStringField(payload, ["task_id", "taskId"]),
+  };
+}
+
+function firstStringField(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = stringField(record, key);
+    if (value) return value;
+  }
+  return undefined;
 }
 
 function enqueueStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnvelopeDto): void {

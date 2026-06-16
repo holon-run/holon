@@ -14,7 +14,9 @@ import type {
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeModelOption,
+  RuntimeTaskOutputResult,
   RuntimeTranscriptEntry,
+  RuntimeToolExecutionRecord,
   SearchResponse,
   TaskSummary,
   WorkItemSummary,
@@ -472,6 +474,28 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         return {};
       }
       return fetchBriefRecordsById(baseUrl, fetchImpl, requestHeaders, agentId, briefIds);
+    },
+    async getToolExecution(agentId: string, toolExecutionId: string): Promise<RuntimeToolExecutionRecord> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      return getJson<RuntimeToolExecutionRecord>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/tool-executions/${encodeURIComponent(toolExecutionId)}`,
+        { headers: requestHeaders },
+      );
+    },
+    async getTaskOutput(agentId: string, taskId: string): Promise<RuntimeTaskOutputResult> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      return getJson<RuntimeTaskOutputResult>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/output?block=false`,
+        { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers: requestHeaders },
+      );
     },
     async getModels(): Promise<RuntimeModelCatalog> {
       if (!baseUrl) {

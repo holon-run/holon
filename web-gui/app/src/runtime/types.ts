@@ -235,10 +235,56 @@ export interface AgentTimelineActivity {
   debug?: string;
 }
 
+export interface RuntimeToolExecutionRecord {
+  id?: string;
+  agent_id?: string;
+  tool_call_id?: string;
+  tool_name?: string;
+  status?: string;
+  summary?: string;
+  input?: unknown;
+  result?: unknown;
+  error?: unknown;
+  duration_ms?: number;
+  created_at?: string;
+  completed_at?: string;
+  [key: string]: unknown;
+}
+
+export interface RuntimeTaskOutputResult {
+  retrieval_status?: string;
+  task?: {
+    task_id?: string;
+    kind?: string;
+    status?: string;
+    summary?: string;
+    output_preview?: string;
+    output_truncated?: boolean;
+    result_summary?: string;
+    exit_status?: number;
+    [key: string]: unknown;
+  };
+  status?: string;
+  stdout?: string;
+  stderr?: string;
+  output?: string;
+  summary?: string;
+  truncated?: boolean;
+  [key: string]: unknown;
+}
+
+export interface InspectorActivityDetailState {
+  loading?: boolean;
+  error?: string;
+  toolExecution?: RuntimeToolExecutionRecord;
+  taskOutput?: RuntimeTaskOutputResult;
+}
+
 export interface InspectorSelection {
   kind: "activity";
   agentId: string;
   activity: AgentTimelineActivity;
+  detailState?: InspectorActivityDetailState;
 }
 
 export interface AgentTimelineItem {

@@ -1,6 +1,14 @@
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
-import type { AgentSummary, AgentTimelineActivity, AgentTimelineItemDetail, InspectorSelection } from "../../runtime/types";
+import type {
+  AgentSummary,
+  AgentTimelineActivity,
+  AgentTimelineItemDetail,
+  InspectorActivityDetailState,
+  InspectorSelection,
+  RuntimeTaskOutputResult,
+  RuntimeToolExecutionRecord,
+} from "../../runtime/types";
 
 interface InspectorPanelProps {
   agent: AgentSummary;
@@ -8,6 +16,79 @@ interface InspectorPanelProps {
   open: boolean;
   onClearSelection: () => void;
   onClose: () => void;
+}
+
+function HydratedActivityDetails({ detailState }: { detailState?: InspectorActivityDetailState }) {
+  if (!detailState) return null;
+  if (detailState.loading) {
+    return (
+      <section className="context-card inspector-card inspector-detail data">
+        <div className="context-head">
+          <span className="eyebrow">Full detail</span>
+          <strong>Loading…</strong>
+        </div>
+        <pre>Fetching full tool/task detail from the runtime API.</pre>
+      </section>
+    );
+  }
+  if (detailState.error) {
+    return (
+      <section className="context-card inspector-card inspector-detail data">
+        <div className="context-head">
+          <span className="eyebrow">Full detail</span>
+          <strong>Unavailable</strong>
+        </div>
+        <pre>{detailState.error}</pre>
+      </section>
+    );
+  }
+  return (
+    <>
+      {detailState.toolExecution ? <ToolExecutionDetail record={detailState.toolExecution} /> : null}
+      {detailState.taskOutput ? <TaskOutputDetail output={detailState.taskOutput} /> : null}
+    </>
+  );
+}
+
+function ToolExecutionDetail({ record }: { record: RuntimeToolExecutionRecord }) {
+  return (
+    <section className="context-card inspector-card inspector-detail data">
+      <div className="context-head">
+        <span className="eyebrow">Tool execution</span>
+        <strong>{compactMeta([record.tool_name, record.status])}</strong>
+      </div>
+      <pre>{formatInspectorJson(record)}</pre>
+    </section>
+  );
+}
+
+function TaskOutputDetail({ output }: { output: RuntimeTaskOutputResult }) {
+  const text = taskOutputText(output) || formatInspectorJson(output);
+  return (
+    <section className="context-card inspector-card inspector-detail output">
+      <div className="context-head">
+        <span className="eyebrow">Task output</span>
+        <strong>{compactMeta([output.task?.status ?? output.status, output.retrieval_status])}</strong>
+      </div>
+      <pre>{text}</pre>
+    </section>
+  );
+}
+
+function taskOutputText(output: RuntimeTaskOutputResult): string {
+  return [
+    textField(output.task?.result_summary),
+    textField(output.task?.output_preview),
+    textField(output.output),
+    textField(output.stdout),
+    textField(output.stderr),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function textField(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 function formatInspectorJson(value: unknown): string {
@@ -41,7 +122,11 @@ export function InspectorPanel({ agent, selection, open, onClearSelection, onClo
         </div>
       </div>
       <div className="panel-body">
-        {selection?.kind === "activity" ? <ActivityDetails activity={selection.activity} /> : <SessionOverview agent={agent} />}
+        {selection?.kind === "activity" ? (
+          <ActivityDetails activity={selection.activity} detailState={selection.detailState} />
+        ) : (
+          <SessionOverview agent={agent} />
+        )}
       </div>
     </aside>
   );
@@ -211,7 +296,7 @@ function WorkItemCard({ workItem, featured = false }: { workItem: NonNullable<Ag
   );
 }
 
-function ActivityDetails({ activity }: { activity: AgentTimelineActivity }) {
+function ActivityDetails({ activity, detailState }: { activity: AgentTimelineActivity; detailState?: InspectorActivityDetailState }) {
   const detail = activity.detail;
   const rawEventText = formatInspectorJson(activity.rawEvent);
 
@@ -259,6 +344,8 @@ function ActivityDetails({ activity }: { activity: AgentTimelineActivity }) {
           description="This activity has no projected detail yet. Use the raw event below for the source payload."
         />
       )}
+
+      <HydratedActivityDetails detailState={detailState} />
 
       {rawEventText ? (
         <section className="context-card inspector-card inspector-detail data">
