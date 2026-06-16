@@ -27,10 +27,10 @@ use crate::{
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         ActiveWorkspaceEntry, AgentModelOverrideAuditEvent, AgentState, AgentStateChangedEvent,
-        AgentSummary, BriefCreatedAuditEvent, BriefRecord, ClosureDecision,
+        AgentSummary, BriefContentSource, BriefCreatedAuditEvent, BriefRecord, ClosureDecision,
         ExternalTriggerStateSnapshot, MessageEnvelope, MessageOrigin, TaskLifecycleAuditEvent,
-        TaskRecord, TimerRecord, TimerStatus, WaitingIntentRecord, WorkItemLifecycleAuditEvent,
-        WorkItemRecord, WorkItemState, WorktreeSession,
+        TaskRecord, TimerRecord, TimerStatus, TranscriptEntry, WaitingIntentRecord,
+        WorkItemLifecycleAuditEvent, WorkItemRecord, WorkItemState, WorktreeSession,
     },
 };
 
@@ -101,6 +101,7 @@ pub(crate) struct TuiProjection {
     durable_conversation_log: Vec<ProjectionEventRecord>,
     live_working_activity_events: Vec<LiveWorkingActivityRecord>,
     message_cache: BTreeMap<String, MessageEnvelope>,
+    pub(crate) brief_text_cache: BTreeMap<String, String>,
 }
 
 impl TuiProjection {
@@ -130,6 +131,7 @@ impl TuiProjection {
             durable_conversation_log: Vec::new(),
             live_working_activity_events: Vec::new(),
             message_cache: BTreeMap::new(),
+            brief_text_cache: BTreeMap::new(),
         };
         projection
     }
@@ -150,6 +152,7 @@ impl TuiProjection {
         refreshed.event_log = mem::take(&mut self.event_log);
         refreshed.durable_conversation_log = mem::take(&mut self.durable_conversation_log);
         refreshed.message_cache = mem::take(&mut self.message_cache);
+        refreshed.brief_text_cache = mem::take(&mut self.brief_text_cache);
         *self = refreshed;
     }
 
@@ -366,9 +369,10 @@ impl TuiProjection {
                 }
             }
             if is_presentation_reducer_event(&record) {
+                let brief_lookup = crate::presentation::BriefTextLookup(&self.brief_text_cache);
                 let timed_items = self
                     .presentation_reducer
-                    .reduce(std::slice::from_ref(&record));
+                    .reduce(std::slice::from_ref(&record), &brief_lookup);
                 let (reducer_events, log_items) = presentation_debug_items_for_event(
                     self.event_log.as_slice(),
                     &record,
@@ -780,6 +784,51 @@ impl TuiProjection {
                 .is_none();
         }
         changed
+    }
+
+    pub(crate) fn missing_brief_entry_ids_for_hydration(&self) -> Vec<String> {
+        self.event_log
+            .iter()
+            .chain(self.durable_conversation_log.iter())
+            .filter(|event| event.kind == "brief_created")
+            .filter_map(|event| {
+                let brief =
+                    serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
+                match &brief.content_source {
+                    BriefContentSource::TranscriptEntry { entry_id } => {
+                        if self.brief_text_cache.contains_key(entry_id) {
+                            return None;
+                        }
+                        Some(entry_id.clone())
+                    }
+                    BriefContentSource::Inline => None,
+                }
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    pub(crate) fn hydrate_brief_texts(&mut self, entries: Vec<TranscriptEntry>) -> bool {
+        let mut changed = false;
+        for entry in entries {
+            if let Some(text) = assistant_round_text_from_entry(&entry) {
+                // Key by the transcript entry id so multiple briefs sharing
+                // the same transcript entry resolve to the same text.
+                changed |= self.brief_text_cache.insert(entry.id, text).is_none();
+            }
+        }
+        changed
+    }
+
+    pub(crate) fn brief_text_for_event(&self, event: &ProjectionEventRecord) -> Option<&str> {
+        let brief = serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
+        match &brief.content_source {
+            BriefContentSource::TranscriptEntry { entry_id } => {
+                self.brief_text_cache.get(entry_id).map(String::as_str)
+            }
+            BriefContentSource::Inline => None,
+        }
     }
 
     pub(crate) fn message_for_event(
@@ -1431,8 +1480,12 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
         "brief_created" => decode_payload::<BriefRecord>(&event.data.payload)
             .map(|brief| trim_summary(&brief.text))
             .or_else(|| {
-                decode_payload::<BriefCreatedAuditEvent>(&event.data.payload)
-                    .map(|brief| format!("{:?} brief created", brief.kind))
+                decode_payload::<BriefCreatedAuditEvent>(&event.data.payload).map(|brief| {
+                    format!(
+                        "{:?} brief ({} chars)",
+                        brief.kind, brief.content_char_count
+                    )
+                })
             })
             .unwrap_or_else(|| event.data.event_type.clone()),
         "task_created" | "task_status_updated" | "task_result_received" => {
@@ -1611,6 +1664,28 @@ fn trim_summary(value: &str) -> String {
         trimmed.push('…');
         trimmed
     }
+}
+
+/// Extract concatenated text blocks from an `AssistantRound` transcript entry.
+/// Returns `None` if the entry is not an assistant round or has no text.
+fn assistant_round_text_from_entry(entry: &TranscriptEntry) -> Option<String> {
+    let blocks = entry.data.get("blocks")?.as_array()?;
+    let text = blocks
+        .iter()
+        .filter_map(|block| {
+            let kind = block.get("type").and_then(Value::as_str)?;
+            if kind != "text" {
+                return None;
+            }
+            block
+                .get("Text")
+                .and_then(|v| v.get("text"))
+                .or_else(|| block.get("text"))
+                .and_then(Value::as_str)
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!text.trim().is_empty()).then_some(text)
 }
 
 #[cfg(test)]

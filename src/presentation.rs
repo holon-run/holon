@@ -428,7 +428,8 @@ impl PresentationItem {
 
 pub(crate) fn render_live_working_activity_text(event: &ProjectionEventRecord) -> Option<String> {
     let mut reducer = PresentationReducer::new();
-    let items = reducer.reduce(&[event.clone()]);
+    let empty_lookup = BriefTextLookup(&std::collections::BTreeMap::new());
+    let items = reducer.reduce(&[event.clone()], &empty_lookup);
     items.iter().find_map(|timed| {
         if timed.item.is_live_working_activity_item()
             && timed
@@ -778,7 +779,11 @@ impl PresentationReducer {
         Self::default()
     }
 
-    pub(crate) fn reduce(&mut self, events: &[ProjectionEventRecord]) -> Vec<TimedItem> {
+    pub(crate) fn reduce(
+        &mut self,
+        events: &[ProjectionEventRecord],
+        brief_texts: &BriefTextLookup,
+    ) -> Vec<TimedItem> {
         let mut items: Vec<TimedItem> = Vec::new();
         let final_brief_texts = final_brief_texts(events);
         let mut local_open_command_items: HashMap<String, usize> = HashMap::new();
@@ -802,7 +807,7 @@ impl PresentationReducer {
                 }
 
                 "brief_created" => {
-                    if let Some((key, item)) = brief_result_item(event) {
+                    if let Some((key, item)) = brief_result_item(event, brief_texts) {
                         let duplicates_observed_preview = match &item {
                             PresentationItem::AssistantResult { body, .. } => self
                                 .observed_assistant_texts
@@ -1177,7 +1182,25 @@ impl PresentationReducer {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-fn brief_result_item(event: &ProjectionEventRecord) -> Option<(String, PresentationItem)> {
+/// Brief text resolved from transcript hydration, keyed by transcript entry_id.
+pub(crate) struct BriefTextLookup<'a>(pub(crate) &'a std::collections::BTreeMap<String, String>);
+
+impl<'a> BriefTextLookup<'a> {
+    pub(crate) fn resolve_for_event(&self, event: &ProjectionEventRecord) -> Option<&str> {
+        let brief = serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
+        match brief.content_source {
+            crate::types::BriefContentSource::TranscriptEntry { ref entry_id } => {
+                self.0.get(entry_id).map(String::as_str)
+            }
+            crate::types::BriefContentSource::Inline => None,
+        }
+    }
+}
+
+fn brief_result_item(
+    event: &ProjectionEventRecord,
+    brief_texts: &BriefTextLookup,
+) -> Option<(String, PresentationItem)> {
     match serde_json::from_value::<BriefRecord>(event.payload.clone()) {
         Ok(brief) => {
             if brief.kind == BriefKind::Ack {
@@ -1208,7 +1231,15 @@ fn brief_result_item(event: &ProjectionEventRecord) -> Option<(String, Presentat
                     format!("id:{}", brief.brief_id),
                     PresentationItem::AssistantResult {
                         brief_id: Some(brief.brief_id),
-                        body: event.summary.clone(),
+                        body: brief_texts
+                            .resolve_for_event(event)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "{:?} brief ({} chars)",
+                                    brief.kind, brief.content_char_count
+                                )
+                            }),
                         outcome: match brief.kind {
                             BriefKind::Failure => Outcome::Failure,
                             BriefKind::Result => Outcome::Success,
@@ -2440,7 +2471,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[start.clone(), finish.clone()]);
+        let items = reducer.reduce(
+            &[start.clone(), finish.clone()],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         // Should produce exactly 1 CommandExecuted (merged)
         assert_eq!(items.len(), 1);
@@ -2479,7 +2513,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[start, finish]);
+        let items = reducer.reduce(
+            &[start, finish],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -2520,7 +2557,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[start, finish]);
+        let items = reducer.reduce(
+            &[start, finish],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -2570,7 +2610,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[start.clone(), progress, finish.clone()]);
+        let items = reducer.reduce(
+            &[start.clone(), progress, finish.clone()],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         let command_items = items
             .iter()
@@ -2624,10 +2667,16 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let started = reducer.reduce(&[start]);
+        let started = reducer.reduce(
+            &[start],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
         assert!(started.is_empty());
 
-        let finished = reducer.reduce(&[finish]);
+        let finished = reducer.reduce(
+            &[finish],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
         assert_eq!(finished.len(), 1);
         assert_eq!(
             finished[0].dedupe_key,
@@ -2663,7 +2712,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -2687,7 +2739,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert!(items.is_empty());
     }
@@ -2705,7 +2760,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert!(items.is_empty());
     }
@@ -2723,7 +2781,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -2744,7 +2805,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -2786,7 +2850,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -2821,7 +2888,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -2853,7 +2923,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 2);
         match &items[0].item {
@@ -2886,7 +2959,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -2910,7 +2986,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -2944,7 +3023,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3000,7 +3082,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[created, completed]);
+        let items = reducer.reduce(
+            &[created, completed],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 2);
         match &items[0].item {
@@ -3063,7 +3148,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[created, completed]);
+        let items = reducer.reduce(
+            &[created, completed],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 2);
         match &items[0].item {
@@ -3111,7 +3199,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[updated, picked]);
+        let items = reducer.reduce(
+            &[updated, picked],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 2);
         for item in items {
@@ -3157,7 +3248,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[updated, tool_event]);
+        let items = reducer.reduce(
+            &[updated, tool_event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3216,7 +3310,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[created, waiting]);
+        let items = reducer.reduce(
+            &[created, waiting],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 2);
         match &items[1].item {
@@ -3242,7 +3339,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[cancelled]);
+        let items = reducer.reduce(
+            &[cancelled],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         assert!(matches!(
@@ -3261,7 +3361,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert!(items.is_empty());
     }
@@ -3280,7 +3383,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3310,7 +3416,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3340,7 +3449,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3365,7 +3477,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         let item = &items[0].item;
@@ -3393,7 +3508,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3429,7 +3547,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3454,7 +3575,10 @@ mod tests {
         let event = make_event("brief_created", "Brief: completed the task", json!(brief));
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3483,7 +3607,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3493,7 +3620,7 @@ mod tests {
                 outcome,
             } => {
                 assert_eq!(brief_id.as_deref(), Some("brief-1"));
-                assert_eq!(body, "Brief");
+                assert_eq!(body, "Result brief (22 chars)");
                 assert_eq!(*outcome, Outcome::Success);
             }
             other => panic!("expected AssistantResult, got {:?}", other),
@@ -3515,7 +3642,10 @@ mod tests {
         second.event_seq = 2;
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[first, second]);
+        let items = reducer.reduce(
+            &[first, second],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3546,7 +3676,10 @@ mod tests {
         second.event_seq = 2;
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[first, second]);
+        let items = reducer.reduce(
+            &[first, second],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3574,7 +3707,10 @@ mod tests {
         let event = make_event("brief_created", "Queued work: duplicate", json!(brief));
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert!(items.is_empty());
     }
@@ -3611,7 +3747,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[assistant, text_only, brief_event]);
+        let items = reducer.reduce(
+            &[assistant, text_only, brief_event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3642,7 +3781,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[assistant, text_only]);
+        let items = reducer.reduce(
+            &[assistant, text_only],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3676,7 +3818,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[assistant, text_only]);
+        let items = reducer.reduce(
+            &[assistant, text_only],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3711,8 +3856,14 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let first = reducer.reduce(&[assistant]);
-        let second = reducer.reduce(&[text_only]);
+        let first = reducer.reduce(
+            &[assistant],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
+        let second = reducer.reduce(
+            &[text_only],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(first.len(), 1);
         assert!(second.is_empty());
@@ -3738,8 +3889,14 @@ mod tests {
         let brief_event = make_event("brief_created", "Issue recorded: #1128", json!(brief));
 
         let mut reducer = PresentationReducer::new();
-        let first = reducer.reduce(&[assistant]);
-        let second = reducer.reduce(&[brief_event]);
+        let first = reducer.reduce(
+            &[assistant],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
+        let second = reducer.reduce(
+            &[brief_event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(first.len(), 1);
         assert!(matches!(
@@ -3773,8 +3930,14 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let first = reducer.reduce(&[assistant]);
-        let second = reducer.reduce(&[brief_event]);
+        let first = reducer.reduce(
+            &[assistant],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
+        let second = reducer.reduce(
+            &[brief_event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(first.len(), 1);
         assert_eq!(second.len(), 1);
@@ -3797,7 +3960,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3827,7 +3993,10 @@ mod tests {
         );
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[event]);
+        let items = reducer.reduce(
+            &[event],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3849,7 +4018,10 @@ mod tests {
         let unknown = make_event("unknown_runtime_event", "unknown runtime detail", json!({}));
 
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[scheduler, unknown]);
+        let items = reducer.reduce(
+            &[scheduler, unknown],
+            &BriefTextLookup(&std::collections::BTreeMap::new()),
+        );
 
         assert_eq!(items.len(), 1);
         match &items[0].item {
@@ -3865,7 +4037,7 @@ mod tests {
     #[test]
     fn reducer_empty_events_returns_empty() {
         let mut reducer = PresentationReducer::new();
-        let items = reducer.reduce(&[]);
+        let items = reducer.reduce(&[], &BriefTextLookup(&std::collections::BTreeMap::new()));
         assert!(items.is_empty());
 
         let flushed = reducer.flush();

@@ -187,7 +187,8 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
             .collect();
 
         let mut reducer = PresentationReducer::new();
-        let mut timed_items = reducer.reduce(events.as_slice());
+        let brief_lookup = crate::presentation::BriefTextLookup(&projection.brief_text_cache);
+        let mut timed_items = reducer.reduce(events.as_slice(), &brief_lookup);
         timed_items.extend(reducer.flush());
         let mut pending_agent_header_hint: Option<String> = None;
 
