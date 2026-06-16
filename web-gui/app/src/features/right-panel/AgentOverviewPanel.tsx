@@ -7,6 +7,7 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
   const openWorkItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = openWorkItems.filter((item) => item.current);
   const otherWorkItems = openWorkItems.filter((item) => !item.current);
+  const currentWorkLabel = currentWorkItems[0]?.objective ?? agent.currentWork?.objective ?? "No current work item";
 
   return (
     <div className="inspector-stack">
@@ -26,15 +27,19 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
             <dd>{agent.model}</dd>
           </div>
           <div>
-            <dt>Focus</dt>
-            <dd>{agent.focusSummary}</dd>
+            <dt>Current work</dt>
+            <dd>{currentWorkLabel}</dd>
+          </div>
+          <div>
+            <dt>Scheduling</dt>
+            <dd>{compactMeta([agent.posture, agent.postureReason])}</dd>
           </div>
         </dl>
       </section>
 
       <section className="context-card inspector-card">
         <div className="context-head">
-          <span className="eyebrow">Workspace</span>
+          <span className="eyebrow">Workspace context</span>
           <StatusBadge className="state-chip" kind="connection" value={agent.workspace === "not bound" ? "unbound" : "active"} />
         </div>
         <h2>{workspace?.name ?? agent.workspace}</h2>
@@ -51,36 +56,38 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
             <dt>ID</dt>
             <dd>{workspace?.id ?? "—"}</dd>
           </div>
-        </dl>
-      </section>
-
-      <section className="context-card inspector-card">
-        <div className="context-head">
-          <span className="eyebrow">{workspace?.worktree ? "Worktree / Execution" : "Execution"}</span>
-          <StatusBadge className="state-chip" kind="connection" value={workspace?.worktree ? "worktree" : "root"} />
-        </div>
-        <h2>{workspace?.worktree?.branch ?? "Current root"}</h2>
-        <dl className="inspector-facts">
-          {workspace?.worktree ? (
-            <>
-              <div>
-                <dt>Branch</dt>
-                <dd>{workspace.worktree.branch ?? "—"}</dd>
-              </div>
-              <div>
-                <dt>Worktree</dt>
-                <dd>{workspace.worktree.path ?? "—"}</dd>
-              </div>
-            </>
-          ) : null}
           <div>
-            <dt>Root</dt>
+            <dt>Projection</dt>
+            <dd>{compactMeta([workspace?.projectionKind, workspace?.accessMode])}</dd>
+          </div>
+          <div>
+            <dt>Execution root</dt>
             <dd>{workspace?.executionRoot ?? workspace?.anchor ?? "—"}</dd>
           </div>
           <div>
             <dt>Cwd</dt>
             <dd>{workspace?.cwd ?? "—"}</dd>
           </div>
+          {workspace?.worktree ? (
+            <>
+              <div>
+                <dt>Managed branch</dt>
+                <dd>{workspace.worktree.branch ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>Worktree</dt>
+                <dd>{workspace.worktree.path ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>Original branch</dt>
+                <dd>{workspace.worktree.originalBranch ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>Original cwd</dt>
+                <dd>{workspace.worktree.originalCwd ?? "—"}</dd>
+              </div>
+            </>
+          ) : null}
         </dl>
       </section>
 

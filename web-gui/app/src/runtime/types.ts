@@ -29,11 +29,15 @@ export interface WorkspaceSummary {
   id: string;
   name: string;
   anchor: string;
+  projectionKind?: string;
+  accessMode?: string;
   executionRoot?: string;
   cwd?: string;
   worktree?: {
     branch?: string;
     path?: string;
+    originalBranch?: string;
+    originalCwd?: string;
   };
 }
 

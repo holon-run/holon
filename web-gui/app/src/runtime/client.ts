@@ -141,6 +141,8 @@ interface AgentListEntryDto {
     workspace_anchor?: string;
     execution_root?: string;
     cwd?: string;
+    projection_kind?: string;
+    access_mode?: string;
     projection_metadata?: {
       worktree_branch?: string;
       worktree_path?: string;
@@ -188,6 +190,8 @@ interface AgentStateDto {
 interface AgentWorkspaceDto {
     active_workspace_entry?: AgentListEntryDto["active_workspace_entry"];
     worktree_session?: {
+      original_branch?: string;
+      original_cwd?: string;
       worktree_branch?: string;
       worktree_path?: string;
     } | null;
@@ -1036,6 +1040,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const waitingCount = state?.waiting_intents?.length ?? state?.agent?.active_waiting_intents?.length ?? (entry.waiting_reason ? 1 : 0);
   const posture = state?.agent?.scheduling_posture?.posture ?? entry.scheduling_posture?.posture ?? "unknown";
   const postureReason = state?.agent?.scheduling_posture?.reason ?? entry.scheduling_posture?.reason ?? "posture unavailable";
+  const focusSummary = currentWork?.objective ?? postureReason;
   const model = state?.agent?.model?.active_model ?? state?.agent?.model?.effective_model ?? entry.model?.active_model ?? entry.model?.effective_model ?? "runtime default";
   const modelSource = state?.agent?.model?.source ?? entry.model?.source;
   const modelReasoningEffort = state?.agent?.model?.override_reasoning_effort ?? entry.model?.override_reasoning_effort ?? undefined;
@@ -1047,7 +1052,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     badge: badgeFor(id),
     profile,
     lifecycle: normalizeKebab(status),
-    focusSummary: postureReason,
+    focusSummary,
     workspace,
     attention: attentionLabel(pending, waitingCount),
     model,
@@ -1084,9 +1089,19 @@ function projectWorkspace(
     id: workspaceEntry?.workspace_id ?? "not bound",
     name,
     anchor,
+    projectionKind: workspaceEntry?.projection_kind,
+    accessMode: workspaceEntry?.access_mode,
     executionRoot: workspaceEntry?.execution_root,
     cwd: workspaceEntry?.cwd,
-    worktree: worktreeBranch || worktreePath ? { branch: worktreeBranch, path: worktreePath } : undefined,
+    worktree:
+      worktreeBranch || worktreePath
+        ? {
+            branch: worktreeBranch,
+            path: worktreePath,
+            originalBranch: worktreeSession?.original_branch,
+            originalCwd: worktreeSession?.original_cwd,
+          }
+        : undefined,
   };
 }
 

@@ -42,11 +42,15 @@ export const runtimeFixture: RuntimeBootstrap = {
         id: "ws_fixture",
         name: "holon",
         anchor: "/Users/jolestar/opensource/src/github.com/holon-run/holon",
+        projectionKind: "git_worktree_root",
+        accessMode: "direct",
         executionRoot: "/Users/jolestar/opensource/src/github.com/holon-run/.holon-worktrees-holon/web-gui-prototype",
         cwd: "/Users/jolestar/opensource/src/github.com/holon-run/.holon-worktrees-holon/web-gui-prototype",
         worktree: {
           branch: "web-gui-prototype",
           path: "/Users/jolestar/opensource/src/github.com/holon-run/.holon-worktrees-holon/web-gui-prototype",
+          originalBranch: "main",
+          originalCwd: "/Users/jolestar/opensource/src/github.com/holon-run/holon",
         },
       },
       tasks: [
