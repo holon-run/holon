@@ -35,7 +35,7 @@ Access modes: `local`, `tunnel`, `lan`, `tailnet`.
 | `GET` | `/agents/list` | List active agent entries with metadata |
 | `POST` | `/control/agents/:agent_id/create` | Create a new agent |
 | `GET` | `/agents/:agent_id/status` | Get agent status and lifecycle |
-| `GET` | `/agents/:agent_id/state` | Get full agent state snapshot |
+| `GET` | `/agents/:agent_id/state` | Get lightweight agent state bootstrap |
 
 ### Messaging
 

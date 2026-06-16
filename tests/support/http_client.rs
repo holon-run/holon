@@ -406,10 +406,7 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
     let snapshot = client.agent_state_snapshot("default").await?;
     assert_eq!(snapshot.agent.identity.agent_id, "default");
     assert!(snapshot.session.pending_count <= snapshot.agent.agent.pending);
-    assert!(snapshot
-        .operator_notifications
-        .iter()
-        .any(|notification| notification.summary == "HTTP state visible operator note"));
+    assert!(snapshot.operator_notifications.is_empty());
     let events_page = client
         .agent_events_page(
             "default",
@@ -421,6 +418,10 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
         )
         .await?;
     assert!(events_page.newest_seq.is_some());
+    assert!(events_page
+        .events
+        .iter()
+        .any(|event| event.event_type == "operator_notification_requested"));
 
     let raw_state: serde_json::Value = reqwest::Client::new()
         .get(format!("{base}/agents/default/state"))
@@ -434,6 +435,20 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
     assert!(
         !raw_agent.contains_key("model_availability"),
         "/agents/{{agent_id}}/state must not embed runtime-global model availability"
+    );
+    assert!(
+        !raw_state
+            .as_object()
+            .expect("state snapshot should be an object")
+            .contains_key("operator_notifications"),
+        "/agents/{{agent_id}}/state must not embed operator notifications"
+    );
+    assert!(
+        !raw_state
+            .as_object()
+            .expect("state snapshot should be an object")
+            .contains_key("execution"),
+        "/agents/{{agent_id}}/state must not embed duplicate execution snapshot"
     );
     assert!(
         !raw_state

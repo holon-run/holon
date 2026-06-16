@@ -70,24 +70,27 @@ use crate::{
     runtime::{CurrentRunAbortError, CurrentRunAbortMode, CurrentRunAbortRequest},
     runtime_db::{MessageSearchQuery, MessageSearchRow},
     storage::{EventLogPageOrder, FileActivityMarker},
-    system::{ExecutionScopeKind, ExecutionSnapshot, HostLocalBoundary},
+    system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
         ActiveWorkspaceEntry, AdmissionContext, AgentRegistryStatus, AgentSummary, AgentVisibility,
         AuditEvent, AuthorityClass, CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction,
         ExternalTriggerStateSnapshot, MessageBody, MessageDeliverySurface, MessageEnvelope,
-        MessageKind, MessageOrigin, OperatorNotificationRecord, OperatorTransportBinding,
-        OperatorTransportBindingStatus, OperatorTransportCapabilities,
-        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
-        TaskStatus, TaskStatusSnapshot, TaskStopResult, TimerRecord, TodoItem, TranscriptEntry,
-        TurnTerminalRecord, WaitingIntentRecord, WaitingReason, WorkItemPlanStatus, WorkItemRecord,
-        WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
+        MessageKind, MessageOrigin, OperatorTransportBinding, OperatorTransportBindingStatus,
+        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
+        OperatorTransportDeliveryAuthKind, Priority, TaskRecord, TaskStatus, TaskStatusSnapshot,
+        TaskStopResult, TimerRecord, TodoItem, TranscriptEntry, TurnTerminalRecord,
+        WaitingIntentRecord, WaitingReason, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+        WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
 const STATE_BOOTSTRAP_TASK_LIMIT: usize = 40;
-const STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT: usize = 2048;
+const STATE_BOOTSTRAP_WORK_ITEM_LIMIT: usize = 50;
+const STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT: usize = 512;
+const STATE_BOOTSTRAP_LAST_TURN_TEXT_LIMIT: usize = 2048;
 #[cfg(test)]
 const STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT: usize = 8192;
+#[cfg(test)]
 const STATE_BOOTSTRAP_JSON_ARRAY_LIMIT: usize = 64;
 const HTTP_SLOW_RESPONSE_WARN_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 const HTTP_LARGE_RESPONSE_WARN_BYTES: usize = 128 * 1024;
@@ -810,10 +813,7 @@ struct AgentStateSnapshot {
     work_items: Vec<WorkItemRecord>,
     waiting_intents: Vec<WaitingIntentRecord>,
     external_triggers: Vec<ExternalTriggerStateSnapshot>,
-    operator_notifications: Vec<OperatorNotificationRecord>,
     workspace: StateWorkspaceSnapshot,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    execution: Option<ExecutionSnapshot>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1592,7 +1592,7 @@ pub async fn agent_state(
         .get_public_agent(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    let agent = runtime.agent_summary().await.map_err(error_response)?;
+    let mut agent = runtime.agent_summary().await.map_err(error_response)?;
     let tasks = runtime
         .active_tasks(STATE_BOOTSTRAP_TASK_LIMIT)
         .await
@@ -1601,12 +1601,21 @@ pub async fn agent_state(
         .map(slim_state_task_record)
         .collect();
     let timers = runtime.recent_timers(50).await.map_err(error_response)?;
-    let mut work_items = runtime.latest_work_items().await.map_err(error_response)?;
+    let mut work_items = runtime
+        .latest_work_items_for_agent(&agent_id, STATE_BOOTSTRAP_WORK_ITEM_LIMIT)
+        .await
+        .map_err(error_response)?
+        .into_iter()
+        .map(slim_state_work_item_record)
+        .collect::<Vec<_>>();
     sort_state_work_items(&mut work_items);
     let waiting_intents = runtime
         .latest_waiting_intents()
         .await
-        .map_err(error_response)?;
+        .map_err(error_response)?
+        .into_iter()
+        .map(slim_state_waiting_intent_record)
+        .collect();
     let external_triggers = runtime
         .latest_external_triggers()
         .await
@@ -1614,16 +1623,16 @@ pub async fn agent_state(
         .into_iter()
         .map(ExternalTriggerStateSnapshot::from)
         .collect();
-    let operator_notifications = runtime
-        .recent_operator_notifications(50)
-        .await
-        .map_err(error_response)?;
     let workspace = state_workspace_snapshot(&agent);
-    let execution = runtime.execution_snapshot().await.map_err(error_response)?;
+    slim_state_agent_summary(&mut agent);
     let session = StateSessionSnapshot {
         current_run_id: agent.agent.current_run_id.clone(),
         pending_count: agent.agent.pending,
-        last_turn: agent.agent.last_turn_terminal.clone(),
+        last_turn: agent
+            .agent
+            .last_turn_terminal
+            .clone()
+            .map(slim_state_turn_terminal_record),
     };
     traced_json(
         "/agents/{agent_id}/state",
@@ -1636,8 +1645,6 @@ pub async fn agent_state(
             work_items,
             waiting_intents,
             external_triggers,
-            operator_notifications,
-            execution: Some(execution),
             workspace,
         },
     )
@@ -1664,13 +1671,84 @@ fn sort_state_work_items(work_items: &mut [WorkItemRecord]) {
 }
 
 fn slim_state_task_record(mut task: TaskRecord) -> TaskRecord {
-    if let Some(detail) = task.detail.take() {
-        task.detail = Some(slim_state_json_value(
-            detail,
-            STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT,
-        ));
-    }
+    let _ = task.detail.take();
+    let _ = task.recovery.take();
     task
+}
+
+fn slim_state_work_item_record(mut record: WorkItemRecord) -> WorkItemRecord {
+    record.objective =
+        truncate_state_bootstrap_string(&record.objective, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+    record.plan_artifact = None;
+    record.todo_list.clear();
+    record.work_refs.clear();
+    record.blocked_by = record
+        .blocked_by
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    record.result_summary = record
+        .result_summary
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    record
+}
+
+fn slim_state_waiting_intent_record(mut record: WaitingIntentRecord) -> WaitingIntentRecord {
+    record.description =
+        truncate_state_bootstrap_string(&record.description, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+    record.source =
+        truncate_state_bootstrap_string(&record.source, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+    record.resource = record
+        .resource
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    record.condition = record
+        .condition
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    record
+}
+
+fn slim_state_agent_summary(agent: &mut AgentSummary) {
+    agent.loaded_agents_md = Default::default();
+    agent.skills = Default::default();
+    agent.active_waiting_intents.clear();
+    agent.active_wait_conditions.clear();
+    agent.active_external_triggers.clear();
+    agent.recent_operator_notifications.clear();
+    agent.agent.context_summary = agent
+        .agent
+        .context_summary
+        .take()
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    agent.agent.tool_latency.clear();
+    agent.agent.working_memory.active_episode_builder = None;
+    agent.agent.active_skills.clear();
+    agent.agent.last_continuation = None;
+    agent.agent.last_turn_terminal = agent
+        .agent
+        .last_turn_terminal
+        .take()
+        .map(slim_state_turn_terminal_record);
+    if let Some(failure) = agent.agent.last_runtime_failure.as_mut() {
+        failure.summary =
+            truncate_state_bootstrap_string(&failure.summary, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+        failure.detail_hint = failure
+            .detail_hint
+            .take()
+            .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    }
+}
+
+fn slim_state_turn_terminal_record(mut record: TurnTerminalRecord) -> TurnTerminalRecord {
+    record.reason = record
+        .reason
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT));
+    record.last_assistant_message = record
+        .last_assistant_message
+        .map(|text| truncate_state_bootstrap_string(&text, STATE_BOOTSTRAP_LAST_TURN_TEXT_LIMIT));
+    record.checkpoint = record.checkpoint.map(|mut checkpoint| {
+        checkpoint.text =
+            truncate_state_bootstrap_string(&checkpoint.text, STATE_BOOTSTRAP_LAST_TURN_TEXT_LIMIT);
+        checkpoint
+    });
+    record
 }
 
 #[cfg(test)]
@@ -1681,6 +1759,7 @@ fn slim_state_transcript_entry(
     entry
 }
 
+#[cfg(test)]
 fn slim_state_json_value(value: Value, string_limit: usize) -> Value {
     match value {
         Value::String(text) => Value::String(truncate_state_bootstrap_string(&text, string_limit)),
@@ -1747,11 +1826,11 @@ fn state_workspace_snapshot(agent: &AgentSummary) -> StateWorkspaceSnapshot {
 mod tests {
     use super::{
         sort_state_work_items, STATE_BOOTSTRAP_JSON_ARRAY_LIMIT,
-        STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT, STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT,
+        STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT, STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT,
     };
     use crate::types::{
-        TaskKind, TaskRecord, TaskStatus, TranscriptEntry, TranscriptEntryKind, WorkItemRecord,
-        WorkItemState,
+        TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState, TranscriptEntry,
+        TranscriptEntryKind, WorkItemRecord, WorkItemState,
     };
     use chrono::{Duration, Utc};
     use serde_json::json;
@@ -1801,7 +1880,7 @@ mod tests {
     }
 
     #[test]
-    fn state_bootstrap_slims_large_task_detail_and_transcript_data() {
+    fn state_bootstrap_omits_task_detail_and_slims_transcript_data() {
         let now = chrono::Utc::now();
         let task = TaskRecord {
             id: "task-1".into(),
@@ -1816,27 +1895,14 @@ mod tests {
             detail: Some(json!({
                 "cmd": "printf test",
                 "output_path": "/tmp/output.log",
-                "output_summary": "x".repeat(STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT + 64),
+                "output_summary": "x".repeat(STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT + 64),
                 "lines": (0..(STATE_BOOTSTRAP_JSON_ARRAY_LIMIT + 10)).collect::<Vec<_>>()
             })),
             recovery: None,
         };
         let slimmed = super::slim_state_task_record(task);
-        let detail = slimmed.detail.expect("detail");
-        assert_eq!(detail["cmd"], "printf test");
-        assert_eq!(detail["output_path"], "/tmp/output.log");
-        assert!(
-            detail["output_summary"]
-                .as_str()
-                .expect("summary")
-                .chars()
-                .count()
-                <= STATE_BOOTSTRAP_TASK_DETAIL_STRING_LIMIT
-        );
-        assert_eq!(
-            detail["lines"].as_array().expect("lines").len(),
-            STATE_BOOTSTRAP_JSON_ARRAY_LIMIT
-        );
+        assert!(slimmed.detail.is_none());
+        assert!(slimmed.recovery.is_none());
 
         let entry = TranscriptEntry {
             id: "entry-1".into(),
@@ -1859,6 +1925,46 @@ mod tests {
                 .chars()
                 .count()
                 <= STATE_BOOTSTRAP_TRANSCRIPT_DATA_STRING_LIMIT
+        );
+    }
+
+    #[test]
+    fn state_bootstrap_slims_work_item_records() {
+        let mut item = WorkItemRecord::new(
+            "default",
+            "x".repeat(STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT + 64),
+            WorkItemState::Open,
+        );
+        item.todo_list = vec![TodoItem {
+            text: "large todo".into(),
+            state: TodoItemState::InProgress,
+        }];
+        item.blocked_by = Some("b".repeat(STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT + 64));
+        item.result_summary = Some("r".repeat(STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT + 64));
+
+        let slimmed = super::slim_state_work_item_record(item);
+
+        assert!(slimmed.objective.chars().count() <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT);
+        assert!(slimmed.todo_list.is_empty());
+        assert!(slimmed.work_refs.is_empty());
+        assert!(slimmed.plan_artifact.is_none());
+        assert!(
+            slimmed
+                .blocked_by
+                .as_deref()
+                .expect("blocker")
+                .chars()
+                .count()
+                <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT
+        );
+        assert!(
+            slimmed
+                .result_summary
+                .as_deref()
+                .expect("result")
+                .chars()
+                .count()
+                <= STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT
         );
     }
 

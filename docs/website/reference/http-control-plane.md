@@ -99,11 +99,13 @@ loading full per-agent runtime summaries.
 
 Returns the same `AgentSummary` shape for the named agent.
 
-**`GET /agents/:id/state`** — Full agent state snapshot
+**`GET /agents/:id/state`** — Lightweight agent state bootstrap
 
-Returns a combined state page: agent summary, session info (current run, pending
-count), active tasks, recent timers, work items, waiting intents, external
-triggers, operator notifications, execution snapshot, and workspace occupancy.
+Returns a bounded bootstrap page: agent summary, session info (current run,
+pending count), active task summaries, recent timers, slim work items, waiting
+intents, external triggers, and workspace occupancy. Operator notifications,
+execution details, task details, and full work item records are available from
+events or dedicated routes.
 
 **`GET /agents/:id/briefs`** — Recent briefs
 
