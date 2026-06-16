@@ -32,6 +32,7 @@ implementation and tests.
 - [Long-Lived Context Memory](./long-lived-context-memory.md)
 - [Agent and Workspace Memory](./agent-and-workspace-memory.md)
 - [Runtime Ref Resolution and MemoryGet](./runtime-ref-resolution-and-memory-get.md)
+- [Runtime Object and Reference Model](./runtime-object-and-reference-model.md)
 - [Turn-Local Context Compaction](./turn-local-context-compaction.md)
 - [OpenAI Remote Compaction Boundary](./openai-remote-compaction.md)
 - [Turn Model Lineage And Recovery](./turn-model-lineage-and-recovery.md)
