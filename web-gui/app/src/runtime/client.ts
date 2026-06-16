@@ -71,6 +71,32 @@ function disconnectedAgentDetail(agentId: string, error: string): AgentDetail {
   };
 }
 
+function disconnectedAgentSummary(agentId: string, error: string): AgentSummary {
+  return {
+    id: agentId,
+    badge: "!",
+    badgeTone: "muted",
+    profile: "unavailable",
+    lifecycle: "unknown",
+    focusSummary: "Runtime API unavailable",
+    workspace: "unavailable",
+    attention: "API disconnected",
+    model: "unavailable",
+    modelReasoningEffort: undefined,
+    footer: "disconnected",
+    subtitle: "Runtime API unavailable",
+    lastBrief: "",
+    lastTurnTime: "",
+    pending: 0,
+    activeTaskCount: 0,
+    waitingCount: 0,
+    posture: "disconnected",
+    postureReason: error,
+    tasks: [],
+    workItems: [],
+  };
+}
+
 async function fetchAgentDetail(
   baseUrl: string,
   fetchImpl: typeof fetch,
@@ -113,6 +139,23 @@ async function fetchAgentDetail(
     oldestEventSeq: events.oldest_seq,
     hasOlderEvents: events.has_older,
   };
+}
+
+async function fetchAgentState(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+): Promise<AgentSummary> {
+  const encodedAgentId = encodeURIComponent(agentId);
+  const [entry, state] = await Promise.all([
+    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers })
+      .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
+      .catch(() => undefined),
+    getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers }),
+  ]);
+  const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
+  return projectAgent(fallbackEntry, state);
 }
 
 interface AgentListEntryDto {
@@ -478,6 +521,17 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return disconnectedAgentDetail(agentId, message);
+      }
+    },
+    async getAgentState(agentId: string): Promise<AgentSummary> {
+      if (!baseUrl) {
+        return disconnectedAgentSummary(agentId, "Holon API base URL is not configured.");
+      }
+      try {
+        return await fetchAgentState(baseUrl, fetchImpl, requestHeaders, agentId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return disconnectedAgentSummary(agentId, message);
       }
     },
     async getAgentWorkItems(agentId: string, options: { limit?: number } = {}): Promise<WorkItemSummary[]> {
