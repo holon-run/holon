@@ -42,6 +42,34 @@ const DEFAULT_VERBOSE_TIMELINE_ITEM_LIMIT = 160;
 const DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT = 220;
 const HISTORY_PAGE_VISIBLE_INCREMENT = 80;
 const TOP_SCROLL_THRESHOLD = 16;
+const COMPOSER_DRAFT_STORAGE_PREFIX = "holon.webGui.composerDraft.v1";
+
+export function storedComposerDraftKey(agentId: string): string {
+  return `${COMPOSER_DRAFT_STORAGE_PREFIX}:${encodeURIComponent(agentId)}`;
+}
+
+export function readStoredComposerDraft(agentId: string): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(storedComposerDraftKey(agentId)) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function writeStoredComposerDraft(agentId: string, prompt: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const key = storedComposerDraftKey(agentId);
+    if (prompt.length > 0) {
+      window.localStorage.setItem(key, prompt);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage failures; the in-memory draft still applies.
+  }
+}
 
 export function AgentPage({
   agent,
@@ -64,7 +92,7 @@ export function AgentPage({
   onInspectActivity,
   selectedActivityId,
 }: AgentPageProps) {
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(() => readStoredComposerDraft(agent.id));
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -112,6 +140,10 @@ export function AgentPage({
     setSelectedReasoningEffort(activeAgent.modelReasoningEffort ?? "auto");
   }, [activeAgent.id, displayLevel]);
 
+  useEffect(() => {
+    setPrompt(readStoredComposerDraft(activeAgent.id));
+  }, [activeAgent.id]);
+
   useLayoutEffect(() => {
     const list = messageListRef.current;
     if (!list) return;
@@ -132,6 +164,7 @@ export function AgentPage({
     if (!canSendPrompt) return;
     try {
       await onSendPrompt(trimmedPrompt);
+      writeStoredComposerDraft(activeAgent.id, "");
       setPrompt("");
     } catch {
       // Keep the draft in place; runtime-store exposes the user-facing error.
@@ -147,6 +180,11 @@ export function AgentPage({
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
     await sendDraftPrompt();
+  }
+
+  function handlePromptChange(value: string) {
+    setPrompt(value);
+    writeStoredComposerDraft(activeAgent.id, value);
   }
 
   function handleMessageListScroll() {
@@ -263,7 +301,7 @@ export function AgentPage({
               placeholder={`Send operator input to ${activeAgent.id}...`}
               value={prompt}
               disabled={sendingPrompt}
-              onChange={(event) => setPrompt(event.target.value)}
+              onChange={(event) => handlePromptChange(event.target.value)}
               onKeyDown={handleComposerKeyDown}
             />
             {promptError ? (
