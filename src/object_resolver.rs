@@ -112,7 +112,7 @@ impl<'a> RuntimeObjectResolver<'a> {
     pub fn resolve_brief_content(&self, brief: &BriefRecord) -> Result<String> {
         match &brief.content_source {
             BriefContentSource::Inline => Ok(brief.text.clone()),
-            BriefContentSource::TranscriptEntry { entry_id } => {
+            BriefContentSource::TranscriptEntry { entry_id, .. } => {
                 let Some(entry) = self.resolve_transcript_entry(entry_id)? else {
                     return Ok(brief.text.clone());
                 };
@@ -310,6 +310,7 @@ mod tests {
         let mut brief = BriefRecord::new("agent-a", BriefKind::Result, "preview", None, None);
         brief.content_source = BriefContentSource::TranscriptEntry {
             entry_id: entry.id.clone(),
+            relation: crate::types::BriefContentSourceRelation::DerivedFrom,
         };
         storage.append_brief(&brief).unwrap();
 
@@ -354,6 +355,7 @@ mod tests {
         let mut brief = BriefRecord::new("agent-a", BriefKind::Result, "preview", None, None);
         brief.content_source = BriefContentSource::TranscriptEntry {
             entry_id: "missing".into(),
+            relation: crate::types::BriefContentSourceRelation::DerivedFrom,
         };
         storage.append_brief(&brief).unwrap();
 

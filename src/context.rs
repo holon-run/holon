@@ -3184,10 +3184,10 @@ mod tests {
         storage::AppStorage,
         types::{
             AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-            AgentVisibility, AuthorityClass, BriefContentSource, BriefKind, BriefRecord,
-            CallbackDeliveryMode, ContextEpisodeRecord, ContinuationTriggerKind,
-            EpisodeBoundaryReason, ExternalTriggerScope, LoadedAgentsMd, MessageKind,
-            MessageOrigin, Priority, TaskKind, TaskStatus, TodoItem, TodoItemState,
+            AgentVisibility, AuthorityClass, BriefContentSource, BriefContentSourceRelation,
+            BriefKind, BriefRecord, CallbackDeliveryMode, ContextEpisodeRecord,
+            ContinuationTriggerKind, EpisodeBoundaryReason, ExternalTriggerScope, LoadedAgentsMd,
+            MessageKind, MessageOrigin, Priority, TaskKind, TaskStatus, TodoItem, TodoItemState,
             ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind,
             WaitConditionKind, WakeSource, WorkItemRef, WorkItemRefKind, WorkItemRefStatus,
             WorkItemState,
@@ -3750,6 +3750,7 @@ mod tests {
         brief.id = "brief-transcript-backed".into();
         brief.content_source = BriefContentSource::TranscriptEntry {
             entry_id: entry.id.clone(),
+            relation: BriefContentSourceRelation::DerivedFrom,
         };
         let mut turn = TurnRecord::new("default", "turn-transcript-backed", 1);
         turn.input_message_ids = vec![message.id.clone()];

@@ -708,6 +708,7 @@ fn bind_brief_to_assistant_round(brief: &mut BriefRecord, entry_id: Option<&str>
         brief.finalizes_assistant_round_id = Some(entry_id.to_string());
         brief.content_source = crate::types::BriefContentSource::TranscriptEntry {
             entry_id: entry_id.to_string(),
+            relation: crate::types::BriefContentSourceRelation::Finalizes,
         };
     }
 }

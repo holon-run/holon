@@ -1188,7 +1188,7 @@ pub(crate) struct BriefTextLookup<'a>(pub(crate) &'a std::collections::BTreeMap<
 impl<'a> BriefTextLookup<'a> {
     pub(crate) fn resolve_for_record(&self, brief: &BriefRecord) -> Option<&str> {
         match brief.content_source {
-            crate::types::BriefContentSource::TranscriptEntry { ref entry_id } => {
+            crate::types::BriefContentSource::TranscriptEntry { ref entry_id, .. } => {
                 self.0.get(entry_id).map(String::as_str)
             }
             crate::types::BriefContentSource::Inline => None,
@@ -1198,7 +1198,7 @@ impl<'a> BriefTextLookup<'a> {
     pub(crate) fn resolve_for_event(&self, event: &ProjectionEventRecord) -> Option<&str> {
         let brief = serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
         match brief.content_source {
-            crate::types::BriefContentSource::TranscriptEntry { ref entry_id } => {
+            crate::types::BriefContentSource::TranscriptEntry { ref entry_id, .. } => {
                 self.0.get(entry_id).map(String::as_str)
             }
             crate::types::BriefContentSource::Inline => None,
@@ -3614,6 +3614,7 @@ mod tests {
         let mut brief = BriefRecord::new("default", BriefKind::Result, "preview only", None, None);
         brief.content_source = crate::types::BriefContentSource::TranscriptEntry {
             entry_id: "transcript-entry-1".into(),
+            relation: crate::types::BriefContentSourceRelation::DerivedFrom,
         };
         let event = make_event("brief_created", "Brief: preview only", json!(brief));
         let brief_texts = std::collections::BTreeMap::from([(

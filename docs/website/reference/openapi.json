@@ -91,6 +91,15 @@
                   "kind": {
                     "const": "transcript_entry",
                     "type": "string"
+                  },
+                  "relation": {
+                    "default": "derived_from",
+                    "enum": [
+                      "derived_from",
+                      "finalizes",
+                      "excerpt"
+                    ],
+                    "type": "string"
                   }
                 },
                 "required": [
