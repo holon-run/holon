@@ -74,22 +74,52 @@ function ToolExecutionDetail({ record }: { record: RuntimeToolExecutionRecord })
 }
 
 export function formatToolExecutionDetail(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
-  const output = record.output ?? record.result;
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const batchItemSections = formatBatchToolOutput(record.input, output);
   const lines = [
     labelledText("Summary", record.summary),
-    labelledText("Command", commandText(record.input)),
+    batchItemSections.length ? "" : labelledText("Command", commandText(record.input)),
     labelledText("Stdout", nestedText(output, ["stdout", "stdout_preview", "output", "output_preview", "combined_output_preview"])),
     labelledText("Stderr", nestedText(output, ["stderr", "stderr_preview"])),
     labelledText("Initial output", nestedText(output, ["initial_output_preview"])),
     labelledText("Result", nestedText(output, ["summary", "summary_text", "result_summary", "result_summary_preview"])),
     labelledText("Error", record.error ?? nestedValue(output, ["error"])),
     labelledText("Exit", nestedValue(output, ["exit_status", "status", "disposition"])),
+    ...batchItemSections,
   ].filter(Boolean);
 
   return {
     text: lines.join("\n\n") || formatInspectorJson(record),
     tone: lines.length ? "output" : "data",
   };
+}
+
+function unwrapToolOutput(value: unknown): unknown {
+  const envelope = isRecord(value) ? value.envelope : undefined;
+  const result = isRecord(envelope) ? envelope.result : undefined;
+  return result ?? value;
+}
+
+function formatBatchToolOutput(input: unknown, output: unknown): string[] {
+  if (!isRecord(output) || !Array.isArray(output.items)) return [];
+  const inputItems = isRecord(input) && Array.isArray(input.items) ? input.items : [];
+
+  return output.items
+    .map((item, index) => {
+      if (!isRecord(item)) return "";
+      const result = isRecord(item.result) ? item.result : item;
+      const command = textField(item.cmd) || commandText(inputItems[index]);
+      const lines = [
+        labelledText("Command", command),
+        labelledText("Stdout", nestedText(result, ["stdout", "stdout_preview", "output", "output_preview", "combined_output_preview"])),
+        labelledText("Stderr", nestedText(result, ["stderr", "stderr_preview"])),
+        labelledText("Result", nestedText(result, ["summary", "summary_text", "result_summary", "result_summary_preview"])),
+        labelledText("Error", nestedValue(result, ["error"])),
+        labelledText("Exit", nestedValue(result, ["exit_status", "status", "disposition"])),
+      ].filter(Boolean);
+      return lines.length ? `Batch item ${item.index ?? index + 1}:\n${lines.join("\n\n")}` : "";
+    })
+    .filter(Boolean);
 }
 
 function labelledText(label: string, value: unknown): string {
