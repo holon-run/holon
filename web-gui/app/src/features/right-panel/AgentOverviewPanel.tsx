@@ -12,6 +12,7 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
   const workspaceRoot = workspace?.cwd ?? workspace?.executionRoot ?? workspace?.worktree?.path ?? workspace?.anchor;
   const modeLabel = workspace?.worktree ? "Managed worktree" : workspace?.projectionKind;
   const showCwd = Boolean(workspace?.cwd && workspace.cwd !== workspace.executionRoot);
+  const hasActiveTasks = agent.activeTaskCount > 0 || Boolean(agent.tasks?.length);
 
   return (
     <div className="inspector-stack">
@@ -104,42 +105,29 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
         ) : null}
       </section>
 
-      <section className="context-card inspector-card">
-        <div className="context-head">
-          <span className="eyebrow">Tasks</span>
-          <StatusBadge className="state-chip" kind="connection" value={agent.activeTaskCount ? "active" : "idle"} />
-        </div>
-        <h2>{agent.activeTaskCount} active</h2>
-        {agent.tasks?.length ? (
-          <ul className="inspector-list">
-            {agent.tasks.map((task) => (
-              <li key={task.id}>
-                <div className="inspector-list-head">
-                  <strong>{task.summary}</strong>
-                  <StatusBadge className="state-chip" kind="connection" value={task.status} />
-                </div>
-                <small>{compactMeta([task.kind, task.command, task.workdir])}</small>
-                <code>{task.id}</code>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <dl className="inspector-facts">
-            <div>
-              <dt>Queued</dt>
-              <dd>{agent.pending}</dd>
-            </div>
-            <div>
-              <dt>Waiting</dt>
-              <dd>{agent.waitingCount}</dd>
-            </div>
-            <div>
-              <dt>Attention</dt>
-              <dd>{agent.attention}</dd>
-            </div>
-          </dl>
-        )}
-      </section>
+      {hasActiveTasks ? (
+        <section className="context-card inspector-card">
+          <div className="context-head">
+            <span className="eyebrow">Tasks</span>
+            <StatusBadge className="state-chip" kind="connection" value="active" />
+          </div>
+          <h2>{agent.activeTaskCount} active</h2>
+          {agent.tasks?.length ? (
+            <ul className="inspector-list">
+              {agent.tasks.map((task) => (
+                <li key={task.id}>
+                  <div className="inspector-list-head">
+                    <strong>{task.summary}</strong>
+                    <StatusBadge className="state-chip" kind="connection" value={task.status} />
+                  </div>
+                  <small>{compactMeta([task.kind, task.command, task.workdir])}</small>
+                  <code>{task.id}</code>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
 
       {openWorkItems.length ? (
         <section className="context-card current-work inspector-card">
