@@ -2212,33 +2212,39 @@ pub async fn events_stream(
     if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     }
-    let events = runtime
-        .storage()
-        .read_recent_events(event_window_limit.saturating_add(1))
-        .map_err(error_response)?;
-    let buffered = initial_buffered_events(&events, after_seq)?;
     let mut live_rx = runtime
         .storage()
         .subscribe_events()
         .map_err(error_response)?
         .ok_or_else(|| error_response(anyhow!("event bus unavailable")))?;
+    let events = runtime
+        .storage()
+        .read_recent_events(event_window_limit.saturating_add(1))
+        .map_err(error_response)?;
+    let buffered = initial_buffered_events(&events, after_seq)?;
     let (tx, out_rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
     let runtime_id = agent_id.clone();
     tokio::spawn(async move {
+        let mut last_sent_seq = after_seq.unwrap_or(0);
         for event in buffered {
             if send_stream_event(&tx, &runtime_id, &event).await.is_err() {
                 return;
             }
+            last_sent_seq = last_sent_seq.max(event.event_seq);
         }
         loop {
             match live_rx.recv().await {
                 Ok(published) if published.agent_id.as_deref() == Some(runtime_id.as_str()) => {
+                    if published.event.event_seq <= last_sent_seq {
+                        continue;
+                    }
                     if send_stream_event(&tx, &runtime_id, &published.event)
                         .await
                         .is_err()
                     {
                         break;
                     }
+                    last_sent_seq = published.event.event_seq;
                 }
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
