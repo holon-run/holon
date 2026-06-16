@@ -1,7 +1,9 @@
-use std::collections::VecDeque;
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
+use std::{
+    collections::VecDeque,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 use anyhow::{anyhow, Result};
@@ -69,7 +71,7 @@ use crate::{
     policy::{default_authority_for_origin, validate_message_kind_for_origin},
     runtime::{CurrentRunAbortError, CurrentRunAbortMode, CurrentRunAbortRequest},
     runtime_db::{MessageSearchQuery, MessageSearchRow},
-    storage::{EventLogPageOrder, FileActivityMarker},
+    storage::EventLogPageOrder,
     system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
         ActiveWorkspaceEntry, AdmissionContext, AgentRegistryStatus, AgentSummary, AgentVisibility,
@@ -165,7 +167,6 @@ impl HttpErrorEnvelope {
 const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
 const DEFAULT_EVENT_STREAM_WINDOW: usize = 128;
 const MAX_EVENT_STREAM_WINDOW: usize = 512;
-const EVENT_STREAM_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const EVENT_STREAM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
 impl AppState {
@@ -223,6 +224,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{agent_id}/briefs", get(briefs))
         .route("/agents/{agent_id}/briefs/{brief_id}", get(brief))
         .route("/agents/{agent_id}/state", get(agent_state))
+        .route("/events/stream", get(global_events_stream))
         .route("/agents/{agent_id}/events", get(events))
         .route("/agents/{agent_id}/events/stream", get(events_stream))
         .route(
@@ -826,15 +828,6 @@ struct StreamEventEnvelope {
     event_type: String,
     provenance: EventReplayProvenance,
     payload: Value,
-}
-
-struct EventStreamState {
-    runtime: crate::runtime::RuntimeHandle,
-    runtime_id: String,
-    event_window_limit: usize,
-    event_marker: FileActivityMarker,
-    last_seen_seq: u64,
-    buffered: VecDeque<AuditEvent>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -2219,85 +2212,80 @@ pub async fn events_stream(
     if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     }
-    let initial_event_marker = runtime
-        .storage()
-        .poll_activity_marker()
-        .map_err(error_response)?
-        .events;
     let events = runtime
         .storage()
         .read_recent_events(event_window_limit.saturating_add(1))
         .map_err(error_response)?;
     let buffered = initial_buffered_events(&events, after_seq)?;
-    let last_seen_seq =
-        after_seq.unwrap_or_else(|| events.last().map_or(0, |event| event.event_seq));
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
+    let mut live_rx = runtime
+        .storage()
+        .subscribe_events()
+        .map_err(error_response)?
+        .ok_or_else(|| error_response(anyhow!("event bus unavailable")))?;
+    let (tx, out_rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
+    let runtime_id = agent_id.clone();
     tokio::spawn(async move {
-        let mut state = EventStreamState {
-            runtime,
-            runtime_id: agent_id,
-            event_window_limit,
-            event_marker: initial_event_marker,
-            last_seen_seq,
-            buffered,
-        };
+        for event in buffered {
+            if send_stream_event(&tx, &runtime_id, &event).await.is_err() {
+                return;
+            }
+        }
         loop {
-            if let Some(event) = state.buffered.pop_front() {
-                let envelope = stream_event_envelope(&state.runtime_id, &event);
-                state.last_seen_seq = event.event_seq;
-                let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
-                if tx
-                    .send(Ok(Event::default()
-                        .id(envelope.event_seq.to_string())
-                        .event(envelope.event_type)
-                        .data(payload)))
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-                continue;
-            }
-            let event_marker = match state.runtime.storage().poll_activity_marker() {
-                Ok(marker) => marker.events,
-                Err(err) => {
-                    error!("failed to poll event marker for stream: {err}");
-                    sleep(EVENT_STREAM_POLL_INTERVAL).await;
-                    continue;
-                }
-            };
-            if event_marker == state.event_marker {
-                sleep(EVENT_STREAM_POLL_INTERVAL).await;
-                continue;
-            }
-            let latest_events: Vec<AuditEvent> = match state
-                .runtime
-                .storage()
-                .read_recent_events(state.event_window_limit.saturating_add(1))
-            {
-                Ok(latest_events) => latest_events,
-                Err(err) => {
-                    error!("failed to load events for stream: {err}");
-                    sleep(EVENT_STREAM_POLL_INTERVAL).await;
-                    continue;
-                }
-            };
-            match refresh_buffered_events(&mut state, latest_events) {
-                Ok(()) => {
-                    state.event_marker = event_marker;
-                    if !state.buffered.is_empty() {
-                        continue;
+            match live_rx.recv().await {
+                Ok(published) if published.agent_id.as_deref() == Some(runtime_id.as_str()) => {
+                    if send_stream_event(&tx, &runtime_id, &published.event)
+                        .await
+                        .is_err()
+                    {
+                        break;
                     }
                 }
-                Err(seq) => {
-                    error!("event stream cursor fell out of replay window: {seq}");
-                    break;
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(agent_id = %runtime_id, skipped, "event stream receiver lagged");
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
-            sleep(EVENT_STREAM_POLL_INTERVAL).await;
         }
     });
-    let stream = ReceiverStream::new(rx);
+    let stream = ReceiverStream::new(out_rx);
+    let keep_alive = KeepAlive::new()
+        .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
+        .text("heartbeat");
+    Ok(Sse::new(stream).keep_alive(keep_alive))
+}
+
+pub async fn global_events_stream(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    if state.require_control_token {
+        authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    }
+    let mut rx = state.host.subscribe_events();
+    let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(published) => {
+                    let Some(agent_id) = published.agent_id.as_deref() else {
+                        continue;
+                    };
+                    if send_stream_event(&tx, agent_id, &published.event)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(skipped, "global event stream receiver lagged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    let stream = ReceiverStream::new(rx_out);
     let keep_alive = KeepAlive::new()
         .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
         .text("heartbeat");
@@ -2321,25 +2309,6 @@ fn initial_buffered_events(
         events.len()
     };
     Ok(events.iter().skip(start_index).cloned().collect())
-}
-
-fn refresh_buffered_events(
-    state: &mut EventStreamState,
-    latest_events: Vec<AuditEvent>,
-) -> std::result::Result<(), u64> {
-    let start_index = if state.last_seen_seq == 0 {
-        0
-    } else {
-        latest_events
-            .iter()
-            .position(|event| event.event_seq == state.last_seen_seq)
-            .map(|position| position + 1)
-            .ok_or(state.last_seen_seq)?
-    };
-    state
-        .buffered
-        .extend(latest_events.into_iter().skip(start_index));
-    Ok(())
 }
 
 fn oldest_seq(events: &[AuditEvent], order: EventPageOrder) -> Option<u64> {
@@ -2368,6 +2337,23 @@ fn stream_event_envelope(agent_id: &str, event: &AuditEvent) -> StreamEventEnvel
         provenance: event_replay_provenance(&event.data),
         payload: event.data.clone(),
     }
+}
+
+async fn send_stream_event(
+    tx: &tokio::sync::mpsc::Sender<Result<Event, std::convert::Infallible>>,
+    agent_id: &str,
+    event: &AuditEvent,
+) -> std::result::Result<
+    (),
+    tokio::sync::mpsc::error::SendError<Result<Event, std::convert::Infallible>>,
+> {
+    let envelope = stream_event_envelope(agent_id, event);
+    let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
+    tx.send(Ok(Event::default()
+        .id(envelope.event_seq.to_string())
+        .event(envelope.event_type)
+        .data(payload)))
+        .await
 }
 
 async fn event_filter_context(

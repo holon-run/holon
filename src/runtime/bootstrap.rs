@@ -21,7 +21,7 @@ use crate::{
     },
     queue::RuntimeQueue,
     runtime_db::RuntimeDb,
-    storage::AppStorage,
+    storage::{AppStorage, EventBus},
     system::{LocalSystem, WorkspaceAccessMode, WorkspaceProjectionKind},
     tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
     types::{
@@ -78,6 +78,7 @@ impl RuntimeHandle {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -92,6 +93,7 @@ impl RuntimeHandle {
         runtime_db: RuntimeDb,
         host_bridge: RuntimeHostBridge,
         model_catalog: RuntimeModelCatalog,
+        event_bus: EventBus,
     ) -> Result<Self> {
         let base_context_config = context_config.clone();
         Self::new_internal(
@@ -111,6 +113,7 @@ impl RuntimeHandle {
             None,
             Some(runtime_db),
             Some(host_bridge),
+            Some(event_bus),
         )
     }
 
@@ -124,6 +127,7 @@ impl RuntimeHandle {
         context_config: ContextConfig,
         runtime_db: RuntimeDb,
         host_bridge: RuntimeHostBridge,
+        event_bus: EventBus,
     ) -> Result<Self> {
         let model_catalog = RuntimeModelCatalog::from_config(&config);
         let model_availability = resolved_model_availability(&config);
@@ -153,6 +157,7 @@ impl RuntimeHandle {
             Some(ProviderReconfigurator { config }),
             Some(runtime_db),
             Some(host_bridge),
+            Some(event_bus),
         )
     }
 
@@ -173,6 +178,7 @@ impl RuntimeHandle {
         provider_reconfig: Option<ProviderReconfigurator>,
         runtime_db: Option<RuntimeDb>,
         host_bridge: Option<RuntimeHostBridge>,
+        event_bus: Option<EventBus>,
     ) -> Result<Self> {
         let mut provider = provider;
         let PreparedRuntimeStorage {
@@ -183,6 +189,9 @@ impl RuntimeHandle {
             active_tasks,
             active_timers,
         } = prepare_runtime_storage(agent_id, data_dir, initial_workspace, runtime_db)?;
+        if let Some(event_bus) = event_bus {
+            storage.enable_event_bus(event_bus)?;
+        }
 
         if let Some(reconfig) = provider_reconfig.as_ref() {
             let chain = model_catalog.provider_chain_for_turn(
