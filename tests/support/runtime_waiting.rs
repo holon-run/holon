@@ -104,7 +104,9 @@ pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> R
     assert!(transcript.iter().any(|entry| {
         entry.kind == TranscriptEntryKind::IncomingMessage
             && entry.related_message_id.as_deref() == Some(message.id.as_str())
-            && entry.data["body"]["text"].as_str() == Some("exercise the turn boundary")
+            && entry.data["body"].is_null()
+            && entry.data["metadata"].is_null()
+            && entry.data["delivery_surface"].is_null()
     }));
     assert!(transcript.iter().any(|entry| {
         entry.kind == TranscriptEntryKind::AssistantRound && entry.round == Some(1)
