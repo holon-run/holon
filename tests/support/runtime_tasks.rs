@@ -324,11 +324,19 @@ pub async fn lifecycle_stop_interrupts_active_command_task() -> Result<()> {
     assert_eq!(detail["interrupted_reason"], "agent_stopped");
     assert_eq!(detail["status_before_stop"], "running");
 
-    let events = runtime.recent_events(200).await?;
-    assert!(events.iter().any(|event| {
-        event.kind == "task_interrupted_on_agent_stop"
-            && event.data.get("task_id").and_then(|value| value.as_str()) == Some(task.id.as_str())
-    }));
+    wait_until_async_for(Duration::from_secs(10), || {
+        let runtime = runtime.clone();
+        let task_id = task.id.clone();
+        async move {
+            let events = runtime.recent_events(200).await?;
+            Ok(events.iter().any(|event| {
+                event.kind == "task_interrupted_on_agent_stop"
+                    && event.data.get("task_id").and_then(|value| value.as_str())
+                        == Some(task_id.as_str())
+            }))
+        }
+    })
+    .await?;
 
     let active_tasks = runtime.active_tasks(10).await?;
     assert!(!active_tasks.iter().any(|record| record.id == task.id));

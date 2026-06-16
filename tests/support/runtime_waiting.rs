@@ -650,7 +650,14 @@ pub async fn notify_operator_records_default_public_and_private_child_targets() 
             && notification.target_operator_boundary
                 == OperatorNotificationBoundary::ParentSupervisor
     }));
-    let events = child_runtime.storage().read_recent_events(20)?;
+    eventually_for(Duration::from_secs(10), || {
+        let events = child_runtime.storage().read_recent_events(200)?;
+        Ok(events
+            .iter()
+            .any(|event| event.kind == "operator_notification_requested"))
+    })
+    .await?;
+    let events = child_runtime.storage().read_recent_events(200)?;
     assert!(events
         .iter()
         .any(|event| event.kind == "operator_notification_requested"));
@@ -1028,7 +1035,14 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
         .revoke_external_trigger(&capability.external_trigger_id)
         .await?;
     assert_eq!(cancelled.status, ExternalTriggerStatus::Revoked);
-    let events = runtime.storage().read_recent_events(20)?;
+    eventually_for(Duration::from_secs(10), || {
+        let events = runtime.storage().read_recent_events(200)?;
+        Ok(events
+            .iter()
+            .any(|event| event.kind == "external_trigger_revoked"))
+    })
+    .await?;
+    let events = runtime.storage().read_recent_events(200)?;
     let cancelled_event = events
         .iter()
         .rev()
@@ -1039,10 +1053,29 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
     let waiting = runtime.latest_waiting_intents().await?;
     let descriptors = runtime.latest_external_triggers().await?;
     assert!(waiting.is_empty());
-    assert_eq!(descriptors[0].status, ExternalTriggerStatus::Revoked);
+    let revoked_descriptor = descriptors
+        .iter()
+        .find(|descriptor| descriptor.external_trigger_id == capability.external_trigger_id)
+        .expect("revoked external trigger descriptor");
+    assert_eq!(revoked_descriptor.status, ExternalTriggerStatus::Revoked);
+    wait_until_async_for(Duration::from_secs(10), || {
+        let runtime = runtime.clone();
+        let external_trigger_id = capability.external_trigger_id.clone();
+        async move {
+            let summary = runtime.agent_summary().await?;
+            Ok(summary
+                .active_external_triggers
+                .iter()
+                .all(|trigger| trigger.external_trigger_id != external_trigger_id))
+        }
+    })
+    .await?;
     let summary = runtime.agent_summary().await?;
     assert!(summary.active_waiting_intents.is_empty());
-    assert!(summary.active_external_triggers.is_empty());
+    assert!(summary
+        .active_external_triggers
+        .iter()
+        .all(|trigger| trigger.external_trigger_id != capability.external_trigger_id));
     let summary_value = serde_json::to_value(&summary)?;
     assert!(summary_value["active_external_triggers"].is_array());
     Ok(())

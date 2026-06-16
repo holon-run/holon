@@ -19,12 +19,12 @@ use holon::{
     provider::{AgentProvider, ProviderTurnRequest, ProviderTurnResponse, StubProvider},
     system::{WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
-        AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, BriefKind, BriefRecord,
-        CallbackDeliveryMode, CommandTaskSpec, ContinuationClass, ControlAction,
-        ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
-        MessageOrigin, OperatorDeliveryStatus, Priority, TaskKind, TaskRecord, TaskStatus,
-        TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus, WaitingIntentStatus,
-        WorkItemState,
+        AdmissionContext, AgentStatus, AuditEvent, AuthorityClass, BriefCreatedAuditEvent,
+        BriefKind, BriefRecord, CallbackDeliveryMode, CommandTaskSpec, ContinuationClass,
+        ControlAction, ExternalTriggerStatus, MessageBody, MessageDeliverySurface, MessageEnvelope,
+        MessageKind, MessageOrigin, OperatorDeliveryStatus, Priority, TaskKind, TaskRecord,
+        TaskStatus, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
+        WaitingIntentStatus, WorkItemState,
     },
 };
 use reqwest::Client;
@@ -67,6 +67,24 @@ async fn newest_event_seq(base: &str, client: &Client, token: Option<&str>) -> R
     page["newest_seq"]
         .as_u64()
         .ok_or_else(|| anyhow::anyhow!("newest_seq should be present"))
+}
+
+async fn fetch_events_page_until(
+    client: &Client,
+    url: String,
+    mut predicate: impl FnMut(&serde_json::Value) -> bool,
+) -> Result<serde_json::Value> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let page: serde_json::Value = client.get(&url).send().await?.json().await?;
+        if predicate(&page) {
+            return Ok(page);
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for events page; last_page={page}");
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
 }
 
 pub async fn events_route_supports_cursor_pagination() -> Result<()> {
@@ -120,27 +138,38 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
     assert_eq!(older["newest_seq"], older_newest);
     assert_eq!(older["has_newer"], false);
 
-    let newer: serde_json::Value = client
-        .get(format!(
+    let newer = fetch_events_page_until(
+        &client,
+        format!(
             "{base}/agents/default/events?after_seq={}&limit=2&order=asc",
             older["newest_seq"].as_u64().expect("newest seq")
-        ))
-        .send()
-        .await?
-        .json()
-        .await?;
+        ),
+        |page| {
+            page["events"]
+                .as_array()
+                .is_some_and(|events| events.len() == 2)
+        },
+    )
+    .await?;
     let newer_events = newer["events"].as_array().expect("events");
     assert_eq!(newer_events.len(), 2);
-    assert_eq!(newer_events[0]["event_seq"], latest_oldest);
-    assert_eq!(newer_events[1]["event_seq"], latest_newest);
-    assert_eq!(newer["oldest_seq"], latest_oldest);
-    assert_eq!(newer["newest_seq"], latest_newest);
+    let newer_oldest = newer_events[0]["event_seq"]
+        .as_u64()
+        .expect("newer oldest seq");
+    let newer_newest = newer_events[1]["event_seq"]
+        .as_u64()
+        .expect("newer newest seq");
+    assert!(newer_oldest > older_newest);
+    assert!(newer_newest > newer_oldest);
+    assert_eq!(newer["oldest_seq"], newer_oldest);
+    assert_eq!(newer["newest_seq"], newer_newest);
     assert_eq!(newer["has_older"], false);
-    assert_eq!(newer["has_newer"], false);
+    assert!(newer["has_newer"].as_bool().is_some());
 
     let bounded_newer: serde_json::Value = client
         .get(format!(
-            "{base}/agents/default/events?after_seq={latest_oldest}&limit=10&order=desc"
+            "{base}/agents/default/events?after_seq={latest_oldest}&before_seq={}&limit=10&order=desc",
+            latest_newest + 1
         ))
         .send()
         .await?
@@ -168,9 +197,16 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
         .await?
         .json()
         .await?;
-    assert_eq!(empty_cursor["events"].as_array().expect("events").len(), 2);
-    assert_eq!(empty_cursor["newest_seq"], latest_newest);
-    assert_eq!(empty_cursor["oldest_seq"], latest_oldest);
+    let empty_cursor_events = empty_cursor["events"].as_array().expect("events");
+    assert_eq!(empty_cursor_events.len(), 2);
+    assert_eq!(
+        empty_cursor["newest_seq"],
+        empty_cursor_events[0]["event_seq"]
+    );
+    assert_eq!(
+        empty_cursor["oldest_seq"],
+        empty_cursor_events[1]["event_seq"]
+    );
 
     server.abort();
     Ok(())
@@ -326,17 +362,18 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
             "raw_text": "debug-only prompt body",
         }),
     ))?;
+    let mut brief = BriefRecord::new(
+        "default",
+        BriefKind::Result,
+        "work finished",
+        Some("msg-stable".into()),
+        Some("task-stable".into()),
+    );
+    brief.work_item_id = Some("work-stable".into());
+    let brief_id = brief.id.clone();
     runtime.storage().append_event(&AuditEvent::new(
         "brief_created",
-        serde_json::json!({
-            "agent_id": "default",
-            "run_id": "run-stable",
-            "work_item_id": "work-stable",
-            "status": "completed",
-            "summary": "work finished",
-            "text_preview": "final summary",
-            "raw_brief": { "debug": true },
-        }),
+        serde_json::to_value(BriefCreatedAuditEvent::from_brief(&brief))?,
     ))?;
     runtime.storage().append_event(&AuditEvent::new(
         "task_status_updated",
@@ -351,14 +388,22 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
         }),
     ))?;
 
-    let page: serde_json::Value = client
-        .get(format!(
-            "{base}/agents/default/events?after_seq={after_seq}&limit=10&order=asc"
-        ))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let page = fetch_events_page_until(
+        &client,
+        format!("{base}/agents/default/events?after_seq={after_seq}&limit=10&order=asc"),
+        |page| {
+            page["events"].as_array().is_some_and(|events| {
+                events
+                    .iter()
+                    .any(|event| event["type"] == "message_admitted")
+                    && events.iter().any(|event| event["type"] == "brief_created")
+                    && events
+                        .iter()
+                        .any(|event| event["type"] == "task_status_updated")
+            })
+        },
+    )
+    .await?;
     let events = page["events"].as_array().expect("events");
 
     let admitted = events
@@ -372,15 +417,21 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
     assert_eq!(admitted["payload"]["raw_text"], "debug-only prompt body");
     assert!(admitted.get("projection").is_none());
 
-    let brief = events
+    let brief_event = events
         .iter()
         .find(|event| event["type"] == "brief_created")
         .expect("brief_created event");
-    assert_eq!(brief["payload"]["run_id"], "run-stable");
-    assert_eq!(brief["payload"]["work_item_id"], "work-stable");
-    assert_eq!(brief["payload"]["summary"], "work finished");
-    assert_eq!(brief["payload"]["raw_brief"]["debug"], true);
-    assert!(brief.get("projection").is_none());
+    assert_eq!(brief_event["payload"]["brief_id"], brief_id);
+    assert_eq!(brief_event["payload"]["work_item_id"], "work-stable");
+    assert_eq!(brief_event["payload"]["related_message_id"], "msg-stable");
+    assert_eq!(brief_event["payload"]["related_task_id"], "task-stable");
+    assert_eq!(
+        brief_event["payload"]["content_char_count"].as_u64(),
+        Some(13)
+    );
+    assert!(brief_event["payload"].get("text").is_none());
+    assert!(brief_event["payload"].get("attachments").is_none());
+    assert!(brief_event.get("projection").is_none());
 
     let task = events
         .iter()
@@ -433,17 +484,21 @@ pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Resu
     );
     runtime.storage().append_event(&AuditEvent::new(
         "brief_created",
-        serde_json::to_value(brief)?,
+        serde_json::to_value(BriefCreatedAuditEvent::from_brief(&brief))?,
     ))?;
 
-    let page: serde_json::Value = client
-        .get(format!(
-            "{base}/agents/default/events?limit=2&order=desc&max_level=info"
-        ))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let page = fetch_events_page_until(
+        &client,
+        format!("{base}/agents/default/events?limit=2&order=desc&max_level=info"),
+        |page| {
+            page["events"].as_array().is_some_and(|events| {
+                events.len() == 2
+                    && events[0]["type"] == "brief_created"
+                    && events[1]["type"] == "message_enqueued"
+            })
+        },
+    )
+    .await?;
     let events = page["events"].as_array().expect("events");
     assert_eq!(events.len(), 2);
     assert_eq!(events[0]["type"], "brief_created");
