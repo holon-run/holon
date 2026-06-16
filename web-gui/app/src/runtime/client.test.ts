@@ -115,4 +115,31 @@ describe("createRuntimeClient", () => {
     );
     expect(seen).toEqual(["http://example.test:7878/agents/agent%2Fone/tasks/task%2F42/output?block=false"]);
   });
+
+  it("fetches agent work items from the scoped work-items endpoint", async () => {
+    const seen: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.endsWith("/agents/agent%2Fone/work-items?limit=25")) {
+        return Response.json([
+          { id: "work-current", objective: "Current", state: "open", plan_status: "ready" },
+          { id: "work-done", objective: "Done", state: "completed" },
+        ]);
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.getAgentWorkItems("agent/one", { limit: 25 })).resolves.toEqual([
+      expect.objectContaining({ id: "work-current", objective: "Current", state: "open", planStatus: "ready" }),
+      expect.objectContaining({ id: "work-done", objective: "Done", state: "completed" }),
+    ]);
+    expect(seen).toEqual(["http://example.test:7878/agents/agent%2Fone/work-items?limit=25"]);
+  });
 });

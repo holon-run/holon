@@ -27,6 +27,7 @@ import type {
   RuntimeModelCatalog,
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
+  WorkItemSummary,
   SearchResponse,
 } from "./types";
 
@@ -198,6 +199,7 @@ export interface RuntimeStoreState {
   deleteCredential: (profile: string) => Promise<void>;
   runSearch: (query: string, options?: { agentIds?: string[]; limit?: number }) => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
+  refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
@@ -221,6 +223,7 @@ const messageHydrationInFlight = new Map<string, Set<string>>();
 const transcriptHydrationInFlight = new Map<string, Set<string>>();
 const briefHydrationInFlight = new Map<string, Set<string>>();
 const inspectorDetailInFlight = new Set<string>();
+const workItemRefreshInFlight = new Set<string>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
 const STREAM_FLUSH_INTERVAL_MS = 100;
@@ -715,6 +718,28 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
+  refreshAgentWorkItems: async (agentId) => {
+    if (!agentId || workItemRefreshInFlight.has(agentId)) return;
+    workItemRefreshInFlight.add(agentId);
+    try {
+      const workItems = await runtimeClient.getAgentWorkItems(agentId, { limit: 50 });
+      set((state) => mergeAgentWorkItemsIntoState(state, agentId, workItems));
+    } catch (error) {
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...emptyAgentSession(),
+            ...state.sessionsByAgentId[agentId],
+            historyError: error instanceof Error ? error.message : String(error),
+          },
+        },
+      }));
+    } finally {
+      workItemRefreshInFlight.delete(agentId);
+    }
+  },
+
   loadOlderAgentEvents: async (agentId, displayLevel) => {
     if (!agentId) return;
     const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
@@ -1201,6 +1226,45 @@ function mergeAgentIntoBootstrap(bootstrap: RuntimeBootstrap, updatedAgent: Agen
   };
 }
 
+function mergeAgentWorkItemsIntoState(state: RuntimeStoreState, agentId: string, workItems: WorkItemSummary[]): Partial<RuntimeStoreState> {
+  const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  const detail = session.detail
+    ? {
+        ...session.detail,
+        agent: patchAgentWorkItems(session.detail.agent, workItems),
+      }
+    : session.detail;
+  const agents = state.bootstrap.agents.map((agent) => (agent.id === agentId ? patchAgentWorkItems(agent, workItems) : agent));
+
+  return {
+    bootstrap: sortBootstrapAgents(
+      {
+        ...state.bootstrap,
+        agents,
+        metrics: buildBootstrapMetrics(agents),
+      },
+      state.rosterActivityByAgentId,
+    ),
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...emptyAgentSession(),
+        ...session,
+        detail,
+      },
+    },
+  };
+}
+
+function patchAgentWorkItems(agent: AgentSummary, workItems: WorkItemSummary[]): AgentSummary {
+  const currentWork = workItems.find((item) => item.current);
+  return {
+    ...agent,
+    currentWork,
+    workItems,
+  };
+}
+
 function sortBootstrapAgents(bootstrap: RuntimeBootstrap, rosterActivityByAgentId: Record<string, AgentRosterActivity>): RuntimeBootstrap {
   return {
     ...bootstrap,
@@ -1435,6 +1499,9 @@ async function catchUpAgentEvents(
       append: true,
     }),
   );
+  if ((page.events ?? []).some(isWorkItemCacheInvalidationEvent)) {
+    void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
+  }
   scheduleMessageHydration(get, set, agentId, "debug");
   scheduleTranscriptHydration(get, set, agentId, "debug");
   scheduleBriefHydration(get, set, agentId, "debug");
@@ -1515,6 +1582,15 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
   scheduleMessageHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
   scheduleTranscriptHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
   scheduleBriefHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
+  if (events.some(isWorkItemCacheInvalidationEvent)) {
+    void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
+  }
+}
+
+function isWorkItemCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolean {
+  if (event.type !== "work_item_written") return false;
+  const action = stringField(asRecord(event.payload), "action");
+  return action === "created" || action === "completed";
 }
 
 function scheduleMessageHydration(

@@ -80,7 +80,7 @@ async function fetchAgentDetail(
 ): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
   const eventDisplayLevel = displayLevel;
-  const [entry, state, events] = await Promise.all([
+  const [entry, state, events, workItems] = await Promise.all([
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers })
       .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
       .catch(() => undefined),
@@ -89,6 +89,7 @@ async function fetchAgentDetail(
       events: [],
       has_older: false,
     })),
+    fetchAgentWorkItems(baseUrl, fetchImpl, headers, agentId, { limit: 50 }).catch((): WorkItemDto[] => []),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const transcriptEntriesById = await fetchTranscriptEntriesForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? []);
@@ -97,6 +98,7 @@ async function fetchAgentDetail(
     fallbackEntry,
     state,
     newestBriefFromEvents(events.events ?? [], transcriptEntriesById, briefRecordsById),
+    workItems,
   );
   const timeline = reduceAgentSessionTimeline({ events, eventDisplayLevel, transcriptEntriesById, briefRecordsById });
 
@@ -185,6 +187,13 @@ interface AgentStateDto {
   }>;
   waiting_intents?: unknown[];
   workspace?: AgentWorkspaceDto;
+}
+
+interface WorkItemDto {
+  id?: string;
+  objective?: string;
+  state?: string;
+  plan_status?: string;
 }
 
 interface AgentWorkspaceDto {
@@ -443,6 +452,13 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         return disconnectedAgentDetail(agentId, message);
       }
     },
+    async getAgentWorkItems(agentId: string, options: { limit?: number } = {}): Promise<WorkItemSummary[]> {
+      if (!baseUrl) {
+        return [];
+      }
+      const workItems = await fetchAgentWorkItems(baseUrl, fetchImpl, requestHeaders, agentId, options);
+      return projectWorkItems(workItems);
+    },
     async getAgentEvents(agentId: string, options: AgentEventPageOptions = {}): Promise<EventPageResponseDto> {
       if (!baseUrl) {
         return { events: [], has_older: false };
@@ -626,6 +642,24 @@ async function fetchAgentEvents(
   const queryString = query.toString();
   const path = `/agents/${encodeURIComponent(agentId)}/events${queryString ? `?${queryString}` : ""}`;
   return getJson<EventPageResponseDto>(fetchImpl, baseUrl, path, { headers });
+}
+
+async function fetchAgentWorkItems(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+  options: { limit?: number } = {},
+): Promise<WorkItemDto[]> {
+  const query = new URLSearchParams();
+  if (options.limit != null) query.set("limit", String(options.limit));
+  const queryString = query.toString();
+  return getJson<WorkItemDto[]>(
+    fetchImpl,
+    baseUrl,
+    `/agents/${encodeURIComponent(agentId)}/work-items${queryString ? `?${queryString}` : ""}`,
+    { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers },
+  );
 }
 
 async function fetchTranscriptEntriesForEvents(
@@ -1025,15 +1059,15 @@ function projectSearchResponse(response: SearchResponseDto): SearchResponse {
   };
 }
 
-function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: BriefRecordDto): AgentSummary {
+function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: BriefRecordDto, workItemRecords?: WorkItemDto[]): AgentSummary {
   const id = entry.identity?.agent_id ?? state?.agent?.agent?.id ?? "unknown-agent";
   const status = state?.agent?.agent?.status ?? entry.status ?? "unknown";
   const profile = compactJoin([entry.identity?.visibility ?? "public", entry.identity?.ownership, entry.identity?.profile_preset]);
   const workspaceEntry = state?.workspace?.active_workspace_entry ?? entry.active_workspace_entry;
   const workspace = workspaceEntry?.workspace_alias ?? workspaceEntry?.workspace_id ?? state?.workspace?.worktree_session?.worktree_branch ?? "not bound";
   const workspaceSummary = projectWorkspace(workspaceEntry, state?.workspace?.worktree_session);
-  const currentWork = selectCurrentWork(state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
-  const workItems = selectOpenWorkItems(state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
+  const currentWork = selectCurrentWork(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
+  const workItems = selectWorkItems(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
   const tasks = projectTasks(state?.tasks ?? []);
   const pending = state?.session?.pending_count ?? entry.pending ?? 0;
   const activeTaskCount = state?.tasks?.length ?? state?.agent?.active_task_count ?? 0;
@@ -1220,7 +1254,7 @@ function compareModelOptions(left: RuntimeModelOption, right: RuntimeModelOption
 }
 
 function selectCurrentWork(
-  workItems: Array<{ id?: string; objective?: string; state?: string }>,
+  workItems: Array<{ id?: string; objective?: string; state?: string; plan_status?: string }>,
   currentWorkItemId?: string | null,
 ): WorkItemSummary | undefined {
   if (!currentWorkItemId) return undefined;
@@ -1230,16 +1264,23 @@ function selectCurrentWork(
     id: selected.id,
     objective: selected.objective ?? selected.id,
     state: selected.state ?? "unknown",
+    planStatus: selected.plan_status,
     current: true,
   };
 }
 
-function selectOpenWorkItems(
+function projectWorkItems(
+  workItems: Array<{ id?: string; objective?: string; state?: string; plan_status?: string }>,
+): WorkItemSummary[] {
+  return selectWorkItems(workItems);
+}
+
+function selectWorkItems(
   workItems: Array<{ id?: string; objective?: string; state?: string; plan_status?: string }>,
   currentWorkItemId?: string | null,
 ): WorkItemSummary[] {
   return workItems
-    .filter((item) => item.id && item.state !== "completed")
+    .filter((item) => item.id)
     .map((item) => ({
       id: item.id ?? "unknown-work-item",
       objective: item.objective ?? item.id ?? "Work item",

@@ -4,9 +4,10 @@ import type { AgentSummary } from "../../runtime/types";
 
 export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
   const workspace = agent.workspaceSummary;
-  const openWorkItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
-  const currentWorkItems = openWorkItems.filter((item) => item.current);
-  const otherWorkItems = openWorkItems.filter((item) => !item.current);
+  const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
+  const currentWorkItems = workItems.filter((item) => item.current);
+  const openWorkItems = workItems.filter((item) => !item.current && item.state !== "completed");
+  const completedWorkItems = workItems.filter((item) => item.state === "completed");
   const currentWorkLabel = currentWorkItems[0]?.objective ?? agent.currentWork?.objective ?? "No current work item";
   const workspaceName = workspace?.name ?? agent.workspace;
   const workspaceRoot = workspace?.cwd ?? workspace?.executionRoot ?? workspace?.worktree?.path ?? workspace?.anchor;
@@ -129,20 +130,27 @@ export function AgentOverviewPanel({ agent }: { agent: AgentSummary }) {
         </section>
       ) : null}
 
-      {openWorkItems.length ? (
+      {workItems.length ? (
         <section className="context-card current-work inspector-card">
           <div className="context-head">
-            <span className="eyebrow">Open work items</span>
-            <StatusBadge className="state-chip" kind="work" value={`${openWorkItems.length} open`} />
+            <span className="eyebrow">Work items</span>
+            <StatusBadge className="state-chip" kind="work" value={`${openWorkItems.length + currentWorkItems.length} open`} />
           </div>
           {currentWorkItems.map((workItem) => (
             <WorkItemCard key={workItem.id} workItem={workItem} featured />
           ))}
-          {otherWorkItems.length ? (
+          {openWorkItems.length ? (
+            <div className="inspector-nested-stack">
+              {openWorkItems.map((workItem) => (
+                <WorkItemCard key={workItem.id} workItem={workItem} />
+              ))}
+            </div>
+          ) : null}
+          {completedWorkItems.length ? (
             <details className="inspector-details-list">
-              <summary>{otherWorkItems.length} other open</summary>
+              <summary>{completedWorkItems.length} completed</summary>
               <div className="inspector-nested-stack">
-                {otherWorkItems.map((workItem) => (
+                {completedWorkItems.map((workItem) => (
                   <WorkItemCard key={workItem.id} workItem={workItem} />
                 ))}
               </div>
