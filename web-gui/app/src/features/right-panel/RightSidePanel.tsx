@@ -1,16 +1,18 @@
-import type { AgentSummary, RightPanelView } from "../../runtime/types";
+import type { AgentSummary, RightPanelView, WorkItemDetailState } from "../../runtime/types";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
 import { AgentOverviewPanel } from "./AgentOverviewPanel";
 
 interface RightSidePanelProps {
   agent: AgentSummary;
+  workItemDetailsById?: Record<string, WorkItemDetailState>;
   view?: RightPanelView;
   open: boolean;
+  onLoadWorkItemDetail: (workItemId: string) => void;
   onShowAgentOverview: () => void;
   onClose: () => void;
 }
 
-export function RightSidePanel({ agent, view, open, onShowAgentOverview, onClose }: RightSidePanelProps) {
+export function RightSidePanel({ agent, workItemDetailsById = {}, view, open, onLoadWorkItemDetail, onShowAgentOverview, onClose }: RightSidePanelProps) {
   const activeView = view?.agentId === agent.id ? view : { kind: "agent_overview" as const, agentId: agent.id };
   const title = activeView.kind === "activity_inspector" ? activityInspectorTitle(activeView.activity) : "Agent overview";
 
@@ -36,7 +38,7 @@ export function RightSidePanel({ agent, view, open, onShowAgentOverview, onClose
         {activeView.kind === "activity_inspector" ? (
           <ActivityInspectorPanel activity={activeView.activity} detailState={activeView.detailState} />
         ) : (
-          <AgentOverviewPanel agent={agent} />
+          <AgentOverviewPanel agent={agent} workItemDetailsById={workItemDetailsById} onLoadWorkItemDetail={onLoadWorkItemDetail} />
         )}
       </div>
     </aside>

@@ -23,6 +23,39 @@ export interface WorkItemSummary {
   state: string;
   planStatus?: string;
   current?: boolean;
+  revision?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  blockedBy?: string;
+  recheckAt?: string;
+  resultBriefId?: string;
+  resultSummary?: string;
+  planArtifact?: WorkItemPlanArtifactSummary;
+  todoList?: WorkItemTodoItem[];
+  workRefs?: WorkItemRefSummary[];
+}
+
+export interface WorkItemPlanArtifactSummary {
+  path?: string;
+  relativePath?: string;
+  workspaceAlias?: string;
+  preview?: string;
+  previewComplete?: boolean;
+  updatedAt?: string;
+}
+
+export interface WorkItemTodoItem {
+  text: string;
+  state: string;
+}
+
+export interface WorkItemRefSummary {
+  kind: string;
+  ref: string;
+  title?: string;
+  reason?: string;
+  status?: string;
+  lastSeenAt?: string;
 }
 
 export interface WorkspaceSummary {
@@ -283,6 +316,12 @@ export interface InspectorActivityDetailState {
   error?: string;
   toolExecution?: RuntimeToolExecutionRecord;
   taskOutput?: RuntimeTaskOutputResult;
+}
+
+export interface WorkItemDetailState {
+  loading?: boolean;
+  error?: string;
+  workItem?: WorkItemSummary;
 }
 
 export type RightPanelView =

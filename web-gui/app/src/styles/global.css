@@ -2755,6 +2755,57 @@ code {
   background: color-mix(in srgb, var(--accent) 10%, var(--surface));
 }
 
+.work-item-button {
+  width: 100%;
+  color: inherit;
+  text-align: left;
+}
+
+.work-item-button:hover,
+.work-item-button.selected {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
+.work-item-detail {
+  margin-top: 12px;
+}
+
+.work-item-detail-section {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.work-item-detail-section h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.work-item-detail-section pre {
+  overflow: auto;
+  max-height: 220px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, #000 18%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--page) 72%, var(--surface));
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.inspector-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
 .inspector-list-head {
   display: flex;
   align-items: flex-start;

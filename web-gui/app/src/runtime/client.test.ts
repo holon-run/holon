@@ -142,4 +142,45 @@ describe("createRuntimeClient", () => {
     ]);
     expect(seen).toEqual(["http://example.test:7878/agents/agent%2Fone/work-items?limit=25"]);
   });
+
+  it("fetches agent work item details from the scoped detail endpoint", async () => {
+    const seen: string[] = [];
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.endsWith("/agents/agent%2Fone/work-items/work%2Fdetail")) {
+        return Response.json({
+          id: "work/detail",
+          objective: "Inspect details",
+          state: "open",
+          plan_status: "ready",
+          revision: 7,
+          plan_artifact: { path: "/agent/work-items/work-detail/plan.md", preview: "1. Ship it" },
+          todo_list: [{ text: "verify", state: "pending" }],
+          result_summary: "not done yet",
+        });
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.getAgentWorkItem("agent/one", "work/detail")).resolves.toEqual(
+      expect.objectContaining({
+        id: "work/detail",
+        objective: "Inspect details",
+        state: "open",
+        planStatus: "ready",
+        revision: 7,
+        planArtifact: expect.objectContaining({ path: "/agent/work-items/work-detail/plan.md", preview: "1. Ship it" }),
+        todoList: [{ text: "verify", state: "pending" }],
+        resultSummary: "not done yet",
+      }),
+    );
+    expect(seen).toEqual(["http://example.test:7878/agents/agent%2Fone/work-items/work%2Fdetail"]);
+  });
 });

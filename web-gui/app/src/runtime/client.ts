@@ -191,9 +191,37 @@ interface AgentStateDto {
 
 interface WorkItemDto {
   id?: string;
+  agent_id?: string;
+  revision?: number;
   objective?: string;
   state?: string;
   plan_status?: string;
+  plan_artifact?: {
+    path?: string;
+    relative_path?: string;
+    workspace_alias?: string;
+    preview?: string;
+    preview_complete?: boolean;
+    updated_at?: string;
+  };
+  todo_list?: Array<{
+    text?: string;
+    state?: string;
+  }>;
+  work_refs?: Array<{
+    kind?: string;
+    ref?: string;
+    title?: string;
+    reason?: string;
+    status?: string;
+    last_seen_at?: string;
+  }>;
+  blocked_by?: string;
+  recheck_at?: string;
+  result_brief_id?: string;
+  result_summary?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 interface AgentWorkspaceDto {
@@ -459,6 +487,13 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const workItems = await fetchAgentWorkItems(baseUrl, fetchImpl, requestHeaders, agentId, options);
       return projectWorkItems(workItems);
     },
+    async getAgentWorkItem(agentId: string, workItemId: string): Promise<WorkItemSummary | undefined> {
+      if (!baseUrl || !workItemId) {
+        return undefined;
+      }
+      const workItem = await fetchAgentWorkItem(baseUrl, fetchImpl, requestHeaders, agentId, workItemId);
+      return projectWorkItem(workItem);
+    },
     async getAgentEvents(agentId: string, options: AgentEventPageOptions = {}): Promise<EventPageResponseDto> {
       if (!baseUrl) {
         return { events: [], has_older: false };
@@ -658,6 +693,21 @@ async function fetchAgentWorkItems(
     fetchImpl,
     baseUrl,
     `/agents/${encodeURIComponent(agentId)}/work-items${queryString ? `?${queryString}` : ""}`,
+    { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers },
+  );
+}
+
+async function fetchAgentWorkItem(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+  workItemId: string,
+): Promise<WorkItemDto> {
+  return getJson<WorkItemDto>(
+    fetchImpl,
+    baseUrl,
+    `/agents/${encodeURIComponent(agentId)}/work-items/${encodeURIComponent(workItemId)}`,
     { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers },
   );
 }
@@ -1275,19 +1325,59 @@ function projectWorkItems(
   return selectWorkItems(workItems);
 }
 
+function projectWorkItem(workItem: WorkItemDto | undefined, currentWorkItemId?: string | null): WorkItemSummary | undefined {
+  if (!workItem?.id) return undefined;
+  const planArtifact = workItem.plan_artifact;
+  return {
+    id: workItem.id,
+    objective: workItem.objective ?? workItem.id,
+    state: workItem.state ?? "unknown",
+    planStatus: workItem.plan_status,
+    current: workItem.id === currentWorkItemId,
+    revision: workItem.revision,
+    createdAt: workItem.created_at,
+    updatedAt: workItem.updated_at,
+    blockedBy: workItem.blocked_by,
+    recheckAt: workItem.recheck_at,
+    resultBriefId: workItem.result_brief_id,
+    resultSummary: workItem.result_summary,
+    planArtifact: planArtifact
+      ? {
+          path: planArtifact.path,
+          relativePath: planArtifact.relative_path,
+          workspaceAlias: planArtifact.workspace_alias,
+          preview: planArtifact.preview,
+          previewComplete: planArtifact.preview_complete,
+          updatedAt: planArtifact.updated_at,
+        }
+      : undefined,
+    todoList: (workItem.todo_list ?? [])
+      .filter((item) => item.text)
+      .map((item) => ({
+        text: item.text ?? "",
+        state: item.state ?? "unknown",
+      })),
+    workRefs: (workItem.work_refs ?? [])
+      .filter((item) => item.ref)
+      .map((item) => ({
+        kind: item.kind ?? "other",
+        ref: item.ref ?? "",
+        title: item.title,
+        reason: item.reason,
+        status: item.status,
+        lastSeenAt: item.last_seen_at,
+      })),
+  };
+}
+
 function selectWorkItems(
   workItems: Array<{ id?: string; objective?: string; state?: string; plan_status?: string }>,
   currentWorkItemId?: string | null,
 ): WorkItemSummary[] {
   return workItems
     .filter((item) => item.id)
-    .map((item) => ({
-      id: item.id ?? "unknown-work-item",
-      objective: item.objective ?? item.id ?? "Work item",
-      state: item.state ?? "unknown",
-      planStatus: item.plan_status,
-      current: item.id === currentWorkItemId,
-    }))
+    .map((item) => projectWorkItem(item as WorkItemDto, currentWorkItemId))
+    .filter((item): item is WorkItemSummary => Boolean(item))
     .sort((left, right) => {
       if (left.current !== right.current) return left.current ? -1 : 1;
       return left.objective.localeCompare(right.objective);

@@ -68,6 +68,7 @@ export function App() {
   const setAgentModel = useRuntimeStore((state) => state.setAgentModel);
   const clearAgentModel = useRuntimeStore((state) => state.clearAgentModel);
   const loadOlderAgentEvents = useRuntimeStore((state) => state.loadOlderAgentEvents);
+  const loadAgentWorkItemDetail = useRuntimeStore((state) => state.loadAgentWorkItemDetail);
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
@@ -375,8 +376,10 @@ export function App() {
       {selectedAgent ? (
         <RightSidePanel
           agent={selectedAgent}
+          workItemDetailsById={selectedAgentSession?.workItemDetailsById ?? {}}
           view={rightPanelView?.agentId === selectedAgent.id ? rightPanelView : undefined}
           open={rightPanelOpen}
+          onLoadWorkItemDetail={(workItemId) => loadAgentWorkItemDetail(selectedAgent.id, workItemId)}
           onShowAgentOverview={showAgentOverview}
           onClose={() => setRightPanelOpen(false)}
         />

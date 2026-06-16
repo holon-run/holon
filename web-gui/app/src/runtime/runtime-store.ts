@@ -28,6 +28,7 @@ import type {
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
   WorkItemSummary,
+  WorkItemDetailState,
   SearchResponse,
 } from "./types";
 
@@ -108,6 +109,7 @@ export interface AgentSessionState {
   historyError?: string;
   promptError?: string;
   modelError?: string;
+  workItemDetailsById: Record<string, WorkItemDetailState>;
 }
 
 interface AgentRosterActivity {
@@ -200,6 +202,7 @@ export interface RuntimeStoreState {
   runSearch: (query: string, options?: { agentIds?: string[]; limit?: number }) => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
+  loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
@@ -224,6 +227,7 @@ const transcriptHydrationInFlight = new Map<string, Set<string>>();
 const briefHydrationInFlight = new Map<string, Set<string>>();
 const inspectorDetailInFlight = new Set<string>();
 const workItemRefreshInFlight = new Set<string>();
+const workItemDetailInFlight = new Set<string>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
 const STREAM_FLUSH_INTERVAL_MS = 100;
@@ -740,6 +744,26 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
+  loadAgentWorkItemDetail: async (agentId, workItemId) => {
+    if (!agentId || !workItemId) return;
+    const key = `${agentId}:${workItemId}`;
+    const cached = get().sessionsByAgentId[agentId]?.workItemDetailsById[workItemId];
+    if (cached?.workItem || cached?.loading || workItemDetailInFlight.has(key)) return;
+    workItemDetailInFlight.add(key);
+    setWorkItemDetailState(set, agentId, workItemId, { loading: true, error: undefined });
+    try {
+      const workItem = await runtimeClient.getAgentWorkItem(agentId, workItemId);
+      setWorkItemDetailState(set, agentId, workItemId, { loading: false, workItem });
+    } catch (error) {
+      setWorkItemDetailState(set, agentId, workItemId, {
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      workItemDetailInFlight.delete(key);
+    }
+  },
+
   loadOlderAgentEvents: async (agentId, displayLevel) => {
     if (!agentId) return;
     const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
@@ -961,6 +985,7 @@ function emptyAgentSession(): AgentSessionState {
     missingTranscriptEntryIds: {},
     briefRecordsById: {},
     missingBriefIds: {},
+    workItemDetailsById: {},
   };
 }
 
@@ -1053,6 +1078,33 @@ function setInspectorActivityDetailState(
         detailState: {
           ...selection.detailState,
           ...detailState,
+        },
+      },
+    };
+  });
+}
+
+function setWorkItemDetailState(
+  set: StoreSet,
+  agentId: string,
+  workItemId: string,
+  detailState: WorkItemDetailState,
+): void {
+  set((state) => {
+    const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+    const previous = session.workItemDetailsById[workItemId] ?? {};
+    return {
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...session,
+          workItemDetailsById: {
+            ...session.workItemDetailsById,
+            [workItemId]: {
+              ...previous,
+              ...detailState,
+            },
+          },
         },
       },
     };
