@@ -837,16 +837,8 @@ pub async fn state_snapshot_bounds_large_projection_fields() -> Result<()> {
         .as_array()
         .and_then(|tasks| tasks.iter().find(|task| task["id"] == "large-task"))
         .expect("large task should be present");
-    assert_eq!(task["detail"]["output_path"], "/tmp/large-task.log");
-    assert!(
-        task["detail"]["output_summary"]
-            .as_str()
-            .expect("task summary")
-            .chars()
-            .count()
-            <= 2048
-    );
-    assert_eq!(task["detail"]["lines"].as_array().expect("lines").len(), 64);
+    // The slimmed snapshot strips detail entirely from task records.
+    assert!(task["detail"].is_null());
 
     server.abort();
     Ok(())
