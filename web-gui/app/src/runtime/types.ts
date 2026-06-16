@@ -281,12 +281,17 @@ export interface InspectorActivityDetailState {
   taskOutput?: RuntimeTaskOutputResult;
 }
 
-export interface InspectorSelection {
-  kind: "activity";
-  agentId: string;
-  activity: AgentTimelineActivity;
-  detailState?: InspectorActivityDetailState;
-}
+export type RightPanelView =
+  | {
+      kind: "agent_overview";
+      agentId: string;
+    }
+  | {
+      kind: "activity_inspector";
+      agentId: string;
+      activity: AgentTimelineActivity;
+      detailState?: InspectorActivityDetailState;
+    };
 
 export interface AgentTimelineItem {
   id: string;

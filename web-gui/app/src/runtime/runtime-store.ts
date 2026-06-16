@@ -14,7 +14,7 @@ import type {
   AgentTimelineActivity,
   AgentTimelineItem,
   DisplayLevel,
-  InspectorSelection,
+  RightPanelView,
   RouteKey,
   RuntimeBootstrap,
   RuntimeConnectionConfig,
@@ -157,8 +157,8 @@ export interface RuntimeStoreState {
   selectedAgentId: string;
   displayLevel: DisplayLevel;
   displayLevelsByAgentId: Record<string, DisplayLevel>;
-  inspectorOpen: boolean;
-  inspectorSelection?: InspectorSelection;
+  rightPanelOpen: boolean;
+  rightPanelView?: RightPanelView;
   navCollapsed: boolean;
 
   bootstrap: RuntimeBootstrap;
@@ -183,10 +183,10 @@ export interface RuntimeStoreState {
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string) => void;
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
-  setInspectorOpen: (open: boolean) => void;
+  setRightPanelOpen: (open: boolean) => void;
+  showAgentOverview: (agentId?: string) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
-  clearInspectorSelection: () => void;
-  toggleInspector: () => void;
+  toggleRightPanel: () => void;
   toggleNavCollapsed: () => void;
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
@@ -424,8 +424,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   selectedAgentId: "",
   displayLevel: "info",
   displayLevelsByAgentId: readStoredDisplayLevels(),
-  inspectorOpen: true,
-  inspectorSelection: undefined,
+  rightPanelOpen: true,
+  rightPanelView: undefined,
   navCollapsed: false,
 
   bootstrap: pendingBootstrap(runtimeConnectionConfig),
@@ -458,16 +458,20 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       writeStoredDisplayLevels(displayLevelsByAgentId);
       return { displayLevel, displayLevelsByAgentId };
     }),
-  setInspectorOpen: (open) => set({ inspectorOpen: open }),
+  setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
+  showAgentOverview: (agentId) =>
+    set((state) => ({
+      rightPanelOpen: true,
+      rightPanelView: { kind: "agent_overview", agentId: agentId ?? state.selectedAgentId },
+    })),
   inspectActivity: (agentId, activity) => {
     set({
-      inspectorOpen: true,
-      inspectorSelection: { kind: "activity", agentId, activity },
+      rightPanelOpen: true,
+      rightPanelView: { kind: "activity_inspector", agentId, activity },
     });
     hydrateInspectorActivityDetail(get, set, agentId, activity);
   },
-  clearInspectorSelection: () => set({ inspectorSelection: undefined }),
-  toggleInspector: () => set((state) => ({ inspectorOpen: !state.inspectorOpen })),
+  toggleRightPanel: () => set((state) => ({ rightPanelOpen: !state.rightPanelOpen })),
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
 
   setRuntimeConnection: async (config) => {
@@ -997,9 +1001,9 @@ function hydrateInspectorActivityDetail(
     })
     .finally(() => {
       inspectorDetailInFlight.delete(key);
-      const selection = get().inspectorSelection;
-      if (selection?.kind === "activity" && selection.agentId === agentId && selection.activity.id === activity.id) {
-        set({ inspectorSelection: selection });
+      const selection = get().rightPanelView;
+      if (selection?.kind === "activity_inspector" && selection.agentId === agentId && selection.activity.id === activity.id) {
+        set({ rightPanelView: selection });
       }
     });
 }
@@ -1016,10 +1020,10 @@ function setInspectorActivityDetailState(
   },
 ): void {
   set((state) => {
-    const selection = state.inspectorSelection;
-    if (selection?.kind !== "activity" || selection.agentId !== agentId || selection.activity.id !== activityId) return {};
+    const selection = state.rightPanelView;
+    if (selection?.kind !== "activity_inspector" || selection.agentId !== agentId || selection.activity.id !== activityId) return {};
     return {
-      inspectorSelection: {
+      rightPanelView: {
         ...selection,
         detailState: {
           ...selection.detailState,

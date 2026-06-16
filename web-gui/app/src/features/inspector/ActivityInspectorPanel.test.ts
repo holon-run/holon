@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatToolExecutionDetail } from "./InspectorPanel";
+import { formatToolExecutionDetail } from "./ActivityInspectorPanel";
 
 describe("formatToolExecutionDetail", () => {
   it("extracts readable command output from tool execution records", () => {
