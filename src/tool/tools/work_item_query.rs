@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    object_resolver::RuntimeObjectResolver,
     runtime::RuntimeHandle,
     types::{
         DeliverySummaryRecord, TodoItem, WaitConditionKind, WaitConditionSummary,
@@ -249,7 +250,10 @@ fn completion_report_for_record(
     {
         if let Some(brief) = runtime.storage().read_brief_by_id(brief_id)? {
             if !brief.text.trim().is_empty() {
-                return Ok(Some(completion_report_view_from_brief(brief)));
+                let text = RuntimeObjectResolver::new(runtime.storage())
+                    .resolve_brief_content(&brief)
+                    .unwrap_or_else(|_| brief.text.clone());
+                return Ok(Some(completion_report_view_from_brief(brief, text)));
             }
         }
     }
@@ -302,9 +306,10 @@ fn completion_report_view(
 
 fn completion_report_view_from_brief(
     brief: crate::types::BriefRecord,
+    text: String,
 ) -> WorkItemCompletionReportView {
     WorkItemCompletionReportView {
-        text: brief.text,
+        text,
         source: WorkItemCompletionReportSource::ResultBrief,
         brief_id: Some(brief.id),
         delivery_summary_id: None,

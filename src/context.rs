@@ -5,6 +5,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::{
+    object_resolver::RuntimeObjectResolver,
     prompt::{PromptSection, PromptStability},
     storage::{is_active_task_status, AppStorage},
     system::{execution_policy_summary_lines, ExecutionSnapshot},
@@ -418,6 +419,7 @@ pub fn build_context_with_default_external_ingress(
     }
 
     if let Some(content) = render_recent_turns_with_budget(
+        storage,
         &turn_records,
         &messages,
         &briefs,
@@ -1362,7 +1364,7 @@ fn latest_completion_report_by_work_item(
             summaries
                 .entry(work_item_id.clone())
                 .or_insert_with(|| CompletionReportProjection {
-                    text: brief.text.clone(),
+                    text: resolved_brief_text(storage, &brief),
                     brief_id: Some(brief.id.clone()),
                 });
         }
@@ -1651,6 +1653,7 @@ enum RecentTurnProjectionMode {
 }
 
 fn render_recent_turn_brief_line(
+    storage: &AppStorage,
     brief: &BriefRecord,
     mode: RecentTurnProjectionMode,
     budget: usize,
@@ -1660,20 +1663,21 @@ fn render_recent_turn_brief_line(
     }
 
     let brief_ref = format!("brief:{}", sanitize_inline(&brief.id));
+    let brief_text = resolved_brief_text(storage, brief);
     match mode {
         RecentTurnProjectionMode::Continuity => {
-            render_continuity_brief_line(brief, &brief_ref, budget)
+            render_continuity_brief_line(brief, &brief_text, &brief_ref, budget)
         }
         RecentTurnProjectionMode::Nearby => Some(format!(
             "    - {:?}: {} brief_ref={}",
             brief.kind,
-            sanitize_inline(&truncate_text(&brief.text.replace('\n', " "), 1200)),
+            sanitize_inline(&truncate_text(&brief_text.replace('\n', " "), 1200)),
             brief_ref
         )),
         RecentTurnProjectionMode::Older => Some(format!(
             "    - {:?}: {} brief_ref={}",
             brief.kind,
-            sanitize_inline(&truncate_text(&brief.text.replace('\n', " "), 240)),
+            sanitize_inline(&truncate_text(&brief_text.replace('\n', " "), 240)),
             brief_ref
         )),
     }
@@ -1681,13 +1685,14 @@ fn render_recent_turn_brief_line(
 
 fn render_continuity_brief_line(
     brief: &BriefRecord,
+    brief_text: &str,
     brief_ref: &str,
     budget: usize,
 ) -> Option<String> {
     let full = format!(
         "    - {:?} full:\n{}\n      brief_ref={}",
         brief.kind,
-        indent_block(&brief.text, 6),
+        indent_block(brief_text, 6),
         brief_ref
     );
     if estimate_text_tokens(&full) <= budget {
@@ -1698,7 +1703,7 @@ fn render_continuity_brief_line(
     let notice = format!("\n      [truncated; full via brief_ref={}]", brief_ref);
     let rendered = truncate_section_content(
         &prefix,
-        &indent_block(&brief.text, 6),
+        &indent_block(brief_text, 6),
         budget.max(64),
         Some(&notice),
     );
@@ -1710,6 +1715,12 @@ fn render_continuity_brief_line(
             brief.kind, brief_ref
         ))
     }
+}
+
+fn resolved_brief_text(storage: &AppStorage, brief: &BriefRecord) -> String {
+    RuntimeObjectResolver::new(storage)
+        .resolve_brief_content(brief)
+        .unwrap_or_else(|_| brief.text.clone())
 }
 
 fn render_current_input_body_with_budget(
@@ -2084,6 +2095,7 @@ fn truncate_section_content(
 }
 
 fn render_recent_turns_with_budget(
+    storage: &AppStorage,
     turn_records: &[TurnRecord],
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
@@ -2093,6 +2105,7 @@ fn render_recent_turns_with_budget(
     budget: usize,
 ) -> Option<String> {
     render_turn_records_with_budget(
+        storage,
         turn_records,
         messages,
         briefs,
@@ -2104,6 +2117,7 @@ fn render_recent_turns_with_budget(
 }
 
 fn render_turn_records_with_budget(
+    storage: &AppStorage,
     turn_records: &[TurnRecord],
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
@@ -2151,7 +2165,9 @@ fn render_turn_records_with_budget(
                 continuity_turn_id.as_deref(),
                 &nearby_turn_ids,
             );
-            render_turn_record_projection(record, messages, briefs, tools, None, mode, budget)
+            render_turn_record_projection(
+                storage, record, messages, briefs, tools, None, mode, budget,
+            )
         })
         .collect::<Vec<_>>();
 
@@ -2161,6 +2177,7 @@ fn render_turn_records_with_budget(
             .find(|record| turn_record_matches_message(record, operator))
         {
             if let Some(rendered) = render_current_continuation_turn_record_projection(
+                storage,
                 record,
                 current_message,
                 operator,
@@ -2197,6 +2214,7 @@ fn recent_turn_projection_mode(
 }
 
 fn render_turn_record_projection(
+    storage: &AppStorage,
     record: &TurnRecord,
     messages: &[MessageEnvelope],
     briefs: &[BriefRecord],
@@ -2276,7 +2294,7 @@ fn render_turn_record_projection(
         .iter()
         .filter_map(|id| briefs.iter().find(|brief| brief.id == *id))
     {
-        if let Some(rendered) = render_recent_turn_brief_line(brief, mode, brief_budget) {
+        if let Some(rendered) = render_recent_turn_brief_line(storage, brief, mode, brief_budget) {
             brief_budget = brief_budget.saturating_sub(estimate_text_tokens(&rendered));
             related_briefs.push(rendered);
         }
@@ -2304,6 +2322,7 @@ fn render_turn_record_projection(
 }
 
 fn render_current_continuation_turn_record_projection(
+    storage: &AppStorage,
     record: &TurnRecord,
     current_message: &MessageEnvelope,
     operator: &MessageEnvelope,
@@ -2314,6 +2333,7 @@ fn render_current_continuation_turn_record_projection(
     budget: usize,
 ) -> Option<String> {
     let mut rendered = render_turn_record_projection(
+        storage,
         record,
         messages,
         briefs,
@@ -3164,12 +3184,13 @@ mod tests {
         storage::AppStorage,
         types::{
             AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-            AgentVisibility, AuthorityClass, BriefKind, BriefRecord, CallbackDeliveryMode,
-            ContextEpisodeRecord, ContinuationTriggerKind, EpisodeBoundaryReason,
-            ExternalTriggerScope, LoadedAgentsMd, MessageKind, MessageOrigin, Priority, TaskKind,
-            TaskStatus, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
-            TranscriptEntry, TranscriptEntryKind, WaitConditionKind, WakeSource, WorkItemRef,
-            WorkItemRefKind, WorkItemRefStatus, WorkItemState,
+            AgentVisibility, AuthorityClass, BriefContentSource, BriefKind, BriefRecord,
+            CallbackDeliveryMode, ContextEpisodeRecord, ContinuationTriggerKind,
+            EpisodeBoundaryReason, ExternalTriggerScope, LoadedAgentsMd, MessageKind,
+            MessageOrigin, Priority, TaskKind, TaskStatus, TodoItem, TodoItemState,
+            ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind,
+            WaitConditionKind, WakeSource, WorkItemRef, WorkItemRefKind, WorkItemRefStatus,
+            WorkItemState,
         },
     };
 
@@ -3651,6 +3672,8 @@ mod tests {
 
     #[test]
     fn older_recent_turn_operator_input_is_previewed_with_message_ref() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
         let long_tail = "older-operator-tail-hidden-behind-message-ref";
         let message = MessageEnvelope::new(
             "default",
@@ -3675,6 +3698,7 @@ mod tests {
         turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
 
         let rendered = render_turn_record_projection(
+            &storage,
             &turn,
             &[message.clone()],
             &[brief],
@@ -3692,6 +3716,61 @@ mod tests {
         )));
         assert!(!rendered.contains(long_tail));
         assert!(rendered.contains("brief_ref=brief:"));
+    }
+
+    #[test]
+    fn recent_turns_resolves_transcript_backed_brief_content() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "summarize from transcript".to_string(),
+            },
+        );
+        let entry = TranscriptEntry::new(
+            "default",
+            TranscriptEntryKind::AssistantRound,
+            Some(1),
+            None,
+            json!({"blocks": [{"type": "text", "text": "resolved brief body sentinel_9341"}]}),
+        );
+        storage.append_transcript_entry(&entry).unwrap();
+        let mut brief = BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "preview only",
+            Some(message.id.clone()),
+            None,
+        );
+        brief.id = "brief-transcript-backed".into();
+        brief.content_source = BriefContentSource::TranscriptEntry {
+            entry_id: entry.id.clone(),
+        };
+        let mut turn = TurnRecord::new("default", "turn-transcript-backed", 1);
+        turn.input_message_ids = vec![message.id.clone()];
+        turn.produced_brief_ids = vec![brief.id.clone()];
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+
+        let rendered = render_turn_record_projection(
+            &storage,
+            &turn,
+            &[message],
+            &[brief],
+            &[],
+            None,
+            RecentTurnProjectionMode::Continuity,
+            2048,
+        )
+        .expect("transcript-backed brief should render");
+
+        assert!(rendered.contains("resolved brief body sentinel_9341"));
+        assert!(!rendered.contains("preview only"));
+        assert!(rendered.contains("brief_ref=brief:brief-transcript-backed"));
     }
 
     #[test]
@@ -4600,6 +4679,8 @@ mod tests {
 
     #[test]
     fn continuity_result_truncation_keeps_explicit_brief_ref() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
         let message = MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
@@ -4624,6 +4705,7 @@ mod tests {
         turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
 
         let rendered = render_turn_record_projection(
+            &storage,
             &turn,
             &[message],
             &[brief],
@@ -4658,6 +4740,8 @@ mod tests {
 
     #[test]
     fn nearby_turns_get_larger_result_previews_than_older_turns() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
         let mut messages = Vec::new();
         let mut briefs = Vec::new();
         let mut turns = Vec::new();
@@ -4708,6 +4792,7 @@ mod tests {
         );
 
         let rendered = render_turn_records_with_budget(
+            &storage,
             &turns,
             &messages,
             &briefs,

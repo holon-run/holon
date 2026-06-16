@@ -785,7 +785,7 @@ impl PresentationReducer {
         brief_texts: &BriefTextLookup,
     ) -> Vec<TimedItem> {
         let mut items: Vec<TimedItem> = Vec::new();
-        let final_brief_texts = final_brief_texts(events);
+        let final_brief_texts = final_brief_texts(events, brief_texts);
         let mut local_open_command_items: HashMap<String, usize> = HashMap::new();
 
         let mut i = 0;
@@ -1186,6 +1186,15 @@ impl PresentationReducer {
 pub(crate) struct BriefTextLookup<'a>(pub(crate) &'a std::collections::BTreeMap<String, String>);
 
 impl<'a> BriefTextLookup<'a> {
+    pub(crate) fn resolve_for_record(&self, brief: &BriefRecord) -> Option<&str> {
+        match brief.content_source {
+            crate::types::BriefContentSource::TranscriptEntry { ref entry_id } => {
+                self.0.get(entry_id).map(String::as_str)
+            }
+            crate::types::BriefContentSource::Inline => None,
+        }
+    }
+
     pub(crate) fn resolve_for_event(&self, event: &ProjectionEventRecord) -> Option<&str> {
         let brief = serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
         match brief.content_source {
@@ -1210,8 +1219,11 @@ fn brief_result_item(
             Some((
                 key,
                 PresentationItem::AssistantResult {
-                    brief_id: Some(brief.id),
-                    body: brief.text,
+                    brief_id: Some(brief.id.clone()),
+                    body: brief_texts
+                        .resolve_for_record(&brief)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| brief.text.clone()),
                     outcome: match brief.kind {
                         BriefKind::Failure => Outcome::Failure,
                         BriefKind::Result => Outcome::Success,
@@ -1475,15 +1487,21 @@ struct FinalBriefText {
     text: String,
 }
 
-fn final_brief_texts(events: &[ProjectionEventRecord]) -> Vec<FinalBriefText> {
+fn final_brief_texts(
+    events: &[ProjectionEventRecord],
+    brief_texts: &BriefTextLookup,
+) -> Vec<FinalBriefText> {
     events
         .iter()
         .filter(|event| event.kind == "brief_created")
         .filter_map(|event| {
             if let Ok(brief) = serde_json::from_value::<BriefRecord>(event.payload.clone()) {
-                return (!brief.text.trim().is_empty()).then_some(FinalBriefText {
+                let text = brief_texts
+                    .resolve_for_record(&brief)
+                    .unwrap_or(brief.text.as_str());
+                return (!text.trim().is_empty()).then_some(FinalBriefText {
                     agent_id: brief.agent_id,
-                    text: normalized_text(brief.text.as_str()),
+                    text: normalized_text(text),
                 });
             }
             let _brief =
@@ -3586,6 +3604,31 @@ mod tests {
                 assert_eq!(body, "completed the task");
                 assert_eq!(*outcome, Outcome::Success);
                 assert!(!body.contains("Brief:"));
+            }
+            other => panic!("expected AssistantResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reducer_brief_created_resolves_transcript_backed_text() {
+        let mut brief = BriefRecord::new("default", BriefKind::Result, "preview only", None, None);
+        brief.content_source = crate::types::BriefContentSource::TranscriptEntry {
+            entry_id: "transcript-entry-1".into(),
+        };
+        let event = make_event("brief_created", "Brief: preview only", json!(brief));
+        let brief_texts = std::collections::BTreeMap::from([(
+            "transcript-entry-1".to_string(),
+            "resolved presentation body sentinel_2107".to_string(),
+        )]);
+
+        let mut reducer = PresentationReducer::new();
+        let items = reducer.reduce(&[event], &BriefTextLookup(&brief_texts));
+
+        assert_eq!(items.len(), 1);
+        match &items[0].item {
+            PresentationItem::AssistantResult { body, outcome, .. } => {
+                assert_eq!(body, "resolved presentation body sentinel_2107");
+                assert_eq!(*outcome, Outcome::Success);
             }
             other => panic!("expected AssistantResult, got {:?}", other),
         }
