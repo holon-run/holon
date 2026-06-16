@@ -5,6 +5,7 @@ import {
   compactAgentTimelineItems,
   mergeAgentTimelineItems,
   reduceAgentSessionTimeline,
+  briefIdForPayload,
   transcriptEntryIdForPayload,
 } from "./session-reducer";
 import type {
@@ -20,6 +21,7 @@ import type {
   RuntimeConfigState,
   CredentialProfileStatus,
   CredentialStoreState,
+  RuntimeBriefRecord,
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeTranscriptEntry,
@@ -92,6 +94,8 @@ export interface AgentSessionState {
   missingMessageIds: Record<string, true>;
   transcriptEntriesById: Record<string, RuntimeTranscriptEntry>;
   missingTranscriptEntryIds: Record<string, true>;
+  briefRecordsById: Record<string, RuntimeBriefRecord>;
+  missingBriefIds: Record<string, true>;
   newestSeq?: number;
   oldestSeq?: number;
   hasOlder?: boolean;
@@ -211,6 +215,7 @@ const reconnectTimers = new Map<string, number>();
 const staleTimers = new Map<string, number>();
 const messageHydrationInFlight = new Map<string, Set<string>>();
 const transcriptHydrationInFlight = new Map<string, Set<string>>();
+const briefHydrationInFlight = new Map<string, Set<string>>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
 const STREAM_FLUSH_INTERVAL_MS = 100;
@@ -395,6 +400,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     pendingStreamEvents.clear();
     messageHydrationInFlight.clear();
     transcriptHydrationInFlight.clear();
+    briefHydrationInFlight.clear();
     for (const timer of streamFlushTimers.values()) window.clearTimeout(timer);
     for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
     for (const timer of staleTimers.values()) window.clearTimeout(timer);
@@ -591,6 +597,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
       scheduleMessageHydration(get, set, agentId, displayLevel);
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
+      scheduleBriefHydration(get, set, agentId, displayLevel);
     } catch (error) {
       set((state) => ({
         sessionsByAgentId: {
@@ -635,6 +642,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       set((state) => mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq, page.has_older, displayLevel));
       scheduleMessageHydration(get, set, agentId, displayLevel);
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
+      scheduleBriefHydration(get, set, agentId, displayLevel);
     } catch (error) {
       set((state) => ({
         sessionsByAgentId: {
@@ -825,6 +833,8 @@ function emptyAgentSession(): AgentSessionState {
     missingMessageIds: {},
     transcriptEntriesById: {},
     missingTranscriptEntryIds: {},
+    briefRecordsById: {},
+    missingBriefIds: {},
   };
 }
 
@@ -1172,6 +1182,10 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     ...current.eventsBySeq,
     ...eventsBySeqFromPage(pageEvents),
   };
+  const briefRecordsById = {
+    ...current.briefRecordsById,
+    ...(detail.briefRecordsById ?? {}),
+  };
   const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
   const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
   const pageTimeline = reduceAgentSessionTimeline({
@@ -1179,6 +1193,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     eventDisplayLevel: "debug",
     messagesById: current.messagesById,
     transcriptEntriesById: current.transcriptEntriesById,
+    briefRecordsById,
   });
   const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
   const agent = liveDetailIsNewer && current.detail ? mergeCachedAgentState(detail.agent, current.detail.agent) : detail.agent;
@@ -1208,6 +1223,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
         liveStatus: detail.error ? "error" : current.liveStatus,
         eventsBySeq,
         eventSeqs,
+        briefRecordsById,
         newestSeq: newestSeq || undefined,
         oldestSeq: detail.oldestEventSeq ?? current.oldestSeq ?? eventSeqs[0],
         hasOlder: detail.hasOlderEvents,
@@ -1237,6 +1253,7 @@ async function catchUpAgentEvents(
   );
   scheduleMessageHydration(get, set, agentId, "debug");
   scheduleTranscriptHydration(get, set, agentId, "debug");
+  scheduleBriefHydration(get, set, agentId, "debug");
 }
 
 function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEnvelopeDto[]): void {
@@ -1272,12 +1289,13 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
       eventDisplayLevel: "debug",
       messagesById: current.messagesById,
       transcriptEntriesById: current.transcriptEntriesById,
+      briefRecordsById: current.briefRecordsById,
     });
     const detailEvents = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
     const baseDetail = current.detail ?? createLiveAgentDetail(state.bootstrap.agents.find((agent) => agent.id === agentId));
     const highestIncomingSeq = highestSeq(eventSeqs) ?? 0;
     const runPatch = agentRunPatchFromEvents(uniqueEvents);
-    const briefPatch = agentBriefPatchFromEvents(uniqueEvents);
+    const briefPatch = agentBriefPatchFromEvents(uniqueEvents, current.transcriptEntriesById, current.briefRecordsById);
     const patchedBaseDetail = patchAgentDetail(baseDetail, runPatch, briefPatch);
     const detail = patchedBaseDetail
       ? {
@@ -1312,6 +1330,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
   });
   scheduleMessageHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
   scheduleTranscriptHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
+  scheduleBriefHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
 }
 
 function scheduleMessageHydration(
@@ -1408,20 +1427,67 @@ function scheduleTranscriptHydration(
     });
 }
 
+function scheduleBriefHydration(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  displayLevel: DisplayLevel,
+): void {
+  const session = get().sessionsByAgentId[agentId];
+  const briefIds = missingBriefIdsForHydration(session);
+  if (!briefIds.length) return;
+
+  let inFlight = briefHydrationInFlight.get(agentId);
+  if (!inFlight) {
+    inFlight = new Set<string>();
+    briefHydrationInFlight.set(agentId, inFlight);
+  }
+  const requestIds = briefIds.filter((briefId) => !inFlight.has(briefId));
+  if (!requestIds.length) return;
+  requestIds.forEach((briefId) => inFlight.add(briefId));
+
+  void runtimeClient
+    .getAgentBriefsById(agentId, requestIds)
+    .then((recordsById) => {
+      set((state) => mergeHydratedBriefRecordsIntoSession(state, agentId, recordsById, requestIds, displayLevel));
+    })
+    .catch((error) => {
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...(state.sessionsByAgentId[agentId] ?? emptyAgentSession()),
+            historyError: error instanceof Error ? error.message : String(error),
+          },
+        },
+      }));
+    })
+    .finally(() => {
+      const current = briefHydrationInFlight.get(agentId);
+      if (!current) return;
+      requestIds.forEach((briefId) => current.delete(briefId));
+      if (!current.size) briefHydrationInFlight.delete(agentId);
+    });
+}
+
 function agentBriefPatchFromEvents(
   events: StreamEventEnvelopeDto[],
   transcriptEntriesById: Record<string, RuntimeTranscriptEntry> = {},
+  briefRecordsById: Record<string, RuntimeBriefRecord> = {},
 ): Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined {
   let patch: Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined;
   for (const event of events) {
     if (event.type !== "brief_created") continue;
     const payload = asRecord(event.payload);
     const entryId = transcriptEntryIdForPayload(payload);
+    const briefId = briefIdForPayload(payload);
     const text = (entryId ? transcriptEntryText(transcriptEntriesById[entryId]) : undefined) ?? stringField(payload, "text");
-    if (!text) continue;
+    const fallbackText = briefId ? briefRecordsById[briefId]?.text : undefined;
+    const resolvedText = text ?? fallbackText;
+    if (!resolvedText) continue;
     const createdAt = stringField(payload, "created_at") ?? event.ts;
     patch = {
-      lastBrief: text,
+      lastBrief: resolvedText,
       lastTurnTime: formatTime(createdAt),
     };
   }
@@ -1465,6 +1531,27 @@ function missingTranscriptEntryIdsForHydration(session: AgentSessionState | unde
   return missing;
 }
 
+function missingBriefIdsForHydration(session: AgentSessionState | undefined): string[] {
+  if (!session) return [];
+  const seen = new Set<string>();
+  const missing: string[] = [];
+  for (const eventSeq of session.eventSeqs) {
+    const event = session.eventsBySeq[eventSeq];
+    if (!isStreamEventEnvelope(event) || event.type !== "brief_created") continue;
+    const payload = asRecord(event.payload);
+    const briefId = briefIdForPayload(payload);
+    if (!briefId || seen.has(briefId) || session.briefRecordsById[briefId] || session.missingBriefIds[briefId]) {
+      continue;
+    }
+    const entryId = transcriptEntryIdForPayload(payload);
+    const hydratedByTranscript = entryId ? transcriptEntryText(session.transcriptEntriesById[entryId]) : undefined;
+    if (hydratedByTranscript || stringField(payload, "text")) continue;
+    seen.add(briefId);
+    missing.push(briefId);
+  }
+  return missing;
+}
+
 function mergeHydratedMessagesIntoSession(
   state: RuntimeStoreState,
   agentId: string,
@@ -1496,6 +1583,7 @@ function mergeHydratedMessagesIntoSession(
     eventDisplayLevel: displayLevel,
     messagesById,
     transcriptEntriesById: current.transcriptEntriesById,
+    briefRecordsById: current.briefRecordsById,
   });
   const detail = current.detail
     ? {
@@ -1548,8 +1636,9 @@ function mergeHydratedTranscriptEntriesIntoSession(
     eventDisplayLevel: displayLevel,
     messagesById: current.messagesById,
     transcriptEntriesById,
+    briefRecordsById: current.briefRecordsById,
   });
-  const briefPatch = agentBriefPatchFromEvents(events, transcriptEntriesById);
+  const briefPatch = agentBriefPatchFromEvents(events, transcriptEntriesById, current.briefRecordsById);
   const detail = current.detail
     ? patchAgentDetail(
         {
@@ -1570,6 +1659,65 @@ function mergeHydratedTranscriptEntriesIntoSession(
         detail,
         transcriptEntriesById,
         missingTranscriptEntryIds: missingById,
+      },
+    },
+  };
+}
+
+function mergeHydratedBriefRecordsIntoSession(
+  state: RuntimeStoreState,
+  agentId: string,
+  recordsById: Record<string, RuntimeBriefRecord>,
+  requestedBriefIds: string[],
+  displayLevel: DisplayLevel,
+): Partial<RuntimeStoreState> {
+  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  const briefRecordsById = { ...current.briefRecordsById };
+  let changed = false;
+  for (const [briefId, record] of Object.entries(recordsById)) {
+    if (!briefId || !record?.text) continue;
+    briefRecordsById[briefId] = record;
+    changed = true;
+  }
+
+  const missingById = { ...current.missingBriefIds };
+  for (const briefId of requestedBriefIds) {
+    if (!briefId || recordsById[briefId]) continue;
+    missingById[briefId] = true;
+    changed = true;
+  }
+  if (!changed) return {};
+
+  const events = current.eventSeqs.map((eventSeq) => current.eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
+  const timeline = reduceAgentSessionTimeline({
+    events: { events },
+    eventDisplayLevel: displayLevel,
+    messagesById: current.messagesById,
+    transcriptEntriesById: current.transcriptEntriesById,
+    briefRecordsById,
+  });
+  const briefPatch = agentBriefPatchFromEvents(events, current.transcriptEntriesById, briefRecordsById);
+  const detail = current.detail
+    ? patchAgentDetail(
+        {
+          ...current.detail,
+          timeline,
+          briefRecordsById,
+        },
+        undefined,
+        briefPatch,
+      )
+    : current.detail;
+
+  return {
+    bootstrap: patchBootstrapAgent(state.bootstrap, agentId, undefined, briefPatch),
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...current,
+        detail,
+        briefRecordsById,
+        missingBriefIds: missingById,
       },
     },
   };
@@ -1654,6 +1802,7 @@ function mergeEventPageIntoSession(
     eventDisplayLevel: displayLevel,
     messagesById: current.messagesById,
     transcriptEntriesById: current.transcriptEntriesById,
+    briefRecordsById: current.briefRecordsById,
   });
   const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
   const detail = current.detail

@@ -1,5 +1,5 @@
 import { agentDetailFixtures } from "./fixtures";
-import { reduceAgentSessionTimeline, transcriptEntryIdForPayload } from "./session-reducer";
+import { briefIdForPayload, reduceAgentSessionTimeline, transcriptEntryIdForPayload } from "./session-reducer";
 import type {
   AgentDetail,
   AgentSummary,
@@ -10,6 +10,7 @@ import type {
   RuntimeConfigState,
   RuntimeConfigSurface,
   RuntimeConnection,
+  RuntimeBriefRecord,
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeModelOption,
@@ -89,18 +90,20 @@ async function fetchAgentDetail(
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const transcriptEntriesById = await fetchTranscriptEntriesForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? []);
+  const briefRecordsById = await fetchBriefRecordsForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? [], transcriptEntriesById);
   const agent = projectAgent(
     fallbackEntry,
     state,
-    newestBriefFromEvents(events.events ?? [], transcriptEntriesById),
+    newestBriefFromEvents(events.events ?? [], transcriptEntriesById, briefRecordsById),
   );
-  const timeline = reduceAgentSessionTimeline({ events, eventDisplayLevel, transcriptEntriesById });
+  const timeline = reduceAgentSessionTimeline({ events, eventDisplayLevel, transcriptEntriesById, briefRecordsById });
 
   return {
     agent,
     source: "http",
     timeline,
     events: events.events ?? [],
+    briefRecordsById,
     eventCursorSeq: events.cursor_seq,
     newestEventSeq: events.newest_seq,
     oldestEventSeq: events.oldest_seq,
@@ -188,12 +191,7 @@ interface AgentWorkspaceDto {
     } | null;
 }
 
-interface BriefRecordDto {
-  id?: string;
-  created_at?: string;
-  text?: string;
-  kind?: string;
-}
+type BriefRecordDto = RuntimeBriefRecord;
 
 export interface EventPageResponseDto {
   events?: EventEnvelopeDto[];
@@ -469,6 +467,12 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         requestHeaders,
       );
     },
+    async getAgentBriefsById(agentId: string, briefIds: string[]): Promise<Record<string, RuntimeBriefRecord>> {
+      if (!baseUrl || !briefIds.length) {
+        return {};
+      }
+      return fetchBriefRecordsById(baseUrl, fetchImpl, requestHeaders, agentId, briefIds);
+    },
     async getModels(): Promise<RuntimeModelCatalog> {
       if (!baseUrl) {
         return { source: "fixture", options: [] };
@@ -619,6 +623,47 @@ async function fetchTranscriptEntriesForEvents(
     headers,
   ).catch((): AgentTranscriptEntriesBatchGetResponseDto => ({ entries: [], missing_entry_ids: entryIds }));
   return Object.fromEntries((response.entries ?? []).flatMap((entry) => (entry.id ? [[entry.id, entry]] : [])));
+}
+
+async function fetchBriefRecordsForEvents(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+  events: EventEnvelopeDto[],
+  transcriptEntriesById: Record<string, RuntimeTranscriptEntry>,
+): Promise<Record<string, RuntimeBriefRecord>> {
+  const briefIds = Array.from(
+    new Set(
+      events
+        .filter((event) => event.type === "brief_created")
+        .filter((event) => {
+          const payload = asRecord(event.payload);
+          const entryId = transcriptEntryIdForPayload(payload);
+          return !((entryId ? transcriptEntryText(transcriptEntriesById[entryId]) : undefined) ?? stringValue(payload?.text));
+        })
+        .map((event) => briefIdForPayload(asRecord(event.payload)))
+        .filter((briefId): briefId is string => Boolean(briefId)),
+    ),
+  );
+  if (!briefIds.length) return {};
+  return fetchBriefRecordsById(baseUrl, fetchImpl, headers, agentId, briefIds);
+}
+
+async function fetchBriefRecordsById(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+  briefIds: string[],
+): Promise<Record<string, RuntimeBriefRecord>> {
+  const records = await Promise.all(
+    briefIds.map(async (briefId): Promise<RuntimeBriefRecord | undefined> => {
+      const path = `/agents/${encodeURIComponent(agentId)}/briefs/${encodeURIComponent(briefId)}`;
+      return getJson<RuntimeBriefRecord>(fetchImpl, baseUrl, path, { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers }).catch(() => undefined);
+    }),
+  );
+  return Object.fromEntries(records.flatMap((record) => (record?.id ? [[record.id, record]] : [])));
 }
 
 function streamAgentEvents(
@@ -1048,13 +1093,16 @@ function projectTasks(tasks: NonNullable<AgentStateDto["tasks"]>): TaskSummary[]
 function newestBriefFromEvents(
   events: EventEnvelopeDto[],
   transcriptEntriesById: Record<string, RuntimeTranscriptEntry> = {},
+  briefRecordsById: Record<string, RuntimeBriefRecord> = {},
 ): BriefRecordDto | undefined {
   return events
     .filter((event) => event.type === "brief_created")
     .map((event) => {
       const payload = event.payload && typeof event.payload === "object" ? (event.payload as Record<string, unknown>) : {};
       const entryId = transcriptEntryIdForPayload(payload);
+      const briefId = briefIdForPayload(payload);
       const text = (entryId ? transcriptEntryText(transcriptEntriesById[entryId]) : undefined) ??
+        (briefId ? briefRecordsById[briefId]?.text : undefined) ??
         (typeof payload.text === "string" ? payload.text : undefined);
       const createdAt = typeof payload.created_at === "string" ? payload.created_at : event.ts;
       const kind = typeof payload.kind === "string" ? payload.kind : undefined;

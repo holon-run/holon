@@ -5,6 +5,7 @@ import type {
   AgentTimelineItemKind,
   DisplayLevel,
   RuntimeMessageEnvelope,
+  RuntimeBriefRecord,
   RuntimeTranscriptEntry,
 } from "./types";
 
@@ -34,6 +35,7 @@ export interface ReduceAgentSessionInput {
   includeDebug?: boolean;
   messagesById?: Record<string, RuntimeMessageEnvelope>;
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>;
+  briefRecordsById?: Record<string, RuntimeBriefRecord>;
 }
 
 interface SessionItemDraft {
@@ -81,6 +83,7 @@ export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): Agen
       input.includeDebug ?? false,
       input.messagesById,
       input.transcriptEntriesById,
+      input.briefRecordsById,
     ),
   );
 
@@ -144,12 +147,13 @@ function projectEventEnvelope(
   includeDebug: boolean,
   messagesById: Record<string, RuntimeMessageEnvelope> | undefined,
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
+  briefRecordsById?: Record<string, RuntimeBriefRecord>,
 ): AgentTimelineItem | undefined {
   if (!event.id && event.event_seq == null) return undefined;
   const id = event.id ?? `event-${event.event_seq}`;
   const payload = asRecord(event.payload);
   const eventType = event.type ?? "runtime_event";
-  const projection = projectRuntimeEvent(eventType, payload, messagesById, transcriptEntriesById);
+  const projection = projectRuntimeEvent(eventType, payload, messagesById, transcriptEntriesById, briefRecordsById);
   if (!projection) return undefined;
   const meta = eventMeta(eventType, payload, event.event_seq);
 
@@ -233,6 +237,7 @@ function projectRuntimeEvent(
   payload: Record<string, unknown> | undefined,
   messagesById?: Record<string, RuntimeMessageEnvelope>,
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
+  briefRecordsById?: Record<string, RuntimeBriefRecord>,
 ): (Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string }) | undefined {
   if (eventType === "message_enqueued") {
     const message = messageEnvelopeProjection(payload, messagesById);
@@ -257,7 +262,11 @@ function projectRuntimeEvent(
     return {
       kind: "assistant",
       label: stringField(payload, "kind") === "result" ? "Result" : "Brief Created",
-      body: transcriptTextForPayload(payload, transcriptEntriesById) || readableTextWithoutSummary(payload) || "Brief text unavailable.",
+      body:
+        transcriptTextForPayload(payload, transcriptEntriesById) ||
+        briefTextForPayload(payload, briefRecordsById) ||
+        readableTextWithoutSummary(payload) ||
+        "Brief text unavailable.",
       timestamp: stringField(payload, "created_at"),
       minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
@@ -991,6 +1000,19 @@ function transcriptTextForPayload(
   const entryId = transcriptEntryIdForPayload(payload);
   const entry = entryId ? transcriptEntriesById?.[entryId] : undefined;
   return transcriptEntryText(entry);
+}
+
+function briefTextForPayload(
+  payload: Record<string, unknown> | undefined,
+  briefRecordsById: Record<string, RuntimeBriefRecord> | undefined,
+): string | undefined {
+  const briefId = briefIdForPayload(payload);
+  const text = briefId ? briefRecordsById?.[briefId]?.text : undefined;
+  return text && text.trim() ? text : undefined;
+}
+
+export function briefIdForPayload(payload: Record<string, unknown> | undefined): string | undefined {
+  return stringField(payload, "brief_id") ?? stringField(payload, "id");
 }
 
 export function transcriptEntryIdForPayload(payload: Record<string, unknown> | undefined): string | undefined {

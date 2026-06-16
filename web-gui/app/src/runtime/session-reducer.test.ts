@@ -626,6 +626,40 @@ describe("reduceAgentSessionTimeline", () => {
       }),
     );
   });
+
+  it("hydrates slim brief events from brief records when transcript content is unavailable", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "brief-event",
+            event_seq: 22,
+            type: "brief_created",
+            payload: {
+              id: "brief_123",
+              kind: "result",
+              content_source: { kind: "inline" },
+            },
+          }),
+        ],
+      },
+      briefRecordsById: {
+        brief_123: {
+          id: "brief_123",
+          text: "Full persisted brief text.",
+          kind: "result",
+        },
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "brief-event",
+        label: "Result",
+        body: "Full persisted brief text.",
+      }),
+    );
+  });
 });
 
 describe("filterTimelineByDisplayLevel", () => {

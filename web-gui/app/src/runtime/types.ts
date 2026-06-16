@@ -96,6 +96,13 @@ export interface RuntimeModelCatalog {
   error?: string;
 }
 
+export interface RuntimeBriefRecord {
+  id?: string;
+  created_at?: string;
+  text?: string;
+  kind?: string;
+}
+
 export interface RuntimeProviderSummary {
   id: string;
   transport: string;
@@ -265,6 +272,7 @@ export interface AgentDetail {
   newestEventSeq?: number;
   oldestEventSeq?: number;
   hasOlderEvents?: boolean;
+  briefRecordsById?: Record<string, RuntimeBriefRecord>;
 }
 
 export interface RuntimeBootstrap {
