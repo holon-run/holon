@@ -219,7 +219,7 @@ const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
 
 function runtimeClientOptions(config: RuntimeConnectionConfig) {
-  return config.mode === "remote" ? { baseUrl: config.baseUrl, token: config.token } : {};
+  return config.mode === "remote" ? { mode: "remote" as const, baseUrl: config.baseUrl, token: config.token } : { mode: "local" as const };
 }
 
 function readStoredRuntimeConnectionConfig(): RuntimeConnectionConfig {
@@ -305,6 +305,7 @@ function pendingBootstrap(config: RuntimeConnectionConfig): RuntimeBootstrap {
       mode: config.mode,
       source: "fixture",
       baseUrl: config.mode === "remote" ? config.baseUrl : undefined,
+      hasToken: config.mode === "remote" ? Boolean(config.token?.trim()) : false,
       summary: config.mode === "remote" ? "Connecting to remote runtime…" : "Connecting to local runtime…",
     },
   };
@@ -369,12 +370,20 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
 
   setRuntimeConnection: async (config) => {
+    const normalizedBaseUrl = config.mode === "remote" ? normalizeConnectionBaseUrl(config.baseUrl) : "";
+    const retainedToken =
+      config.mode === "remote" &&
+      config.token === undefined &&
+      runtimeConnectionConfig.mode === "remote" &&
+      normalizeConnectionBaseUrl(runtimeConnectionConfig.baseUrl) === normalizedBaseUrl
+        ? runtimeConnectionConfig.token
+        : undefined;
     const normalizedConfig: RuntimeConnectionConfig =
       config.mode === "remote"
         ? {
             mode: "remote",
-            baseUrl: normalizeConnectionBaseUrl(config.baseUrl),
-            token: config.token?.trim() || undefined,
+            baseUrl: normalizedBaseUrl,
+            token: config.token?.trim() || retainedToken,
           }
         : { mode: "local" };
     runtimeConnectionConfig = normalizedConfig;

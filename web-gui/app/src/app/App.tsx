@@ -423,6 +423,10 @@ function ConnectionSwitcher({
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | undefined>();
 
+  useEffect(() => {
+    if (connection.mode === "remote") setBaseUrl(connection.baseUrl ?? "");
+  }, [connection.baseUrl, connection.mode]);
+
   async function applyConnection(config: RuntimeConnectionConfig) {
     setSaving(true);
     setFormError(undefined);
@@ -455,7 +459,7 @@ function ConnectionSwitcher({
               setFormError("Remote URL is required.");
               return;
             }
-            void applyConnection({ mode: "remote", baseUrl: trimmedBaseUrl, token });
+            void applyConnection({ mode: "remote", baseUrl: trimmedBaseUrl, token: token.trim() || undefined });
           }}
         >
           <label>
@@ -472,7 +476,7 @@ function ConnectionSwitcher({
             <input
               value={token}
               onChange={(event) => setToken(event.target.value)}
-              placeholder="optional for trusted local networks"
+              placeholder={connection.hasToken ? "saved token retained unless replaced" : "optional for trusted local networks"}
               type="password"
             />
           </label>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { projectModelOptions } from "./client";
+import { createRuntimeClient, projectModelOptions } from "./client";
 
 describe("projectModelOptions", () => {
   it("detects reasoning effort support from runtime available model capabilities", () => {
@@ -23,5 +23,38 @@ describe("projectModelOptions", () => {
         supportsReasoningEffort: true,
       }),
     ]);
+  });
+});
+
+describe("createRuntimeClient", () => {
+  it("preserves the configured remote connection mode even when the runtime auth mode is local", async () => {
+    const fetchImpl = async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/handshake")) {
+        return Response.json({ auth: { mode: "local" } });
+      }
+      if (url.endsWith("/agents/list")) {
+        return Response.json([]);
+      }
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      token: "secret-token",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const bootstrap = await client.getBootstrap();
+
+    expect(bootstrap.connection).toEqual(
+      expect.objectContaining({
+        mode: "remote",
+        source: "http",
+        baseUrl: "http://example.test:7878",
+        hasToken: true,
+      }),
+    );
   });
 });

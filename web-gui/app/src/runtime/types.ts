@@ -6,6 +6,7 @@ export interface RuntimeConnection {
   mode: "local" | "remote";
   summary: string;
   baseUrl?: string;
+  hasToken?: boolean;
   source: "http" | "fixture";
   error?: string;
 }

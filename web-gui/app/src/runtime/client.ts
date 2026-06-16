@@ -22,6 +22,7 @@ import type {
 } from "./types";
 
 export interface RuntimeClientOptions {
+  mode?: "local" | "remote";
   baseUrl?: string;
   token?: string;
   fetchImpl?: typeof fetch;
@@ -410,18 +411,20 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
   const fetchImpl = options.fetchImpl ?? fetch;
   const requestHeaders = authorizationHeaders(options.token);
+  const connectionMode = options.mode ?? (options.baseUrl ? "remote" : "local");
+  const hasToken = Boolean(options.token?.trim());
 
   return {
     async getBootstrap(): Promise<RuntimeBootstrap> {
       if (!baseUrl) {
-        return buildDisconnectedBootstrap(undefined, "Holon API base URL is not configured.");
+        return buildDisconnectedBootstrap(undefined, "Holon API base URL is not configured.", connectionMode, hasToken);
       }
 
       try {
-        return await fetchRuntimeBootstrap(baseUrl, fetchImpl, requestHeaders);
+        return await fetchRuntimeBootstrap(baseUrl, fetchImpl, requestHeaders, connectionMode, hasToken);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return buildDisconnectedBootstrap(baseUrl, message);
+        return buildDisconnectedBootstrap(baseUrl, message, connectionMode, hasToken);
       }
     },
     async getAgentDetail(agentId: string, displayLevel: DisplayLevel = "info"): Promise<AgentDetail> {
@@ -715,7 +718,13 @@ function parseSseEventFrame(frame: string): StreamEventEnvelopeDto | undefined {
   return JSON.parse(dataLines.join("\n")) as StreamEventEnvelopeDto;
 }
 
-async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch, headers: Record<string, string>): Promise<RuntimeBootstrap> {
+async function fetchRuntimeBootstrap(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  connectionMode: "local" | "remote",
+  hasToken: boolean,
+): Promise<RuntimeBootstrap> {
   const [handshake, agentEntries] = await Promise.all([
     getJson<{ auth?: { mode?: string } }>(fetchImpl, baseUrl, "/handshake", { headers }),
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { headers }),
@@ -726,10 +735,11 @@ async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch, h
   const activeTaskCount = agents.reduce((sum, agent) => sum + agent.activeTaskCount, 0);
   const currentWorkCount = agents.filter((agent) => agent.currentWork).length;
   const connection: RuntimeConnection = {
-    mode: handshake.auth?.mode === "bearer" ? "remote" : "local",
+    mode: connectionMode,
     source: "http",
     baseUrl,
-    summary: `${baseUrl} · ${handshake.auth?.mode ?? "local"} · existing /agents routes`,
+    hasToken,
+    summary: `${baseUrl} · ${connectionMode}${hasToken ? " bearer" : ""} · existing /agents routes`,
   };
 
   return {
@@ -747,11 +757,11 @@ async function getJson<T>(
   options: { timeoutMs?: number; headers?: Record<string, string> } = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     headers: { Accept: "application/json", ...options.headers },
     signal: controller.signal,
-  }).finally(() => window.clearTimeout(timeout));
+  }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
     throw new Error(`GET ${path} failed with ${response.status}`);
   }
@@ -766,7 +776,7 @@ async function postJson<T>(
   headers: Record<string, string> = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
@@ -776,7 +786,7 @@ async function postJson<T>(
     },
     body: JSON.stringify(body),
     signal: controller.signal,
-  }).finally(() => window.clearTimeout(timeout));
+  }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
     throw new Error(`POST ${path} failed with ${response.status}`);
   }
@@ -793,7 +803,7 @@ async function patchJson<T>(
   headers: Record<string, string> = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     method: "PATCH",
     headers: {
@@ -803,7 +813,7 @@ async function patchJson<T>(
     },
     body: JSON.stringify(body),
     signal: controller.signal,
-  }).finally(() => window.clearTimeout(timeout));
+  }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
     throw new Error(`PATCH ${path} failed with ${response.status}`);
   }
@@ -1164,13 +1174,19 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function buildDisconnectedBootstrap(baseUrl: string | undefined, error: string): RuntimeBootstrap {
+function buildDisconnectedBootstrap(
+  baseUrl: string | undefined,
+  error: string,
+  mode: "local" | "remote" = "local",
+  hasToken = false,
+): RuntimeBootstrap {
   return {
     attentionCount: 0,
     connection: {
       source: "fixture",
-      mode: "local",
+      mode,
       baseUrl,
+      hasToken,
       error,
       summary: baseUrl ? `${baseUrl} unavailable` : "Holon API unavailable",
     },
