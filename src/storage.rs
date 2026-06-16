@@ -432,6 +432,22 @@ impl AppStorage {
             .clone())
     }
 
+    #[cfg(test)]
+    fn flush_audit_event_writes_for_tests(&self) -> Result<()> {
+        if let Some(sink) = self
+            .audit_event_index
+            .lock()
+            .map_err(|_| anyhow::anyhow!("audit event index mutex poisoned"))?
+            .clone()
+        {
+            sink.runtime_db.flush_background_writes_for_tests()?;
+        }
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.flush_background_writes_for_tests()?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn current_agent_id(&self) -> Result<Option<String>> {
         Ok(self.agent_id.clone())
     }
@@ -995,6 +1011,8 @@ impl AppStorage {
     }
 
     pub fn read_recent_events(&self, limit: usize) -> Result<Vec<AuditEvent>> {
+        #[cfg(test)]
+        self.flush_audit_event_writes_for_tests()?;
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             return runtime_db
                 .audit_events()
@@ -1008,6 +1026,8 @@ impl AppStorage {
     }
 
     pub fn latest_event_seq(&self) -> Result<Option<u64>> {
+        #[cfg(test)]
+        self.flush_audit_event_writes_for_tests()?;
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             return runtime_db
                 .audit_events()
@@ -1032,6 +1052,8 @@ impl AppStorage {
     where
         F: FnMut(&AuditEvent) -> bool,
     {
+        #[cfg(test)]
+        self.flush_audit_event_writes_for_tests()?;
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             if limit == 0 {
                 return Ok(EventLogPage {

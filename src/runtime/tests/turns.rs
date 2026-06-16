@@ -990,7 +990,23 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
         AuthorityClass::RuntimeInstruction
     ));
 
-    let events = runtime.storage().read_recent_events(20).unwrap();
+    let events = wait_for_audit_events(
+        &runtime,
+        20,
+        |events| {
+            events
+                .iter()
+                .any(|event| event.kind == "lineage_retry_exhausted")
+                && events
+                    .iter()
+                    .any(|event| event.kind == "deferred_to_fallback")
+                && events
+                    .iter()
+                    .any(|event| event.kind == "recovery_turn_started")
+        },
+        "provider failure fallback events",
+    )
+    .await;
     assert!(events
         .iter()
         .any(|event| event.kind == "lineage_retry_exhausted"));
@@ -1107,7 +1123,21 @@ async fn runtime_records_turn_latency_phase_events_for_provider_and_tool() {
         .unwrap();
 
     assert_eq!(outcome.final_text, "done");
-    let events = runtime.storage().read_recent_events(20).unwrap();
+    let events = wait_for_audit_events(
+        &runtime,
+        20,
+        |events| {
+            let provider_count = events
+                .iter()
+                .filter(|event| event.kind == "provider_round_completed")
+                .count();
+            provider_count == 2
+                && events.iter().any(|event| event.kind == "tool_executed")
+                && events.iter().any(|event| event.kind == "turn_terminal")
+        },
+        "turn latency phase events",
+    )
+    .await;
     let provider_events = events
         .iter()
         .filter(|event| event.kind == "provider_round_completed")

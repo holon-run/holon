@@ -985,7 +985,26 @@ async fn message_admission_wakes_asleep_and_booting_agents() {
         assert_eq!(state.status, AgentStatus::AwakeIdle);
         assert_eq!(state.sleeping_until, None);
         assert_eq!(state.pending, 1);
-        let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+        let events = wait_for_audit_events(
+            &runtime,
+            usize::MAX,
+            |events| {
+                let has_admitted = events.iter().any(|event| {
+                    event.kind == "message_admitted"
+                        && event.data["kind"] == serde_json::json!(MessageKind::OperatorPrompt)
+                });
+                let has_posture = events.iter().any(|event| {
+                    event.kind == "scheduler_posture_decision"
+                        && event.data["boundary"] == "message_admission"
+                        && event.data["reason"] == "message_admission_wake"
+                        && event.data["previous_status"] == serde_json::json!(status)
+                        && event.data["next_status"] == "awake_idle"
+                });
+                has_admitted && has_posture
+            },
+            "message admission wake events",
+        )
+        .await;
         assert!(events.iter().any(|event| {
             event.kind == "message_admitted"
                 && event.data["kind"] == serde_json::json!(MessageKind::OperatorPrompt)
@@ -1091,7 +1110,21 @@ async fn control_start_hands_stopped_agent_to_scheduler_without_model_turn() {
     assert_eq!(state.status, AgentStatus::AwakeIdle);
     assert_eq!(state.pending, 1);
     assert_eq!(provider.call_count().await, 0);
-    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    let events = wait_for_audit_events(
+        &runtime,
+        usize::MAX,
+        |events| {
+            events.iter().any(|event| {
+                event.kind == "scheduler_posture_decision"
+                    && event.data["boundary"] == "lifecycle_control"
+                    && event.data["reason"] == "start"
+                    && event.data["previous_status"] == "stopped"
+                    && event.data["next_status"] == "awake_idle"
+            })
+        },
+        "lifecycle start posture decision event",
+    )
+    .await;
     assert!(events.iter().any(|event| {
         event.kind == "scheduler_posture_decision"
             && event.data["boundary"] == "lifecycle_control"

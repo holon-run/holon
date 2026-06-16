@@ -275,6 +275,14 @@ pub async fn operator_transport_binding_validates_delivery_auth_and_redacts_audi
         "http://127.0.0.1:1/delivery",
     )
     .await?;
+    wait_until(|| {
+        let events = runtime.storage().read_recent_events(20)?;
+        Ok(events.iter().any(|event| {
+            event.kind == "operator_transport_binding_upserted"
+                && event.data["binding_id"] == "opbind-redacted-audit"
+        }))
+    })
+    .await?;
     let events = runtime.storage().read_recent_events(20)?;
     let event = events
         .iter()

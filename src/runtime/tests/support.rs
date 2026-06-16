@@ -23,10 +23,10 @@ pub(crate) use crate::{
     system::{ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind},
     types::{
         ActiveWorkspaceEntry, AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset,
-        AgentRegistryStatus, AgentState, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
-        BriefRecord, CallbackDeliveryMode, ClosureDecision, ClosureOutcome, ContinuationClass,
-        ContinuationTriggerKind, DeliverySummaryRecord, LoadedAgentsMd, MessageBody,
-        MessageDeliverySurface, MessageKind, MessageOrigin, PendingWakeHint, Priority,
+        AgentRegistryStatus, AgentState, AgentStatus, AgentVisibility, AuditEvent, AuthorityClass,
+        BriefKind, BriefRecord, CallbackDeliveryMode, ClosureDecision, ClosureOutcome,
+        ContinuationClass, ContinuationTriggerKind, DeliverySummaryRecord, LoadedAgentsMd,
+        MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin, PendingWakeHint, Priority,
         QueueEntryStatus, TaskKind, TaskOutputRetrievalStatus, TaskRecord, TaskRecoverySpec,
         TaskStatus, TimerRecord, TimerStatus, TodoItem, TodoItemState, TokenUsage,
         TurnTerminalKind, TurnTerminalRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord,
@@ -84,6 +84,25 @@ pub(crate) fn continuation_ready_context_config(
         turn_projection_max_budget: prompt_budget_estimated_tokens,
         ..context_config()
     }
+}
+
+pub(crate) async fn wait_for_audit_events(
+    runtime: &RuntimeHandle,
+    limit: usize,
+    mut predicate: impl FnMut(&[AuditEvent]) -> bool,
+    label: &str,
+) -> Vec<AuditEvent> {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let events = runtime.storage().read_recent_events(limit).unwrap();
+            if predicate(&events) {
+                return events;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {label}"))
 }
 
 pub(crate) async fn host_backed_test_runtime() -> (TempDir, RuntimeHost, RuntimeHandle) {
