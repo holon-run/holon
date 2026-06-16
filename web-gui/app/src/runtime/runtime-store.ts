@@ -1,7 +1,12 @@
 import { create } from "zustand";
 
 import { createRuntimeClient, type AgentEventStreamSubscription, type StreamEventEnvelopeDto } from "./client";
-import { compactAgentTimelineItems, mergeAgentTimelineItems, reduceAgentSessionTimeline } from "./session-reducer";
+import {
+  compactAgentTimelineItems,
+  mergeAgentTimelineItems,
+  reduceAgentSessionTimeline,
+  transcriptEntryIdForPayload,
+} from "./session-reducer";
 import type {
   AgentDetail,
   AgentSummary,
@@ -15,6 +20,7 @@ import type {
   RuntimeConfigState,
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
+  RuntimeTranscriptEntry,
   SearchResponse,
 } from "./types";
 
@@ -82,6 +88,8 @@ export interface AgentSessionState {
   eventSeqs: number[];
   messagesById: Record<string, RuntimeMessageEnvelope>;
   missingMessageIds: Record<string, true>;
+  transcriptEntriesById: Record<string, RuntimeTranscriptEntry>;
+  missingTranscriptEntryIds: Record<string, true>;
   newestSeq?: number;
   oldestSeq?: number;
   hasOlder?: boolean;
@@ -194,6 +202,7 @@ const streamFlushTimers = new Map<string, number>();
 const reconnectTimers = new Map<string, number>();
 const staleTimers = new Map<string, number>();
 const messageHydrationInFlight = new Map<string, Set<string>>();
+const transcriptHydrationInFlight = new Map<string, Set<string>>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
 const STREAM_FLUSH_INTERVAL_MS = 100;
@@ -368,6 +377,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     activeEventStreams.clear();
     pendingStreamEvents.clear();
     messageHydrationInFlight.clear();
+    transcriptHydrationInFlight.clear();
     for (const timer of streamFlushTimers.values()) window.clearTimeout(timer);
     for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
     for (const timer of staleTimers.values()) window.clearTimeout(timer);
@@ -525,6 +535,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       const detail = await runtimeClient.getAgentDetail(agentId, displayLevel);
       set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
       scheduleMessageHydration(get, set, agentId, displayLevel);
+      scheduleTranscriptHydration(get, set, agentId, displayLevel);
     } catch (error) {
       set((state) => ({
         sessionsByAgentId: {
@@ -568,6 +579,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
       set((state) => mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq, page.has_older, displayLevel));
       scheduleMessageHydration(get, set, agentId, displayLevel);
+      scheduleTranscriptHydration(get, set, agentId, displayLevel);
     } catch (error) {
       set((state) => ({
         sessionsByAgentId: {
@@ -756,6 +768,8 @@ function emptyAgentSession(): AgentSessionState {
     eventSeqs: [],
     messagesById: {},
     missingMessageIds: {},
+    transcriptEntriesById: {},
+    missingTranscriptEntryIds: {},
   };
 }
 
@@ -1035,6 +1049,18 @@ function stringField(record: Record<string, unknown> | undefined, key: string): 
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function transcriptEntryText(entry: RuntimeTranscriptEntry | undefined): string | undefined {
+  const data = asRecord(entry?.data);
+  const text = stringField(data, "text");
+  if (text) return text;
+  const blocks = Array.isArray(data?.blocks) ? data.blocks : [];
+  const parts = blocks.flatMap((block) => {
+    const record = asRecord(block);
+    return stringField(record, "text") ?? stringField(record, "content") ?? [];
+  });
+  return parts.filter(Boolean).join("\n\n") || undefined;
+}
+
 function countAgentsNeedingAttention(agents: AgentSummary[]): number {
   return agents.filter((agent) => agent.pending > 0 || agent.waitingCount > 0).length;
 }
@@ -1097,6 +1123,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     events: { events: pageEvents },
     eventDisplayLevel: "debug",
     messagesById: current.messagesById,
+    transcriptEntriesById: current.transcriptEntriesById,
   });
   const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
   const agent = liveDetailIsNewer && current.detail ? mergeCachedAgentState(detail.agent, current.detail.agent) : detail.agent;
@@ -1154,6 +1181,7 @@ async function catchUpAgentEvents(
     }),
   );
   scheduleMessageHydration(get, set, agentId, "debug");
+  scheduleTranscriptHydration(get, set, agentId, "debug");
 }
 
 function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEnvelopeDto[]): void {
@@ -1188,6 +1216,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
       events: { events: uniqueEvents },
       eventDisplayLevel: "debug",
       messagesById: current.messagesById,
+      transcriptEntriesById: current.transcriptEntriesById,
     });
     const detailEvents = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
     const baseDetail = current.detail ?? createLiveAgentDetail(state.bootstrap.agents.find((agent) => agent.id === agentId));
@@ -1227,6 +1256,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
     };
   });
   scheduleMessageHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
+  scheduleTranscriptHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
 }
 
 function scheduleMessageHydration(
@@ -1272,12 +1302,67 @@ function scheduleMessageHydration(
     });
 }
 
-function agentBriefPatchFromEvents(events: StreamEventEnvelopeDto[]): Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined {
+function scheduleTranscriptHydration(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  displayLevel: DisplayLevel,
+): void {
+  const session = get().sessionsByAgentId[agentId];
+  const entryIds = missingTranscriptEntryIdsForHydration(session);
+  if (!entryIds.length) return;
+
+  let inFlight = transcriptHydrationInFlight.get(agentId);
+  if (!inFlight) {
+    inFlight = new Set<string>();
+    transcriptHydrationInFlight.set(agentId, inFlight);
+  }
+  const requestIds = entryIds.filter((entryId) => !inFlight.has(entryId));
+  if (!requestIds.length) return;
+  requestIds.forEach((entryId) => inFlight.add(entryId));
+
+  void runtimeClient
+    .getAgentTranscriptEntriesBatch(agentId, requestIds)
+    .then((response) => {
+      set((state) =>
+        mergeHydratedTranscriptEntriesIntoSession(
+          state,
+          agentId,
+          response.entries ?? [],
+          response.missing_entry_ids ?? [],
+          displayLevel,
+        ),
+      );
+    })
+    .catch((error) => {
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...(state.sessionsByAgentId[agentId] ?? emptyAgentSession()),
+            historyError: error instanceof Error ? error.message : String(error),
+          },
+        },
+      }));
+    })
+    .finally(() => {
+      const current = transcriptHydrationInFlight.get(agentId);
+      if (!current) return;
+      requestIds.forEach((entryId) => current.delete(entryId));
+      if (!current.size) transcriptHydrationInFlight.delete(agentId);
+    });
+}
+
+function agentBriefPatchFromEvents(
+  events: StreamEventEnvelopeDto[],
+  transcriptEntriesById: Record<string, RuntimeTranscriptEntry> = {},
+): Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined {
   let patch: Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined;
   for (const event of events) {
     if (event.type !== "brief_created") continue;
     const payload = asRecord(event.payload);
-    const text = stringField(payload, "text");
+    const entryId = transcriptEntryIdForPayload(payload);
+    const text = (entryId ? transcriptEntryText(transcriptEntriesById[entryId]) : undefined) ?? stringField(payload, "text");
     if (!text) continue;
     const createdAt = stringField(payload, "created_at") ?? event.ts;
     patch = {
@@ -1299,6 +1384,28 @@ function missingMessageIdsForHydration(session: AgentSessionState | undefined): 
     if (!messageId || seen.has(messageId) || session.messagesById[messageId] || session.missingMessageIds[messageId]) continue;
     seen.add(messageId);
     missing.push(messageId);
+  }
+  return missing;
+}
+
+function missingTranscriptEntryIdsForHydration(session: AgentSessionState | undefined): string[] {
+  if (!session) return [];
+  const seen = new Set<string>();
+  const missing: string[] = [];
+  for (const eventSeq of session.eventSeqs) {
+    const event = session.eventsBySeq[eventSeq];
+    if (!isStreamEventEnvelope(event)) continue;
+    const entryId = transcriptEntryIdForPayload(asRecord(event.payload));
+    if (
+      !entryId ||
+      seen.has(entryId) ||
+      session.transcriptEntriesById[entryId] ||
+      session.missingTranscriptEntryIds[entryId]
+    ) {
+      continue;
+    }
+    seen.add(entryId);
+    missing.push(entryId);
   }
   return missing;
 }
@@ -1333,6 +1440,7 @@ function mergeHydratedMessagesIntoSession(
     events: { events },
     eventDisplayLevel: displayLevel,
     messagesById,
+    transcriptEntriesById: current.transcriptEntriesById,
   });
   const detail = current.detail
     ? {
@@ -1349,6 +1457,64 @@ function mergeHydratedMessagesIntoSession(
         detail,
         messagesById,
         missingMessageIds: missingById,
+      },
+    },
+  };
+}
+
+function mergeHydratedTranscriptEntriesIntoSession(
+  state: RuntimeStoreState,
+  agentId: string,
+  entries: RuntimeTranscriptEntry[],
+  missingEntryIds: string[],
+  displayLevel: DisplayLevel,
+): Partial<RuntimeStoreState> {
+  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  const transcriptEntriesById = { ...current.transcriptEntriesById };
+  let changed = false;
+  for (const entry of entries) {
+    const entryId = typeof entry.id === "string" && entry.id.trim() ? entry.id : undefined;
+    if (!entryId) continue;
+    transcriptEntriesById[entryId] = entry;
+    changed = true;
+  }
+
+  const missingById = { ...current.missingTranscriptEntryIds };
+  for (const entryId of missingEntryIds) {
+    if (!entryId) continue;
+    missingById[entryId] = true;
+    changed = true;
+  }
+  if (!changed) return {};
+
+  const events = current.eventSeqs.map((eventSeq) => current.eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
+  const timeline = reduceAgentSessionTimeline({
+    events: { events },
+    eventDisplayLevel: displayLevel,
+    messagesById: current.messagesById,
+    transcriptEntriesById,
+  });
+  const briefPatch = agentBriefPatchFromEvents(events, transcriptEntriesById);
+  const detail = current.detail
+    ? patchAgentDetail(
+        {
+          ...current.detail,
+          timeline,
+        },
+        undefined,
+        briefPatch,
+      )
+    : current.detail;
+
+  return {
+    bootstrap: patchBootstrapAgent(state.bootstrap, agentId, undefined, briefPatch),
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...current,
+        detail,
+        transcriptEntriesById,
+        missingTranscriptEntryIds: missingById,
       },
     },
   };
@@ -1432,6 +1598,7 @@ function mergeEventPageIntoSession(
     events: { events: pageEvents },
     eventDisplayLevel: displayLevel,
     messagesById: current.messagesById,
+    transcriptEntriesById: current.transcriptEntriesById,
   });
   const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
   const detail = current.detail

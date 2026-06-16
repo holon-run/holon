@@ -909,7 +909,6 @@ fn simple_event_text(
 fn brief_text(payload: &Value) -> (String, Option<String>, String) {
     let text = payload
         .get("text")
-        .or_else(|| payload.get("text_preview"))
         .and_then(Value::as_str)
         .map(collapse_whitespace)
         .filter(|text| !text.is_empty())
@@ -2275,7 +2274,7 @@ mod tests {
     }
 
     #[test]
-    fn brief_created_lightweight_payload_uses_preview_and_work_item_visibility() {
+    fn brief_created_lightweight_payload_uses_summary_and_work_item_visibility() {
         let mut context = OperatorPresentationContext::default();
         context.completed_work_item_ids.insert("wi-1".into());
         let payload = json!({
@@ -2285,15 +2284,14 @@ mod tests {
             "work_item_id": "wi-1",
             "kind": "result",
             "created_at": "2026-01-01T00:00:00Z",
-            "text_preview": "completed from preview",
-            "text_len": 22
+            "content_char_count": 22
         });
 
         let presentation = present_operator_event("brief_created", &payload, "fallback", &context);
 
         assert_eq!(presentation.visibility, OperatorVisibility::WorkDone);
-        assert_eq!(presentation.body.as_deref(), Some("completed from preview"));
-        assert_eq!(presentation.summary, "Brief: completed from preview");
+        assert_eq!(presentation.body, None);
+        assert_eq!(presentation.summary, "Brief");
     }
 
     #[test]

@@ -422,7 +422,7 @@ async fn e2e_tui_complex_turn_multi_operation() {
         "presentation.jsonl should contain reducer_event_kinds"
     );
 
-    let expected_kinds = ["tool_executed", "assistant_round_recorded", "turn_terminal"];
+    let expected_kinds = ["tool_executed", "text_only_round_observed", "turn_terminal"];
 
     let item_kind_set: std::collections::BTreeSet<&str> =
         item_kinds.iter().map(|s| s.as_str()).collect();

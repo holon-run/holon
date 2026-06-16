@@ -78,9 +78,9 @@ use crate::{
         MessageKind, MessageOrigin, OperatorNotificationRecord, OperatorTransportBinding,
         OperatorTransportBindingStatus, OperatorTransportCapabilities,
         OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskRecord,
-        TaskStatus, TaskStatusSnapshot, TaskStopResult, TimerRecord, TodoItem, TurnTerminalRecord,
-        WaitingIntentRecord, WaitingReason, WorkItemPlanStatus, WorkItemRecord, WorkItemState,
-        WorkspaceOccupancyRecord, WorktreeSession,
+        TaskStatus, TaskStatusSnapshot, TaskStopResult, TimerRecord, TodoItem, TranscriptEntry,
+        TurnTerminalRecord, WaitingIntentRecord, WaitingReason, WorkItemPlanStatus, WorkItemRecord,
+        WorkItemState, WorkspaceOccupancyRecord, WorktreeSession,
     },
 };
 
@@ -228,6 +228,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/agents/{agent_id}/messages/{message_id}", get(message))
         .route("/agents/{agent_id}/transcript", get(transcript))
+        .route(
+            "/agents/{agent_id}/transcript:batchGet",
+            post(transcript_batch_get),
+        )
+        .route(
+            "/agents/{agent_id}/transcript/{entry_id}",
+            get(transcript_entry),
+        )
         .route("/agents/{agent_id}/tasks", get(tasks))
         .route("/agents/{agent_id}/tasks/{task_id}", get(task_status))
         .route(
@@ -735,6 +743,19 @@ pub struct BatchGetMessagesResponse {
     pub messages: Vec<MessageEnvelope>,
     #[serde(default)]
     pub missing_message_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct BatchGetTranscriptEntriesRequest {
+    #[serde(default)]
+    pub entry_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BatchGetTranscriptEntriesResponse {
+    pub entries: Vec<TranscriptEntry>,
+    #[serde(default)]
+    pub missing_entry_ids: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -2325,6 +2346,58 @@ pub async fn transcript(
         .await
         .map_err(error_response)?;
     Ok(Json(transcript))
+}
+
+pub async fn transcript_entry(
+    Path((agent_id, entry_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let Some(entry) = runtime
+        .transcript_entry_by_id(&entry_id)
+        .await
+        .map_err(error_response)?
+        .filter(|entry| entry.agent_id == agent_id)
+    else {
+        return Err(not_found(format!("transcript entry {entry_id} not found")));
+    };
+    Ok(Json(entry))
+}
+
+pub async fn transcript_batch_get(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<BatchGetTranscriptEntriesRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let runtime = state
+        .host
+        .get_public_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let mut entries = Vec::new();
+    let mut missing_entry_ids = Vec::new();
+    for entry_id in request.entry_ids {
+        match runtime
+            .transcript_entry_by_id(&entry_id)
+            .await
+            .map_err(error_response)?
+        {
+            Some(entry) if entry.agent_id == agent_id => entries.push(entry),
+            _ => missing_entry_ids.push(entry_id),
+        }
+    }
+    Ok(Json(BatchGetTranscriptEntriesResponse {
+        entries,
+        missing_entry_ids,
+    }))
 }
 
 pub async fn worktree_summary(

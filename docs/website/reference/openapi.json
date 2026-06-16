@@ -78,9 +78,50 @@
               "null"
             ]
           },
+          "content_source": {
+            "default": {
+              "kind": "inline"
+            },
+            "oneOf": [
+              {
+                "properties": {
+                  "entry_id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "transcript_entry",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "entry_id"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "const": "inline",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "finalizes_assistant_round_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "type": "string"
@@ -5256,6 +5297,132 @@
           "agents"
         ],
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
+      }
+    },
+    "/agents/{agent_id}/transcript/{entry_id}": {
+      "get": {
+        "description": "Return a persisted transcript entry by id for the selected agent.",
+        "operationId": "agentTranscriptEntry",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Transcript entry detail",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/agents/{agent_id}/transcript:batchGet": {
+      "post": {
+        "description": "Return persisted transcript entries for the selected agent. Missing or cross-agent ids are reported in missing_entry_ids.",
+        "operationId": "agentTranscriptBatchGet",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchGetTranscriptEntriesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchGetTranscriptEntriesResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Batch get transcript entries",
+        "tags": [
+          "agents"
+        ]
       }
     },
     "/agents/{agent_id}/work-items": {

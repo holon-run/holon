@@ -186,6 +186,13 @@ export interface RuntimeMessageEnvelope {
   [key: string]: unknown;
 }
 
+export interface RuntimeTranscriptEntry {
+  id?: string;
+  agent_id?: string;
+  data?: unknown;
+  [key: string]: unknown;
+}
+
 export type AgentTimelineItemKind = "operator" | "assistant" | "tool" | "event" | "system";
 
 export interface AgentTimelineItemDetail {

@@ -1364,6 +1364,28 @@ impl AppStorage {
         read_recent_jsonl(&self.transcript_path, usize::MAX)
     }
 
+    pub fn read_transcript_entry_by_id(&self, entry_id: &str) -> Result<Option<TranscriptEntry>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db
+                .transcript_entries()
+                .by_id(self.current_agent_id()?.as_deref(), entry_id);
+        }
+        let current_agent_id = self.current_agent_id()?;
+        let mut found = None;
+        scan_jsonl_reverse::<TranscriptEntry, _>(&self.transcript_path, |entry| {
+            if current_agent_id
+                .as_deref()
+                .is_none_or(|agent_id| entry.agent_id == agent_id)
+                && entry.id == entry_id
+            {
+                found = Some(entry);
+                return false;
+            }
+            true
+        })?;
+        Ok(found)
+    }
+
     pub fn read_recent_waiting_intents(&self, limit: usize) -> Result<Vec<WaitingIntentRecord>> {
         read_recent_jsonl(&self.waiting_intents_path, limit)
     }

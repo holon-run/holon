@@ -1432,7 +1432,7 @@ fn summarize_event(event: &AgentStreamEvent) -> String {
             .map(|brief| trim_summary(&brief.text))
             .or_else(|| {
                 decode_payload::<BriefCreatedAuditEvent>(&event.data.payload)
-                    .map(|brief| trim_summary(&brief.text_preview))
+                    .map(|brief| format!("{:?} brief created", brief.kind))
             })
             .unwrap_or_else(|| event.data.event_type.clone()),
         "task_created" | "task_status_updated" | "task_result_received" => {

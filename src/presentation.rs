@@ -1204,16 +1204,11 @@ fn brief_result_item(event: &ProjectionEventRecord) -> Option<(String, Presentat
                 if brief.kind == BriefKind::Ack {
                     return None;
                 }
-                let body = if brief.text_preview.trim().is_empty() {
-                    event.summary.clone()
-                } else {
-                    brief.text_preview
-                };
                 return Some((
                     format!("id:{}", brief.brief_id),
                     PresentationItem::AssistantResult {
                         brief_id: Some(brief.brief_id),
-                        body,
+                        body: event.summary.clone(),
                         outcome: match brief.kind {
                             BriefKind::Failure => Outcome::Failure,
                             BriefKind::Result => Outcome::Success,
@@ -1460,12 +1455,9 @@ fn final_brief_texts(events: &[ProjectionEventRecord]) -> Vec<FinalBriefText> {
                     text: normalized_text(brief.text.as_str()),
                 });
             }
-            let brief =
+            let _brief =
                 serde_json::from_value::<BriefCreatedAuditEvent>(event.payload.clone()).ok()?;
-            (!brief.text_preview.trim().is_empty()).then_some(FinalBriefText {
-                agent_id: brief.agent_id,
-                text: normalized_text(brief.text_preview.as_str()),
-            })
+            None
         })
         .collect()
 }
@@ -3476,18 +3468,17 @@ mod tests {
     }
 
     #[test]
-    fn reducer_brief_created_uses_lightweight_preview() {
+    fn reducer_brief_created_uses_lightweight_summary() {
         let event = make_event(
             "brief_created",
-            "Brief: completed from preview",
+            "Brief created",
             json!({
                 "brief_id": "brief-1",
                 "agent_id": "default",
                 "workspace_id": "agent_home",
                 "kind": "result",
                 "created_at": "2026-01-01T00:00:00Z",
-                "text_preview": "completed from preview",
-                "text_len": 22
+                "content_char_count": 22
             }),
         );
 
@@ -3502,7 +3493,7 @@ mod tests {
                 outcome,
             } => {
                 assert_eq!(brief_id.as_deref(), Some("brief-1"));
-                assert_eq!(body, "completed from preview");
+                assert_eq!(body, "Brief");
                 assert_eq!(*outcome, Outcome::Success);
             }
             other => panic!("expected AssistantResult, got {:?}", other),

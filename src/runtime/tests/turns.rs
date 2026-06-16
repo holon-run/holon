@@ -85,10 +85,14 @@ async fn runtime_records_text_only_round_observations() {
     assert_eq!(assistant_event.data["text_block_count"], 1);
     assert!(assistant_event.data.get("text").is_none());
     assert!(assistant_event.data.get("text_blocks").is_none());
-    assert!(assistant_event.data["text_preview"]
-        .as_str()
-        .unwrap()
-        .contains("runtime split"));
+    assert!(assistant_event.data.get("text_preview").is_none());
+    assert!(
+        assistant_event.data["text_char_count"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+    assert!(assistant_event.data["has_text"].as_bool().unwrap_or(false));
 
     let text_only_event = events
         .iter()

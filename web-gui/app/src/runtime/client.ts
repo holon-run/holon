@@ -1,5 +1,5 @@
 import { agentDetailFixtures } from "./fixtures";
-import { reduceAgentSessionTimeline } from "./session-reducer";
+import { reduceAgentSessionTimeline, transcriptEntryIdForPayload } from "./session-reducer";
 import type {
   AgentDetail,
   AgentSummary,
@@ -11,6 +11,7 @@ import type {
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeModelOption,
+  RuntimeTranscriptEntry,
   SearchResponse,
   TaskSummary,
   WorkItemSummary,
@@ -84,8 +85,13 @@ async function fetchAgentDetail(
     })),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
-  const agent = projectAgent(fallbackEntry, state, newestBriefFromEvents(events.events ?? []));
-  const timeline = reduceAgentSessionTimeline({ events, eventDisplayLevel });
+  const transcriptEntriesById = await fetchTranscriptEntriesForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? []);
+  const agent = projectAgent(
+    fallbackEntry,
+    state,
+    newestBriefFromEvents(events.events ?? [], transcriptEntriesById),
+  );
+  const timeline = reduceAgentSessionTimeline({ events, eventDisplayLevel, transcriptEntriesById });
 
   return {
     agent,
@@ -369,6 +375,11 @@ interface AgentMessagesBatchGetResponseDto {
   missing_message_ids?: string[];
 }
 
+interface AgentTranscriptEntriesBatchGetResponseDto {
+  entries?: RuntimeTranscriptEntry[];
+  missing_entry_ids?: string[];
+}
+
 export interface RuntimeConfigUpdateEntry {
   key: string;
   value?: unknown;
@@ -421,6 +432,18 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         baseUrl,
         `/agents/${encodeURIComponent(agentId)}/messages:batchGet`,
         { message_ids: messageIds },
+        requestHeaders,
+      );
+    },
+    async getAgentTranscriptEntriesBatch(agentId: string, entryIds: string[]): Promise<AgentTranscriptEntriesBatchGetResponseDto> {
+      if (!baseUrl || !entryIds.length) {
+        return { entries: [], missing_entry_ids: [] };
+      }
+      return postJson<AgentTranscriptEntriesBatchGetResponseDto>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/transcript:batchGet`,
+        { entry_ids: entryIds },
         requestHeaders,
       );
     },
@@ -515,6 +538,31 @@ async function fetchAgentEvents(
   const queryString = query.toString();
   const path = `/agents/${encodeURIComponent(agentId)}/events${queryString ? `?${queryString}` : ""}`;
   return getJson<EventPageResponseDto>(fetchImpl, baseUrl, path, { headers });
+}
+
+async function fetchTranscriptEntriesForEvents(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+  events: EventEnvelopeDto[],
+): Promise<Record<string, RuntimeTranscriptEntry>> {
+  const entryIds = Array.from(
+    new Set(
+      events
+        .map((event) => transcriptEntryIdForPayload(asRecord(event.payload)))
+        .filter((entryId): entryId is string => Boolean(entryId)),
+    ),
+  );
+  if (!entryIds.length) return {};
+  const response = await postJson<AgentTranscriptEntriesBatchGetResponseDto>(
+    fetchImpl,
+    baseUrl,
+    `/agents/${encodeURIComponent(agentId)}/transcript:batchGet`,
+    { entry_ids: entryIds },
+    headers,
+  ).catch((): AgentTranscriptEntriesBatchGetResponseDto => ({ entries: [], missing_entry_ids: entryIds }));
+  return Object.fromEntries((response.entries ?? []).flatMap((entry) => (entry.id ? [[entry.id, entry]] : [])));
 }
 
 function streamAgentEvents(
@@ -882,18 +930,35 @@ function projectTasks(tasks: NonNullable<AgentStateDto["tasks"]>): TaskSummary[]
     });
 }
 
-function newestBriefFromEvents(events: EventEnvelopeDto[]): BriefRecordDto | undefined {
+function newestBriefFromEvents(
+  events: EventEnvelopeDto[],
+  transcriptEntriesById: Record<string, RuntimeTranscriptEntry> = {},
+): BriefRecordDto | undefined {
   return events
     .filter((event) => event.type === "brief_created")
     .map((event) => {
       const payload = event.payload && typeof event.payload === "object" ? (event.payload as Record<string, unknown>) : {};
-      const text = typeof payload.text === "string" ? payload.text : undefined;
+      const entryId = transcriptEntryIdForPayload(payload);
+      const text = (entryId ? transcriptEntryText(transcriptEntriesById[entryId]) : undefined) ??
+        (typeof payload.text === "string" ? payload.text : undefined);
       const createdAt = typeof payload.created_at === "string" ? payload.created_at : event.ts;
       const kind = typeof payload.kind === "string" ? payload.kind : undefined;
       return { id: event.id, created_at: createdAt, text, kind };
     })
     .filter((brief) => brief.text)
     .sort((left, right) => sortableTime(right.created_at) - sortableTime(left.created_at))[0];
+}
+
+function transcriptEntryText(entry: RuntimeTranscriptEntry | undefined): string | undefined {
+  const data = asRecord(entry?.data);
+  const text = stringValue(data?.text);
+  if (text) return text;
+  const blocks = Array.isArray(data?.blocks) ? data.blocks : [];
+  const parts = blocks.flatMap((block) => {
+    const record = asRecord(block);
+    return stringValue(record?.text) ?? stringValue(record?.content) ?? [];
+  });
+  return parts.filter(Boolean).join("\n\n") || undefined;
 }
 
 function sortableTime(value: string | undefined): number {
