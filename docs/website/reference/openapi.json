@@ -7834,6 +7834,44 @@
         ]
       }
     },
+    "/events/stream": {
+      "get": {
+        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor.",
+        "operationId": "eventsStream",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Server-Sent Events stream. Each data frame contains a StreamEventEnvelope JSON object."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error before stream establishment."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Global event stream",
+        "tags": [
+          "events"
+        ]
+      }
+    },
     "/handshake": {
       "get": {
         "description": "Return auth mode, protocol version, capabilities, and runtime hints.",

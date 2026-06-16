@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
+use tokio::sync::broadcast;
 
 use crate::{
     memory::index::enqueue_memory_index_upsert,
@@ -61,6 +62,32 @@ pub(crate) struct EventLogPage {
     pub(crate) events: Vec<AuditEvent>,
     pub(crate) has_older: bool,
     pub(crate) has_newer: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PublishedAuditEvent {
+    pub(crate) agent_id: Option<String>,
+    pub(crate) event: AuditEvent,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EventBus {
+    tx: broadcast::Sender<PublishedAuditEvent>,
+}
+
+impl EventBus {
+    pub(crate) fn new(capacity: usize) -> Self {
+        let (tx, _rx) = broadcast::channel(capacity);
+        Self { tx }
+    }
+
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<PublishedAuditEvent> {
+        self.tx.subscribe()
+    }
+
+    fn publish(&self, event: PublishedAuditEvent) {
+        let _ = self.tx.send(event);
+    }
 }
 
 impl WorkQueuePromptProjection {
@@ -221,6 +248,7 @@ pub struct AppStorage {
     transcript_seq_counter: Arc<Mutex<u64>>,
     audit_event_index: Arc<Mutex<Option<AuditEventIndexSink>>>,
     scheduler_control_plane_db: Arc<Mutex<Option<RuntimeDb>>>,
+    event_bus: Arc<Mutex<Option<EventBus>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -356,6 +384,7 @@ impl AppStorage {
             transcript_seq_counter: Arc::new(Mutex::new(transcript_seq_counter)),
             audit_event_index: Arc::new(Mutex::new(None)),
             scheduler_control_plane_db: Arc::new(Mutex::new(None)),
+            event_bus: Arc::new(Mutex::new(None)),
             data_dir,
         })
     }
@@ -421,6 +450,41 @@ impl AppStorage {
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduler control-plane db mutex poisoned"))?;
         *guard = Some(runtime_db);
+        Ok(())
+    }
+
+    pub(crate) fn enable_event_bus(&self, event_bus: EventBus) -> Result<()> {
+        let mut guard = self
+            .event_bus
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event bus mutex poisoned"))?;
+        *guard = Some(event_bus);
+        Ok(())
+    }
+
+    pub(crate) fn subscribe_events(
+        &self,
+    ) -> Result<Option<broadcast::Receiver<PublishedAuditEvent>>> {
+        Ok(self
+            .event_bus
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event bus mutex poisoned"))?
+            .as_ref()
+            .map(EventBus::subscribe))
+    }
+
+    fn publish_event(&self, agent_id: Option<String>, event: &AuditEvent) -> Result<()> {
+        if let Some(event_bus) = self
+            .event_bus
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event bus mutex poisoned"))?
+            .clone()
+        {
+            event_bus.publish(PublishedAuditEvent {
+                agent_id,
+                event: event.clone(),
+            });
+        }
         Ok(())
     }
 
@@ -540,20 +604,22 @@ impl AppStorage {
             .map_err(|_| anyhow::anyhow!("audit event index mutex poisoned"))?
             .clone()
         {
+            let agent_id = sink.agent_id.clone();
             if let Err(error) = sink
                 .runtime_db
                 .audit_events()
-                .append(sink.agent_id.as_deref(), &event)
+                .append(agent_id.as_deref(), &event)
             {
                 tracing::warn!(
                     error = %error,
                     event_id = %event.id,
                     event_kind = %event.kind,
                     event_seq = event.event_seq,
-                    agent_id = sink.agent_id.as_deref().unwrap_or("<global>"),
+                    agent_id = agent_id.as_deref().unwrap_or("<global>"),
                     "failed to enqueue runtime db audit event"
                 );
             }
+            self.publish_event(agent_id, &event)?;
             return Ok(());
         }
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
@@ -572,6 +638,7 @@ impl AppStorage {
                         "failed to enqueue runtime db audit event"
                     );
                 }
+                self.publish_event(agent_id, &event)?;
                 return Ok(());
             }
         }
@@ -580,6 +647,7 @@ impl AppStorage {
         bytes.extend_from_slice(line.as_bytes());
         bytes.push(b'\n');
         append_jsonl_bytes(&self.events_path, &bytes)?;
+        self.publish_event(self.current_agent_id()?, &event)?;
         Ok(())
     }
 

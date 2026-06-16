@@ -290,6 +290,51 @@ pub async fn events_stream_supports_cursor_and_rfc3339_ts() -> Result<()> {
     Ok(())
 }
 
+pub async fn events_stream_receives_live_events_without_polling_replay() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    let mut stream = client
+        .get(format!("{base}/agents/default/events/stream"))
+        .send()
+        .await?;
+    runtime.storage().append_event(&AuditEvent::new(
+        "live_test_event",
+        serde_json::json!({ "live": true }),
+    ))?;
+
+    let event = next_sse_event_kind(&mut stream, "live_test_event").await?;
+    assert_eq!(event.data["agent_id"], "default");
+    assert_eq!(event.data["payload"]["live"], true);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn global_events_stream_receives_live_agent_events() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let runtime = host.default_runtime().await?;
+    let client = reqwest::Client::new();
+
+    let mut stream = client.get(format!("{base}/events/stream")).send().await?;
+    runtime.storage().append_event(&AuditEvent::new(
+        "global_live_test_event",
+        serde_json::json!({ "global": true }),
+    ))?;
+
+    let event = next_sse_event_kind(&mut stream, "global_live_test_event").await?;
+    assert_eq!(event.data["agent_id"], "default");
+    assert_eq!(
+        event.data["event_seq"].as_u64(),
+        Some(event._id.parse::<u64>()?)
+    );
+    assert_eq!(event.data["payload"]["global"], true);
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn events_route_preserves_replay_provenance() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;

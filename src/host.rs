@@ -34,7 +34,7 @@ use crate::{
     runtime::{InitialWorkspaceBinding, RuntimeHandle},
     runtime_db::RuntimeDb,
     skills::{load_skills_runtime_view, SkillVisibility},
-    storage::AppStorage,
+    storage::{AppStorage, EventBus, PublishedAuditEvent},
     system::{ExecutionScopeKind, HostLocalBoundary, WorkspaceAccessMode},
     tool::{apply_patch::ApplyPatchSurface, ToolRegistry},
     types::{
@@ -100,6 +100,7 @@ impl std::error::Error for PublicAgentError {}
 struct HostInner {
     registry: RuntimeRegistry,
     runtime_db: RuntimeDb,
+    event_bus: EventBus,
     static_provider: Option<Arc<dyn AgentProvider>>,
     agents: RwLock<HashMap<String, AgentEntry>>,
 }
@@ -197,6 +198,7 @@ impl RuntimeHost {
             inner: Arc::new(HostInner {
                 registry,
                 runtime_db,
+                event_bus: EventBus::new(1024),
                 static_provider,
                 agents: RwLock::new(HashMap::new()),
             }),
@@ -219,7 +221,12 @@ impl RuntimeHost {
         let storage =
             AppStorage::new_for_agent(self.agent_data_dir(agent_id), agent_id.to_string())?;
         storage.enable_scheduler_control_plane_db(self.runtime_db().clone())?;
+        storage.enable_event_bus(self.inner.event_bus.clone())?;
         Ok(storage)
+    }
+
+    pub(crate) fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<PublishedAuditEvent> {
+        self.inner.event_bus.subscribe()
     }
 
     fn agent_storage_read_only(&self, agent_id: &str) -> Result<AppStorage> {
@@ -1611,6 +1618,7 @@ impl RuntimeHost {
                 self.inner.runtime_db.clone(),
                 self.bridge(),
                 RuntimeModelCatalog::from_config(self.config()),
+                self.inner.event_bus.clone(),
             )?
         } else {
             RuntimeHandle::new_reconfigurable_with_host_bridge(
@@ -1623,6 +1631,7 @@ impl RuntimeHost {
                 self.runtime_context_config(),
                 self.inner.runtime_db.clone(),
                 self.bridge(),
+                self.inner.event_bus.clone(),
             )?
         };
         let runtime_task = tokio::spawn({
@@ -3262,6 +3271,7 @@ mod tests {
             host.runtime_context_config(),
             host.runtime_db().clone(),
             bridge,
+            host.inner.event_bus.clone(),
         )
         .unwrap();
 

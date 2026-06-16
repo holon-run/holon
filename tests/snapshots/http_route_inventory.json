@@ -567,6 +567,23 @@
   },
   {
     "method": "get",
+    "path": "/events/stream",
+    "handler": "global_events_stream",
+    "operation_id": "eventsStream",
+    "tag": "events",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json",
+      "text/event-stream"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/handshake",
     "handler": "handshake",
     "operation_id": "handshake",

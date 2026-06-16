@@ -70,6 +70,7 @@ const ROUTES: &[RouteSpec] = &[
     aide_route("get", "/agents/{agent_id}/briefs", "agentBriefs", "agents", "Recent briefs", "Return recent user-facing delivery briefs. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/briefs/{brief_id}", "agentBrief", "agents", "Brief detail", "Return a persisted user-facing delivery brief by id.", None, "BriefRecord", AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/state", "agentState", "agents", "Agent state snapshot", "Return the lightweight bootstrap snapshot for an agent. Heavy task, work-item, operator notification, and execution details are available through dedicated routes and events.", None, AuthKind::RemoteAccess),
+    event_stream_route("get", "/events/stream", "eventsStream", "events", "Global event stream", "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/events", "agentEvents", "events", "Agent event page", "Return a bounded page of runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Event payloads are included in full; max_level filters event inclusion only. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.", None, AuthKind::RemoteAccess),
     event_stream_route("get", "/agents/{agent_id}/events/stream", "agentEventsStream", "events", "Agent event stream", "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/messages/{message_id}", "agentMessage", "messages", "Message detail", "Return a persisted message envelope by id for the selected agent.", None, AuthKind::RemoteAccess),
@@ -632,6 +633,7 @@ mod tests {
             .flat_map(|path| path.as_object().into_iter().flat_map(|ops| ops.keys()))
             .count();
         assert!(operation_count >= 40, "expected baseline coverage");
+        assert!(paths["/events/stream"]["get"].is_object());
         assert!(paths["/agents/{agent_id}/events/stream"]["get"].is_object());
         assert!(paths["/callbacks/wake/{callback_token}"]["post"].is_object());
         assert_eq!(
