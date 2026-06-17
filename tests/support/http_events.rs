@@ -895,8 +895,9 @@ pub async fn events_stream_requires_control_auth_when_configured() -> Result<()>
 }
 
 pub async fn state_snapshot_bounds_large_projection_fields() -> Result<()> {
-    let (host, base, server) = spawn_server().await?;
+    let (host, _base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
+    let config = host.config().clone();
     let now = chrono::Utc::now();
 
     let task = TaskRecord {
@@ -918,6 +919,11 @@ pub async fn state_snapshot_bounds_large_projection_fields() -> Result<()> {
     };
     runtime.storage().append_task(&task)?;
     host.runtime_db().tasks().upsert(&task)?;
+
+    server.abort();
+    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("route result")))?;
+    let (base, server) = spawn_server_for_host(host).await?;
+
     let snapshot: serde_json::Value = reqwest::Client::new()
         .get(format!("{base}/agents/default/state"))
         .send()
