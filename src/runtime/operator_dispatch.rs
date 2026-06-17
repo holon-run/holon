@@ -51,6 +51,7 @@ impl RuntimeHandle {
                 &state.attached_workspaces,
             );
             let loaded_agents_md = self.loaded_agents_md_for_state(&state)?;
+            let loaded_agent_memory = self.loaded_agent_memory_for_state()?;
             let skills = self.skills_runtime_view_for_state(&state, &identity)?;
             build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
                 &self.inner.storage,
@@ -62,6 +63,7 @@ impl RuntimeHandle {
                 self.agent_home().as_path(),
                 &identity,
                 loaded_agents_md,
+                loaded_agent_memory,
                 &skills,
                 &prompt_tools,
                 apply_patch_surface,
@@ -218,6 +220,7 @@ impl RuntimeHandle {
         let prompt_tools = provider.prompt_tool_specs(&available_tools);
         let execution = self.execution_snapshot().await?;
         let loaded_agents_md = self.loaded_agents_md_for_state(&agent)?;
+        let loaded_agent_memory = self.loaded_agent_memory_for_state()?;
         let skills = self.skills_runtime_view_for_state(&agent, &identity)?;
         build_effective_prompt_with_apply_patch_surface_and_default_external_ingress(
             &self.inner.storage,
@@ -229,6 +232,7 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &identity,
             loaded_agents_md,
+            loaded_agent_memory,
             &skills,
             &prompt_tools,
             apply_patch_surface,
@@ -268,6 +272,7 @@ impl RuntimeHandle {
                 .workspace_id()
                 .map(|_| execution.workspace.workspace_anchor()),
         )?;
+        let loaded_agent_memory = load_agent_memory(self.agent_home().as_path())?;
         let state = self
             .inner
             .storage
@@ -310,6 +315,7 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             &identity,
             loaded_agents_md,
+            loaded_agent_memory,
             &skills,
             &[],
             ApplyPatchSurface::UnifiedDiffJson,

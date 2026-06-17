@@ -1275,6 +1275,7 @@ fn current_input_summary_extracts_body_from_context_section() {
             worktree_root: None,
         },
         loaded_agents_md: LoadedAgentsMd::default(),
+        loaded_agent_memory: LoadedAgentMemory::default(),
         cache_identity: crate::prompt::PromptCacheIdentity {
             agent_id: "default".into(),
             prompt_cache_key: "default".into(),

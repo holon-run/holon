@@ -25,12 +25,12 @@ pub(crate) use crate::{
         ActiveWorkspaceEntry, AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset,
         AgentRegistryStatus, AgentState, AgentStatus, AgentVisibility, AuditEvent, AuthorityClass,
         BriefKind, BriefRecord, CallbackDeliveryMode, ClosureDecision, ClosureOutcome,
-        ContinuationClass, ContinuationTriggerKind, DeliverySummaryRecord, LoadedAgentsMd,
-        MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin, PendingWakeHint, Priority,
-        QueueEntryStatus, TaskKind, TaskOutputRetrievalStatus, TaskRecord, TaskRecoverySpec,
-        TaskStatus, TimerRecord, TimerStatus, TodoItem, TodoItemState, TokenUsage,
-        TurnTerminalKind, TurnTerminalRecord, WaitingIntentStatus, WaitingReason, WorkItemRecord,
-        WorkItemState, WorkReactivationMode, WorkspaceEntry,
+        ContinuationClass, ContinuationTriggerKind, DeliverySummaryRecord, LoadedAgentMemory,
+        LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
+        PendingWakeHint, Priority, QueueEntryStatus, TaskKind, TaskOutputRetrievalStatus,
+        TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TodoItem,
+        TodoItemState, TokenUsage, TurnTerminalKind, TurnTerminalRecord, WaitingIntentStatus,
+        WaitingReason, WorkItemRecord, WorkItemState, WorkReactivationMode, WorkspaceEntry,
     },
 };
 
@@ -162,6 +162,7 @@ pub(crate) fn test_effective_prompt() -> EffectivePrompt {
             worktree_root: None,
         },
         loaded_agents_md: LoadedAgentsMd::default(),
+        loaded_agent_memory: LoadedAgentMemory::default(),
         cache_identity: crate::prompt::PromptCacheIdentity {
             agent_id: "default".into(),
             prompt_cache_key: "default".into(),

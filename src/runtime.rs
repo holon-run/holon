@@ -58,6 +58,7 @@ use tracing::{error, info, warn};
 #[cfg(test)]
 use crate::provider::{ConversationMessage, ProviderTurnRequest};
 use crate::{
+    agent_memory::load_agent_memory,
     agent_template::discover_agent_templates_catalog,
     agents_md::load_agents_md,
     brief,
@@ -87,6 +88,7 @@ use crate::{
         WorkspaceAccessMode, WorkspaceProjectionKind, WorkspaceView,
     },
     tool::{ToolRegistry, ToolResult},
+    types::LoadedAgentMemory,
     types::{
         ActiveWorkspaceEntry, AdmissionContext, AgentIdentityView, AgentKind,
         AgentModelOverrideAuditEvent, AgentModelSource, AgentModelState, AgentState,
@@ -1018,6 +1020,10 @@ impl RuntimeHandle {
             self.agent_home().as_path(),
             self.workspace_anchor_for_state_ref(state),
         )
+    }
+
+    fn loaded_agent_memory_for_state(&self) -> Result<LoadedAgentMemory> {
+        load_agent_memory(self.agent_home().as_path())
     }
 
     pub(crate) async fn skills_runtime_view(
