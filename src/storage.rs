@@ -1891,9 +1891,8 @@ impl AppStorage {
             })
             .collect::<std::collections::BTreeMap<_, _>>();
         let active_wait_conditions = self
-            .latest_wait_conditions()?
+            .active_wait_conditions()?
             .into_iter()
-            .filter(|condition| condition.status == WaitConditionStatus::Active)
             .filter_map(|condition| condition.work_item_id.clone().map(|id| (id, condition)))
             .fold(
                 std::collections::BTreeMap::<String, ActiveWaitConditionStates>::new(),
@@ -2104,7 +2103,7 @@ impl AppStorage {
             .find(|item| item.scheduling_state == WorkItemSchedulingState::WaitingTask)
         {
             let task_id = self
-                .latest_wait_conditions()?
+                .active_wait_conditions()?
                 .into_iter()
                 .find(|condition| {
                     condition.status == WaitConditionStatus::Active
@@ -2416,37 +2415,56 @@ impl AppStorage {
         Ok(latest.into_values().collect())
     }
 
-    pub fn latest_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
-        let records = self.read_recent_wait_conditions(usize::MAX)?;
-        let mut latest = std::collections::BTreeMap::new();
-        for record in records {
-            latest.insert(record.id.clone(), record);
-        }
-        Ok(latest.into_values().collect())
-    }
-
-    pub fn latest_active_wait_conditions_for_agent(
+    pub fn active_wait_conditions_for_agent(
         &self,
         agent_id: &str,
     ) -> Result<Vec<WaitConditionRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.wait_conditions().active_for_agent(agent_id);
+        }
+        // JSONL fallback: read all and filter
         Ok(self
-            .latest_wait_conditions()?
+            .read_recent_wait_conditions(usize::MAX)?
             .into_iter()
             .filter(|record| record.agent_id == agent_id)
             .filter(|record| record.status == WaitConditionStatus::Active)
             .collect())
     }
 
-    pub fn latest_active_wait_conditions_for_work_item(
+    pub fn active_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.wait_conditions().active_all();
+        }
+        // JSONL fallback: read all and filter
+        Ok(self
+            .read_recent_wait_conditions(usize::MAX)?
+            .into_iter()
+            .filter(|record| record.status == WaitConditionStatus::Active)
+            .collect())
+    }
+
+    pub fn active_wait_conditions_for_work_item(
         &self,
         agent_id: &str,
         work_item_id: &str,
     ) -> Result<Vec<WaitConditionRecord>> {
         Ok(self
-            .latest_active_wait_conditions_for_agent(agent_id)?
+            .active_wait_conditions_for_agent(agent_id)?
             .into_iter()
             .filter(|record| record.work_item_id.as_deref() == Some(work_item_id))
             .collect())
+    }
+
+    pub fn latest_wait_conditions(&self) -> Result<Vec<WaitConditionRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.wait_conditions().latest_all();
+        }
+        let records = self.read_recent_wait_conditions(usize::MAX)?;
+        let mut latest = std::collections::BTreeMap::new();
+        for record in records {
+            latest.insert(record.id.clone(), record);
+        }
+        Ok(latest.into_values().collect())
     }
 
     pub fn latest_waiting_intent(
@@ -3104,6 +3122,11 @@ mod tests {
 
     use chrono::Utc;
 
+    fn truncate_to_millis(dt: DateTime<Utc>) -> DateTime<Utc> {
+        let millis = dt.timestamp_millis();
+        DateTime::from_timestamp_millis(millis).unwrap()
+    }
+
     use crate::types::{
         AgentState, AgentStatus, AuthorityClass, BriefKind, CallbackDeliveryMode,
         EpisodeBoundaryReason, ExternalTriggerScope, ExternalTriggerStatus, MessageBody,
@@ -3323,7 +3346,7 @@ mod tests {
             .enable_scheduler_control_plane_db(runtime_db.clone())
             .unwrap();
 
-        let now = Utc::now();
+        let now = truncate_to_millis(Utc::now());
         let wait_condition = WaitConditionRecord {
             id: "wait-1".into(),
             agent_id: "default".into(),
@@ -3514,7 +3537,7 @@ mod tests {
             .enable_scheduler_control_plane_db(runtime_db.clone())
             .unwrap();
 
-        let now = Utc::now();
+        let now = truncate_to_millis(Utc::now());
         let task = TaskRecord {
             id: "task-db-only".into(),
             agent_id: "default".into(),
@@ -5220,7 +5243,7 @@ mod tests {
         storage.append_waiting_intent(&active).unwrap();
         assert!(storage.latest_wait_conditions().unwrap().is_empty());
         let active_for_work = storage
-            .latest_active_wait_conditions_for_work_item("default", "work-1")
+            .active_wait_conditions_for_work_item("default", "work-1")
             .unwrap();
         assert!(active_for_work.is_empty());
 

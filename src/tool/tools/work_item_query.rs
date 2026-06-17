@@ -150,7 +150,7 @@ pub(crate) async fn view_for_record(
         Some(wait_conditions) => wait_conditions.get(&record.id).cloned().unwrap_or_default(),
         None => runtime
             .storage()
-            .latest_active_wait_conditions_for_work_item(&record.agent_id, &record.id)?
+            .active_wait_conditions_for_work_item(&record.agent_id, &record.id)?
             .into_iter()
             .map(WaitConditionSummary::from)
             .collect(),
@@ -204,7 +204,7 @@ pub(crate) fn active_wait_conditions_by_work_item(
     for agent_id in agent_ids {
         for condition in runtime
             .storage()
-            .latest_active_wait_conditions_for_agent(agent_id)?
+            .active_wait_conditions_for_agent(agent_id)?
         {
             if let Some(work_item_id) = condition.work_item_id.as_ref() {
                 wait_conditions

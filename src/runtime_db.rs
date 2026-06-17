@@ -22,7 +22,8 @@ use crate::types::{
     ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord, ExternalTriggerScope,
     ExternalTriggerStatus, MessageEnvelope, QueueEntryRecord, QueueEntryStatus, TaskRecord,
     TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry, TurnRecord,
-    WaitConditionRecord, WorkItemContinuationFrame, WorkItemDelegationRecord, WorkItemRecord,
+    WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
+    WorkItemContinuationFrame, WorkItemDelegationRecord, WorkItemRecord,
     WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
 
@@ -1296,13 +1297,16 @@ impl WaitConditionRepository<'_> {
     pub fn latest_all(&self) -> Result<Vec<WaitConditionRecord>> {
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
-            "SELECT payload_json
+            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+                subject_ref, waiting_for, created_at, updated_at, expires_at,
+                resolved_at, cancelled_at, last_turn_id,
+                wake_sources_json, continuation_json
              FROM wait_conditions
-             ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
+             ORDER BY wait_condition_id ASC",
         )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_wait_condition_payload(&row?))
-            .collect()
+        let rows = statement.query_map([], |row| decode_wait_condition_row(row).map_err(|_| rusqlite::Error::InvalidQuery))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
     }
 
     pub fn recent(&self, limit: usize) -> Result<Vec<WaitConditionRecord>> {
@@ -1312,15 +1316,17 @@ impl WaitConditionRepository<'_> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
-            "SELECT payload_json
+            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+                subject_ref, waiting_for, created_at, updated_at, expires_at,
+                resolved_at, cancelled_at, last_turn_id,
+                wake_sources_json, continuation_json
              FROM wait_conditions
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC
              LIMIT ?1",
         )?;
-        let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_wait_condition_payload(&row?))
-            .collect::<Result<_>>()?;
+        let rows = statement.query_map([limit], |row| decode_wait_condition_row(row).map_err(|_| rusqlite::Error::InvalidQuery))?;
+        let mut records: Vec<_> = rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))?;
         records.reverse();
         Ok(records)
     }
@@ -1336,16 +1342,18 @@ impl WaitConditionRepository<'_> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
-            "SELECT payload_json
+            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+                subject_ref, waiting_for, created_at, updated_at, expires_at,
+                resolved_at, cancelled_at, last_turn_id,
+                wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE agent_id = ?1
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC
              LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
-        let mut records: Vec<_> = rows
-            .map(|row| decode_wait_condition_payload(&row?))
-            .collect::<Result<_>>()?;
+        let rows = statement.query_map(params![agent_id, limit], |row| decode_wait_condition_row(row).map_err(|_| rusqlite::Error::InvalidQuery))?;
+        let mut records: Vec<_> = rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))?;
         records.reverse();
         Ok(records)
     }
@@ -1353,14 +1361,33 @@ impl WaitConditionRepository<'_> {
     pub fn active_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
-            "SELECT payload_json
+            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+                subject_ref, waiting_for, created_at, updated_at, expires_at,
+                resolved_at, cancelled_at, last_turn_id,
+                wake_sources_json, continuation_json
              FROM wait_conditions
              WHERE agent_id = ?1 AND status = 'active'
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
         )?;
-        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_wait_condition_payload(&row?))
-            .collect()
+        let rows = statement.query_map([agent_id], |row| decode_wait_condition_row(row).map_err(|_| rusqlite::Error::InvalidQuery))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+    }
+
+    pub fn active_all(&self) -> Result<Vec<WaitConditionRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+                subject_ref, waiting_for, created_at, updated_at, expires_at,
+                resolved_at, cancelled_at, last_turn_id,
+                wake_sources_json, continuation_json
+             FROM wait_conditions
+             WHERE status = 'active'
+             ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| decode_wait_condition_row(row).map_err(|_| rusqlite::Error::InvalidQuery))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
     }
 }
 
@@ -3383,12 +3410,19 @@ fn upsert_wait_condition_tx(tx: &Transaction<'_>, record: &WaitConditionRecord) 
     let payload_json = serde_json::to_string(record)?;
     let status = enum_string(&record.status)?;
     let kind = enum_string(&record.kind)?;
+    let wake_sources_json = serde_json::to_string(&record.wake_sources)?;
+    let continuation_json = record
+        .continuation
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
     tx.execute(
         "INSERT INTO wait_conditions (
             wait_condition_id, agent_id, work_item_id, status, kind, source,
             subject_ref, waiting_for, created_at, updated_at, expires_at,
-            resolved_at, cancelled_at, last_turn_id, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            resolved_at, cancelled_at, last_turn_id,
+            wake_sources_json, continuation_json, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(wait_condition_id) DO UPDATE SET
             agent_id = excluded.agent_id,
             work_item_id = excluded.work_item_id,
@@ -3403,6 +3437,8 @@ fn upsert_wait_condition_tx(tx: &Transaction<'_>, record: &WaitConditionRecord) 
             resolved_at = excluded.resolved_at,
             cancelled_at = excluded.cancelled_at,
             last_turn_id = excluded.last_turn_id,
+            wake_sources_json = excluded.wake_sources_json,
+            continuation_json = excluded.continuation_json,
             payload_json = excluded.payload_json
          WHERE excluded.updated_at >= wait_conditions.updated_at",
         params![
@@ -3420,6 +3456,8 @@ fn upsert_wait_condition_tx(tx: &Transaction<'_>, record: &WaitConditionRecord) 
             record.resolved_at.map(timestamp),
             record.cancelled_at.map(timestamp),
             record.turn_id,
+            wake_sources_json,
+            continuation_json,
             payload_json,
         ],
     )?;
@@ -4090,8 +4128,64 @@ fn decode_task_payload(payload: &str) -> Result<TaskRecord> {
     serde_json::from_str(payload).context("decoding task payload from runtime db")
 }
 
-fn decode_wait_condition_payload(payload: &str) -> Result<WaitConditionRecord> {
-    serde_json::from_str(payload).context("decoding wait condition payload from runtime db")
+fn parse_timestamp(value: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Utc))
+        .with_context(|| format!("parsing timestamp: {value}"))
+}
+
+fn parse_optional_timestamp(value: Option<&str>) -> Result<Option<DateTime<Utc>>> {
+    value.map(parse_timestamp).transpose()
+}
+
+fn decode_wait_condition_row(row: &rusqlite::Row<'_>) -> Result<WaitConditionRecord> {
+    let id: String = row.get(0)?;
+    let agent_id: String = row.get(1)?;
+    let work_item_id: Option<String> = row.get(2)?;
+    let status_str: String = row.get(3)?;
+    let kind_str: String = row.get(4)?;
+    let source: Option<String> = row.get(5)?;
+    let subject_ref: Option<String> = row.get(6)?;
+    let waiting_for: String = row.get(7)?;
+    let created_at_str: String = row.get(8)?;
+    let updated_at_str: String = row.get(9)?;
+    let expires_at_str: Option<String> = row.get(10)?;
+    let resolved_at_str: Option<String> = row.get(11)?;
+    let cancelled_at_str: Option<String> = row.get(12)?;
+    let turn_id: Option<String> = row.get(13)?;
+    let wake_sources_json: String = row.get(14)?;
+    let continuation_json: Option<String> = row.get(15)?;
+    let status: WaitConditionStatus =
+        serde_json::from_value(serde_json::Value::String(status_str))
+            .context("parsing wait condition status")?;
+    let kind: WaitConditionKind =
+        serde_json::from_value(serde_json::Value::String(kind_str))
+            .context("parsing wait condition kind")?;
+    let wake_sources: Vec<WakeSource> = serde_json::from_str(&wake_sources_json)
+        .context("parsing wake_sources_json")?;
+    let continuation: Option<serde_json::Value> = continuation_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .context("parsing continuation_json")?;
+    Ok(WaitConditionRecord {
+        id,
+        agent_id,
+        work_item_id,
+        status,
+        kind,
+        source,
+        subject_ref,
+        waiting_for,
+        wake_sources,
+        continuation,
+        created_at: parse_timestamp(&created_at_str)?,
+        updated_at: parse_timestamp(&updated_at_str)?,
+        expires_at: parse_optional_timestamp(expires_at_str.as_deref())?,
+        resolved_at: parse_optional_timestamp(resolved_at_str.as_deref())?,
+        cancelled_at: parse_optional_timestamp(cancelled_at_str.as_deref())?,
+        turn_id,
+    })
 }
 
 fn decode_queue_entry_payload(payload: &str) -> Result<QueueEntryRecord> {
@@ -4893,6 +4987,15 @@ WHERE NOT EXISTS (
 );
 "#,
     },
+    Migration {
+        version: 16,
+        name: "wait_conditions_payload_columns",
+        sql: r#"
+-- Columns are added conditionally in backfill_wait_condition_payload_columns
+-- to support test databases that may not have wait_conditions table
+SELECT 1;
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -5300,6 +5403,7 @@ impl RuntimeDb {
         for migration in MIGRATIONS {
             apply_migration(&mut connection, migration)?;
         }
+        backfill_wait_condition_payload_columns(&connection)?;
         Ok(())
     }
 }
@@ -5561,6 +5665,66 @@ fn apply_migration(connection: &mut Connection, migration: &Migration) -> Result
         ),
     )?;
     transaction.commit()?;
+    Ok(())
+}
+
+/// Backfill `wake_sources_json` and `continuation_json` from `payload_json`
+/// for existing rows that still have the default values.
+fn backfill_wait_condition_payload_columns(connection: &Connection) -> Result<()> {
+    // Check if wait_conditions table exists (may not exist in test databases)
+    let table_exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'wait_conditions')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(());
+    }
+
+    // Check if columns exist, add them if they don't
+    let columns: Vec<String> = connection
+        .prepare("PRAGMA table_info(wait_conditions)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    
+    if !columns.iter().any(|c| c == "wake_sources_json") {
+        connection.execute_batch(
+            "ALTER TABLE wait_conditions ADD COLUMN wake_sources_json TEXT NOT NULL DEFAULT '[]'",
+        )?;
+    }
+    if !columns.iter().any(|c| c == "continuation_json") {
+        connection.execute_batch(
+            "ALTER TABLE wait_conditions ADD COLUMN continuation_json TEXT",
+        )?;
+    }
+
+    let needs_backfill: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM wait_conditions WHERE wake_sources_json = '[]' AND continuation_json IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    if needs_backfill == 0 {
+        return Ok(());
+    }
+    let mut stmt = connection.prepare(
+        "SELECT wait_condition_id, payload_json FROM wait_conditions WHERE wake_sources_json = '[]' AND continuation_json IS NULL",
+    )?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    let mut updates = 0usize;
+    for (id, payload) in rows {
+        let record: WaitConditionRecord = serde_json::from_str(&payload)
+            .context("decoding wait condition payload for backfill")?;
+        let wake_sources_json = serde_json::to_string(&record.wake_sources)?;
+        let continuation_json = record.continuation.as_ref().map(|v| serde_json::to_string(v)).transpose()?;
+        connection.execute(
+            "UPDATE wait_conditions SET wake_sources_json = ?1, continuation_json = ?2 WHERE wait_condition_id = ?3",
+            params![wake_sources_json, continuation_json, id],
+        )?;
+        updates += 1;
+    }
+    tracing::info!(updates, "backfilled wait_conditions wake_sources_json/continuation_json");
     Ok(())
 }
 

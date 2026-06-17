@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::{
     storage::AppStorage,
     types::{
-        AgentState, ClosureDecision, TodoItemState, WaitConditionStatus, WorkingMemorySnapshot,
+        AgentState, ClosureDecision, TodoItemState, WorkingMemorySnapshot,
     },
 };
 
@@ -60,9 +60,8 @@ pub fn derive_working_memory_snapshot(
     let projection = storage.work_queue_prompt_projection()?;
     let current_work_item = projection.current.as_ref();
     let active_waiting = storage
-        .latest_wait_conditions()?
+        .active_wait_conditions()?
         .into_iter()
-        .filter(|record| record.status == WaitConditionStatus::Active)
         .filter(|record| record.work_item_id.is_some())
         .collect::<Vec<_>>();
     let current_work_item_id = current_work_item.map(|item| item.id.as_str());

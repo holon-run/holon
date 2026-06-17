@@ -1010,7 +1010,7 @@ async fn task_result_resolves_wait_for_task_condition_and_clears_matching_blocke
     assert_eq!(latest.blocked_by, None);
     let active_conditions = runtime
         .storage()
-        .latest_active_wait_conditions_for_work_item("default", &work.id)
+        .active_wait_conditions_for_work_item("default", &work.id)
         .unwrap();
     assert!(active_conditions.is_empty());
     let events = runtime.storage().read_recent_events(100).unwrap();
@@ -2407,7 +2407,7 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
 
     let active_conditions = runtime
         .storage()
-        .latest_active_wait_conditions_for_agent("default")
+        .active_wait_conditions_for_agent("default")
         .unwrap();
     assert!(!active_conditions
         .iter()
@@ -2535,7 +2535,7 @@ async fn timer_operator_and_system_ticks_record_wait_reconciliation_signals() {
     }
     let active_conditions = runtime
         .storage()
-        .latest_active_wait_conditions_for_agent("default")
+        .active_wait_conditions_for_agent("default")
         .unwrap();
     assert_eq!(active_conditions.len(), 3);
 }
@@ -3317,7 +3317,7 @@ async fn register_wait_for_agent_scoped_cancels_prior_agent_scoped_waits() {
     // The first wait condition should now be cancelled
     let active = runtime
         .storage()
-        .latest_active_wait_conditions_for_agent("default")
+        .active_wait_conditions_for_agent("default")
         .unwrap();
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].id, second.condition.id);

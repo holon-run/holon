@@ -131,12 +131,7 @@ impl SchedulerProjection {
         let waiting_work_item_scheduling_state =
             waiting_work_item_projection.map(|item| item.scheduling_state);
         let active_wait_conditions = storage
-            .latest_wait_conditions()?
-            .into_iter()
-            .filter(|condition| {
-                condition.agent_id == snapshot.id && condition.status == WaitConditionStatus::Active
-            })
-            .collect::<Vec<_>>();
+            .active_wait_conditions_for_agent(&snapshot.id)?;
         let active_work_item_waiting_intents = active_wait_conditions
             .iter()
             .filter(|condition| condition.work_item_id.is_some())
@@ -286,7 +281,7 @@ pub(crate) fn scheduling_diagnostics_with_queue_len(
     let projection = SchedulerProjection::from_state_with_queue_len(storage, agent, queue_len)?;
     let posture = storage.agent_posture_projection(agent)?;
     let work_queue = storage.work_queue_prompt_projection()?;
-    let wait_conditions = storage.latest_wait_conditions()?;
+    let wait_conditions = storage.active_wait_conditions()?;
 
     Ok(scheduling_diagnostics_for_facts(
         agent,

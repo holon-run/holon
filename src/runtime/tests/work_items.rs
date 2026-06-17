@@ -3673,7 +3673,7 @@ async fn external_wake_records_wait_reconciliation_without_resolving_wait() {
 
     let active = runtime
         .storage()
-        .latest_active_wait_conditions_for_work_item("default", &work.id)
+        .active_wait_conditions_for_work_item("default", &work.id)
         .unwrap();
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].id, wait_condition_id);
@@ -4884,7 +4884,7 @@ async fn pick_blocked_work_item_with_clear_blocker_resumes_runnable_focus() {
     assert!(picked.transition.cancelled_waiting_intent_ids.is_empty());
     assert!(runtime
         .storage()
-        .latest_active_wait_conditions_for_work_item("default", &work.id)
+        .active_wait_conditions_for_work_item("default", &work.id)
         .unwrap()
         .is_empty());
     assert!(runtime

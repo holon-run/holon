@@ -180,7 +180,7 @@ impl RuntimeHandle {
         let active = self
             .inner
             .storage
-            .latest_active_wait_conditions_for_work_item(agent_id, work_item_id)?;
+            .active_wait_conditions_for_work_item(agent_id, work_item_id)?;
         let mut cancelled = Vec::new();
         for condition in active {
             let mut cancelled_condition = condition.clone();
@@ -215,7 +215,7 @@ impl RuntimeHandle {
         let active = self
             .inner
             .storage
-            .latest_active_wait_conditions_for_agent(agent_id)?;
+            .active_wait_conditions_for_agent(agent_id)?;
         let mut cancelled = Vec::new();
         for condition in active {
             let mut cancelled_condition = condition.clone();
@@ -245,7 +245,7 @@ impl RuntimeHandle {
         let active_conditions = self
             .inner
             .storage
-            .latest_active_wait_conditions_for_agent(&agent_id)?;
+            .active_wait_conditions_for_agent(&agent_id)?;
         let matching = active_conditions
             .into_iter()
             .filter(|condition| {
@@ -856,7 +856,7 @@ impl RuntimeHandle {
         Ok(self
             .inner
             .storage
-            .latest_active_wait_conditions_for_agent(&agent_id)?
+            .active_wait_conditions_for_agent(&agent_id)?
             .into_iter()
             .find(|condition| {
                 condition.wake_sources.iter().any(|source| {
@@ -947,7 +947,7 @@ impl RuntimeHandle {
         Ok(self
             .inner
             .storage
-            .latest_active_wait_conditions_for_agent(&agent_id)?
+            .active_wait_conditions_for_agent(&agent_id)?
             .into_iter()
             .map(WaitConditionSummary::from)
             .collect())
@@ -1083,7 +1083,7 @@ impl RuntimeHandle {
         let active_conditions = self
             .inner
             .storage
-            .latest_active_wait_conditions_for_agent(&agent_id)?;
+            .active_wait_conditions_for_agent(&agent_id)?;
         if active_conditions.is_empty() {
             return Ok(());
         }
