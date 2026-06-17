@@ -2601,6 +2601,36 @@ code {
   gap: 12px;
 }
 
+.settings-advanced {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.settings-advanced > summary {
+  cursor: pointer;
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 760;
+  list-style: none;
+}
+
+.settings-advanced > summary::before {
+  content: "▸ ";
+}
+
+.settings-advanced[open] > summary::before {
+  content: "▾ ";
+}
+
 .settings-diagnostics summary {
   cursor: pointer;
   width: fit-content;
