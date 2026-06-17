@@ -27,7 +27,9 @@ export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
   const route = useRuntimeStore((state) => state.route);
   const selectedAgentId = useRuntimeStore((state) => state.selectedAgentId);
-  const displayLevel = useRuntimeStore((state) => state.displayLevel);
+  const displayLevel = useRuntimeStore((state) =>
+    state.displayLevelsByAgentId[selectedAgentId] ?? "info",
+  );
   const rightPanelOpen = useRuntimeStore((state) => state.rightPanelOpen);
   const rightPanelView = useRuntimeStore((state) => state.rightPanelView);
   const navCollapsed = useRuntimeStore((state) => state.navCollapsed);
