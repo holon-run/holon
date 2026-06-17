@@ -672,6 +672,50 @@ impl WorkItemRepository<'_> {
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.map(|row| decode_work_item_payload(&row?)).collect()
     }
+
+    pub fn due_blocked_rechecks(
+        &self,
+        agent_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<WorkItemRecord>> {
+        let now_str = timestamp(now);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM work_items
+             WHERE agent_id = ?1
+               AND state = 'open'
+               AND blocked_by IS NOT NULL
+               AND recheck_at IS NOT NULL
+               AND recheck_at <= ?2
+               AND (recheck_consumed_at IS NULL OR recheck_consumed_at < recheck_at)
+             ORDER BY recheck_at ASC",
+        )?;
+        let rows =
+            statement.query_map(params![agent_id, now_str], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_work_item_payload(&row?)).collect()
+    }
+
+    pub fn next_recheck_at(&self, agent_id: &str) -> Result<Option<DateTime<Utc>>> {
+        let connection = self.db.connection()?;
+        let result: Option<String> = connection
+            .query_row(
+                "SELECT MIN(recheck_at)
+                 FROM work_items
+                 WHERE agent_id = ?1
+                   AND state = 'open'
+                   AND blocked_by IS NOT NULL
+                   AND recheck_at IS NOT NULL
+                   AND (recheck_consumed_at IS NULL OR recheck_consumed_at < recheck_at)",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        result
+            .map(|s| parse_timestamp(&s).context("parsing recheck_at from work_items query"))
+            .transpose()
+    }
 }
 
 impl AgentStateRepository<'_> {
@@ -3326,12 +3370,16 @@ fn upsert_work_item_tx(
         .plan_artifact
         .as_ref()
         .map(|artifact| artifact.path.display().to_string());
+    let blocked_by = record.blocked_by.clone();
+    let recheck_at = record.recheck_at.map(|t| timestamp(t));
+    let recheck_consumed_at = record.recheck_consumed_at.map(|t| timestamp(t));
     tx.execute(
         "INSERT INTO work_items (
             work_item_id, agent_id, state, objective, plan_status, readiness,
             revision, current_focus, created_at, updated_at, completed_at,
-            plan_artifact_path, last_turn_id, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            plan_artifact_path, last_turn_id, payload_json,
+            blocked_by, recheck_at, recheck_consumed_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(work_item_id) DO UPDATE SET
             agent_id = excluded.agent_id,
             state = excluded.state,
@@ -3345,7 +3393,10 @@ fn upsert_work_item_tx(
             completed_at = excluded.completed_at,
             plan_artifact_path = excluded.plan_artifact_path,
             last_turn_id = excluded.last_turn_id,
-            payload_json = excluded.payload_json
+            payload_json = excluded.payload_json,
+            blocked_by = excluded.blocked_by,
+            recheck_at = excluded.recheck_at,
+            recheck_consumed_at = excluded.recheck_consumed_at
          WHERE excluded.revision >= work_items.revision",
         params![
             record.id,
@@ -3362,6 +3413,9 @@ fn upsert_work_item_tx(
             plan_artifact_path,
             record.turn_id,
             payload_json,
+            blocked_by,
+            recheck_at,
+            recheck_consumed_at,
         ],
     )?;
     Ok(())
@@ -5042,6 +5096,15 @@ WHERE NOT EXISTS (
 SELECT 1;
 "#,
     },
+    Migration {
+        version: 17,
+        name: "work_items_recheck_columns",
+        sql: r#"
+-- Columns are added conditionally in backfill_work_item_recheck_columns
+-- to support databases that may already have them
+SELECT 1;
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -5450,6 +5513,7 @@ impl RuntimeDb {
             apply_migration(&mut connection, migration)?;
         }
         backfill_wait_condition_payload_columns(&connection)?;
+        backfill_work_item_recheck_columns(&connection)?;
         Ok(())
     }
 }
@@ -5777,6 +5841,72 @@ fn backfill_wait_condition_payload_columns(connection: &Connection) -> Result<()
         updates,
         "backfilled wait_conditions wake_sources_json/continuation_json"
     );
+    Ok(())
+}
+
+fn backfill_work_item_recheck_columns(connection: &Connection) -> Result<()> {
+    let columns: Vec<String> = connection
+        .prepare("PRAGMA table_info(work_items)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    let mut added = false;
+    if !columns.iter().any(|c| c == "blocked_by") {
+        connection.execute_batch("ALTER TABLE work_items ADD COLUMN blocked_by TEXT")?;
+        added = true;
+    }
+    if !columns.iter().any(|c| c == "recheck_at") {
+        connection.execute_batch("ALTER TABLE work_items ADD COLUMN recheck_at TEXT")?;
+        added = true;
+    }
+    if !columns.iter().any(|c| c == "recheck_consumed_at") {
+        connection.execute_batch("ALTER TABLE work_items ADD COLUMN recheck_consumed_at TEXT")?;
+        added = true;
+    }
+    if added {
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_work_items_recheck \
+             ON work_items(agent_id, state, blocked_by, recheck_at)",
+        )?;
+    }
+
+    let needs_backfill: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM work_items WHERE blocked_by IS NULL AND recheck_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    if needs_backfill == 0 {
+        return Ok(());
+    }
+    let mut stmt = connection.prepare(
+        "SELECT work_item_id, payload_json FROM work_items WHERE blocked_by IS NULL AND recheck_at IS NULL",
+    )?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    let mut updates = 0usize;
+    for (id, payload) in rows {
+        let record: WorkItemRecord = serde_json::from_str(&payload)
+            .context("decoding work item payload for recheck column backfill")?;
+        let blocked_by = record.blocked_by.clone();
+        let recheck_at = record.recheck_at.map(|t| timestamp(t));
+        let recheck_consumed_at = record.recheck_consumed_at.map(|t| timestamp(t));
+        // Only update if there is actually a value to set
+        if blocked_by.is_some() || recheck_at.is_some() || recheck_consumed_at.is_some() {
+            connection.execute(
+                "UPDATE work_items SET blocked_by = ?1, recheck_at = ?2, recheck_consumed_at = ?3 \
+                 WHERE work_item_id = ?4",
+                params![blocked_by, recheck_at, recheck_consumed_at, id],
+            )?;
+            updates += 1;
+        }
+    }
+    if updates > 0 {
+        tracing::info!(
+            updates,
+            "backfilled work_items blocked_by/recheck_at/recheck_consumed_at"
+        );
+    }
     Ok(())
 }
 

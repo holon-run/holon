@@ -2204,6 +2204,9 @@ impl AppStorage {
         agent_id: &str,
         now: DateTime<Utc>,
     ) -> Result<Vec<WorkItemRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.work_items().due_blocked_rechecks(agent_id, now);
+        }
         let mut due = self
             .latest_work_items()?
             .into_iter()
@@ -2229,6 +2232,9 @@ impl AppStorage {
         &self,
         agent_id: &str,
     ) -> Result<Option<DateTime<Utc>>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.work_items().next_recheck_at(agent_id);
+        }
         Ok(self
             .latest_work_items()?
             .into_iter()
