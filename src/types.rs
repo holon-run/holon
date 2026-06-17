@@ -12,6 +12,7 @@ use crate::model_catalog::ResolvedRuntimeModelPolicy;
 use crate::system::{
     ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind,
 };
+use crate::tool::ToolError;
 
 pub const AGENT_HOME_WORKSPACE_ID: &str = "agent_home";
 
@@ -4260,6 +4261,75 @@ pub struct WorktreeSession {
     pub original_branch: String,
     pub worktree_path: PathBuf,
     pub worktree_branch: String,
+}
+
+/// Ref-backed tool result metadata for transcript storage.
+/// Stores stable identifiers and bounded provider-visible content rather than full tool output.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolResultRef {
+    /// Stable tool call id from assistant tool use block
+    pub tool_call_id: String,
+    /// Stable tool execution record id for full content resolution
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_execution_id: Option<String>,
+    /// Provider-visible bounded content (truncated or summary)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_visible_text: Option<String>,
+    /// Whether the full content was truncated from provider view
+    #[serde(default)]
+    pub content_truncated: bool,
+    /// Error marker
+    #[serde(default)]
+    pub is_error: bool,
+}
+
+/// Legacy tool result block format for backward compatibility.
+/// Used when reading old transcripts that store full content directly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LegacyToolResultBlock {
+    pub tool_use_id: String,
+    pub content: String,
+    #[serde(default)]
+    pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ToolError>,
+}
+
+/// Unified tool result data format in transcript.
+/// Supports both new ref-backed format and legacy full-content format.
+///
+/// # Serialization formats
+///
+/// ## New ref-backed format
+/// ```json
+/// {
+///   "refs": [
+///     {
+///       "tool_call_id": "...",
+///       "tool_execution_id": "...",
+///       "provider_visible_text": "...",
+///       "content_truncated": false,
+///       "is_error": false
+///     }
+///   ]
+/// }
+/// ```
+///
+/// ## Legacy format
+/// ```json
+/// {
+///   "results": [
+///     { "tool_use_id": "...", "content": "...", "is_error": false }
+///   ]
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ToolResultData {
+    /// New ref-backed format with explicit wrapper
+    RefsWithWrapper { refs: Vec<ToolResultRef> },
+    /// Legacy format with explicit wrapper
+    LegacyWithWrapper { results: Vec<LegacyToolResultBlock> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
