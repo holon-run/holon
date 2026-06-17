@@ -154,6 +154,69 @@ pub async fn agent_brief_route_returns_full_brief_by_id() -> Result<()> {
     Ok(())
 }
 
+pub async fn agent_state_route_scopes_work_items_to_requested_agent() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ok")))?;
+    attach_default_workspace(&host).await?;
+    host.create_named_agent("alpha", None).await?;
+    host.create_named_agent("beta", None).await?;
+    let alpha = host.get_or_create_agent("alpha").await?;
+    let beta = host.get_or_create_agent("beta").await?;
+    let alpha_item = alpha
+        .create_work_item("alpha scoped work item".into(), None, None, Vec::new())
+        .await?;
+    let beta_item = beta
+        .create_work_item("beta scoped work item".into(), None, None, Vec::new())
+        .await?;
+    let (base, server) = spawn_server_for_host(host.clone()).await?;
+    let client = reqwest::Client::new();
+
+    let alpha_state: serde_json::Value = client
+        .get(format!("{base}/agents/alpha/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let beta_state: serde_json::Value = client
+        .get(format!("{base}/agents/beta/state"))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    let alpha_ids: Vec<String> = alpha_state["work_items"]
+        .as_array()
+        .expect("work_items array")
+        .iter()
+        .filter_map(|item| item["id"].as_str().map(str::to_string))
+        .collect();
+    let beta_ids: Vec<String> = beta_state["work_items"]
+        .as_array()
+        .expect("work_items array")
+        .iter()
+        .filter_map(|item| item["id"].as_str().map(str::to_string))
+        .collect();
+
+    assert!(
+        alpha_ids.iter().any(|id| id == &alpha_item.id),
+        "alpha state should include alpha work item: {alpha_ids:?}",
+    );
+    assert!(
+        !alpha_ids.iter().any(|id| id == &beta_item.id),
+        "alpha state must not leak beta work items: {alpha_ids:?}",
+    );
+    assert!(
+        beta_ids.iter().any(|id| id == &beta_item.id),
+        "beta state should include beta work item: {beta_ids:?}",
+    );
+    assert!(
+        !beta_ids.iter().any(|id| id == &alpha_item.id),
+        "beta state must not leak alpha work items: {beta_ids:?}",
+    );
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present() -> Result<()> {
     let mut config = test_config();
     let (host, base, server) = spawn_server_with_config(config.clone()).await?;
