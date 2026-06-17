@@ -1205,6 +1205,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   return {
     id,
     badge: badgeFor(id),
+    badgeHue: hueFor(id),
     profile,
     lifecycle: normalizeKebab(status),
     focusSummary,
@@ -1511,6 +1512,20 @@ function compactJoin(parts: Array<string | undefined | null>): string {
 function badgeFor(id: string): string {
   const words = id.split(/[-_]/).filter(Boolean);
   return (words.length > 1 ? words.map((word) => word[0]).join("") : id.slice(0, 3)).slice(0, 4).toUpperCase();
+}
+
+/**
+ * Deterministic hue (0-360) from agent id for avatar color.
+ * Uses a curated palette of 10 evenly-spaced hues with controlled
+ * saturation/lightness so white text stays readable (WCAG AA).
+ */
+function hueFor(id: string): number {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
+  }
+  const palette = [12, 38, 160, 190, 210, 260, 290, 330, 350, 0];
+  return palette[Math.abs(hash) % palette.length];
 }
 
 function attentionLabel(pending: number, waiting: number): string {

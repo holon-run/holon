@@ -17,6 +17,7 @@ export const runtimeFixture: RuntimeBootstrap = {
     {
       id: "holon-pm",
       badge: "PM",
+      badgeHue: 190,
       profile: "public · project manager profile",
       lifecycle: "asleep",
       focusSummary: "standalone Web GUI implementation plan",
@@ -82,6 +83,7 @@ export const runtimeFixture: RuntimeBootstrap = {
       id: "holon-dev",
       badge: "DEV",
       badgeTone: "muted",
+      badgeHue: 210,
       profile: "public · implementation profile",
       lifecycle: "stopped",
       focusSummary: "no active workspace",

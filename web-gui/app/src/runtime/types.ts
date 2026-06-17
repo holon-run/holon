@@ -93,6 +93,7 @@ export interface AgentSummary {
   id: string;
   badge: string;
   badgeTone?: "muted";
+  badgeHue?: number;
   profile: string;
   lifecycle: string;
   focusSummary: string;

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
 
 import { AgentPage } from "../features/agent/AgentPage";
 import { Button } from "../components/ui/Button";
@@ -236,7 +236,7 @@ export function App() {
                   type="button"
                   onClick={() => navigateAgent(agent.id)}
                 >
-                  <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
+                  <span className={`agent-badge ${agent.badgeTone ?? ""}`} style={agent.badgeHue != null && !agent.badgeTone ? ({ "--badge-hue": `${agent.badgeHue}` } as CSSProperties) : undefined}>{agent.badge}</span>
                   <span className="agent-row-main">
                     <span className="agent-row-title">
                       <strong>{agent.id}</strong>
