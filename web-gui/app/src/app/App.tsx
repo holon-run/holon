@@ -59,6 +59,11 @@ export function App() {
   const refreshModelCatalog = useRuntimeStore((state) => state.refreshModelCatalog);
   const refreshRuntimeConfig = useRuntimeStore((state) => state.refreshRuntimeConfig);
   const updateRuntimeConfig = useRuntimeStore((state) => state.updateRuntimeConfig);
+  const credentialStore = useRuntimeStore((state) => state.credentialStore);
+  const credentialStoreLoading = useRuntimeStore((state) => state.credentialStoreLoading);
+  const refreshCredentialStore = useRuntimeStore((state) => state.refreshCredentialStore);
+  const setCredential = useRuntimeStore((state) => state.setCredential);
+  const deleteCredential = useRuntimeStore((state) => state.deleteCredential);
   const sendOperatorPrompt = useRuntimeStore((state) => state.sendOperatorPrompt);
   const setAgentModel = useRuntimeStore((state) => state.setAgentModel);
   const clearAgentModel = useRuntimeStore((state) => state.clearAgentModel);
@@ -359,6 +364,11 @@ export function App() {
             onRefreshModels={refreshModelCatalog}
             onRefreshRuntimeConfig={refreshRuntimeConfig}
             onUpdateRuntimeConfig={updateRuntimeConfig}
+            credentialStore={credentialStore}
+            credentialStoreLoading={credentialStoreLoading}
+            onRefreshCredentialStore={refreshCredentialStore}
+            onSetCredential={setCredential}
+            onDeleteCredential={deleteCredential}
           />
         ) : null}
       </main>

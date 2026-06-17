@@ -1,5 +1,21 @@
 [
   {
+    "method": "delete",
+    "path": "/control/runtime/credentials/{profile}",
+    "handler": "delete_credential",
+    "operation_id": "deleteRuntimeCredential",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
     "method": "get",
     "path": "/",
     "handler": "root",
@@ -506,6 +522,22 @@
     "path": "/control/runtime/config",
     "handler": "runtime_config",
     "operation_id": "runtimeConfig",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/control/runtime/credentials",
+    "handler": "list_credentials",
+    "operation_id": "runtimeCredentials",
     "tag": "runtime",
     "parameters": [],
     "request_schema": null,
@@ -1429,5 +1461,21 @@
       "application/json"
     ],
     "security": []
+  },
+  {
+    "method": "put",
+    "path": "/control/runtime/credentials/{profile}",
+    "handler": "set_credential",
+    "operation_id": "setRuntimeCredential",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": "SetCredentialRequest",
+    "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
   }
 ]

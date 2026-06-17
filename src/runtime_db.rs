@@ -5191,6 +5191,17 @@ SELECT 1;
         version: 18,
         name: "queue_entries_current_view",
         sql: r#"
+CREATE TABLE IF NOT EXISTS queue_entries (
+  message_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (message_id, status)
+);
+
 CREATE TABLE IF NOT EXISTS queue_entries_current (
   message_id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,

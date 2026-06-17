@@ -18,6 +18,8 @@ import type {
   RuntimeBootstrap,
   RuntimeConnectionConfig,
   RuntimeConfigState,
+  CredentialProfileStatus,
+  CredentialStoreState,
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeTranscriptEntry,
@@ -163,6 +165,9 @@ export interface RuntimeStoreState {
   runtimeConfigLoading: boolean;
   runtimeConfigSaving: boolean;
   runtimeConfigError?: string;
+  credentialStore: CredentialStoreState;
+  credentialStoreLoading: boolean;
+  credentialStoreError?: string;
   search: SearchResponse | null;
   searchLoading: boolean;
   searchError?: string;
@@ -182,6 +187,9 @@ export interface RuntimeStoreState {
   refreshModelCatalog: () => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
+  refreshCredentialStore: () => Promise<void>;
+  setCredential: (profile: string, kind: string, material: string) => Promise<CredentialProfileStatus | undefined>;
+  deleteCredential: (profile: string) => Promise<void>;
   runSearch: (query: string, options?: { agentIds?: string[]; limit?: number }) => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
@@ -392,6 +400,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       modelCatalogError: undefined,
       runtimeConfig: emptyRuntimeConfig,
       runtimeConfigError: undefined,
+      credentialStore: { profiles: [] },
+      credentialStoreLoading: false,
+      credentialStoreError: undefined,
       search: null,
       searchError: undefined,
       sessionsByAgentId: {},
@@ -499,6 +510,41 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     }
   },
 
+
+  refreshCredentialStore: async () => {
+    set({ credentialStoreLoading: true, credentialStoreError: undefined });
+    try {
+      const credentialStore = await runtimeClient.listCredentials();
+      set({ credentialStore, credentialStoreLoading: false });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set({ credentialStoreLoading: false, credentialStoreError: message });
+    }
+  },
+
+  setCredential: async (profile, kind, material) => {
+    try {
+      const result = await runtimeClient.setCredential(profile, kind, material);
+      const credentialStore = await runtimeClient.listCredentials();
+      set({ credentialStore, credentialStoreError: undefined });
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set({ credentialStoreError: message });
+      return undefined;
+    }
+  },
+
+  deleteCredential: async (profile) => {
+    try {
+      await runtimeClient.deleteCredential(profile);
+      const credentialStore = await runtimeClient.listCredentials();
+      set({ credentialStore, credentialStoreError: undefined });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set({ credentialStoreError: message });
+    }
+  },
   runSearch: async (query, options = {}) => {
     const trimmed = query.trim();
     if (!trimmed) {
