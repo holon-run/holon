@@ -185,4 +185,90 @@ describe("formatToolExecutionDetail", () => {
     expect(detail.text).toContain("State:\nopen · needs_input");
     expect(detail.text).toContain("Todo:\npending · Decide API shape");
   });
+
+  it("formats WebSearch tool results with query and structured result list", () => {
+    const detail = formatToolExecutionDetail({
+      tool_name: "mcp__web-search-prime__web_search_prime",
+      status: "success",
+      input: {
+        search_query: "rust async runtime",
+        location: "cn",
+        content_size: "medium",
+      },
+      output: {
+        envelope: {
+          result: {
+            results: [
+              {
+                title: "Tokio — Async Runtime",
+                url: "https://tokio.rs",
+                siteName: "tokio.rs",
+                summary: "Tokio is an async runtime for writing reliable network applications.",
+              },
+              {
+                title: "async-std",
+                url: "https://async.rs",
+                summary: "A small and fast async runtime.",
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(detail.tone).toBe("output");
+    expect(detail.text).toContain("Query:\nrust async runtime");
+    expect(detail.text).toContain("Results:\n2 found");
+    expect(detail.text).toContain("1. Tokio — Async Runtime");
+    expect(detail.text).toContain("https://tokio.rs");
+    expect(detail.text).toContain("(tokio.rs)");
+    expect(detail.text).toContain("2. async-std");
+  });
+
+  it("formats WebReader tool results with URL and content preview", () => {
+    const detail = formatToolExecutionDetail({
+      tool_name: "mcp__web_reader__webReader",
+      status: "success",
+      input: {
+        url: "https://example.com/article",
+        return_format: "markdown",
+      },
+      output: {
+        envelope: {
+          result: {
+            title: "Example Article",
+            markdown: "# Example Article\n\nThis is the content of the article.",
+          },
+        },
+      },
+    });
+
+    expect(detail.tone).toBe("output");
+    expect(detail.text).toContain("URL:\nhttps://example.com/article");
+    expect(detail.text).toContain("Title:\nExample Article");
+    expect(detail.text).toContain("Content:\n# Example Article");
+  });
+
+  it("formats AnalyzeImage tool results with image URL and analysis", () => {
+    const detail = formatToolExecutionDetail({
+      tool_name: "mcp__4_5v_mcp__analyze_image",
+      status: "success",
+      input: {
+        imageSource: "https://example.com/image.png",
+        prompt: "Describe the layout of this UI",
+      },
+      output: {
+        envelope: {
+          result: {
+            analysis: "The image shows a three-column layout with a sidebar on the left.",
+          },
+        },
+      },
+    });
+
+    expect(detail.tone).toBe("output");
+    expect(detail.text).toContain("Image:\nhttps://example.com/image.png");
+    expect(detail.text).toContain("Prompt:\nDescribe the layout of this UI");
+    expect(detail.text).toContain("Analysis:\nThe image shows a three-column layout");
+  });
 });

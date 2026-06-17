@@ -947,3 +947,68 @@ describe("turn_started projection", () => {
     expect(item.meta.startsWith("turn_started")).toBe(true);
   });
 });
+
+describe("WebSearch tool projection", () => {
+  it("projects WebSearch tool with query and result count on timeline", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("web-search-1", "mcp__web-search-prime__web_search_prime", {
+            duration_ms: 3200,
+            input: {
+              search_query: "rust async runtime",
+              location: "cn",
+            },
+            output: {
+              results: [
+                { title: "Tokio", url: "https://tokio.rs", summary: "Async runtime" },
+                { title: "async-std", url: "https://async.rs", summary: "Fast runtime" },
+              ],
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        label: "Web search completed",
+        body: expect.stringContaining("Web search · rust async runtime · 2 results"),
+      }),
+    );
+    expect(timeline[0].detail?.label).toBe("Search results");
+    expect(timeline[0].detail?.text).toContain("1. Tokio");
+    expect(timeline[0].detail?.text).toContain("https://tokio.rs");
+    expect(timeline[0].detail?.text).toContain("2. async-std");
+  });
+});
+
+describe("WebReader tool projection", () => {
+  it("projects WebReader tool with URL and content on timeline", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("web-reader-1", "mcp__web_reader__webReader", {
+            duration_ms: 5400,
+            input: { url: "https://example.com/article" },
+            output: {
+              title: "Example Article",
+              markdown: "# Example Article\n\nContent here.",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        label: "Web page read",
+        body: expect.stringContaining("Read webpage · Example Article"),
+      }),
+    );
+    expect(timeline[0].detail?.label).toBe("Webpage content");
+    expect(timeline[0].detail?.text).toContain("# Example Article");
+  });
+});

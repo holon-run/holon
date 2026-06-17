@@ -105,8 +105,24 @@ function formatKnownToolExecutionDetail(record: RuntimeToolExecutionRecord): { t
   if (record.tool_name === "WaitFor") return formatWaitForToolExecution(record);
   if (record.tool_name === "ViewImage") return formatViewImageToolExecution(record);
   if (isWorkItemTool(record.tool_name)) return formatWorkItemToolExecution(record);
+  if (isWebSearchTool(record.tool_name)) return formatWebSearchToolExecution(record);
+  if (isWebReaderTool(record.tool_name)) return formatWebReaderToolExecution(record);
+  if (isAnalyzeImageTool(record.tool_name)) return formatAnalyzeImageToolExecution(record);
   return undefined;
 }
+
+function isWebSearchTool(toolName: string | undefined): boolean {
+  return toolName === "mcp__web-search-prime__web_search_prime" || toolName === "WebSearch";
+}
+
+function isWebReaderTool(toolName: string | undefined): boolean {
+  return toolName === "mcp__web_reader__webReader";
+}
+
+function isAnalyzeImageTool(toolName: string | undefined): boolean {
+  return toolName === "mcp__4_5v_mcp__analyze_image";
+}
+
 
 function formatApplyPatchToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
   const output = unwrapToolOutput(record.output ?? record.result);
@@ -203,6 +219,106 @@ function formatViewImageToolExecution(record: RuntimeToolExecutionRecord): { tex
     labelledText("Error", record.error),
   ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
+}
+
+function formatWebSearchToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+  const input = isRecord(record.input) ? record.input : {};
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const results = extractInspectorSearchResults(output);
+  const query = nestedValue(input, ["search_query", "query", "q"]);
+  const location = nestedValue(input, ["location"]);
+  const resultLines = results.slice(0, 15).map((item, index) => {
+    const title = nestedValue(item, ["title", "name"]);
+    const url = nestedValue(item, ["url", "link", "href"]);
+    const siteName = nestedValue(item, ["siteName", "site_name", "websiteName", "website_name"]);
+    const summary = nestedValue(item, ["summary", "snippet", "description"]);
+    return labelledText(
+      `${index + 1}. ${title ?? "Untitled"}`,
+      [url, siteName ? `(${siteName})` : undefined, typeof summary === "string" ? truncateInspectorText(summary, 300) : undefined]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  });
+  const lines = [
+    labelledText("Query", query),
+    labelledText("Location", location),
+    labelledText("Content size", nestedValue(input, ["content_size"])),
+    labelledText("Recency", nestedValue(input, ["search_recency_filter"])),
+    labelledText("Domain filter", nestedValue(input, ["search_domain_filter"])),
+    labelledText("Results", `${results.length} found`),
+    ...resultLines,
+    labelledText("Error", record.error),
+  ].filter(Boolean);
+  return { text: lines.join("\n\n") || formatInspectorJson(record), tone: results.length ? "output" : "data" };
+}
+
+function formatWebReaderToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+  const input = isRecord(record.input) ? record.input : {};
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const url = nestedValue(input, ["url"]);
+  const title = nestedText(output, ["title", "pageTitle"]);
+  const contentPreview = extractInspectorMarkdownPreview(output, 2000);
+  const lines = [
+    labelledText("URL", url),
+    labelledText("Title", title),
+    labelledText("Format", nestedValue(input, ["return_format"])),
+    labelledText("Images", nestedValue(input, ["retain_images"])),
+    labelledText("Content", contentPreview),
+    labelledText("Error", record.error),
+  ].filter(Boolean);
+  return { text: lines.join("\n\n") || formatInspectorJson(record), tone: contentPreview ? "output" : "data" };
+}
+
+function formatAnalyzeImageToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+  const input = isRecord(record.input) ? record.input : {};
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const lines = [
+    labelledText("Image", nestedValue(input, ["imageSource", "image_source", "url"])),
+    labelledText("Prompt", nestedValue(input, ["prompt"])),
+    labelledText("Analysis", nestedText(output, ["analysis", "result", "text", "content", "description"])),
+    labelledText("Error", record.error),
+  ].filter(Boolean);
+  return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
+}
+
+function extractInspectorSearchResults(value: unknown): Record<string, unknown>[] {
+  const record = isRecord(value) ? value : undefined;
+  if (!record) return [];
+  for (const key of ["results", "search_results", "data", "items"]) {
+    const candidate = record[key];
+    if (Array.isArray(candidate)) {
+      return candidate.filter((item): item is Record<string, unknown> => isRecord(item));
+    }
+  }
+  return [];
+}
+
+function extractInspectorMarkdownPreview(value: unknown, maxChars: number): string | undefined {
+  const record = isRecord(value) ? value : undefined;
+  if (!record) return undefined;
+  for (const key of ["markdown", "content", "text"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      return truncateInspectorText(candidate, maxChars);
+    }
+  }
+  const content = record.content;
+  if (Array.isArray(content)) {
+    const text = content
+      .map((item) => (isRecord(item) ? item.text : undefined))
+      .filter((text): text is string => typeof text === "string")
+      .join("\n");
+    return text.trim() ? truncateInspectorText(text, maxChars) : undefined;
+  }
+  return undefined;
+}
+
+function truncateInspectorText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const truncated = value.slice(0, maxChars - 1);
+  const lastNewline = truncated.lastIndexOf("\n");
+  const cutPoint = lastNewline > maxChars * 0.6 ? lastNewline : truncated.length;
+  return `${truncated.slice(0, cutPoint)}…`;
 }
 
 function formatWorkItemToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
