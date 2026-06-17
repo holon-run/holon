@@ -21,9 +21,9 @@ use crate::{
     system::{execution_policy_summary_lines, ExecutionSnapshot},
     tool::{ApplyPatchSurface, ToolSpec},
     types::{
-        AgentIdentityView, AgentKind, AgentState, AgentsMdKind, AgentsMdSource,
-        ContinuationResolution, ExternalTriggerRecord, LoadedAgentsMd, MessageBody,
-        MessageEnvelope, MessageOrigin, SkillsRuntimeView,
+        AgentIdentityView, AgentKind, AgentMemorySource, AgentState, AgentsMdKind, AgentsMdSource,
+        ContinuationResolution, ExternalTriggerRecord, LoadedAgentMemory, LoadedAgentsMd,
+        MessageBody, MessageEnvelope, MessageOrigin, SkillsRuntimeView,
     },
 };
 
@@ -73,6 +73,7 @@ pub struct EffectivePrompt {
     pub execution: ExecutionSnapshot,
     pub loaded_agents_md: LoadedAgentsMd,
     pub cache_identity: PromptCacheIdentity,
+    pub loaded_agent_memory: LoadedAgentMemory,
     pub system_sections: Vec<PromptSection>,
     pub context_sections: Vec<PromptSection>,
     pub rendered_system_prompt: String,
@@ -265,6 +266,7 @@ pub fn build_effective_prompt(
     agent_home: &Path,
     identity: &AgentIdentityView,
     loaded_agents_md: LoadedAgentsMd,
+    loaded_agent_memory: LoadedAgentMemory,
     skills: &SkillsRuntimeView,
     available_tools: &[ToolSpec],
     continuation: Option<&ContinuationResolution>,
@@ -279,6 +281,7 @@ pub fn build_effective_prompt(
         agent_home,
         identity,
         loaded_agents_md,
+        loaded_agent_memory,
         skills,
         available_tools,
         continuation,
@@ -296,6 +299,7 @@ pub fn build_effective_prompt_with_default_external_ingress(
     agent_home: &Path,
     identity: &AgentIdentityView,
     loaded_agents_md: LoadedAgentsMd,
+    loaded_agent_memory: LoadedAgentMemory,
     skills: &SkillsRuntimeView,
     available_tools: &[ToolSpec],
     continuation: Option<&ContinuationResolution>,
@@ -311,6 +315,7 @@ pub fn build_effective_prompt_with_default_external_ingress(
         agent_home,
         identity,
         loaded_agents_md,
+        loaded_agent_memory,
         skills,
         available_tools,
         ToolPromptContext::default(),
@@ -329,6 +334,7 @@ pub fn build_effective_prompt_with_apply_patch_surface(
     agent_home: &Path,
     identity: &AgentIdentityView,
     loaded_agents_md: LoadedAgentsMd,
+    loaded_agent_memory: LoadedAgentMemory,
     skills: &SkillsRuntimeView,
     available_tools: &[ToolSpec],
     apply_patch_surface: ApplyPatchSurface,
@@ -344,6 +350,7 @@ pub fn build_effective_prompt_with_apply_patch_surface(
         agent_home,
         identity,
         loaded_agents_md,
+        loaded_agent_memory,
         skills,
         available_tools,
         apply_patch_surface,
@@ -362,6 +369,7 @@ pub fn build_effective_prompt_with_apply_patch_surface_and_default_external_ingr
     agent_home: &Path,
     identity: &AgentIdentityView,
     loaded_agents_md: LoadedAgentsMd,
+    loaded_agent_memory: LoadedAgentMemory,
     skills: &SkillsRuntimeView,
     available_tools: &[ToolSpec],
     apply_patch_surface: ApplyPatchSurface,
@@ -378,6 +386,7 @@ pub fn build_effective_prompt_with_apply_patch_surface_and_default_external_ingr
         agent_home,
         identity,
         loaded_agents_md,
+        loaded_agent_memory,
         skills,
         available_tools,
         ToolPromptContext {
@@ -398,6 +407,7 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
     agent_home: &Path,
     identity: &AgentIdentityView,
     loaded_agents_md: LoadedAgentsMd,
+    loaded_agent_memory: LoadedAgentMemory,
     skills: &SkillsRuntimeView,
     available_tools: &[ToolSpec],
     tool_prompt_context: ToolPromptContext,
@@ -420,6 +430,7 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         current_message,
         workspace_root,
         &loaded_agents_md,
+        &loaded_agent_memory,
         skills,
         available_tools,
         tool_prompt_context,
@@ -447,6 +458,7 @@ fn build_effective_prompt_with_tool_prompt_context_and_default_external_ingress(
         identity: identity.clone(),
         execution: execution.clone(),
         loaded_agents_md,
+        loaded_agent_memory,
         cache_identity: PromptCacheIdentity {
             agent_id: session.id.clone(),
             prompt_cache_key: prompt_cache_key(&session.id, &cache_scope_fingerprint),
@@ -589,6 +601,7 @@ fn build_system_sections(
     current_message: &MessageEnvelope,
     workspace_root: &Path,
     loaded_agents_md: &LoadedAgentsMd,
+    loaded_agent_memory: &LoadedAgentMemory,
     skills: &SkillsRuntimeView,
     available_tools: &[ToolSpec],
     tool_prompt_context: ToolPromptContext,
@@ -630,7 +643,7 @@ fn build_system_sections(
         section(
             "agent_home_contract",
             PromptStability::Stable,
-            "Treat `AgentHome` as the default workspace for agent-local state, not as a replacement for an active project workspace. Treat `agent_home/AGENTS.md` as the long-lived contract for this specific agent, not as a duplicate of the system prompt, tool instructions, workspace/project guidance, or one-off task notes. It should capture durable agent-specific information such as role, standing responsibilities, granted authority, escalation boundaries, and how this agent maintains its own `agent_home`. `AGENTS.md` is loaded guidance; `agent_home/memory/self.md` and `agent_home/memory/operator.md` are curated Markdown memory to search or retrieve on demand. Keep project-scoped work, files, rules, and memory in the active project workspace. `agent_home/work-items/<work_item_id>/plan.md` is the agent-authored durable plan artifact for that WorkItem. `.holon/` under agent_home is runtime-owned state, ledger, index, and cache storage; do not edit it as ordinary agent-authored files. `AGENTS.md` may evolve over time as the operator clarifies the agent's role. Near the end of each turn, quickly check whether the interaction revealed new durable agent-specific information worth preserving there. Update it only when that information is likely to remain useful across future turns or sessions. Do not store transient plans, temporary execution notes, copied project docs, or repeated tool guidance there.".to_string(),
+            "Treat `AgentHome` as the default workspace for agent-local state, not as a replacement for an active project workspace. Treat `agent_home/AGENTS.md` as the long-lived contract for this specific agent, not as a duplicate of the system prompt, tool instructions, workspace/project guidance, or one-off task notes. It should capture durable agent-specific information such as role, standing responsibilities, granted authority, escalation boundaries, and how this agent maintains its own `agent_home`. `AGENTS.md` is loaded guidance. `agent_home/memory/operator.md` and `agent_home/memory/self.md` are curated Markdown memory; a compact high-priority slice of each is auto-loaded under a fixed per-file character budget (default 1500 chars) and the truncation status is surfaced to you, while the remainder stays searchable via `MemorySearch` and retrievable via `MemoryGet`. Keep project-scoped work, files, rules, and memory in the active project workspace. `agent_home/work-items/<work_item_id>/plan.md` is the agent-authored durable plan artifact for that WorkItem. `.holon/` under agent_home is runtime-owned state, ledger, index, and cache storage; do not edit it as ordinary agent-authored files. `AGENTS.md` may evolve over time as the operator clarifies the agent's role. Near the end of each turn, quickly check whether the interaction revealed new durable agent-specific information worth preserving there. Update it only when that information is likely to remain useful across future turns or sessions. Do not store transient plans, temporary execution notes, copied project docs, or repeated tool guidance there.".to_string(),
         ),
         section(
             "context_completion",
@@ -698,6 +711,14 @@ fn build_system_sections(
     if let Some(section) = agent_agents_md_section(loaded_agents_md.agent_source.as_ref()) {
         sections.push(section);
     }
+    if let Some(section) =
+        agent_memory_operator_section(loaded_agent_memory.operator_source.as_ref())
+    {
+        sections.push(section);
+    }
+    if let Some(section) = agent_memory_self_section(loaded_agent_memory.self_source.as_ref()) {
+        sections.push(section);
+    }
     if let Some(section) = workspace_agents_md_section(loaded_agents_md.workspace_source.as_ref()) {
         sections.push(section);
     }
@@ -736,6 +757,56 @@ fn agent_agents_md_section(source: Option<&AgentsMdSource>) -> Option<PromptSect
             ),
         )
     })
+}
+
+fn agent_memory_operator_section(source: Option<&AgentMemorySource>) -> Option<PromptSection> {
+    let source = source?;
+    let mut body = format!(
+        "Apply the following compact slice of `agent_home/memory/operator.md` (curated operator memory, source: {}). It is auto-loaded under a fixed per-file character budget; the remainder, if any, stays searchable via `MemorySearch` and retrievable via `MemoryGet`:\n\n{}",
+        source.path.display(),
+        source.content
+    );
+    if source.truncated {
+        body.push_str(&format!(
+            "\n\n[truncated at the auto-load budget: this slice covers {} of {} characters; retrieve the full file with `MemoryGet` when the remainder is needed.]",
+            source.content.chars().count(),
+            source.total_chars,
+        ));
+    } else if source.content.is_empty() {
+        body.push_str(
+            "\n\n[empty: operator memory file is present but contains no curated content yet.]",
+        );
+    }
+    Some(section(
+        "agent_memory_operator",
+        PromptStability::AgentScoped,
+        body,
+    ))
+}
+
+fn agent_memory_self_section(source: Option<&AgentMemorySource>) -> Option<PromptSection> {
+    let source = source?;
+    let mut body = format!(
+        "Apply the following compact slice of `agent_home/memory/self.md` (curated agent self memory, source: {}). It is auto-loaded under a fixed per-file character budget; the remainder, if any, stays searchable via `MemorySearch` and retrievable via `MemoryGet`:\n\n{}",
+        source.path.display(),
+        source.content
+    );
+    if source.truncated {
+        body.push_str(&format!(
+            "\n\n[truncated at the auto-load budget: this slice covers {} of {} characters; retrieve the full file with `MemoryGet` when the remainder is needed.]",
+            source.content.chars().count(),
+            source.total_chars,
+        ));
+    } else if source.content.is_empty() {
+        body.push_str(
+            "\n\n[empty: self memory file is present but contains no curated content yet.]",
+        );
+    }
+    Some(section(
+        "agent_memory_self",
+        PromptStability::AgentScoped,
+        body,
+    ))
 }
 
 fn user_global_agents_md_section(source: Option<&AgentsMdSource>) -> Option<PromptSection> {
@@ -1249,6 +1320,7 @@ mod tests {
             &sample_message(),
             Path::new("/tmp/agent-home"),
             &first_loaded,
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1258,6 +1330,7 @@ mod tests {
             &sample_message(),
             Path::new("/tmp/agent-home"),
             &second_loaded,
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1369,6 +1442,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1398,6 +1472,7 @@ mod tests {
             &message,
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1419,6 +1494,7 @@ mod tests {
             &sample_message(),
             Path::new("/repo"),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1450,6 +1526,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1474,6 +1551,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1504,6 +1582,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1535,6 +1614,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1591,6 +1671,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1622,6 +1703,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1647,6 +1729,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1675,6 +1758,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1726,6 +1810,7 @@ mod tests {
                     content: "Workspace guidance".into(),
                 }),
             },
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1753,6 +1838,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1785,6 +1871,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1810,6 +1897,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1852,6 +1940,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1885,6 +1974,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1931,6 +2021,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -1956,6 +2047,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -2008,6 +2100,7 @@ mod tests {
                     content: "workspace guidance".into(),
                 }),
             },
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView {
                 discoverable_skills: vec![crate::types::SkillCatalogEntry {
                     skill_id: "workspace:review".into(),
@@ -2091,6 +2184,7 @@ mod tests {
                     content: "workspace guidance".into(),
                 }),
             },
+            loaded_agent_memory: LoadedAgentMemory::default(),
             cache_identity: sample_cache_identity(),
             system_sections: vec![PromptSection {
                 name: "test_section".to_string(),
@@ -2140,6 +2234,7 @@ mod tests {
             agent_home: PathBuf::from("/tmp/agent-home"),
             execution: sample_execution_snapshot(),
             loaded_agents_md: LoadedAgentsMd::default(),
+            loaded_agent_memory: LoadedAgentMemory::default(),
             cache_identity: sample_cache_identity(),
             system_sections: vec![PromptSection {
                 name: "constrained_repair".to_string(),
@@ -2197,6 +2292,7 @@ mod tests {
                 }),
                 workspace_source: None,
             },
+            loaded_agent_memory: LoadedAgentMemory::default(),
             cache_identity: sample_cache_identity(),
             system_sections: vec![PromptSection {
                 name: "agent_agents_md".to_string(),
@@ -2233,6 +2329,7 @@ mod tests {
                 &message,
                 Path::new("."),
                 &LoadedAgentsMd::default(),
+                &LoadedAgentMemory::default(),
                 &SkillsRuntimeView::default(),
                 &[],
                 ToolPromptContext::default(),
@@ -2268,6 +2365,7 @@ mod tests {
                 &message,
                 Path::new("."),
                 &LoadedAgentsMd::default(),
+                &LoadedAgentMemory::default(),
                 &SkillsRuntimeView::default(),
                 &[],
                 ToolPromptContext::default(),
@@ -2309,6 +2407,7 @@ mod tests {
                 &message,
                 Path::new("."),
                 &LoadedAgentsMd::default(),
+                &LoadedAgentMemory::default(),
                 &SkillsRuntimeView::default(),
                 &[],
                 ToolPromptContext::default(),
@@ -2334,6 +2433,7 @@ mod tests {
             &message,
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView::default(),
             &[],
             ToolPromptContext::default(),
@@ -2356,6 +2456,7 @@ mod tests {
             &sample_message(),
             Path::new("."),
             &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
             &SkillsRuntimeView {
                 discoverable_skills: vec![crate::types::SkillCatalogEntry {
                     skill_id: "user:demo".into(),

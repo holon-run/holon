@@ -14,10 +14,10 @@ use holon::{
     types::{
         AdmissionContext, AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset,
         AgentRegistryStatus, AgentState, AgentVisibility, AuthorityClass, BriefKind, BriefRecord,
-        ContinuationClass, ContinuationResolution, ContinuationTriggerKind, LoadedAgentsMd,
-        MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        SkillsRuntimeView, TodoItem, TodoItemState, ToolExecutionRecord, ToolExecutionStatus,
-        WaitingReason, WorkItemRecord, WorkItemState, WorkingMemorySnapshot,
+        ContinuationClass, ContinuationResolution, ContinuationTriggerKind, LoadedAgentMemory,
+        LoadedAgentsMd, MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind,
+        MessageOrigin, Priority, SkillsRuntimeView, TodoItem, TodoItemState, ToolExecutionRecord,
+        ToolExecutionStatus, WaitingReason, WorkItemRecord, WorkItemState, WorkingMemorySnapshot,
     },
 };
 use serde_json::{json, Value};
@@ -125,6 +125,7 @@ fn render_context_snapshot_named(
         Path::new("/tmp/agent-home"),
         &sample_identity(),
         LoadedAgentsMd::default(),
+        LoadedAgentMemory::default(),
         &SkillsRuntimeView::default(),
         &[],
         continuation,

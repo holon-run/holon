@@ -17,6 +17,7 @@ use tokio::{
 use tracing::warn;
 
 use crate::{
+    agent_memory::load_agent_memory,
     agent_template::{
         discover_agent_templates_catalog, ensure_agent_home_agents_md_from_template_with_home,
         initialize_agent_home_from_template_with_catalog,
@@ -895,6 +896,7 @@ impl RuntimeHost {
             agent_home.as_path(),
             crate::runtime::workspace::workspace_anchor_for_state_ref(&state),
         )?;
+        let loaded_agent_memory = load_agent_memory(agent_home.as_path())?;
         let mut skills = load_skills_runtime_view(
             skill_visibility(&identity_view),
             std::env::var_os("HOME").map(PathBuf::from).as_deref(),
@@ -954,6 +956,7 @@ impl RuntimeHost {
             agent_home.as_path(),
             &identity_view,
             loaded_agents_md,
+            loaded_agent_memory,
             &skills,
             &prompt_tools,
             apply_patch_surface,

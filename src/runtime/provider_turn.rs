@@ -175,7 +175,7 @@ mod tests {
         system::ExecutionSnapshot,
         types::{
             AgentIdentityView, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-            AgentVisibility, LoadedAgentsMd,
+            AgentVisibility, LoadedAgentMemory, LoadedAgentsMd,
         },
     };
     use std::path::PathBuf;
@@ -288,6 +288,7 @@ mod tests {
                 worktree_root: None,
             },
             loaded_agents_md: LoadedAgentsMd::default(),
+            loaded_agent_memory: LoadedAgentMemory::default(),
             cache_identity: PromptCacheIdentity {
                 agent_id: "default".into(),
                 prompt_cache_key: "default".into(),
@@ -336,6 +337,7 @@ mod tests {
                 worktree_root: None,
             },
             loaded_agents_md: LoadedAgentsMd::default(),
+            loaded_agent_memory: LoadedAgentMemory::default(),
             cache_identity: PromptCacheIdentity {
                 agent_id: "default".into(),
                 prompt_cache_key: "default".into(),

@@ -562,6 +562,52 @@ impl From<&LoadedAgentsMd> for LoadedAgentsMdView {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentMemorySource {
+    pub path: PathBuf,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub content: String,
+    pub truncated: bool,
+    pub total_chars: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentMemorySourceView {
+    pub path: PathBuf,
+    pub truncated: bool,
+    pub total_chars: usize,
+}
+
+impl From<&AgentMemorySource> for AgentMemorySourceView {
+    fn from(value: &AgentMemorySource) -> Self {
+        Self {
+            path: value.path.clone(),
+            truncated: value.truncated,
+            total_chars: value.total_chars,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LoadedAgentMemory {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_source: Option<AgentMemorySource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_source: Option<AgentMemorySource>,
+    #[serde(default)]
+    pub budget_chars: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LoadedAgentMemoryView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_source: Option<AgentMemorySourceView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_source: Option<AgentMemorySourceView>,
+    #[serde(default)]
+    pub budget_chars: usize,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillScope {
