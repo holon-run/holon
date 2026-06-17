@@ -1569,8 +1569,7 @@ impl QueueEntryRepository<'_> {
         Ok(records)
     }
 
-    /// Returns true if the given agent has any queue entries with status='queued'.
-    /// Uses SQL EXISTS for O(1) lookup instead of full table scan.
+    /// Returns true if the given agent has any messages currently queued.
     pub fn has_queued_for_agent(&self, agent_id: &str) -> Result<bool> {
         let connection = self.db.connection()?;
         let status = enum_string(&crate::types::QueueEntryStatus::Queued)?;
@@ -1584,8 +1583,7 @@ impl QueueEntryRepository<'_> {
         Ok(exists.is_some())
     }
 
-    /// Returns only the queued entries for a specific agent.
-    /// Avoids reading all entries when only queued status matters.
+    /// Returns only entries currently queued for a specific agent.
     pub fn queued_for_agent(&self, agent_id: &str) -> Result<Vec<QueueEntryRecord>> {
         let connection = self.db.connection()?;
         let status = enum_string(&crate::types::QueueEntryStatus::Queued)?;
@@ -3666,7 +3664,7 @@ fn upsert_queue_entry_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Res
         "INSERT INTO queue_entries (
             message_id, agent_id, priority, status, created_at, updated_at, payload_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(message_id, status) DO UPDATE SET
+         ON CONFLICT(message_id) DO UPDATE SET
             agent_id = excluded.agent_id,
             priority = excluded.priority,
             status = excluded.status,
@@ -3688,31 +3686,22 @@ fn upsert_queue_entry_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Res
 }
 
 fn try_claim_queued_message_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) -> Result<bool> {
-    let latest_status = tx
-        .query_row(
-            "SELECT status
-             FROM queue_entries
-             WHERE message_id = ?1 AND agent_id = ?2
-             ORDER BY updated_at DESC, created_at DESC
-             LIMIT 1",
-            params![record.message_id, record.agent_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
     let queued_status = enum_string(&QueueEntryStatus::Queued)?;
-    if latest_status.as_deref() != Some(queued_status.as_str()) {
-        return Ok(false);
-    }
-
     let mut claimed = record.clone();
     claimed.status = QueueEntryStatus::Dequeued;
     let payload_json = serde_json::to_string(&claimed)?;
     let priority = enum_string(&claimed.priority)?;
     let status = enum_string(&claimed.status)?;
     let changed = tx.execute(
-        "INSERT OR IGNORE INTO queue_entries (
-            message_id, agent_id, priority, status, created_at, updated_at, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "UPDATE queue_entries
+         SET priority = ?3,
+             status = ?4,
+             created_at = ?5,
+             updated_at = ?6,
+             payload_json = ?7
+         WHERE message_id = ?1
+           AND agent_id = ?2
+           AND status = ?8",
         params![
             claimed.message_id,
             claimed.agent_id,
@@ -3721,6 +3710,7 @@ fn try_claim_queued_message_tx(tx: &Transaction<'_>, record: &QueueEntryRecord) 
             timestamp(claimed.created_at),
             timestamp(claimed.updated_at),
             payload_json,
+            queued_status,
         ],
     )?;
     Ok(changed == 1)
@@ -5197,6 +5187,46 @@ SELECT 1;
 SELECT 1;
 "#,
     },
+    Migration {
+        version: 18,
+        name: "queue_entries_current_view",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS queue_entries_current (
+  message_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+INSERT OR REPLACE INTO queue_entries_current (
+  message_id, agent_id, priority, status, created_at, updated_at, payload_json
+)
+SELECT q.message_id, q.agent_id, q.priority, q.status, q.created_at, q.updated_at, q.payload_json
+FROM queue_entries AS q
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM queue_entries AS newer
+  WHERE newer.message_id = q.message_id
+    AND (
+      newer.updated_at > q.updated_at
+      OR (
+        newer.updated_at = q.updated_at
+        AND newer.rowid > q.rowid
+      )
+    )
+);
+
+DROP TABLE queue_entries;
+
+ALTER TABLE queue_entries_current RENAME TO queue_entries;
+
+CREATE INDEX IF NOT EXISTS idx_queue_entries_agent_status
+  ON queue_entries(agent_id, status, updated_at);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -6446,6 +6476,85 @@ INSERT INTO storage_domains (
     }
 
     #[test]
+    fn runtime_db_migration_compacts_queue_entries_to_current_view() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let connection = open_connection(&db_path)?;
+            connection.execute_batch(
+                r#"
+CREATE TABLE schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at TEXT NOT NULL
+);
+CREATE TABLE queue_entries (
+  message_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (message_id, status)
+);
+INSERT INTO queue_entries (
+  message_id, agent_id, priority, status, created_at, updated_at, payload_json
+) VALUES
+  (
+    'message-1', 'agent-a', 'normal', 'queued',
+    '2026-06-17T00:00:00.000Z', '2026-06-17T00:00:00.000Z',
+    '{"message_id":"message-1","agent_id":"agent-a","priority":"normal","status":"queued","created_at":"2026-06-17T00:00:00.000Z","updated_at":"2026-06-17T00:00:00.000Z"}'
+  ),
+  (
+    'message-1', 'agent-a', 'normal', 'processed',
+    '2026-06-17T00:00:00.000Z', '2026-06-17T00:01:00.000Z',
+    '{"message_id":"message-1","agent_id":"agent-a","priority":"normal","status":"processed","created_at":"2026-06-17T00:00:00.000Z","updated_at":"2026-06-17T00:01:00.000Z"}'
+  ),
+  (
+    'message-2', 'agent-a', 'interject', 'queued',
+    '2026-06-17T00:02:00.000Z', '2026-06-17T00:02:00.000Z',
+    '{"message_id":"message-2","agent_id":"agent-a","priority":"interject","status":"queued","created_at":"2026-06-17T00:02:00.000Z","updated_at":"2026-06-17T00:02:00.000Z"}'
+  );
+"#,
+            )?;
+            for migration in &MIGRATIONS[..17] {
+                connection.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+                    (
+                        migration.version,
+                        migration.name,
+                        Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    ),
+                )?;
+            }
+        }
+
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let entries = db.queue_entries().latest_all()?;
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|entry| {
+            entry.message_id == "message-1" && entry.status == QueueEntryStatus::Processed
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry.message_id == "message-2" && entry.status == QueueEntryStatus::Queued
+        }));
+
+        let connection = open_connection(&db_path)?;
+        let duplicate = connection.execute(
+            "INSERT INTO queue_entries (
+                message_id, agent_id, priority, status, created_at, updated_at, payload_json
+             ) VALUES (
+                'message-2', 'agent-a', 'interject', 'dequeued',
+                '2026-06-17T00:02:00.000Z', '2026-06-17T00:03:00.000Z', '{}'
+             )",
+            [],
+        );
+        assert!(duplicate.is_err());
+
+        Ok(())
+    }
+
+    #[test]
     fn runtime_db_read_connection_opens_while_external_writer_holds_lock() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
@@ -6932,18 +7041,14 @@ CREATE TABLE working_memory_deltas (
             .try_claim_queued_message(&duplicate_claim)?);
 
         let latest = db.queue_entries().latest_all()?;
-        assert_eq!(latest.len(), 2);
-        assert!(latest.iter().any(|record| {
-            record.message_id == "message-1" && record.status == QueueEntryStatus::Queued
-        }));
-        assert!(latest.iter().any(|record| {
-            record.message_id == "message-1" && record.status == QueueEntryStatus::Dequeued
-        }));
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].message_id, "message-1");
+        assert_eq!(latest[0].status, QueueEntryStatus::Dequeued);
         Ok(())
     }
 
     #[test]
-    fn queue_claim_rejects_message_whose_latest_lifecycle_is_terminal() -> Result<()> {
+    fn queue_claim_rejects_message_whose_current_status_is_terminal() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let now = Utc::now();
@@ -6965,6 +7070,52 @@ CREATE TABLE working_memory_deltas (
         claim.status = QueueEntryStatus::Dequeued;
         claim.updated_at = now + chrono::Duration::seconds(2);
         assert!(!db.queue_entries().try_claim_queued_message(&claim)?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn queued_for_agent_reads_current_queue_entries() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        let stale_queued = QueueEntryRecord {
+            message_id: "stale-message".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut stale_processed = stale_queued.clone();
+        stale_processed.status = QueueEntryStatus::Processed;
+        stale_processed.updated_at = now + chrono::Duration::seconds(1);
+
+        let fresh_queued = QueueEntryRecord {
+            message_id: "fresh-message".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Interject,
+            status: QueueEntryStatus::Queued,
+            created_at: now + chrono::Duration::seconds(2),
+            updated_at: now + chrono::Duration::seconds(2),
+        };
+
+        db.queue_entries().upsert(&stale_queued)?;
+        db.queue_entries().upsert(&stale_processed)?;
+        db.queue_entries().upsert(&fresh_queued)?;
+
+        assert!(db.queue_entries().has_queued_for_agent("agent-a")?);
+        let queued = db.queue_entries().queued_for_agent("agent-a")?;
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].message_id, "fresh-message");
+
+        let mut fresh_dequeued = fresh_queued.clone();
+        fresh_dequeued.status = QueueEntryStatus::Dequeued;
+        fresh_dequeued.updated_at = now + chrono::Duration::seconds(3);
+        db.queue_entries().upsert(&fresh_dequeued)?;
+
+        assert!(!db.queue_entries().has_queued_for_agent("agent-a")?);
+        assert!(db.queue_entries().queued_for_agent("agent-a")?.is_empty());
 
         Ok(())
     }
