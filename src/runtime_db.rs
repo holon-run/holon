@@ -34,6 +34,10 @@ const CONTEXT_EPISODE_ANCHORS_DOMAIN: &str = "context_episode_anchors";
 const RUNTIME_DB_BUSY_TIMEOUT: Duration = Duration::from_millis(30_000);
 const RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(25);
 const RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY: Duration = Duration::from_millis(1_000);
+#[cfg(test)]
+const RUNTIME_DB_BEGIN_RETRY_TIMEOUT: Duration = Duration::from_millis(250);
+#[cfg(not(test))]
+const RUNTIME_DB_BEGIN_RETRY_TIMEOUT: Duration = Duration::from_secs(120);
 const RUNTIME_DB_APPEND_RETRY_MAX_DELAY: Duration = Duration::from_millis(5_000);
 const RUNTIME_DB_WRITE_QUEUE_CAPACITY: usize = 1024;
 
@@ -4838,14 +4842,13 @@ CREATE TABLE IF NOT EXISTS wait_conditions (
 );
 
 CREATE TABLE IF NOT EXISTS queue_entries (
-  message_id TEXT NOT NULL,
+  message_id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
   priority TEXT NOT NULL,
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  PRIMARY KEY (message_id, status)
+  payload_json TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS timers (
@@ -5799,7 +5802,8 @@ fn begin_immediate_transaction_with_retry<'connection>(
         match Transaction::new_unchecked(connection, TransactionBehavior::Immediate) {
             Ok(transaction) => return Ok((transaction, retry_count, started_at.elapsed())),
             Err(error)
-                if is_sqlite_locked(&error) && started_at.elapsed() < RUNTIME_DB_BUSY_TIMEOUT =>
+                if is_sqlite_locked(&error)
+                    && started_at.elapsed() < RUNTIME_DB_BEGIN_RETRY_TIMEOUT =>
             {
                 retry_count += 1;
                 tracing::trace!(
@@ -7055,6 +7059,45 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(latest.len(), 1);
         assert_eq!(latest[0].message_id, "message-1");
         assert_eq!(latest[0].status, QueueEntryStatus::Dequeued);
+        Ok(())
+    }
+
+    #[test]
+    fn queue_entries_table_uses_message_id_as_current_state_key() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = db.connection()?;
+        let primary_key_columns: Vec<String> = {
+            let mut statement = connection.prepare("PRAGMA table_info(queue_entries)")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter_map(|(name, pk)| (pk > 0).then_some(name))
+                .collect()
+        };
+        assert_eq!(primary_key_columns, vec!["message_id"]);
+
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-current".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut processed = queued.clone();
+        processed.status = QueueEntryStatus::Processed;
+        processed.updated_at = now + chrono::Duration::seconds(1);
+        db.queue_entries().upsert(&queued)?;
+        db.queue_entries().upsert(&processed)?;
+
+        let rows: i64 =
+            connection.query_row("SELECT COUNT(*) FROM queue_entries", [], |row| row.get(0))?;
+        assert_eq!(rows, 1);
+        assert!(db.queue_entries().queued_for_agent("agent-a")?.is_empty());
         Ok(())
     }
 
