@@ -41,13 +41,14 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: WebSearchArgs = parse_tool_args(NAME, input)?;
     let query = validate_non_empty(args.query, NAME, "query")?;
+    let web_config = runtime.web_config();
     let result = search(
         WebSearchRequest {
             query,
             max_results: args.max_results,
             provider: args.provider,
         },
-        runtime.web_config(),
+        &web_config,
     )
     .await?;
     serialize_success(NAME, &result)

@@ -3071,8 +3071,14 @@ impl TurnExecution<'_> {
                             "exec_command_batch_items": command_batch_preview_field(&call),
                             "exec_command_cost": command_cost_field(
                                 &call,
-                                runtime.inner.default_tool_output_tokens,
-                                runtime.inner.max_tool_output_tokens
+                                {
+                                    let snap = runtime.inner.config_snapshot.load();
+                                    snap.default_tool_output_tokens
+                                },
+                                {
+                                    let snap = runtime.inner.config_snapshot.load();
+                                    snap.max_tool_output_tokens
+                                },
                             ),
                             "error": audit_error,
                             "error_kind": error.kind.clone(),
@@ -3215,8 +3221,12 @@ impl TurnExecution<'_> {
                                 exec_command_batch_items: command_batch_preview_field(&call),
                                 exec_command_cost: command_cost_field(
                                     &call,
-                                    runtime.inner.default_tool_output_tokens,
-                                    runtime.inner.max_tool_output_tokens,
+                                    runtime
+                                        .inner
+                                        .config_snapshot
+                                        .load()
+                                        .default_tool_output_tokens,
+                                    runtime.inner.config_snapshot.load().max_tool_output_tokens,
                                 ),
                                 exec_command_disposition: exec_command_disposition_field(
                                     &call,
@@ -3275,8 +3285,8 @@ impl TurnExecution<'_> {
                                 "exec_command_batch_items": command_batch_preview_field(&call),
                                 "exec_command_cost": command_cost_field(
                                     &call,
-                                    runtime.inner.default_tool_output_tokens,
-                                    runtime.inner.max_tool_output_tokens
+                                    runtime.inner.config_snapshot.load().default_tool_output_tokens,
+                                    runtime.inner.config_snapshot.load().max_tool_output_tokens
                                 ),
                                 "error": audit_error,
                                 "error_kind": error.kind.clone(),

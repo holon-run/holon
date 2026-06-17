@@ -39,13 +39,14 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: WebFetchArgs = parse_tool_args(NAME, input)?;
     let url = validate_non_empty(args.url, NAME, "url")?;
+    let web_config = runtime.web_config();
     let result = fetch(
         WebFetchRequest {
             url,
             max_chars: args.max_chars,
             extract_mode: args.extract_mode,
         },
-        &runtime.web_config().fetch,
+        &web_config.fetch,
     )
     .await?;
     serialize_success(NAME, &result)

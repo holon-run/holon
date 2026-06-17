@@ -334,7 +334,8 @@ impl RuntimeHandle {
         BuiltinWebSearchSelectionDiagnostics,
     )> {
         let provider = self.current_provider().await;
-        let native_search_provider = self.web_config().native_search_provider();
+        let web_config = self.web_config();
+        let native_search_provider = web_config.native_search_provider();
         let builtin_capability = provider.builtin_web_search();
         let probe_result = if let Some(capability) = builtin_capability.as_ref() {
             let probe_key = BuiltinWebSearchProbeKey::from_capability(capability);
@@ -347,7 +348,7 @@ impl RuntimeHandle {
             } else if !builtin_web_search_probe_requested(
                 capability,
                 native_search_provider.as_ref(),
-                &self.web_config().search,
+                &web_config.search,
             ) {
                 BuiltinWebSearchProbeCacheEntry {
                     status: BuiltinWebSearchProbeStatus::Skipped,
@@ -357,7 +358,7 @@ impl RuntimeHandle {
                 probe_builtin_web_search_capability(
                     provider.as_ref(),
                     capability,
-                    self.web_config().search.max_results,
+                    web_config.search.max_results,
                 )
                 .await
             }
@@ -372,7 +373,7 @@ impl RuntimeHandle {
             native_web_search_request_for_config(
                 builtin_capability,
                 native_search_provider.as_ref(),
-                &self.web_config().search,
+                &web_config.search,
                 &mut cache,
                 probe_result,
             )

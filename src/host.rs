@@ -214,6 +214,27 @@ impl RuntimeHost {
         self.inner.registry.config()
     }
 
+    /// Hot-reload config for all currently loaded agents.
+    ///
+    /// Re-reads the full config from disk (config file + credentials),
+    /// rebuilds each agent's provider/catalog/model-availability, and atomically swaps
+    /// the config snapshot. In-progress turns are unaffected; the next
+    /// turn picks up the new config.
+    pub async fn reload_all_agents_config(&self) -> Result<()> {
+        let new_config = crate::config::AppConfig::load()
+            .map_err(|e| anyhow!("failed to reload config: {}", e))?;
+        let agent_handles: Vec<RuntimeHandle> = {
+            let agents = self.inner.agents.read().await;
+            agents.values().map(|entry| entry.runtime.clone()).collect()
+        };
+        for runtime in &agent_handles {
+            if let Err(e) = runtime.reload_config(&new_config).await {
+                tracing::warn!(error = %e, "failed to reload config for agent");
+            }
+        }
+        Ok(())
+    }
+
     pub fn runtime_db(&self) -> &RuntimeDb {
         &self.inner.runtime_db
     }

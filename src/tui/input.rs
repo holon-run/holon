@@ -1863,6 +1863,10 @@ fn onboarding_runtime_config_status(
             "Onboarding set runtime default model to {model} via daemon config; restart/reload required: {}",
             result.reason
         ),
+        crate::http::RuntimeConfigUpdateEffect::AcceptedReloaded => format!(
+            "Onboarding set runtime default model to {model} via daemon config; applied via hot-reload: {}",
+            result.reason
+        ),
         crate::http::RuntimeConfigUpdateEffect::Rejected => format!(
             "Onboarding daemon config update rejected for model.default: {}",
             result.reason

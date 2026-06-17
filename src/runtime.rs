@@ -42,7 +42,8 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use bootstrap::ProviderReconfigurator;
+use arc_swap::ArcSwap;
+use bootstrap::ConfigSnapshot;
 use chrono::Utc;
 use serde::Serialize;
 use serde_json::Value;
@@ -95,13 +96,12 @@ use crate::{
         ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMd, MessageBody,
         MessageDeliverySurface, MessageEnvelope, MessageKind, MessageLifecycleAuditEvent,
         MessageOrigin, PendingWakeHint, Priority, QueueEntryRecord, QueueEntryStatus,
-        ResolvedModelAvailability, RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture,
-        SkillActivationSource, SkillActivationState, SkillCatalogEntry, SkillLoadReason,
-        SkillsRuntimeView, TaskKind, TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec,
-        TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
-        TranscriptEntryKind, ViewImageObservation, WaitingIntentRecord, WaitingIntentStatus,
-        WaitingIntentSummary, WaitingReason, WorkItemLifecycleAuditEvent, WorkspaceEntry,
-        AGENT_HOME_WORKSPACE_ID,
+        RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture, SkillActivationSource,
+        SkillActivationState, SkillCatalogEntry, SkillLoadReason, SkillsRuntimeView, TaskKind,
+        TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec, TaskStatus, TimerRecord,
+        TimerStatus, ToolExecutionRecord, TranscriptEntry, TranscriptEntryKind,
+        ViewImageObservation, WaitingIntentRecord, WaitingIntentStatus, WaitingIntentSummary,
+        WaitingReason, WorkItemLifecycleAuditEvent, WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
     web::{WebConfig, WebProviderKind},
 };
@@ -238,14 +238,8 @@ struct RuntimeInner {
     storage: AppStorage,
     runtime_db: RuntimeDb,
     provider: RwLock<Arc<dyn AgentProvider>>,
-    provider_reconfig: Option<ProviderReconfigurator>,
-    model_catalog: RuntimeModelCatalog,
-    model_availability: Vec<ResolvedModelAvailability>,
-    base_context_config: ContextConfig,
     context_config: RwLock<ContextConfig>,
-    default_tool_output_tokens: u64,
-    max_tool_output_tokens: u64,
-    web_config: WebConfig,
+    config_snapshot: ArcSwap<ConfigSnapshot>,
     builtin_web_search_probe_cache:
         Mutex<HashMap<BuiltinWebSearchProbeKey, BuiltinWebSearchProbeCacheEntry>>,
     view_image_observation_cache:
@@ -825,8 +819,8 @@ impl RuntimeHandle {
         self.inner.system.clone()
     }
 
-    pub(crate) fn web_config(&self) -> &WebConfig {
-        &self.inner.web_config
+    pub(crate) fn web_config(&self) -> WebConfig {
+        self.inner.config_snapshot.load().web_config.clone()
     }
 
     fn user_home(&self) -> Option<PathBuf> {
@@ -885,7 +879,13 @@ impl RuntimeHandle {
             next_state.model_override = parent_state.model_override.clone();
             next_state
         };
-        if self.inner.provider_reconfig.is_some() {
+        if self
+            .inner
+            .config_snapshot
+            .load()
+            .provider_reconfig
+            .is_some()
+        {
             self.reconfigure_provider_for_state(&next_state).await?;
         }
         self.update_agent_state(|state| {
@@ -910,7 +910,13 @@ impl RuntimeHandle {
             next_state.model_override = parent_state.model_override.clone();
             next_state
         };
-        if self.inner.provider_reconfig.is_some() {
+        if self
+            .inner
+            .config_snapshot
+            .load()
+            .provider_reconfig
+            .is_some()
+        {
             self.reconfigure_provider_for_state(&next_state).await?;
         }
         self.update_agent_state(|state| {
