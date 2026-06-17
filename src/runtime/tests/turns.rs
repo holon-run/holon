@@ -294,12 +294,19 @@ async fn disallowed_tool_call_is_auditable_and_continuation_stays_valid() {
         .iter()
         .find(|entry| entry.kind == TranscriptEntryKind::ToolResults)
         .expect("missing tool results transcript");
+    // New format uses refs with tool_call_id
+    let refs = tool_results
+        .data
+        .get("refs")
+        .and_then(|v| v.as_array())
+        .expect("missing refs array in new format");
+    assert_eq!(refs.len(), 1);
     assert_eq!(
-        tool_results.data["results"][0]["tool_use_id"].as_str(),
+        refs[0].get("tool_call_id").and_then(|v| v.as_str()),
         Some("legacy-task")
     );
     assert_eq!(
-        tool_results.data["results"][0]["is_error"].as_bool(),
+        refs[0].get("is_error").and_then(|v| v.as_bool()),
         Some(true)
     );
 }
@@ -379,8 +386,16 @@ async fn max_output_mutation_tool_call_is_rejected_without_side_effects() {
         .iter()
         .find(|entry| entry.kind == TranscriptEntryKind::ToolResults)
         .expect("missing tool results transcript");
-    let content = tool_results.data["results"][0]["content"]
-        .as_str()
+    // New format uses refs with provider_visible_text
+    let refs = tool_results
+        .data
+        .get("refs")
+        .and_then(|v| v.as_array())
+        .expect("missing refs array in new format");
+    assert_eq!(refs.len(), 1);
+    let content = refs[0]
+        .get("provider_visible_text")
+        .and_then(|v| v.as_str())
         .expect("tool result content");
     let receipt: serde_json::Value = serde_json::from_str(content).expect("tool error receipt");
     assert_eq!(receipt["ok"], false);

@@ -3002,6 +3002,7 @@ impl TurnExecution<'_> {
             let round_tool_calls = tool_calls.clone();
             let mut tool_results = Vec::new();
             let mut tool_result_envelopes = Vec::new();
+            let mut tool_execution_refs: Vec<(String, String)> = Vec::new();
             for call in tool_calls {
                 if let Err(err) = runtime.ensure_not_aborted().await {
                     if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
@@ -3160,6 +3161,7 @@ impl TurnExecution<'_> {
                         if result.should_sleep {
                             sleep_duration_ms = result.sleep_duration_ms;
                         }
+                        tool_execution_refs.push((tool_call_id.clone(), record.id.clone()));
                         runtime.persist_tool_execution_evidence(&record)?;
                         if matches!(record.status, crate::types::ToolExecutionStatus::Success) {
                             runtime
@@ -3291,14 +3293,34 @@ impl TurnExecution<'_> {
             {
                 post_completion_continuation_action = true;
             }
+            // Build ref-backed tool result metadata for transcript
+            use crate::types::{ToolResultData, ToolResultRef};
+            let refs: Vec<ToolResultRef> = tool_results
+                .iter()
+                .map(|result| {
+                    let tool_call_id = &result.tool_use_id;
+                    let tool_execution_id = tool_execution_refs
+                        .iter()
+                        .find(|(id, _)| id == tool_call_id)
+                        .map(|(_, exec_id)| exec_id);
+                    // Store full content for now - truncation breaks structured JSON receipts
+                    let (provider_visible_text, content_truncated) =
+                        (Some(result.content.clone()), false);
+                    ToolResultRef {
+                        tool_call_id: tool_call_id.clone(),
+                        tool_execution_id: tool_execution_id.map(|id| id.clone()),
+                        provider_visible_text,
+                        content_truncated,
+                        is_error: result.is_error,
+                    }
+                })
+                .collect();
             runtime.persist_transcript_evidence(&TranscriptEntry::new(
                 agent_id.to_string(),
                 TranscriptEntryKind::ToolResults,
                 Some(round),
                 None,
-                serde_json::json!({
-                    "results": tool_results.clone(),
-                }),
+                to_json_value(&ToolResultData::RefsWithWrapper { refs }),
             ))?;
             let after_tool_results_interjections = runtime
                 .drain_operator_interjections(agent_id, round, "after_tool_results")

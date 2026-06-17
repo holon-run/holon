@@ -2100,8 +2100,17 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
         .iter()
         .find(|entry| entry.kind == crate::types::TranscriptEntryKind::ToolResults)
         .expect("tool results should be recorded");
-    let tool_result: serde_json::Value =
-        serde_json::from_str(tool_results.data["results"][0]["content"].as_str().unwrap()).unwrap();
+    // New format uses refs with provider_visible_text
+    let refs = tool_results
+        .data
+        .get("refs")
+        .and_then(|v| v.as_array())
+        .expect("missing refs array in new format");
+    let content = refs[0]
+        .get("provider_visible_text")
+        .and_then(|v| v.as_str())
+        .expect("provider_visible_text");
+    let tool_result: serde_json::Value = serde_json::from_str(content).unwrap();
     assert_eq!(
         tool_result["result"]["completion_report_promoted"].as_bool(),
         Some(true)
@@ -2263,16 +2272,25 @@ async fn complete_work_item_does_not_promote_text_before_other_tool() {
         .iter()
         .find(|entry| entry.kind == crate::types::TranscriptEntryKind::ToolResults)
         .expect("tool results should be recorded");
-    let completion_result = tool_results.data["results"]
-        .as_array()
-        .unwrap()
+    // New format uses refs
+    let refs = tool_results
+        .data
+        .get("refs")
+        .and_then(|v| v.as_array())
+        .expect("missing refs array in new format");
+    let completion_ref = refs
         .iter()
-        .find(|result| result["tool_use_id"].as_str() == Some("complete-work"))
+        .find(|ref_entry| {
+            ref_entry.get("tool_call_id").and_then(|v| v.as_str()) == Some("complete-work")
+        })
         .expect("completion result should be recorded");
-    let content: serde_json::Value =
-        serde_json::from_str(completion_result["content"].as_str().unwrap()).unwrap();
+    let content = completion_ref
+        .get("provider_visible_text")
+        .and_then(|v| v.as_str())
+        .expect("provider_visible_text");
+    let content_json: serde_json::Value = serde_json::from_str(content).unwrap();
     assert_eq!(
-        content["result"]["completion_report_promoted"].as_bool(),
+        content_json["result"]["completion_report_promoted"].as_bool(),
         None
     );
 }
@@ -2432,8 +2450,17 @@ async fn complete_work_item_without_same_round_report_warns_without_summary() {
         .iter()
         .find(|entry| entry.kind == crate::types::TranscriptEntryKind::ToolResults)
         .expect("tool results should be recorded");
-    let tool_result: serde_json::Value =
-        serde_json::from_str(tool_results.data["results"][0]["content"].as_str().unwrap()).unwrap();
+    // New format uses refs
+    let refs = tool_results
+        .data
+        .get("refs")
+        .and_then(|v| v.as_array())
+        .expect("missing refs array in new format");
+    let content = refs[0]
+        .get("provider_visible_text")
+        .and_then(|v| v.as_str())
+        .expect("provider_visible_text");
+    let tool_result: serde_json::Value = serde_json::from_str(content).unwrap();
     assert_eq!(
         tool_result["result"]["warnings"][0]["kind"].as_str(),
         Some("missing_completion_report")
@@ -2680,8 +2707,17 @@ async fn repeated_complete_work_item_does_not_overwrite_existing_report() {
         .iter()
         .find(|entry| entry.kind == crate::types::TranscriptEntryKind::ToolResults)
         .expect("tool results should be recorded");
-    let tool_result: serde_json::Value =
-        serde_json::from_str(tool_results.data["results"][0]["content"].as_str().unwrap()).unwrap();
+    // New format uses refs
+    let refs = tool_results
+        .data
+        .get("refs")
+        .and_then(|v| v.as_array())
+        .expect("missing refs array in new format");
+    let content = refs[0]
+        .get("provider_visible_text")
+        .and_then(|v| v.as_str())
+        .expect("provider_visible_text");
+    let tool_result: serde_json::Value = serde_json::from_str(content).unwrap();
     assert_eq!(
         tool_result["result"]["completed_transition"].as_bool(),
         Some(false)
