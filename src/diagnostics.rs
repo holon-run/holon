@@ -36,6 +36,38 @@ static SCHEDULER_POLL_SHUTDOWN: MetricAccumulator =
     MetricAccumulator::new("scheduler.poll.shutdown");
 static SCHEDULER_POLL_SKIPPED: MetricAccumulator = MetricAccumulator::new("scheduler.poll.skipped");
 
+// Turn lifecycle
+static TURN_TOTAL: MetricAccumulator = MetricAccumulator::new("turn.total");
+static TURN_CONTEXT_BUILD: MetricAccumulator = MetricAccumulator::new("turn.context_build");
+static TURN_PROVIDER_ROUND: MetricAccumulator = MetricAccumulator::new("turn.provider_round");
+static TURN_TOOL_EXECUTION: MetricAccumulator = MetricAccumulator::new("turn.tool_execution");
+static TURN_CLEANUP: MetricAccumulator = MetricAccumulator::new("turn.cleanup");
+
+// Provider phases
+static PROVIDER_REQUEST_BUILD: MetricAccumulator = MetricAccumulator::new("provider.request_build");
+static PROVIDER_ROUND_TOTAL: MetricAccumulator = MetricAccumulator::new("provider.round_total");
+static PROVIDER_RETRY: MetricAccumulator = MetricAccumulator::new("provider.retry");
+
+// Tool phase
+static TOOL_EXECUTION: MetricAccumulator = MetricAccumulator::new("tool.execution");
+
+// Persistence
+static STORAGE_APPEND_EVENT: MetricAccumulator = MetricAccumulator::new("storage.append_event");
+static STORAGE_PERSIST_STATE: MetricAccumulator = MetricAccumulator::new("storage.persist_state");
+
+// Projection/API substeps
+static PROJECTION_STATE_TASKS: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.tasks");
+static PROJECTION_STATE_TIMERS: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.timers");
+static PROJECTION_STATE_WORK_ITEMS: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.work_items");
+static PROJECTION_STATE_WAITING: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.waiting_intents");
+static PROJECTION_STATE_TRIGGERS: MetricAccumulator =
+    MetricAccumulator::new("projection.agent_state.external_triggers");
+static PROJECTION_AGENTS_LIST: MetricAccumulator = MetricAccumulator::new("projection.agents_list");
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PerformanceDiagnosticsSnapshot {
     pub captured_at: String,
@@ -44,6 +76,8 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub projections: Vec<MetricSnapshot>,
     pub db: Vec<MetricSnapshot>,
     pub scheduler: Vec<MetricSnapshot>,
+    pub turn: Vec<MetricSnapshot>,
+    pub provider: Vec<MetricSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -158,6 +192,101 @@ pub fn record_scheduler_poll(outcome: &'static str, elapsed: Duration) {
     scheduler_poll_accumulator(outcome).record(elapsed, None);
 }
 
+// Turn lifecycle recording
+
+pub fn record_turn_total(elapsed: Duration) {
+    process_started_at();
+    TURN_TOTAL.record(elapsed, None);
+}
+
+pub fn record_turn_context_build(elapsed: Duration) {
+    process_started_at();
+    TURN_CONTEXT_BUILD.record(elapsed, None);
+}
+
+pub fn record_turn_provider_round(elapsed: Duration) {
+    process_started_at();
+    TURN_PROVIDER_ROUND.record(elapsed, None);
+}
+
+pub fn record_turn_tool_execution(elapsed: Duration) {
+    process_started_at();
+    TURN_TOOL_EXECUTION.record(elapsed, None);
+}
+
+pub fn record_turn_cleanup(elapsed: Duration) {
+    process_started_at();
+    TURN_CLEANUP.record(elapsed, None);
+}
+
+// Provider phase recording
+
+pub fn record_provider_request_build(elapsed: Duration) {
+    process_started_at();
+    PROVIDER_REQUEST_BUILD.record(elapsed, None);
+}
+
+pub fn record_provider_round_total(elapsed: Duration) {
+    process_started_at();
+    PROVIDER_ROUND_TOTAL.record(elapsed, None);
+}
+
+pub fn record_provider_retry(elapsed: Duration) {
+    process_started_at();
+    PROVIDER_RETRY.record(elapsed, None);
+}
+
+// Tool execution recording
+
+pub fn record_tool_execution(_tool_name: &str, elapsed: Duration, output_bytes: Option<usize>) {
+    process_started_at();
+    TOOL_EXECUTION.record(elapsed, output_bytes);
+}
+
+// Persistence recording
+
+pub fn record_storage_append_event(elapsed: Duration) {
+    process_started_at();
+    STORAGE_APPEND_EVENT.record(elapsed, None);
+}
+
+pub fn record_storage_persist_state(elapsed: Duration) {
+    process_started_at();
+    STORAGE_PERSIST_STATE.record(elapsed, None);
+}
+
+// Projection substep recording
+
+pub fn record_projection_state_tasks(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_STATE_TASKS.record(elapsed, None);
+}
+
+pub fn record_projection_state_timers(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_STATE_TIMERS.record(elapsed, None);
+}
+
+pub fn record_projection_state_work_items(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_STATE_WORK_ITEMS.record(elapsed, None);
+}
+
+pub fn record_projection_state_waiting_intents(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_STATE_WAITING.record(elapsed, None);
+}
+
+pub fn record_projection_state_external_triggers(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_STATE_TRIGGERS.record(elapsed, None);
+}
+
+pub fn record_projection_agents_list(elapsed: Duration) {
+    process_started_at();
+    PROJECTION_AGENTS_LIST.record(elapsed, None);
+}
+
 pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
     let started_at = process_started_at();
     PerformanceDiagnosticsSnapshot {
@@ -186,6 +315,18 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             SCHEDULER_POLL_STOPPED.snapshot(false),
             SCHEDULER_POLL_SHUTDOWN.snapshot(false),
             SCHEDULER_POLL_SKIPPED.snapshot(false),
+        ],
+        turn: vec![
+            TURN_TOTAL.snapshot(false),
+            TURN_CONTEXT_BUILD.snapshot(false),
+            TURN_PROVIDER_ROUND.snapshot(false),
+            TURN_TOOL_EXECUTION.snapshot(false),
+            TURN_CLEANUP.snapshot(false),
+        ],
+        provider: vec![
+            PROVIDER_REQUEST_BUILD.snapshot(false),
+            PROVIDER_ROUND_TOTAL.snapshot(false),
+            PROVIDER_RETRY.snapshot(false),
         ],
     }
 }
@@ -262,5 +403,61 @@ mod tests {
             .scheduler
             .iter()
             .any(|metric| metric.name == "scheduler.poll.idle" && metric.count >= 1));
+    }
+
+    #[test]
+    fn snapshot_includes_turn_and_provider_metrics() {
+        record_turn_total(Duration::from_millis(100));
+        record_turn_context_build(Duration::from_millis(10));
+        record_turn_provider_round(Duration::from_millis(50));
+        record_turn_tool_execution(Duration::from_millis(30));
+        record_turn_cleanup(Duration::from_millis(5));
+        record_provider_request_build(Duration::from_millis(5));
+        record_provider_round_total(Duration::from_millis(50));
+        record_provider_retry(Duration::from_millis(3));
+        record_tool_execution("ExecCommand", Duration::from_millis(20), Some(512));
+        record_storage_append_event(Duration::from_millis(1));
+        record_storage_persist_state(Duration::from_millis(2));
+        record_projection_state_tasks(Duration::from_millis(3));
+        record_projection_state_timers(Duration::from_millis(1));
+        record_projection_state_work_items(Duration::from_millis(2));
+        record_projection_state_waiting_intents(Duration::from_millis(1));
+        record_projection_state_external_triggers(Duration::from_millis(1));
+        record_projection_agents_list(Duration::from_millis(10));
+
+        let snapshot = performance_snapshot();
+
+        assert!(snapshot
+            .turn
+            .iter()
+            .any(|metric| metric.name == "turn.total" && metric.count >= 1));
+        assert!(snapshot
+            .turn
+            .iter()
+            .any(|metric| metric.name == "turn.context_build" && metric.count >= 1));
+        assert!(snapshot
+            .turn
+            .iter()
+            .any(|metric| metric.name == "turn.provider_round" && metric.count >= 1));
+        assert!(snapshot
+            .turn
+            .iter()
+            .any(|metric| metric.name == "turn.tool_execution" && metric.count >= 1));
+        assert!(snapshot
+            .turn
+            .iter()
+            .any(|metric| metric.name == "turn.cleanup" && metric.count >= 1));
+        assert!(snapshot
+            .provider
+            .iter()
+            .any(|metric| metric.name == "provider.request_build" && metric.count >= 1));
+        assert!(snapshot
+            .provider
+            .iter()
+            .any(|metric| metric.name == "provider.round_total" && metric.count >= 1));
+        assert!(snapshot
+            .provider
+            .iter()
+            .any(|metric| metric.name == "provider.retry" && metric.count >= 1));
     }
 }

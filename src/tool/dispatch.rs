@@ -143,7 +143,9 @@ impl ToolRegistry {
             ))
             .into());
         }
+        let tool_started = std::time::Instant::now();
         let result = tools::execute_builtin_tool(runtime, agent_id, authority_class, call).await?;
+        crate::diagnostics::record_tool_execution(&call.name, tool_started.elapsed(), None);
         if !result.is_error() {
             if let Err(error) =
                 maybe_refresh_memory_index_after_tool(runtime, call.name.as_str(), &result).await

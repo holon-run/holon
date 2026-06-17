@@ -581,12 +581,15 @@ impl AppStorage {
     }
 
     pub fn append_event(&self, event: &AuditEvent) -> Result<()> {
+        let started = std::time::Instant::now();
         self.ensure_writable()?;
         let _guard = self
             .append_mutex
             .lock()
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
-        self.append_event_with_append_mutex_held(event)
+        let result = self.append_event_with_append_mutex_held(event);
+        crate::diagnostics::record_storage_append_event(started.elapsed());
+        result
     }
 
     fn append_event_with_append_mutex_held(&self, event: &AuditEvent) -> Result<()> {

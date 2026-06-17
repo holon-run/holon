@@ -527,11 +527,14 @@ struct RuntimeAgent {
 
 impl RuntimeAgent {
     fn persist_state(&mut self, storage: &AppStorage) -> Result<()> {
+        let started = std::time::Instant::now();
         if let Err(error) = storage.write_agent(&self.state) {
             self.state = self.last_persisted_state.clone();
+            crate::diagnostics::record_storage_persist_state(started.elapsed());
             return Err(error);
         }
         self.last_persisted_state = self.state.clone();
+        crate::diagnostics::record_storage_persist_state(started.elapsed());
         Ok(())
     }
 }
