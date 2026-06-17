@@ -223,12 +223,112 @@ describe("reduceAgentSessionTimeline", () => {
     expect(timeline[0]).toEqual(
       expect.objectContaining({
         kind: "tool",
-        body: "1 active task · Run command: npm run dev · running · command_task · task_1 · 11ms",
+        body: "1 active task · Run command: npm run dev · running · command_task · task_1",
         detail: {
           label: "Tasks",
           text: "Run command: npm run dev · running · command_task · task_1",
           tone: "data",
         },
+      }),
+    );
+  });
+
+  it("projects TaskOutput with task status and output preview", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("task-output", "TaskOutput", {
+            task_output_result: {
+              task: {
+                task_id: "task_abc123",
+                status: "completed",
+                summary: "Run command: cargo build",
+                exit_status: 0,
+              },
+              output_preview: "Compiling holon v0.1.0\nFinished",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        body: "Task output · task_abc123 · completed · Run command: cargo build · exit 0",
+      }),
+    );
+    // Duration should be suppressed for read/control tools
+    expect(timeline[0].body).not.toContain("ms");
+    expect(timeline[0].detail?.tone).toBe("output");
+  });
+
+  it("projects TaskOutput with truncated flag", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("task-output-trunc", "TaskOutput", {
+            task_output_result: {
+              task: { task_id: "task_xyz", status: "running" },
+              output_preview: "...partial output...",
+              output_truncated: true,
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0].body).toContain("truncated");
+  });
+
+  it("projects TaskStatus with status and kind", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("task-status", "TaskStatus", {
+            task_status_result: {
+              task_id: "task_789",
+              status: "running",
+              kind: "command_task",
+              summary: "Run command: npm test",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        body: "Task status · task_789 · running · command_task · Run command: npm test",
+      }),
+    );
+    expect(timeline[0].body).not.toContain("ms");
+  });
+
+  it("projects TaskStop and TaskInput", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("task-stop", "TaskStop", {
+            task_stop_result: { task_id: "task_stop1", status: "cancelled" },
+          }),
+          toolEvent("task-input", "TaskInput", {
+            task_input_result: { task_id: "task_in1", status: "accepted" },
+            input: "y\n",
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        body: "Stopped task · task_stop1 · cancelled",
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        body: "Task input · task_in1 · y",
       }),
     );
   });

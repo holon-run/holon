@@ -537,8 +537,10 @@ function projectToolExecution(
   const promoted = disposition === "promoted_to_task";
   const stringPreview = toolStringPreview(toolName, payload, commandPreview) || undefined;
   const toolSummary = projection?.body ?? stringPreview ?? summary ?? genericToolDescription(toolName, payload) ?? toolName;
-  // For promoted tasks, duration_ms is the yield_time timeout, not real execution time — suppress it.
-  const effectiveDuration = promoted ? undefined : durationMs;
+  // Suppress duration for promoted tasks (yield_time, not real execution) and for read/control tools
+  // where duration_ms is just API round-trip time with no user-facing meaning.
+  const suppressDuration = promoted || isReadControlTool(toolName);
+  const effectiveDuration = suppressDuration ? undefined : durationMs;
   const promotedTaskId = promoted ? firstStringField(asRecord(payload?.task_handle), ["task_id"]) : undefined;
   const body = compactJoin([
     toolSummary,
@@ -582,6 +584,10 @@ function projectKnownToolExecution(
   if (isWebFetchTool(toolName)) return projectWebFetchTool(payload);
   if (toolName === "MemorySearch") return projectMemorySearchTool(payload);
   if (toolName === "MemoryGet") return projectMemoryGetTool(payload);
+  if (toolName === "TaskOutput") return projectTaskOutputTool(payload);
+  if (toolName === "TaskStatus") return projectTaskStatusTool(payload);
+  if (toolName === "TaskStop") return projectTaskStopTool(payload);
+  if (toolName === "TaskInput") return projectTaskInputTool(payload);
   return undefined;
 }
 
@@ -595,6 +601,24 @@ function isWebSearchTool(toolName: string): boolean {
 
 function isWebFetchTool(toolName: string): boolean {
   return toolName === "WebFetch";
+}
+
+/**
+ * Read/control tools where duration_ms is just API round-trip time, not meaningful execution time.
+ * Suppress showing it in the timeline to avoid noise like "success · 272ms".
+ */
+function isReadControlTool(toolName: string): boolean {
+  return (
+    toolName === "TaskOutput" ||
+    toolName === "TaskStatus" ||
+    toolName === "TaskStop" ||
+    toolName === "TaskInput" ||
+    toolName === "ListTasks" ||
+    toolName === "ListWorkItems" ||
+    toolName === "GetWorkItem" ||
+    toolName === "MemorySearch" ||
+    toolName === "MemoryGet"
+  );
 }
 
 function toolStringPreview(
@@ -670,6 +694,101 @@ function projectListTasksTool(payload: Record<string, unknown> | undefined): Pic
     detail: taskSummaries.length
       ? { label: "Tasks", text: taskSummaries.join("\n"), tone: "data" }
       : { label: "Result", text: debugJson(result ?? payload ?? {}), tone: "data" },
+  };
+}
+
+function extractTaskFromOutput(payload: Record<string, unknown> | undefined): {
+  task?: Record<string, unknown>;
+  taskId?: string;
+  status?: string;
+  summary?: string;
+  exitStatus?: number;
+  outputPreview?: string;
+  truncated?: boolean;
+} {
+  const result = asRecord(payload?.task_output_result) ?? unwrapToolResult(payload);
+  const task = asRecord(result.task) ?? asRecord(result.task_record);
+  const taskId = firstStringField(task, ["task_id", "id"]) ?? stringField(payload, "task_id");
+  const status = firstStringField(task, ["status"]) ?? stringField(result, "status") ?? stringField(result, "retrieval_status");
+  const summary = stringField(task, "summary") ?? stringField(result, "summary") ?? stringField(result, "result_summary");
+  const exitStatus = numberField(task, "exit_status") ?? numberField(result, "exit_status");
+  const outputPreview =
+    stringField(result, "output_preview") ??
+    stringField(result, "output") ??
+    stringField(result, "stdout") ??
+    stringField(result, "stderr");
+  const truncated = result.output_truncated === true || result.truncated === true;
+  return { task, taskId, status, summary, exitStatus, outputPreview, truncated };
+}
+
+function projectTaskOutputTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const info = extractTaskFromOutput(payload);
+  const body = compactJoin([
+    "Task output",
+    info.taskId ? shortTaskId(info.taskId) : undefined,
+    info.status,
+    info.summary,
+    info.exitStatus != null ? `exit ${info.exitStatus}` : undefined,
+    info.truncated ? "truncated" : undefined,
+  ]);
+  return {
+    body,
+    detail: info.outputPreview
+      ? {
+          label: info.truncated ? "Task output (truncated)" : "Task output",
+          text: truncateText(info.outputPreview, 2000),
+          tone: "output",
+        }
+      : undefined,
+  };
+}
+
+function projectTaskStatusTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.task_status_result) ?? unwrapToolResult(payload);
+  const taskId = stringField(result, "task_id") ?? stringField(payload, "task_id");
+  const status = stringField(result, "status");
+  const summary = stringField(result, "summary");
+  const kind = stringField(result, "kind");
+  const body = compactJoin([
+    "Task status",
+    taskId ? shortTaskId(taskId) : undefined,
+    status,
+    kind,
+    summary,
+  ]);
+  return {
+    body,
+    detail: undefined,
+  };
+}
+
+function projectTaskStopTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.task_stop_result) ?? unwrapToolResult(payload);
+  const taskId = stringField(result, "task_id") ?? stringField(payload, "task_id");
+  const status = stringField(result, "status");
+  const body = compactJoin([
+    "Stopped task",
+    taskId ? shortTaskId(taskId) : undefined,
+    status,
+  ]);
+  return {
+    body,
+    detail: undefined,
+  };
+}
+
+function projectTaskInputTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.task_input_result) ?? unwrapToolResult(payload);
+  const taskId = stringField(result, "task_id") ?? stringField(payload, "task_id");
+  const input = stringField(payload, "input") ?? stringField(result, "input");
+  const body = compactJoin([
+    "Task input",
+    taskId ? shortTaskId(taskId) : undefined,
+    input ? truncateText(input.replace(/\s+/g, " ").trim(), 100) : undefined,
+  ]);
+  return {
+    body,
+    detail: undefined,
   };
 }
 
@@ -1034,6 +1153,10 @@ function toolFriendlyLabel(toolName: string, failed: boolean): string {
   if (toolName === "CompleteWorkItem") return failed ? "Work item completion failed" : "Completed work item";
   if (isWebSearchTool(toolName)) return failed ? "Web search failed" : "Web search completed";
   if (isWebFetchTool(toolName)) return failed ? "Web fetch failed" : "Web fetch completed";
+  if (toolName === "TaskOutput") return failed ? "Task output failed" : "Task output";
+  if (toolName === "TaskStatus") return failed ? "Task status failed" : "Task status";
+  if (toolName === "TaskStop") return failed ? "Task stop failed" : "Stopped task";
+  if (toolName === "TaskInput") return failed ? "Task input failed" : "Task input";
   return failed ? "Tool failed" : "Tool finished";
 }
 

@@ -109,6 +109,10 @@ function formatKnownToolExecutionDetail(record: RuntimeToolExecutionRecord): { t
   if (isWebFetchTool(record.tool_name)) return formatWebFetchToolExecution(record);
   if (record.tool_name === "MemorySearch") return formatMemorySearchToolExecution(record);
   if (record.tool_name === "MemoryGet") return formatMemoryGetToolExecution(record);
+  if (record.tool_name === "TaskOutput") return formatTaskOutputToolExecution(record);
+  if (record.tool_name === "TaskStatus") return formatTaskStatusToolExecution(record);
+  if (record.tool_name === "TaskStop") return formatTaskStopToolExecution(record);
+  if (record.tool_name === "TaskInput") return formatTaskInputToolExecution(record);
   return undefined;
 }
 
@@ -187,6 +191,68 @@ function formatListTasksToolExecution(record: RuntimeToolExecutionRecord): { tex
     labelledText("Error", record.error),
   ].filter(Boolean);
 
+  return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
+}
+
+function formatTaskOutputToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const result = asResultRecord(output, "task_output_result") ?? (isRecord(output) ? output : undefined);
+  const task = isRecord(result?.task) ? result.task : isRecord(result?.task_record) ? result.task_record : undefined;
+  const taskId = nestedValue(task, ["task_id", "id"]) ?? nestedValue(record.input, ["task_id"]);
+  const status = nestedValue(task, ["status"]) ?? nestedValue(result, ["status", "retrieval_status"]);
+  const exitStatus = nestedValue(task, ["exit_status"]) ?? nestedValue(result, ["exit_status"]);
+  const outputText = nestedText(result, ["output_preview", "output", "stdout", "stderr", "combined_output_preview"]);
+  const truncated = nestedValue(result, ["output_truncated", "truncated"]) === true;
+  const lines = [
+    labelledText("Task ID", taskId),
+    labelledText("Status", status),
+    labelledText("Exit", exitStatus),
+    labelledText("Summary", nestedValue(task, ["summary"]) ?? nestedValue(result, ["summary", "result_summary"])),
+    outputText ? labelledText(truncated ? "Output (truncated)" : "Output", outputText) : "",
+    labelledText("Error", record.error),
+  ].filter(Boolean);
+  return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
+}
+
+function formatTaskStatusToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const result = asResultRecord(output, "task_status_result") ?? (isRecord(output) ? output : undefined);
+  const taskId = nestedValue(result, ["task_id", "id"]) ?? nestedValue(record.input, ["task_id"]);
+  const lines = [
+    labelledText("Task ID", taskId),
+    labelledText("Status", nestedValue(result, ["status"])),
+    labelledText("Kind", nestedValue(result, ["kind"])),
+    labelledText("Summary", nestedValue(result, ["summary"])),
+    labelledText("Error", record.error),
+  ].filter(Boolean);
+  return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
+}
+
+function formatTaskStopToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const result = asResultRecord(output, "task_stop_result") ?? (isRecord(output) ? output : undefined);
+  const taskId = nestedValue(result, ["task_id", "id"]) ?? nestedValue(record.input, ["task_id"]);
+  const lines = [
+    labelledText("Task ID", taskId),
+    labelledText("Status", nestedValue(result, ["status"])),
+    labelledText("Summary", record.summary),
+    labelledText("Error", record.error),
+  ].filter(Boolean);
+  return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
+}
+
+function formatTaskInputToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const result = asResultRecord(output, "task_input_result") ?? (isRecord(output) ? output : undefined);
+  const taskId = nestedValue(result, ["task_id", "id"]) ?? nestedValue(record.input, ["task_id"]);
+  const input = nestedValue(record.input, ["input"]) ?? nestedValue(result, ["input"]);
+  const lines = [
+    labelledText("Task ID", taskId),
+    labelledText("Input", input),
+    labelledText("Status", nestedValue(result, ["status"])),
+    labelledText("Summary", record.summary),
+    labelledText("Error", record.error),
+  ].filter(Boolean);
   return { text: lines.join("\n\n") || formatInspectorJson(record), tone: lines.length ? "output" : "data" };
 }
 
