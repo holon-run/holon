@@ -1811,6 +1811,14 @@ impl AppStorage {
     }
 
     pub fn latest_work_items(&self) -> Result<Vec<WorkItemRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .work_items()
+                    .latest_for_agent(&agent_id, usize::MAX);
+            }
+            return runtime_db.work_items().latest_all();
+        }
         let records = self.read_recent_work_items(usize::MAX)?;
         let mut latest = std::collections::BTreeMap::new();
         for record in records {
@@ -2069,11 +2077,14 @@ impl AppStorage {
             });
         }
 
-        if self
-            .latest_queue_entries()?
-            .iter()
-            .any(|entry| entry.agent_id == agent.id && entry.status == QueueEntryStatus::Queued)
-        {
+        let has_queued = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.queue_entries().has_queued_for_agent(&agent.id)?
+        } else {
+            self.latest_queue_entries()?
+                .iter()
+                .any(|entry| entry.agent_id == agent.id && entry.status == QueueEntryStatus::Queued)
+        };
+        if has_queued {
             return Ok(AgentPostureProjection {
                 posture: AgentSchedulingPosture::HasQueuedInput,
                 reason: "agent has queued input".into(),
@@ -2312,6 +2323,14 @@ impl AppStorage {
     }
 
     pub fn latest_work_item_delegations(&self) -> Result<Vec<WorkItemDelegationRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .work_item_delegations()
+                    .recent_for_agent(&agent_id, usize::MAX);
+            }
+            return runtime_db.work_item_delegations().latest_all();
+        }
         let records = self.read_recent_work_item_delegations(usize::MAX)?;
         let mut latest = std::collections::BTreeMap::new();
         for record in records {
@@ -2321,6 +2340,14 @@ impl AppStorage {
     }
 
     pub fn latest_work_item_continuations(&self) -> Result<Vec<WorkItemContinuationFrame>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db
+                    .work_item_continuations()
+                    .recent_for_agent(&agent_id, usize::MAX);
+            }
+            return runtime_db.work_item_continuations().latest_all();
+        }
         let records = self.read_recent_work_item_continuations(usize::MAX)?;
         let mut latest = std::collections::BTreeMap::new();
         for record in records {
@@ -2398,6 +2425,12 @@ impl AppStorage {
     }
 
     pub fn latest_timer_records(&self) -> Result<Vec<TimerRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db.timers().recent_for_agent(&agent_id, usize::MAX);
+            }
+            return runtime_db.timers().latest_all();
+        }
         let records = self.read_recent_timers(usize::MAX)?;
         let mut latest = std::collections::BTreeMap::new();
         for record in records {
@@ -2490,6 +2523,12 @@ impl AppStorage {
     }
 
     pub fn latest_external_triggers(&self) -> Result<Vec<ExternalTriggerRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                return runtime_db.external_triggers().latest_for_agent(&agent_id);
+            }
+            return runtime_db.external_triggers().latest_all();
+        }
         let records = self.read_recent_external_triggers(usize::MAX)?;
         let mut latest = std::collections::BTreeMap::new();
         for record in records {
@@ -2517,6 +2556,9 @@ impl AppStorage {
     }
 
     pub fn latest_workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.workspace_entries().latest_all();
+        }
         let records = self.read_recent_workspace_entries(usize::MAX)?;
         let mut latest = std::collections::BTreeMap::new();
         for record in records {
@@ -2526,6 +2568,9 @@ impl AppStorage {
     }
 
     pub fn latest_workspace_occupancies(&self) -> Result<Vec<WorkspaceOccupancyRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.workspace_occupancies().latest_all();
+        }
         let records = self.read_recent_workspace_occupancies(usize::MAX)?;
         let mut latest = std::collections::BTreeMap::new();
         for record in records {
@@ -2535,6 +2580,9 @@ impl AppStorage {
     }
 
     pub fn latest_agent_identities(&self) -> Result<Vec<AgentIdentityRecord>> {
+        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            return runtime_db.agent_identities().latest_all();
+        }
         let records = self.read_recent_agent_identities(usize::MAX)?;
         let mut latest = std::collections::BTreeMap::new();
         for record in records {
@@ -2544,7 +2592,18 @@ impl AppStorage {
     }
 
     pub fn latest_queue_entries(&self) -> Result<Vec<QueueEntryRecord>> {
-        let records = self.read_recent_queue_entries(usize::MAX)?;
+        let records = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            if let Some(agent_id) = self.current_agent_id()? {
+                runtime_db
+                    .queue_entries()
+                    .recent(Some(&agent_id), usize::MAX)?
+            } else {
+                runtime_db.queue_entries().latest_all()?
+            }
+        } else {
+            self.read_recent_queue_entries(usize::MAX)?
+        };
+        // Deduplicate by message_id, keeping the latest entry (last in chronological order)
         let mut latest = std::collections::BTreeMap::new();
         for record in records {
             latest.insert(record.message_id.clone(), record);
@@ -2559,19 +2618,20 @@ impl AppStorage {
             messages_by_id.insert(message.id.clone(), message);
         }
 
-        let mut replay_messages = self
-            .latest_queue_entries()?
+        let queued_entries = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+            runtime_db.queue_entries().queued_for_agent(agent_id)?
+        } else {
+            self.latest_queue_entries()?
+                .into_iter()
+                .filter(|entry| {
+                    entry.agent_id == agent_id
+                        && entry.status == crate::types::QueueEntryStatus::Queued
+                })
+                .collect()
+        };
+        let mut replay_messages = queued_entries
             .into_iter()
-            .filter_map(|entry| match entry.status {
-                crate::types::QueueEntryStatus::Queued => {
-                    messages_by_id.get(&entry.message_id).cloned()
-                }
-                crate::types::QueueEntryStatus::Dequeued
-                | crate::types::QueueEntryStatus::Processed
-                | crate::types::QueueEntryStatus::Interjected
-                | crate::types::QueueEntryStatus::Aborted
-                | crate::types::QueueEntryStatus::Dropped => None,
-            })
+            .filter_map(|entry| messages_by_id.get(&entry.message_id).cloned())
             .collect::<Vec<_>>();
         replay_messages.sort_by(|left, right| match (left.message_seq, right.message_seq) {
             (Some(left_seq), Some(right_seq)) => left_seq
