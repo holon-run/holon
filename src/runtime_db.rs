@@ -2265,11 +2265,9 @@ impl EvidenceRepository<'_> {
 
 impl AuditEventSink<'_> {
     pub fn append(&self, agent_id: Option<&str>, event: &AuditEvent) -> Result<()> {
-        let agent_id = agent_id.map(str::to_string);
-        let event = event.clone();
-        self.db.append_with_context(
-            RuntimeDbWriteContext::background("audit_events.append", "audit_events"),
-            move |tx| insert_audit_event_tx(tx, agent_id.as_deref(), &event),
+        self.db.transaction_with_context(
+            RuntimeDbWriteContext::sync("audit_events.append", "audit_events"),
+            |tx| insert_audit_event_tx(tx, agent_id, event),
         )
     }
 
@@ -4946,14 +4944,6 @@ impl RuntimeDb {
         f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
     ) -> Result<()> {
         self.writer.append(f)
-    }
-
-    fn append_with_context(
-        &self,
-        context: RuntimeDbWriteContext,
-        f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
-    ) -> Result<()> {
-        self.writer.append_with_context(context, f)
     }
 
     #[cfg(test)]

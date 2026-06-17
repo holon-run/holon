@@ -952,18 +952,24 @@ pub async fn tool_schema_and_dispatch_errors_are_recorded_without_corrupting_run
         .iter()
         .find(|entry| entry.kind == holon::types::TranscriptEntryKind::ToolResults)
         .expect("tool results transcript entry should exist");
-    let results = tool_results.data["results"]
+    let refs = tool_results.data["refs"]
         .as_array()
-        .expect("tool results should be an array");
-    assert_eq!(results.len(), 3);
-    assert!(results
-        .iter()
-        .all(|result| { result.get("is_error").and_then(|value| value.as_bool()) == Some(true) }));
-    assert!(results.iter().all(|result| {
-        result
-            .get("error")
-            .and_then(|value| value.get("kind"))
+        .expect("tool result refs should be an array");
+    assert_eq!(refs.len(), 3);
+    assert!(refs.iter().all(|reference| {
+        reference.get("is_error").and_then(|value| value.as_bool()) == Some(true)
+    }));
+    assert!(refs.iter().all(|reference| {
+        reference
+            .get("provider_visible_text")
             .and_then(|value| value.as_str())
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(content).ok())
+            .and_then(|receipt| {
+                receipt
+                    .get("kind")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned)
+            })
             .is_some()
     }));
 
