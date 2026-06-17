@@ -3235,10 +3235,7 @@ async fn register_wait_for_agent_scoped_cancels_prior_agent_scoped_waits() {
         .await
         .unwrap();
     assert_eq!(second.cancelled_wait_condition_ids.len(), 1);
-    assert_eq!(
-        second.cancelled_wait_condition_ids[0],
-        first.condition.id
-    );
+    assert_eq!(second.cancelled_wait_condition_ids[0], first.condition.id);
 
     // The first wait condition should now be cancelled
     let active = runtime
