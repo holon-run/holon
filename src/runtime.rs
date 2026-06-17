@@ -458,6 +458,27 @@ impl RuntimeHandle {
             .storage
             .append_event(&AuditEvent::new("work_item_written", payload))
     }
+
+    pub(crate) fn append_work_item_plan_artifact_refreshed_event(
+        &self,
+        record: &crate::types::WorkItemRecord,
+    ) -> Result<()> {
+        let Some(artifact) = record.plan_artifact.as_ref() else {
+            return Ok(());
+        };
+        self.inner.storage.append_event(&AuditEvent::new(
+            "work_item_plan_artifact_refreshed",
+            serde_json::json!({
+                "work_item_id": record.id,
+                "revision": record.revision,
+                "plan_artifact_path": artifact.path,
+                "plan_artifact_hash": artifact.hash,
+                "plan_artifact_bytes": artifact.bytes,
+                "plan_artifact_updated_at": artifact.updated_at,
+                "preview_complete": artifact.preview_complete,
+            }),
+        ))
+    }
 }
 
 impl RuntimeHandle {

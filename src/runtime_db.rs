@@ -2783,7 +2783,7 @@ fn upsert_message_tx(tx: &Transaction<'_>, message: &MessageEnvelope) -> Result<
             payload_json,
         ],
     )?;
-    upsert_message_search_index_tx(tx, message, &kind, &payload_json)?;
+    upsert_message_search_index_tx(tx, message, &kind)?;
     Ok(())
 }
 
@@ -2791,7 +2791,6 @@ fn upsert_message_search_index_tx(
     tx: &Transaction<'_>,
     message: &MessageEnvelope,
     kind: &str,
-    payload_json: &str,
 ) -> Result<()> {
     tx.execute(
         "DELETE FROM message_search_index WHERE evidence_id = ?1",
@@ -2800,8 +2799,8 @@ fn upsert_message_search_index_tx(
     tx.execute(
         "INSERT INTO message_search_index (
             evidence_id, agent_id, turn_id, message_id, task_id, work_item_id,
-            kind, body_text, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            kind, body_text
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             message.id,
             message.agent_id,
@@ -2811,7 +2810,6 @@ fn upsert_message_search_index_tx(
             message.work_item_id,
             kind,
             message_body_search_text(&message.body),
-            payload_json,
         ],
     )?;
     Ok(())
@@ -4871,13 +4869,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS message_search_index USING fts5(
   task_id UNINDEXED,
   work_item_id UNINDEXED,
   kind,
-  body_text,
-  payload_json
+  body_text
 );
 
 INSERT INTO message_search_index (
   evidence_id, agent_id, turn_id, message_id, task_id, work_item_id,
-  kind, body_text, payload_json
+  kind, body_text
 )
 SELECT
   messages.evidence_id,
@@ -4887,8 +4884,7 @@ SELECT
   messages.task_id,
   messages.work_item_id,
   messages.kind,
-  COALESCE(messages.preview, ''),
-  messages.payload_json
+  COALESCE(messages.preview, '')
 FROM messages
 WHERE NOT EXISTS (
   SELECT 1
@@ -6395,6 +6391,13 @@ CREATE TABLE working_memory_deltas (
     fn message_search_indexes_messages_across_agents() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let columns = db
+            .connection()?
+            .prepare("PRAGMA table_info(message_search_index)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert!(!columns.iter().any(|column| column == "payload_json"));
+
         let mut first = MessageEnvelope::new(
             "agent-a",
             crate::types::MessageKind::OperatorPrompt,

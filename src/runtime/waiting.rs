@@ -317,14 +317,7 @@ impl RuntimeHandle {
             .upsert(&record, current_focus)?;
         self.inner.storage.append_work_item(&record)?;
         if plan_artifact_changed {
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_plan_artifact_refreshed",
-                serde_json::json!({
-                    "work_item_id": record.id.clone(),
-                    "revision": record.revision,
-                    "plan_artifact": record.plan_artifact.clone(),
-                }),
-            ))?;
+            self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
         self.append_work_item_written_event("wait_for_blocked", &record, Value::Null)?;
         Ok(record)
@@ -396,14 +389,7 @@ impl RuntimeHandle {
             .upsert(&record, current_focus)?;
         self.inner.storage.append_work_item(&record)?;
         if plan_artifact_changed {
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_plan_artifact_refreshed",
-                serde_json::json!({
-                    "work_item_id": record.id.clone(),
-                    "revision": record.revision,
-                    "plan_artifact": record.plan_artifact.clone(),
-                }),
-            ))?;
+            self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
         self.append_work_item_written_event(
             "wait_for_task_resolved",
@@ -471,14 +457,7 @@ impl RuntimeHandle {
             .upsert(&record, current_focus)?;
         self.inner.storage.append_work_item(&record)?;
         if plan_artifact_changed {
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_plan_artifact_refreshed",
-                serde_json::json!({
-                    "work_item_id": record.id.clone(),
-                    "revision": record.revision,
-                    "plan_artifact": record.plan_artifact.clone(),
-                }),
-            ))?;
+            self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
         self.append_work_item_written_event(
             "pick_blocker_cleared",
