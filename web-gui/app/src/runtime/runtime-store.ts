@@ -1,6 +1,14 @@
 import { create } from "zustand";
 
 import { createRuntimeClient, type AgentEventStreamSubscription, type StreamEventEnvelopeDto } from "./client";
+import { cacheClearRemote } from "./idb-cache";
+import {
+  currentRemoteKey,
+  hydrateAllSessions,
+  initSessionCache,
+  SessionCacheWriter,
+} from "./session-cache";
+import type { AgentSessionState as AgentSessionStateBase } from "./runtime-store-helpers";
 import {
   compactAgentTimelineItems,
   mergeAgentTimelineItems,
@@ -28,11 +36,11 @@ import type {
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
   WorkItemSummary,
-  WorkItemDetailState,
   SearchResponse,
 } from "./types";
 
-export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
+export type { AgentLiveStatus, AgentSessionState } from "./runtime-store-helpers";
+import type { AgentLiveStatus, AgentSessionState, WorkItemDetailState } from "./runtime-store-helpers";
 
 export interface BootstrapRefreshOptions {
   background?: boolean;
@@ -84,32 +92,6 @@ function cachedAgentsByIdFromState(state: RuntimeStoreState): Record<string, Age
     agentsById[agent.id] = agentsById[agent.id] ? mergeCachedAgentState(agentsById[agent.id], agent) : agent;
   }
   return agentsById;
-}
-
-export interface AgentSessionState {
-  loading: boolean;
-  loadingOlder: boolean;
-  liveStatus: AgentLiveStatus;
-  sendingPrompt: boolean;
-  detail: AgentDetail | null;
-  eventsBySeq: Record<number, unknown>;
-  eventSeqs: number[];
-  messagesById: Record<string, RuntimeMessageEnvelope>;
-  missingMessageIds: Record<string, true>;
-  transcriptEntriesById: Record<string, RuntimeTranscriptEntry>;
-  missingTranscriptEntryIds: Record<string, true>;
-  briefRecordsById: Record<string, RuntimeBriefRecord>;
-  missingBriefIds: Record<string, true>;
-  newestSeq?: number;
-  oldestSeq?: number;
-  hasOlder?: boolean;
-  lastStreamActivityAt?: string;
-  reconnectAttempt?: number;
-  error?: string;
-  historyError?: string;
-  promptError?: string;
-  modelError?: string;
-  workItemDetailsById: Record<string, WorkItemDetailState>;
 }
 
 interface AgentRosterActivity {
@@ -250,6 +232,10 @@ const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
 const GLOBAL_STREAM_STALE_TIMEOUT_MS = 45_000;
 const GLOBAL_BACKFILL_LIMIT = 100;
+
+// ─── Session cache (IndexedDB persistence) ──────────────────────────
+let sessionCacheWriter: SessionCacheWriter | null = null;
+let sessionCacheInitPromise: Promise<void> | null = null;
 
 function runtimeClientOptions(config: RuntimeConnectionConfig) {
   return config.mode === "remote" ? { mode: "remote" as const, baseUrl: config.baseUrl, token: config.token } : { mode: "local" as const };
@@ -442,6 +428,42 @@ const emptyRuntimeConfig: RuntimeConfigState = {
   source: "fixture",
 };
 
+/**
+ * Initialize session cache for the current remote and hydrate any cached
+ * sessions into the store. Called on initial load and remote switch.
+ */
+function initSessionCacheForRemote(set: StoreSet): void {
+  if (sessionCacheInitPromise) return;
+  const remoteKey = currentRemoteKey(runtimeConnectionConfig);
+
+  sessionCacheInitPromise = (async () => {
+    const ok = await initSessionCache();
+    if (!ok) {
+      sessionCacheWriter = null;
+      return;
+    }
+
+    // Set up writer for this remote.
+    sessionCacheWriter?.cancel();
+    sessionCacheWriter = new SessionCacheWriter(remoteKey);
+
+    // Hydrate cached sessions into store.
+    const cached = await hydrateAllSessions(remoteKey);
+    if (Object.keys(cached).length === 0) return;
+
+    set((state) => {
+      const sessionsByAgentId = { ...state.sessionsByAgentId };
+      for (const [agentId, partial] of Object.entries(cached)) {
+        sessionsByAgentId[agentId] = {
+          ...emptyAgentSession(),
+          ...partial,
+        };
+      }
+      return { sessionsByAgentId };
+    });
+  })();
+}
+
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   route: "dashboard",
   selectedAgentId: "",
@@ -550,6 +572,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     streamFlushTimers.clear();
     reconnectTimers.clear();
     staleTimers.clear();
+    // Flush pending cache writes for the old remote before switching.
+    sessionCacheWriter?.flush();
+    sessionCacheWriter = null;
+    sessionCacheInitPromise = null;
     set({
       bootstrap: pendingBootstrap(normalizedConfig),
       bootstrapLoading: true,
@@ -568,6 +594,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       route: "dashboard",
     });
     await get().refreshBootstrap();
+    // Initialize cache for the new remote (async, non-blocking).
+    initSessionCacheForRemote(set);
   },
 
   refreshBootstrap: async (options = {}) => {
@@ -741,6 +769,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       scheduleMessageHydration(get, set, agentId, displayLevel);
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
       scheduleBriefHydration(get, set, agentId, displayLevel);
+      scheduleCacheWrite(get, agentId);
     } catch (error) {
       set((state) => ({
         sessionsByAgentId: {
@@ -1030,6 +1059,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   },
 }));
 
+// Initialize session cache on first load.
+if (typeof window !== "undefined") {
+  initSessionCacheForRemote((partial) => useRuntimeStore.setState(partial));
+}
+
 function emptyAgentSession(): AgentSessionState {
   return {
     loading: false,
@@ -1056,6 +1090,17 @@ type StoreSet = (
     | ((state: RuntimeStoreState) => Partial<RuntimeStoreState> | RuntimeStoreState),
   replace?: false,
 ) => void;
+
+/**
+ * Schedule a debounced cache write for the given agent's session.
+ * Best-effort: silently skips if the cache writer isn't initialized.
+ */
+function scheduleCacheWrite(get: () => RuntimeStoreState, agentId: string): void {
+  if (!sessionCacheWriter) return;
+  const session = get().sessionsByAgentId[agentId];
+  if (!session) return;
+  sessionCacheWriter.scheduleWrite(agentId, session);
+}
 
 // ─── Global event stream ────────────────────────────────────────────
 
@@ -1897,6 +1942,7 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
   scheduleMessageHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
   scheduleTranscriptHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
   scheduleBriefHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
+  scheduleCacheWrite(useRuntimeStore.getState, agentId);
   if (events.some(isWorkItemCacheInvalidationEvent)) {
     void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
   }
