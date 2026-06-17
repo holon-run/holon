@@ -1133,7 +1133,7 @@ impl RuntimeHost {
         // This produces audit events and avoids orphaned active waits.
         let now = chrono::Utc::now();
         if let Ok(storage) = self.agent_storage(agent_id) {
-            if let Ok(active) = storage.latest_active_wait_conditions_for_agent(agent_id) {
+            if let Ok(active) = storage.active_wait_conditions_for_agent(agent_id) {
                 let mut cancelled_ids = Vec::new();
                 for condition in active {
                     let mut cancelled = condition.clone();
@@ -2119,11 +2119,10 @@ fn child_has_active_lifecycle_blockers(storage: &AppStorage, child_agent_id: &st
     }
 
     Ok(storage
-        .latest_wait_conditions()?
+        .active_wait_conditions_for_agent(child_agent_id)?
         .into_iter()
         .any(|condition| {
-            condition.agent_id == child_agent_id
-                && condition.status == crate::types::WaitConditionStatus::Active
+            condition.status == crate::types::WaitConditionStatus::Active
                 && condition.kind == crate::types::WaitConditionKind::Task
         }))
 }

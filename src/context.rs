@@ -17,8 +17,7 @@ use crate::{
         ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TaskRecord, TodoItemState,
         ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnRecord,
-        WaitConditionRecord, WaitConditionStatus, WorkItemRecord, WorkItemRefStatus,
-        WorkingMemorySnapshot,
+        WaitConditionRecord, WorkItemRecord, WorkItemRefStatus, WorkingMemorySnapshot,
     },
 };
 
@@ -135,11 +134,9 @@ pub fn build_context_with_default_external_ingress(
     )?;
     let transcript = storage.read_recent_transcript(config.recent_messages)?;
     let active_wait_conditions = storage
-        .latest_wait_conditions()?
+        .active_wait_conditions_for_agent(&agent.id)?
         .into_iter()
-        .filter(|condition| condition.agent_id == agent.id)
         .filter(|condition| condition.work_item_id.is_some())
-        .filter(|condition| condition.status == WaitConditionStatus::Active)
         .collect::<Vec<_>>();
     let episodes = storage.read_recent_context_episodes(config.recent_episode_candidates)?;
     let work_queue_projection = storage.work_queue_prompt_projection()?;
@@ -3189,8 +3186,8 @@ mod tests {
             ContinuationTriggerKind, EpisodeBoundaryReason, ExternalTriggerScope, LoadedAgentsMd,
             MessageKind, MessageOrigin, Priority, TaskKind, TaskStatus, TodoItem, TodoItemState,
             ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind,
-            WaitConditionKind, WakeSource, WorkItemRef, WorkItemRefKind, WorkItemRefStatus,
-            WorkItemState,
+            WaitConditionKind, WaitConditionStatus, WakeSource, WorkItemRef, WorkItemRefKind,
+            WorkItemRefStatus, WorkItemState,
         },
     };
 
