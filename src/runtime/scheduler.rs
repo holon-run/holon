@@ -130,8 +130,7 @@ impl SchedulerProjection {
         let waiting_work_item = waiting_work_item_projection.map(|item| item.work_item.clone());
         let waiting_work_item_scheduling_state =
             waiting_work_item_projection.map(|item| item.scheduling_state);
-        let active_wait_conditions = storage
-            .active_wait_conditions_for_agent(&snapshot.id)?;
+        let active_wait_conditions = storage.active_wait_conditions_for_agent(&snapshot.id)?;
         let active_work_item_waiting_intents = active_wait_conditions
             .iter()
             .filter(|condition| condition.work_item_id.is_some())

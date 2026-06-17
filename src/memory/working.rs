@@ -2,9 +2,7 @@ use anyhow::Result;
 
 use crate::{
     storage::AppStorage,
-    types::{
-        AgentState, ClosureDecision, TodoItemState, WorkingMemorySnapshot,
-    },
+    types::{AgentState, ClosureDecision, TodoItemState, WorkingMemorySnapshot},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

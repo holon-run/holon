@@ -17,8 +17,7 @@ use crate::{
         ExternalTriggerScope, ExternalTriggerStatus, MessageBody, MessageDeliverySurface,
         MessageEnvelope, MessageKind, MessageOrigin, SkillsRuntimeView, TaskRecord, TodoItemState,
         ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnRecord,
-        WaitConditionRecord, WorkItemRecord, WorkItemRefStatus,
-        WorkingMemorySnapshot,
+        WaitConditionRecord, WorkItemRecord, WorkItemRefStatus, WorkingMemorySnapshot,
     },
 };
 
@@ -3187,8 +3186,8 @@ mod tests {
             ContinuationTriggerKind, EpisodeBoundaryReason, ExternalTriggerScope, LoadedAgentsMd,
             MessageKind, MessageOrigin, Priority, TaskKind, TaskStatus, TodoItem, TodoItemState,
             ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind,
-            WaitConditionKind, WakeSource, WorkItemRef, WorkItemRefKind, WorkItemRefStatus,
-            WaitConditionStatus, WorkItemState,
+            WaitConditionKind, WaitConditionStatus, WakeSource, WorkItemRef, WorkItemRefKind,
+            WorkItemRefStatus, WorkItemState,
         },
     };
 
