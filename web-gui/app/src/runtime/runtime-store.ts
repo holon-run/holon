@@ -704,6 +704,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
             bootstrapError: bootstrap.connection.error,
           };
         });
+        syncGlobalEventRoster(get, set);
       } catch (error) {
         set({
           bootstrapLoading: false,
@@ -1220,10 +1221,11 @@ function stopGlobalEventStream(set: StoreSet): void {
 }
 
 function registerAgentForEvents(get: () => RuntimeStoreState, set: StoreSet, agentId: string): void {
+  const wasSubscribed = globalStreamSubscribedAgents.has(agentId);
   globalStreamSubscribedAgents.add(agentId);
   // Initialize seq tracking from existing session state.
-  const session = get().sessionsByAgentId[agentId];
-  if (session) {
+  const session = wasSubscribed ? undefined : get().sessionsByAgentId[agentId];
+  if (session && !agentLastSeenSeq.has(agentId)) {
     const lastSeq = highestSeq(session.eventSeqs) ?? session.newestSeq;
     if (lastSeq != null) {
       agentLastSeenSeq.set(agentId, lastSeq);
@@ -1232,12 +1234,22 @@ function registerAgentForEvents(get: () => RuntimeStoreState, set: StoreSet, age
   // Start global stream if not running.
   startGlobalEventStream(get, set);
   // Initial backfill from the last known seq.
-  void backfillAgentEvents(set, agentId);
+  if (!wasSubscribed) void backfillAgentEvents(set, agentId);
 }
 
 function unregisterAgentForEvents(agentId: string): void {
   globalStreamSubscribedAgents.delete(agentId);
   agentLastSeenSeq.delete(agentId);
+}
+
+function syncGlobalEventRoster(get: () => RuntimeStoreState, set: StoreSet): void {
+  const agentIds = new Set(get().bootstrap.agents.map((agent) => agent.id));
+  for (const agentId of Array.from(globalStreamSubscribedAgents)) {
+    if (!agentIds.has(agentId)) unregisterAgentForEvents(agentId);
+  }
+  for (const agentId of agentIds) {
+    registerAgentForEvents(get, set, agentId);
+  }
 }
 
 function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto): void {

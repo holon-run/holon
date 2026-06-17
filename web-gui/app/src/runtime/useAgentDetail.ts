@@ -14,7 +14,6 @@ export function useAgentDetail(agentId: string | undefined, displayLevel: Displa
   const loading = useRuntimeStore((state) => (agentId ? state.sessionsByAgentId[agentId]?.loading ?? false : false));
   const refreshAgentDetail = useRuntimeStore((state) => state.refreshAgentDetail);
   const registerAgentForEvents = useRuntimeStore((state) => state.registerAgentForEvents);
-  const unregisterAgentForEvents = useRuntimeStore((state) => state.unregisterAgentForEvents);
   const refresh = async () => {
     await refreshAgentDetail(agentId, displayLevel);
   };
@@ -22,11 +21,10 @@ export function useAgentDetail(agentId: string | undefined, displayLevel: Displa
   useEffect(() => {
     if (!agentId) return;
     registerAgentForEvents(agentId);
-    void refreshAgentDetail(agentId, displayLevel);
-    return () => {
-      unregisterAgentForEvents(agentId);
-    };
-  }, [agentId, displayLevel, refreshAgentDetail, registerAgentForEvents, unregisterAgentForEvents]);
+    if (!detail || detail.error) {
+      void refreshAgentDetail(agentId, displayLevel);
+    }
+  }, [agentId, detail, displayLevel, refreshAgentDetail, registerAgentForEvents]);
 
   return { detail, loading, refresh };
 }
