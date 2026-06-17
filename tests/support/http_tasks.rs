@@ -181,32 +181,48 @@ pub async fn create_command_task_route_accepts_command_request() -> Result<()> {
 
 pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
-    let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
-    let now = chrono::Utc::now();
-    let task = |id: &str, status: TaskStatus, offset: i64| TaskRecord {
-        id: id.into(),
-        agent_id: "default".into(),
-        kind: TaskKind::CommandTask,
-        status: status.clone(),
-        created_at: now + chrono::Duration::seconds(offset),
-        updated_at: now + chrono::Duration::seconds(offset),
-        parent_message_id: None,
-        work_item_id: None,
-        summary: Some(format!("{id} {status:?}")),
-        detail: None,
-        recovery: None,
+
+    let create_task = |summary: &str, cmd: &str, yield_time_ms: u64| {
+        client
+            .post(format!("{base}/control/agents/default/tasks"))
+            .json(&serde_json::json!({
+                "summary": summary,
+                "cmd": cmd,
+                "login": false,
+                "yield_time_ms": yield_time_ms
+            }))
     };
 
-    for task in [
-        task("task-terminal", TaskStatus::Queued, 0),
-        task("task-running", TaskStatus::Running, 1),
-        task("task-terminal", TaskStatus::Completed, 2),
-        task("task-cancelling", TaskStatus::Cancelling, 3),
-    ] {
-        runtime.storage().append_task(&task)?;
-        host.runtime_db().tasks().upsert(&task)?;
-    }
+    let first: serde_json::Value = create_task("active one", "sleep 30", 1)
+        .send()
+        .await?
+        .json()
+        .await?;
+    let first_id = first["id"].as_str().expect("task id").to_string();
+    let second: serde_json::Value = create_task("active two", "sleep 30", 1)
+        .send()
+        .await?
+        .json()
+        .await?;
+    let second_id = second["id"].as_str().expect("task id").to_string();
+    create_task("terminal task", "printf done", 1000)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let runtime = host.default_runtime().await?;
+    eventually_async(|| {
+        let runtime = runtime.clone();
+        let first_id = first_id.clone();
+        let second_id = second_id.clone();
+        async move {
+            let tasks = runtime.active_tasks(10).await?;
+            Ok(tasks.iter().any(|task| task.id == first_id)
+                && tasks.iter().any(|task| task.id == second_id))
+        }
+    })
+    .await?;
 
     let tasks: serde_json::Value = client
         .get(format!("{base}/agents/default/tasks"))
@@ -220,7 +236,8 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
         .iter()
         .map(|task| task["id"].as_str().unwrap_or_default())
         .collect::<Vec<_>>();
-    assert_eq!(task_ids, vec!["task-cancelling", "task-running"]);
+    assert!(task_ids.contains(&first_id.as_str()));
+    assert!(task_ids.contains(&second_id.as_str()));
 
     let snapshot: serde_json::Value = client
         .get(format!("{base}/agents/default/state"))
@@ -234,7 +251,24 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
         .iter()
         .map(|task| task["id"].as_str().unwrap_or_default())
         .collect::<Vec<_>>();
-    assert_eq!(state_task_ids, vec!["task-cancelling", "task-running"]);
+    assert_eq!(state_task_ids, task_ids);
+
+    client
+        .post(format!(
+            "{base}/control/agents/default/tasks/{first_id}/stop"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .error_for_status()?;
+    client
+        .post(format!(
+            "{base}/control/agents/default/tasks/{second_id}/stop"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await?
+        .error_for_status()?;
 
     server.abort();
     Ok(())
