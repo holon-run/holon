@@ -1516,7 +1516,7 @@ function badgeFor(id: string): string {
 
 /**
  * Deterministic hue (0-360) from agent id for avatar color.
- * Uses a curated palette of 10 evenly-spaced hues with controlled
+ * Uses a curated palette of 20 evenly-spaced hues with controlled
  * saturation/lightness so white text stays readable (WCAG AA).
  */
 function hueFor(id: string): number {
@@ -1524,7 +1524,7 @@ function hueFor(id: string): number {
   for (let i = 0; i < id.length; i++) {
     hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
   }
-  const palette = [12, 38, 160, 190, 210, 260, 290, 330, 350, 0];
+  const palette = [0, 18, 35, 52, 90, 130, 160, 175, 190, 205, 220, 240, 260, 275, 290, 310, 325, 340, 355, 8];
   return palette[Math.abs(hash) % palette.length];
 }
 
