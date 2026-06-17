@@ -680,6 +680,10 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) return undefined;
       return streamAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
     },
+    streamGlobalEvents(options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
+      if (!baseUrl) return undefined;
+      return streamGlobalEvents(baseUrl, fetchImpl, requestHeaders, options);
+    },
     async sendOperatorPrompt(agentId: string, text: string): Promise<void> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
@@ -849,6 +853,19 @@ function streamAgentEvents(
 
   void readEventStream(fetchImpl, `${baseUrl}${path}`, headers, controller.signal, options);
 
+  return {
+    close: () => controller.abort(),
+  };
+}
+function streamGlobalEvents(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  options: AgentEventStreamOptions,
+): AgentEventStreamSubscription {
+  const controller = new AbortController();
+  const path = "/events/stream";
+  void readEventStream(fetchImpl, `${baseUrl}${path}`, headers, controller.signal, options);
   return {
     close: () => controller.abort(),
   };

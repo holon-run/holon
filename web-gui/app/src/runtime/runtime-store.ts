@@ -211,6 +211,10 @@ export interface RuntimeStoreState {
   clearAgentModel: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   startAgentEventStream: (agentId: string | undefined, displayLevel: DisplayLevel) => void;
   stopAgentEventStream: (agentId: string | undefined) => void;
+  startGlobalEventStream: () => void;
+  stopGlobalEventStream: () => void;
+  registerAgentForEvents: (agentId: string) => void;
+  unregisterAgentForEvents: (agentId: string) => void;
 }
 
 const LEGACY_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1";
@@ -224,6 +228,13 @@ const pendingStreamEvents = new Map<string, StreamEventEnvelopeDto[]>();
 const streamFlushTimers = new Map<string, number>();
 const reconnectTimers = new Map<string, number>();
 const staleTimers = new Map<string, number>();
+let globalEventStream: AgentEventStreamSubscription | undefined;
+let globalStreamReconnectTimer: number | undefined;
+let globalStreamStaleTimer: number | undefined;
+let globalStreamReconnectAttempt = 0;
+const globalStreamSubscribedAgents = new Set<string>();
+const agentLastSeenSeq = new Map<string, number>();
+const backfillInFlight = new Set<string>();
 const messageHydrationInFlight = new Map<string, Set<string>>();
 const transcriptHydrationInFlight = new Map<string, Set<string>>();
 const briefHydrationInFlight = new Map<string, Set<string>>();
@@ -237,6 +248,8 @@ const STREAM_FLUSH_INTERVAL_MS = 100;
 const STREAM_STALE_TIMEOUT_MS = 45_000;
 const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
+const GLOBAL_STREAM_STALE_TIMEOUT_MS = 45_000;
+const GLOBAL_BACKFILL_LIMIT = 100;
 
 function runtimeClientOptions(config: RuntimeConnectionConfig) {
   return config.mode === "remote" ? { mode: "remote" as const, baseUrl: config.baseUrl, token: config.token } : { mode: "local" as const };
@@ -513,6 +526,20 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     for (const subscription of activeEventStreams.values()) subscription.close();
     activeEventStreams.clear();
     pendingStreamEvents.clear();
+    globalEventStream?.close();
+    globalEventStream = undefined;
+    if (globalStreamReconnectTimer != null) {
+      window.clearTimeout(globalStreamReconnectTimer);
+      globalStreamReconnectTimer = undefined;
+    }
+    if (globalStreamStaleTimer != null) {
+      window.clearTimeout(globalStreamStaleTimer);
+      globalStreamStaleTimer = undefined;
+    }
+    globalStreamSubscribedAgents.clear();
+    agentLastSeenSeq.clear();
+    backfillInFlight.clear();
+    globalStreamReconnectAttempt = 0;
     messageHydrationInFlight.clear();
     transcriptHydrationInFlight.clear();
     briefHydrationInFlight.clear();
@@ -989,6 +1016,18 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     if (!agentId) return;
     stopAgentEventStream(agentId, set);
   },
+  startGlobalEventStream: () => {
+    startGlobalEventStream(get, set);
+  },
+  stopGlobalEventStream: () => {
+    stopGlobalEventStream(set);
+  },
+  registerAgentForEvents: (agentId) => {
+    registerAgentForEvents(get, set, agentId);
+  },
+  unregisterAgentForEvents: (agentId) => {
+    unregisterAgentForEvents(agentId);
+  },
 }));
 
 function emptyAgentSession(): AgentSessionState {
@@ -1017,6 +1056,169 @@ type StoreSet = (
     | ((state: RuntimeStoreState) => Partial<RuntimeStoreState> | RuntimeStoreState),
   replace?: false,
 ) => void;
+
+// ─── Global event stream ────────────────────────────────────────────
+
+function startGlobalEventStream(get: () => RuntimeStoreState, set: StoreSet): void {
+  if (globalEventStream) return;
+
+  const subscription = runtimeClient.streamGlobalEvents({
+    onOpen: () => {
+      globalStreamReconnectAttempt = 0;
+      scheduleGlobalStaleWatchdog(get, set);
+      // Backfill all registered agents on (re)connect.
+      for (const agentId of globalStreamSubscribedAgents) {
+        void backfillAgentEvents(set, agentId);
+      }
+    },
+    onActivity: () => {
+      scheduleGlobalStaleWatchdog(get, set);
+    },
+    onEvent: (event) => {
+      scheduleGlobalStaleWatchdog(get, set);
+      dispatchGlobalStreamEvent(set, event);
+    },
+    onClose: () => scheduleGlobalStreamReconnect(get, set, "global event stream closed"),
+    onError: (error) => scheduleGlobalStreamReconnect(get, set, error.message),
+  });
+  if (!subscription) return;
+  globalEventStream = subscription;
+}
+
+function stopGlobalEventStream(set: StoreSet): void {
+  globalEventStream?.close();
+  globalEventStream = undefined;
+  if (globalStreamReconnectTimer != null) {
+    window.clearTimeout(globalStreamReconnectTimer);
+    globalStreamReconnectTimer = undefined;
+  }
+  if (globalStreamStaleTimer != null) {
+    window.clearTimeout(globalStreamStaleTimer);
+    globalStreamStaleTimer = undefined;
+  }
+  globalStreamReconnectAttempt = 0;
+  // Flush any pending events for all agents.
+  for (const agentId of globalStreamSubscribedAgents) {
+    flushStreamEvents(set, agentId);
+  }
+}
+
+function registerAgentForEvents(get: () => RuntimeStoreState, set: StoreSet, agentId: string): void {
+  globalStreamSubscribedAgents.add(agentId);
+  // Initialize seq tracking from existing session state.
+  const session = get().sessionsByAgentId[agentId];
+  if (session) {
+    const lastSeq = highestSeq(session.eventSeqs) ?? session.newestSeq;
+    if (lastSeq != null) {
+      agentLastSeenSeq.set(agentId, lastSeq);
+    }
+  }
+  // Start global stream if not running.
+  startGlobalEventStream(get, set);
+  // Initial backfill from the last known seq.
+  void backfillAgentEvents(set, agentId);
+}
+
+function unregisterAgentForEvents(agentId: string): void {
+  globalStreamSubscribedAgents.delete(agentId);
+  agentLastSeenSeq.delete(agentId);
+}
+
+function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto): void {
+  const agentId = event.agent_id;
+  if (!agentId || !globalStreamSubscribedAgents.has(agentId)) return;
+
+  const seq = event.event_seq;
+  if (seq != null) {
+    const lastSeq = agentLastSeenSeq.get(agentId);
+    if (lastSeq != null && seq > lastSeq + 1) {
+      // Gap detected — trigger backfill.
+      void backfillAgentEvents(set, agentId);
+    }
+    agentLastSeenSeq.set(agentId, Math.max(seq, lastSeq ?? 0));
+  }
+
+  enqueueStreamEvent(set, agentId, event);
+  scheduleBootstrapRefresh(useRuntimeStore.getState);
+}
+
+async function backfillAgentEvents(set: StoreSet, agentId: string): Promise<void> {
+  if (backfillInFlight.has(agentId)) return;
+  const afterSeq = agentLastSeenSeq.get(agentId);
+  if (afterSeq == null) return; // No seq baseline yet; initial fetch handles this.
+  backfillInFlight.add(agentId);
+  try {
+    let cursor = afterSeq;
+    let hasMore = true;
+    while (hasMore) {
+      const page = await runtimeClient.getAgentEvents(agentId, {
+        afterSeq: cursor,
+        order: "asc",
+        limit: GLOBAL_BACKFILL_LIMIT,
+      });
+      const events = (page.events ?? []).filter((e) => e.event_seq != null);
+      if (!events.length) break;
+      // Convert EventEnvelopeDto to StreamEventEnvelopeDto for the reducer.
+      const streamEvents: StreamEventEnvelopeDto[] = events.map((e) => ({
+        id: e.id,
+        event_seq: e.event_seq,
+        ts: e.ts,
+        agent_id: agentId,
+        type: e.type,
+        payload: e.payload,
+      }));
+      applyStreamEvents(set, agentId, streamEvents);
+      const maxSeq = events.reduce((max, e) => Math.max(max, e.event_seq!), 0);
+      agentLastSeenSeq.set(agentId, Math.max(maxSeq, agentLastSeenSeq.get(agentId) ?? 0));
+      cursor = maxSeq;
+      hasMore = events.length >= GLOBAL_BACKFILL_LIMIT;
+    }
+  } catch {
+    // Silently ignore backfill errors; the stream will retry.
+  } finally {
+    backfillInFlight.delete(agentId);
+  }
+}
+
+function scheduleGlobalStaleWatchdog(get: () => RuntimeStoreState, set: StoreSet): void {
+  if (globalStreamStaleTimer != null) window.clearTimeout(globalStreamStaleTimer);
+  globalStreamStaleTimer = window.setTimeout(() => {
+    if (!globalEventStream) return;
+    for (const agentId of globalStreamSubscribedAgents) {
+      flushStreamEvents(set, agentId);
+    }
+    scheduleGlobalStreamReconnect(get, set, "global event stream idle timeout");
+  }, GLOBAL_STREAM_STALE_TIMEOUT_MS);
+}
+
+function scheduleGlobalStreamReconnect(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  reason: string,
+): void {
+  globalEventStream?.close();
+  globalEventStream = undefined;
+  if (globalStreamStaleTimer != null) {
+    window.clearTimeout(globalStreamStaleTimer);
+    globalStreamStaleTimer = undefined;
+  }
+  if (globalStreamReconnectTimer != null) return;
+
+  globalStreamReconnectAttempt += 1;
+  const delay = reconnectDelayMs(globalStreamReconnectAttempt);
+  for (const agentId of globalStreamSubscribedAgents) {
+    setStreamState(set, agentId, "reconnecting", {
+      reconnectAttempt: globalStreamReconnectAttempt,
+      error: reason,
+    });
+  }
+  globalStreamReconnectTimer = window.setTimeout(() => {
+    globalStreamReconnectTimer = undefined;
+    startGlobalEventStream(get, set);
+  }, delay);
+}
+
+// ─── End global event stream ────────────────────────────────────────
 
 function stopAgentEventStream(agentId: string, set?: StoreSet): void {
   if (set) flushStreamEvents(set, agentId);
