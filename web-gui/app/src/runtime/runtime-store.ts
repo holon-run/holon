@@ -538,6 +538,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   runtimeConfigSaving: false,
   search: null,
   searchLoading: false,
+  credentialStore: { profiles: [] },
+  credentialStoreLoading: false,
+  credentialStoreError: undefined,
   rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig)),
   sessionsByAgentId: {},
 

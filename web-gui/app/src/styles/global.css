@@ -2500,6 +2500,21 @@ code {
   gap: 10px;
 }
 
+.settings-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: var(--font-size-xs, 11px);
+  color: var(--text-secondary, var(--muted));
+  line-height: 1.5;
+}
+
+.settings-hint code {
+  font-size: inherit;
+  background: var(--surface-raised, rgba(0, 0, 0, 0.06));
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
 .settings-checkbox {
   display: flex !important;
   grid-template-columns: none !important;

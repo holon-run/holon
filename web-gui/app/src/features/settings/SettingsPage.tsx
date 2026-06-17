@@ -651,7 +651,14 @@ export function SettingsPage({
                         </label>
                         <label>
                           <span>Credential source</span>
-                          <select value={draft.credentialSource} onChange={(event) => updateProviderDraft(provider.id, { credentialSource: event.target.value })}>
+                          <select value={draft.credentialSource} onChange={(event) => {
+                            const source = event.target.value;
+                            if (source === "credential_profile" && !draft.credentialProfile?.trim()) {
+                              updateProviderDraft(provider.id, { credentialSource: source, credentialProfile: `${provider.id}:default` });
+                            } else {
+                              updateProviderDraft(provider.id, { credentialSource: source });
+                            }
+                          }}>
                             {credentialSources.map((source) => (
                               <option key={source} value={source}>
                                 {source}
@@ -679,6 +686,9 @@ export function SettingsPage({
                           <span>Credential profile</span>
                           <input value={draft.credentialProfile ?? ""} onChange={(event) => updateProviderDraft(provider.id, { credentialProfile: event.target.value })} />
                         </label>
+                        {draft.credentialSource === "credential_profile" ? (
+                          <p className="settings-hint">Auto-named <code>{provider.id}:default</code> if left empty. Multiple providers can share one profile; use different names (e.g. <code>{provider.id}:work</code>) for separate keys.</p>
+                        ) : null}
                       </div>
                       <label>
                         <span>External credential provider</span>
