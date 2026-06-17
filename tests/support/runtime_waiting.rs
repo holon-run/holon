@@ -96,9 +96,7 @@ pub async fn turn_execution_boundary_persists_queue_transcript_and_briefs() -> R
         .filter(|entry| entry.message_id == message.id)
         .map(|entry| entry.status.clone())
         .collect::<Vec<_>>();
-    assert!(statuses.contains(&QueueEntryStatus::Queued));
-    assert!(statuses.contains(&QueueEntryStatus::Dequeued));
-    assert!(statuses.contains(&QueueEntryStatus::Processed));
+    assert_eq!(statuses, vec![QueueEntryStatus::Processed]);
 
     let transcript = runtime.storage().read_recent_transcript(20)?;
     assert!(transcript.iter().any(|entry| {
