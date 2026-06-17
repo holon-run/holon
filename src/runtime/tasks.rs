@@ -2255,8 +2255,7 @@ impl RuntimeHandle {
                 "work_item_continuation_resumed",
                 serde_json::json!({
                     "agent_id": agent_id,
-                    "frame": resolved,
-                    "reason": "explicit_pick",
+                    "continuation": continuation_summary(&resolved, "explicit_pick"),
                 }),
             ))?;
         }
@@ -2274,8 +2273,7 @@ impl RuntimeHandle {
                     "work_item_continuation_cancelled",
                     serde_json::json!({
                         "agent_id": agent_id,
-                        "frame": cancelled,
-                        "reason": "current_focus_reselected",
+                        "continuation": continuation_summary(&cancelled, "current_focus_reselected"),
                     }),
                 ))?;
             }
@@ -2312,8 +2310,7 @@ impl RuntimeHandle {
                     "work_item_continuation_created",
                     serde_json::json!({
                         "agent_id": agent_id,
-                        "frame": frame,
-                        "reason": "pick_work_item",
+                        "continuation": continuation_summary(&frame, "pick_work_item"),
                     }),
                 ))?;
             }
@@ -2493,14 +2490,7 @@ impl RuntimeHandle {
                 .upsert(&record, current_focus)?;
             self.inner.storage.append_work_item(&record)?;
             if plan_artifact_changed && record.plan_artifact != existing.plan_artifact {
-                self.inner.storage.append_event(&AuditEvent::new(
-                    "work_item_plan_artifact_refreshed",
-                    serde_json::json!({
-                        "work_item_id": record.id.clone(),
-                        "revision": record.revision,
-                        "plan_artifact": record.plan_artifact.clone(),
-                    }),
-                ))?;
+                self.append_work_item_plan_artifact_refreshed_event(&record)?;
             }
             self.append_work_item_written_event(
                 "updated",
@@ -2564,14 +2554,7 @@ impl RuntimeHandle {
             .upsert(&record, current_focus)?;
         self.inner.storage.append_work_item(&record)?;
         if plan_artifact_changed {
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_plan_artifact_refreshed",
-                serde_json::json!({
-                    "work_item_id": record.id.clone(),
-                    "revision": record.revision,
-                    "plan_artifact": record.plan_artifact.clone(),
-                }),
-            ))?;
+            self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_recheck_consumed",
@@ -2627,14 +2610,7 @@ impl RuntimeHandle {
         self.inner.runtime_db.work_items().upsert(&record, false)?;
         self.inner.storage.append_work_item(&record)?;
         if plan_artifact_changed {
-            self.inner.storage.append_event(&AuditEvent::new(
-                "work_item_plan_artifact_refreshed",
-                serde_json::json!({
-                    "work_item_id": record.id.clone(),
-                    "revision": record.revision,
-                    "plan_artifact": record.plan_artifact.clone(),
-                }),
-            ))?;
+            self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
         {
             self.release_current_work_item_if_matches(&agent_id, &record, "work_item_completed")
@@ -2805,8 +2781,7 @@ impl RuntimeHandle {
                 "work_item_continuation_cancelled",
                 serde_json::json!({
                     "agent_id": agent_id,
-                    "frame": cancelled,
-                    "reason": "suspended_work_item_missing",
+                    "continuation": continuation_summary(&cancelled, "suspended_work_item_missing"),
                 }),
             ))?;
             return Ok(None);
@@ -2820,8 +2795,7 @@ impl RuntimeHandle {
                 "work_item_continuation_cancelled",
                 serde_json::json!({
                     "agent_id": agent_id,
-                    "frame": cancelled,
-                    "reason": "suspended_work_item_not_open",
+                    "continuation": continuation_summary(&cancelled, "suspended_work_item_not_open"),
                     "suspended_work_item_state": suspended.state,
                 }),
             ))?;
@@ -2845,8 +2819,7 @@ impl RuntimeHandle {
             "work_item_continuation_resumed",
             serde_json::json!({
                 "agent_id": agent_id,
-                "frame": resumed,
-                "reason": "active_work_item_completed",
+                "continuation": summary,
                 "completed_work_item_id": completed.id,
                 "resumed_work_item_id": suspended.id,
             }),

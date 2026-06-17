@@ -1273,10 +1273,22 @@ async fn turn_end_refreshes_changed_work_item_plan_artifact_snapshot() {
         committed.plan_artifact.as_ref().unwrap().hash
     );
     let events = runtime.storage().read_recent_events(20).unwrap();
-    assert!(events
+    let refreshed = events
         .iter()
-        .any(|event| event.kind == "work_item_plan_artifact_refreshed"
-            && event.data["work_item_id"].as_str() == Some(work.id.as_str())));
+        .find(|event| {
+            event.kind == "work_item_plan_artifact_refreshed"
+                && event.data["work_item_id"].as_str() == Some(work.id.as_str())
+        })
+        .expect("plan artifact refresh event");
+    assert!(refreshed.data.get("plan_artifact").is_none());
+    assert_eq!(
+        refreshed.data["plan_artifact_hash"].as_str(),
+        Some(committed.plan_artifact.as_ref().unwrap().hash.as_str())
+    );
+    assert_eq!(
+        refreshed.data["preview_complete"].as_bool(),
+        Some(committed.plan_artifact.as_ref().unwrap().preview_complete)
+    );
 }
 
 #[tokio::test]
@@ -5019,6 +5031,21 @@ async fn pick_from_runnable_current_yields_and_complete_resumes_caller() {
             && event.data["reason"].as_str() == Some("continuation_resumed")
             && event.data["work_item_id"].as_str() == Some(current.id.as_str())
     }));
+    let continuation_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.kind.starts_with("work_item_continuation_"))
+        .collect();
+    assert!(continuation_events
+        .iter()
+        .any(|event| event.data["continuation"]["frame_id"].as_str()
+            == Some(created.frame_id.as_str())));
+    assert!(continuation_events
+        .iter()
+        .any(|event| event.data["continuation"]["frame_id"].as_str()
+            == Some(resumed.frame_id.as_str())));
+    assert!(continuation_events
+        .iter()
+        .all(|event| event.data.get("frame").is_none()));
 }
 
 #[tokio::test]

@@ -1754,7 +1754,19 @@ impl RuntimeHandle {
         self.inner.storage.append_turn(&record)?;
         self.inner.storage.append_event(&AuditEvent::new(
             "turn_record",
-            serde_json::to_value(&record)?,
+            serde_json::json!({
+                "turn_id": record.turn_id,
+                "turn_index": record.turn_index,
+                "agent_id": record.agent_id,
+                "run_id": record.run_id,
+                "current_work_item_id": record.current_work_item_id,
+                "tool_execution_ids": record.tool_execution_ids,
+                "produced_brief_ids": record.produced_brief_ids,
+                "completed_work_item_ids": record.completed_work_item_ids,
+                "waiting_condition_ids": record.waiting_condition_ids,
+                "terminal": record.terminal,
+                "created_at": record.created_at,
+            }),
         ))?;
         Ok(())
     }
@@ -1924,7 +1936,11 @@ impl RuntimeHandle {
             serde_json::json!({
                 "run_id": run_id,
                 "reason": reason,
-                "record": record,
+                "turn_id": record.turn_id.clone(),
+                "turn_index": record.turn_index,
+                "kind": record.kind,
+                "completed_at": record.completed_at,
+                "duration_ms": record.duration_ms,
             }),
         ))?;
         Ok(record)
