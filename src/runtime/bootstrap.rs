@@ -31,8 +31,8 @@ use crate::{
 };
 
 use super::{
-    scheduler_executor, workspace, InitialWorkspaceBinding, RuntimeAgent, RuntimeHandle,
-    RuntimeInner,
+    scheduler_executor, workspace, AgentRuntimeProjectionCache, InitialWorkspaceBinding,
+    RuntimeAgent, RuntimeHandle, RuntimeInner,
 };
 
 #[derive(Debug, Clone)]
@@ -188,6 +188,7 @@ impl RuntimeHandle {
             queue,
             active_tasks,
             active_timers,
+            projection_cache,
         } = prepare_runtime_storage(agent_id, data_dir, initial_workspace, runtime_db)?;
         if let Some(event_bus) = event_bus {
             storage.enable_event_bus(event_bus)?;
@@ -219,6 +220,7 @@ impl RuntimeHandle {
                     queue,
                     current_run_abort: None,
                 }),
+                projection_cache: Mutex::new(projection_cache),
                 notify: Notify::new(),
                 storage,
                 runtime_db,
@@ -511,6 +513,7 @@ struct PreparedRuntimeStorage {
     queue: RuntimeQueue,
     active_tasks: Vec<crate::types::TaskRecord>,
     active_timers: Vec<crate::types::TimerRecord>,
+    projection_cache: AgentRuntimeProjectionCache,
 }
 
 fn prepare_runtime_storage(
@@ -796,6 +799,18 @@ fn prepare_runtime_storage(
         crate::runtime_db::RuntimeDb::expected_storage_domains(),
     )?;
     storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
+    let projection_cache = AgentRuntimeProjectionCache::rebuild(
+        state.id.clone(),
+        runtime_db.tasks().latest_for_agent(&state.id, usize::MAX)?,
+        runtime_db
+            .work_items()
+            .latest_for_agent(&state.id, usize::MAX)?,
+        runtime_db
+            .timers()
+            .recent_for_agent(&state.id, usize::MAX)?,
+        storage.read_recent_waiting_intents(usize::MAX)?,
+        runtime_db.external_triggers().latest_for_agent(&state.id)?,
+    );
 
     Ok(PreparedRuntimeStorage {
         storage,
@@ -804,6 +819,7 @@ fn prepare_runtime_storage(
         queue,
         active_tasks: snapshot.active_tasks,
         active_timers: snapshot.active_timers,
+        projection_cache,
     })
 }
 

@@ -2159,7 +2159,7 @@ impl RuntimeHandle {
             .map(|entry| entry.workspace_id)
             .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
         self.inner.runtime_db.work_items().upsert(&record, false)?;
-        self.inner.storage.append_work_item(&record)?;
+        self.record_work_item_projection(&record).await?;
         self.append_work_item_written_event("created", &record, Value::Null)?;
         self.inner.notify.notify_one();
         Ok(record)
@@ -2488,7 +2488,7 @@ impl RuntimeHandle {
                 .runtime_db
                 .work_items()
                 .upsert(&record, current_focus)?;
-            self.inner.storage.append_work_item(&record)?;
+            self.record_work_item_projection(&record).await?;
             if plan_artifact_changed && record.plan_artifact != existing.plan_artifact {
                 self.append_work_item_plan_artifact_refreshed_event(&record)?;
             }
@@ -2552,7 +2552,7 @@ impl RuntimeHandle {
             .runtime_db
             .work_items()
             .upsert(&record, current_focus)?;
-        self.inner.storage.append_work_item(&record)?;
+        self.record_work_item_projection(&record).await?;
         if plan_artifact_changed {
             self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
@@ -2608,7 +2608,7 @@ impl RuntimeHandle {
             &mut record,
         )?;
         self.inner.runtime_db.work_items().upsert(&record, false)?;
-        self.inner.storage.append_work_item(&record)?;
+        self.record_work_item_projection(&record).await?;
         if plan_artifact_changed {
             self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
@@ -2709,7 +2709,7 @@ impl RuntimeHandle {
             ..existing
         };
         self.inner.runtime_db.work_items().upsert(&record, false)?;
-        self.inner.storage.append_work_item(&record)?;
+        self.record_work_item_projection(&record).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_completion_report_promoted",
             serde_json::json!({

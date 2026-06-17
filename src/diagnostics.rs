@@ -19,6 +19,10 @@ static HTTP_OTHER: MetricAccumulator = MetricAccumulator::new("http.json.other")
 
 static PROJECTION_AGENT_SUMMARY: MetricAccumulator =
     MetricAccumulator::new("projection.agent_summary");
+static PROJECTION_RUNTIME_CACHE_REBUILD: MetricAccumulator =
+    MetricAccumulator::new("projection.runtime_current_cache.rebuild");
+static PROJECTION_RUNTIME_CACHE_READ: MetricAccumulator =
+    MetricAccumulator::new("projection.runtime_current_cache.read");
 static DB_CONNECTION_OPEN: MetricAccumulator = MetricAccumulator::new("db.connection.open");
 
 static SCHEDULER_POLL_ALL: MetricAccumulator = MetricAccumulator::new("scheduler.poll.all");
@@ -120,6 +124,16 @@ pub fn record_agent_summary_projection(elapsed: Duration) {
     PROJECTION_AGENT_SUMMARY.record(elapsed, None);
 }
 
+pub fn record_runtime_projection_cache_rebuild() {
+    process_started_at();
+    PROJECTION_RUNTIME_CACHE_REBUILD.record(Duration::ZERO, None);
+}
+
+pub fn record_runtime_projection_cache_read() {
+    process_started_at();
+    PROJECTION_RUNTIME_CACHE_READ.record(Duration::ZERO, None);
+}
+
 pub fn record_runtime_db_connection_open(elapsed: Duration) {
     process_started_at();
     DB_CONNECTION_OPEN.record(elapsed, None);
@@ -144,7 +158,11 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             HTTP_AGENT_STATE.snapshot(true),
             HTTP_OTHER.snapshot(true),
         ],
-        projections: vec![PROJECTION_AGENT_SUMMARY.snapshot(false)],
+        projections: vec![
+            PROJECTION_AGENT_SUMMARY.snapshot(false),
+            PROJECTION_RUNTIME_CACHE_REBUILD.snapshot(false),
+            PROJECTION_RUNTIME_CACHE_READ.snapshot(false),
+        ],
         db: vec![DB_CONNECTION_OPEN.snapshot(false)],
         scheduler: vec![
             SCHEDULER_POLL_ALL.snapshot(false),
@@ -197,6 +215,8 @@ mod tests {
     fn snapshot_includes_bounded_runtime_hotspot_groups() {
         record_http_json_response("/agents/{agent_id}/state", Duration::from_millis(7), 1024);
         record_agent_summary_projection(Duration::from_millis(3));
+        record_runtime_projection_cache_rebuild();
+        record_runtime_projection_cache_read();
         record_runtime_db_connection_open(Duration::from_millis(2));
         record_scheduler_poll("idle", Duration::from_millis(1));
 
@@ -213,6 +233,12 @@ mod tests {
             .projections
             .iter()
             .any(|metric| metric.name == "projection.agent_summary" && metric.count >= 1));
+        assert!(snapshot.projections.iter().any(|metric| {
+            metric.name == "projection.runtime_current_cache.rebuild" && metric.count >= 1
+        }));
+        assert!(snapshot.projections.iter().any(|metric| {
+            metric.name == "projection.runtime_current_cache.read" && metric.count >= 1
+        }));
         assert!(snapshot
             .db
             .iter()
