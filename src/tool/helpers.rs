@@ -35,6 +35,8 @@ where
     T: DeserializeOwned,
     F: FnOnce() -> String,
 {
+    let coerced = coerce_string_scalars(input);
+    let input = coerced.as_ref().unwrap_or(input);
     serde_json::from_value(input.clone()).map_err(|error| {
         anyhow::Error::from(
             ToolError::new(
@@ -48,6 +50,84 @@ where
             .with_recovery_hint(recovery_hint()),
         )
     })
+}
+
+/// Recursively coerces string scalars to their typed JSON equivalents so that
+/// minor LLM mistakes (e.g. `"42"` instead of `42`, `"true"` instead of `true`)
+/// do not cause hard schema failures during `serde_json::from_value`.
+///
+/// Only pure numeric strings and the exact strings `"true"` / `"false"` are
+/// converted. Mixed strings like `"10px"` or `"hello"` are left untouched.
+/// Returns `None` when no changes were made so the caller can avoid a
+/// needless clone.
+fn coerce_string_scalars(value: &Value) -> Option<Value> {
+    coerce_value(value)
+}
+
+fn coerce_value(value: &Value) -> Option<Value> {
+    match value {
+        Value::Object(map) => {
+            let mut changed = false;
+            let mut new_map = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                match coerce_value(v) {
+                    Some(coerced) => {
+                        new_map.insert(k.clone(), coerced);
+                        changed = true;
+                    }
+                    None => {
+                        new_map.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            if changed {
+                Some(Value::Object(new_map))
+            } else {
+                None
+            }
+        }
+        Value::Array(arr) => {
+            let mut changed = false;
+            let mut new_arr = Vec::with_capacity(arr.len());
+            for v in arr {
+                match coerce_value(v) {
+                    Some(coerced) => {
+                        new_arr.push(coerced);
+                        changed = true;
+                    }
+                    None => {
+                        new_arr.push(v.clone());
+                    }
+                }
+            }
+            if changed {
+                Some(Value::Array(new_arr))
+            } else {
+                None
+            }
+        }
+        Value::String(s) => coerce_string(s),
+        _ => None,
+    }
+}
+
+fn coerce_string(s: &str) -> Option<Value> {
+    if s.eq_ignore_ascii_case("true") {
+        return Some(Value::Bool(true));
+    }
+    if s.eq_ignore_ascii_case("false") {
+        return Some(Value::Bool(false));
+    }
+    // Try integer first to preserve precision, then float.
+    if let Ok(i) = s.parse::<i64>() {
+        return Some(Value::Number(i.into()));
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        if f.is_finite() {
+            return Some(Value::Number(serde_json::Number::from_f64(f)?));
+        }
+    }
+    None
 }
 
 pub(crate) fn invalid_tool_input(
@@ -426,5 +506,90 @@ mod tests {
         assert!(display.contains("TOKEN=[redacted]"));
         assert!(display.contains("cargo test --all-targets -- --exact some_really_long_test_name"));
         assert!(!display.contains("abc123"));
+    }
+
+    #[test]
+    fn coerce_string_to_number_integer() {
+        assert_eq!(coerce_string("42"), Some(Value::Number(42i64.into())));
+        assert_eq!(coerce_string("0"), Some(Value::Number(0i64.into())));
+        assert_eq!(coerce_string("-7"), Some(Value::Number((-7i64).into())));
+    }
+
+    #[test]
+    fn coerce_string_to_number_float() {
+        let result = coerce_string("4.567");
+        assert_eq!(
+            result,
+            Some(Value::Number(serde_json::Number::from_f64(4.567).unwrap()))
+        );
+    }
+
+    #[test]
+    fn coerce_string_to_bool() {
+        assert_eq!(coerce_string("true"), Some(Value::Bool(true)));
+        assert_eq!(coerce_string("false"), Some(Value::Bool(false)));
+        assert_eq!(coerce_string("TRUE"), Some(Value::Bool(true)));
+        assert_eq!(coerce_string("False"), Some(Value::Bool(false)));
+    }
+
+    #[test]
+    fn coerce_string_leaves_non_numeric_strings() {
+        assert_eq!(coerce_string("10px"), None);
+        assert_eq!(coerce_string("hello"), None);
+        assert_eq!(coerce_string(""), None);
+        assert_eq!(coerce_string("123abc"), None);
+        assert_eq!(coerce_string("null"), None);
+    }
+
+    #[test]
+    fn coerce_string_scalars_recursive_object() {
+        let input = json!({
+            "name": "test",
+            "count": "42",
+            "enabled": "true",
+            "nested": {
+                "ratio": "4.567",
+                "flag": "false"
+            }
+        });
+        let result = coerce_string_scalars(&input).expect("should have coerced");
+        assert_eq!(
+            result,
+            json!({
+                "name": "test",
+                "count": 42,
+                "enabled": true,
+                "nested": {
+                    "ratio": 4.567,
+                    "flag": false
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn coerce_string_scalars_recursive_array() {
+        let input = json!({
+            "items": [
+                {"yield_time_ms": "10000", "cmd": "echo hi"},
+                {"yield_time_ms": "5000", "cmd": "echo bye"}
+            ]
+        });
+        let result = coerce_string_scalars(&input).expect("should have coerced");
+        assert_eq!(
+            result,
+            json!({
+                "items": [
+                    {"yield_time_ms": 10000, "cmd": "echo hi"},
+                    {"yield_time_ms": 5000, "cmd": "echo bye"}
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn coerce_string_scalars_returns_none_when_no_change() {
+        let input = json!({"name": "test", "cmd": "echo"});
+        assert!(coerce_string_scalars(&input).is_none());
     }
 }
