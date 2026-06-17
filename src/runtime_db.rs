@@ -5845,6 +5845,16 @@ fn backfill_wait_condition_payload_columns(connection: &Connection) -> Result<()
 }
 
 fn backfill_work_item_recheck_columns(connection: &Connection) -> Result<()> {
+    // Check if work_items table exists (may not exist in test databases)
+    let table_exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'work_items')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !table_exists {
+        return Ok(());
+    }
+
     let columns: Vec<String> = connection
         .prepare("PRAGMA table_info(work_items)")?
         .query_map([], |row| row.get::<_, String>(1))?
