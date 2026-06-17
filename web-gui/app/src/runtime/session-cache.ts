@@ -23,7 +23,7 @@ import type { RuntimeConnectionConfig } from "./types";
 
 export type { CachedAgentSession };
 
-const MAX_CACHED_AGENTS_PER_REMOTE = 20;
+const MAX_CACHED_AGENTS_PER_REMOTE = 50;
 const MAX_EVENTS_PER_AGENT = 5000;
 const WRITE_DEBOUNCE_MS = 2000;
 

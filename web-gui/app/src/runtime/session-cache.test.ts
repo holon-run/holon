@@ -5,6 +5,7 @@ import {
   extractCacheableSession,
   hydrateSessionFromCache,
   SessionCacheWriter,
+  enforceCacheLimits,
 } from "./session-cache";
 import type { AgentSessionState } from "./runtime-store-helpers";
 import { CACHE_SCHEMA_VERSION } from "./idb-cache";
@@ -207,5 +208,83 @@ describe("SessionCacheWriter", () => {
     expect(putSpy).not.toHaveBeenCalled();
 
     putSpy.mockRestore();
+  });
+});
+
+describe("enforceCacheLimits", () => {
+  const remoteKey = "local";
+
+  function makeCachedSession(agentId: string, cachedAt: number) {
+    return {
+      remoteKey,
+      agentId,
+      schemaVersion: CACHE_SCHEMA_VERSION,
+      eventsBySeq: {},
+      eventSeqs: [] as number[],
+      messagesById: {},
+      transcriptEntriesById: {},
+      briefRecordsById: {},
+      cachedAt,
+    };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does nothing when agent count is within limit (<= 50)", async () => {
+    const sessions = Array.from({ length: 50 }, (_, i) =>
+      makeCachedSession(`agent-${i}`, Date.now() + i),
+    );
+    const idbModule = await import("./idb-cache");
+    const getAllSpy = vi.spyOn(idbModule, "cacheGetAllSessions").mockResolvedValue(sessions);
+    const deleteSpy = vi.spyOn(idbModule, "cacheDeleteSession").mockResolvedValue(undefined);
+
+    await enforceCacheLimits(remoteKey);
+
+    expect(getAllSpy).toHaveBeenCalledTimes(1);
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
+  it("deletes oldest sessions when exceeding 50 agents", async () => {
+    // 55 sessions: oldest 5 should be deleted to bring it to 50
+    const sessions = Array.from({ length: 55 }, (_, i) =>
+      makeCachedSession(`agent-${i}`, 1000 + i * 100),
+    );
+    const idbModule = await import("./idb-cache");
+    vi.spyOn(idbModule, "cacheGetAllSessions").mockResolvedValue(sessions);
+    const deleteSpy = vi.spyOn(idbModule, "cacheDeleteSession").mockResolvedValue(undefined);
+
+    await enforceCacheLimits(remoteKey);
+
+    expect(deleteSpy).toHaveBeenCalledTimes(5);
+    // Oldest 5 are agent-0 through agent-4 (cachedAt 1000..1400)
+    const deletedAgentIds = deleteSpy.mock.calls.map((c) => c[1]);
+    expect(deletedAgentIds).toEqual(
+      expect.arrayContaining(["agent-0", "agent-1", "agent-2", "agent-3", "agent-4"]),
+    );
+    // Newest sessions are NOT deleted
+    expect(deletedAgentIds).not.toContain("agent-54");
+  });
+
+  it("preserves newest 50 sessions when count is well above limit", async () => {
+ const sessions = Array.from({ length: 100 }, (_, i) =>
+      makeCachedSession(`agent-${i}`, 5000 + i * 10),
+    );
+    const idbModule = await import("./idb-cache");
+    vi.spyOn(idbModule, "cacheGetAllSessions").mockResolvedValue(sessions);
+    const deleteSpy = vi.spyOn(idbModule, "cacheDeleteSession").mockResolvedValue(undefined);
+
+    await enforceCacheLimits(remoteKey);
+
+    expect(deleteSpy).toHaveBeenCalledTimes(50);
+    // agent-50..agent-99 should survive
+    const deletedAgentIds = new Set(deleteSpy.mock.calls.map((c) => c[1]));
+    for (let i = 50; i < 100; i++) {
+      expect(deletedAgentIds.has(`agent-${i}`)).toBe(false);
+    }
+    for (let i = 0; i < 50; i++) {
+      expect(deletedAgentIds.has(`agent-${i}`)).toBe(true);
+    }
   });
 });
