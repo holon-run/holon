@@ -34,10 +34,7 @@ const CONTEXT_EPISODE_ANCHORS_DOMAIN: &str = "context_episode_anchors";
 const RUNTIME_DB_BUSY_TIMEOUT: Duration = Duration::from_millis(30_000);
 const RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(25);
 const RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY: Duration = Duration::from_millis(1_000);
-#[cfg(test)]
-const RUNTIME_DB_BEGIN_RETRY_TIMEOUT: Duration = Duration::from_millis(250);
-#[cfg(not(test))]
-const RUNTIME_DB_BEGIN_RETRY_TIMEOUT: Duration = Duration::from_secs(120);
+const RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL: Duration = Duration::from_secs(30);
 const RUNTIME_DB_APPEND_RETRY_MAX_DELAY: Duration = Duration::from_millis(5_000);
 const RUNTIME_DB_WRITE_QUEUE_CAPACITY: usize = 1024;
 
@@ -5796,16 +5793,15 @@ fn begin_immediate_transaction_with_retry<'connection>(
     let started_at = Instant::now();
     let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
     let mut retry_count = 0;
+    let mut next_warn_at = RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL;
     loop {
         // The writer mutex prevents concurrent transactions on this connection;
         // the retry loop absorbs transient locks from external processes or connections.
         match Transaction::new_unchecked(connection, TransactionBehavior::Immediate) {
             Ok(transaction) => return Ok((transaction, retry_count, started_at.elapsed())),
-            Err(error)
-                if is_sqlite_locked(&error)
-                    && started_at.elapsed() < RUNTIME_DB_BEGIN_RETRY_TIMEOUT =>
-            {
+            Err(error) if is_sqlite_locked(&error) => {
                 retry_count += 1;
+                let elapsed = started_at.elapsed();
                 tracing::trace!(
                     error = %error,
                     path = %path.display(),
@@ -5813,19 +5809,22 @@ fn begin_immediate_transaction_with_retry<'connection>(
                     retry_delay_ms = retry_delay.as_millis(),
                     "runtime db begin immediate transaction retrying"
                 );
+                if elapsed >= next_warn_at {
+                    tracing::warn!(
+                        error = %error,
+                        path = %path.display(),
+                        retry_count,
+                        elapsed_ms = elapsed.as_millis(),
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "runtime db begin immediate transaction still locked"
+                    );
+                    next_warn_at += RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL;
+                }
                 thread::sleep(retry_delay);
                 retry_delay = next_runtime_db_retry_delay(
                     retry_delay,
                     RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
                 );
-            }
-            Err(error) if is_sqlite_locked(&error) => {
-                return Err(RuntimeDbRetryableError::new(
-                    "starting immediate transaction",
-                    path,
-                    error,
-                )
-                .into());
             }
             Err(error) => {
                 return Err(error).with_context(|| {
