@@ -241,13 +241,13 @@ export function App() {
                     <span className="agent-row-title">
                       <strong>{agent.id}</strong>
                       {unreadCount > 0 ? (
-                        <span className="agent-row-unread" aria-label={`${unreadCount} unread updates`}>
+                        <span className="agent-row-unread" aria-label={`${unreadCount} unread updates`} title={`${unreadCount} unread updates`}>
                           {formatUnreadCount(unreadCount)}
                         </span>
                       ) : null}
-                      <StatusBadge className="agent-row-status" kind="agent" value={status.tone} aria-label={status.title} title={status.title}>
-                        {status.label}
-                      </StatusBadge>
+                      <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={`${status.label} · ${status.title}`}>
+                        {agentStatusIcon(status.tone)}
+                      </span>
                     </span>
                     {workSummary ? (
                       <span className="agent-row-meta">
@@ -527,6 +527,15 @@ function MissingAgentPage({ agentId, loading }: { agentId: string; loading: bool
 
 function formatUnreadCount(count: number): string {
   return count > 99 ? "99+" : String(count);
+}
+
+function agentStatusIcon(tone: string): string {
+  if (tone === "running") return "●";
+  if (tone === "needs-input") return "!";
+  if (tone === "waiting") return "◌";
+  if (tone === "ready") return "✓";
+  if (tone === "stopped") return "×";
+  return "·";
 }
 
 function pageTitle(route: RouteKey): string {

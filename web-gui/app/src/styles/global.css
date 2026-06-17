@@ -305,14 +305,15 @@ button {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
   border-radius: 999px;
-  background: var(--danger);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 780;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 760;
   line-height: 1;
 }
 
@@ -374,6 +375,41 @@ button {
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-row-status-dot {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 820;
+  line-height: 1;
+}
+
+.agent-row-status-dot.running {
+  color: var(--accent);
+}
+
+.agent-row-status-dot.needs-input {
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  color: var(--warning);
+}
+
+.agent-row-status-dot.waiting {
+  color: var(--muted);
+}
+
+.agent-row-status-dot.ready {
+  color: var(--success);
+}
+
+.agent-row-status-dot.stopped {
+  color: var(--faint);
 }
 
 .agent-row-status.input {
