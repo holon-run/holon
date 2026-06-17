@@ -188,27 +188,29 @@ describe("formatToolExecutionDetail", () => {
 
   it("formats WebSearch tool results with query and structured result list", () => {
     const detail = formatToolExecutionDetail({
-      tool_name: "mcp__web-search-prime__web_search_prime",
+      tool_name: "WebSearch",
       status: "success",
       input: {
-        search_query: "rust async runtime",
-        location: "cn",
-        content_size: "medium",
+        query: "rust async runtime",
+        max_results: 5,
       },
       output: {
         envelope: {
           result: {
+            query: "rust async runtime",
+            provider: "brave",
+            mode: "single",
             results: [
               {
                 title: "Tokio — Async Runtime",
                 url: "https://tokio.rs",
-                siteName: "tokio.rs",
-                summary: "Tokio is an async runtime for writing reliable network applications.",
+                source: "tokio.rs",
+                snippet: "Tokio is an async runtime for writing reliable network applications.",
               },
               {
                 title: "async-std",
                 url: "https://async.rs",
-                summary: "A small and fast async runtime.",
+                snippet: "A small and fast async runtime.",
               },
             ],
           },
@@ -225,19 +227,24 @@ describe("formatToolExecutionDetail", () => {
     expect(detail.text).toContain("2. async-std");
   });
 
-  it("formats WebReader tool results with URL and content preview", () => {
+  it("formats WebFetch tool results with URL and content preview", () => {
     const detail = formatToolExecutionDetail({
-      tool_name: "mcp__web_reader__webReader",
+      tool_name: "WebFetch",
       status: "success",
       input: {
         url: "https://example.com/article",
-        return_format: "markdown",
+        max_chars: 10000,
       },
       output: {
         envelope: {
           result: {
-            title: "Example Article",
-            markdown: "# Example Article\n\nThis is the content of the article.",
+            url: "https://example.com/article",
+            final_url: "https://example.com/article",
+            status: 200,
+            content_type: "text/html",
+            bytes_read: 2048,
+            truncated: false,
+            text: "# Example Article\n\nThis is the content of the article.",
           },
         },
       },
@@ -245,30 +252,7 @@ describe("formatToolExecutionDetail", () => {
 
     expect(detail.tone).toBe("output");
     expect(detail.text).toContain("URL:\nhttps://example.com/article");
-    expect(detail.text).toContain("Title:\nExample Article");
+    expect(detail.text).toContain("Status:\n200");
     expect(detail.text).toContain("Content:\n# Example Article");
-  });
-
-  it("formats AnalyzeImage tool results with image URL and analysis", () => {
-    const detail = formatToolExecutionDetail({
-      tool_name: "mcp__4_5v_mcp__analyze_image",
-      status: "success",
-      input: {
-        imageSource: "https://example.com/image.png",
-        prompt: "Describe the layout of this UI",
-      },
-      output: {
-        envelope: {
-          result: {
-            analysis: "The image shows a three-column layout with a sidebar on the left.",
-          },
-        },
-      },
-    });
-
-    expect(detail.tone).toBe("output");
-    expect(detail.text).toContain("Image:\nhttps://example.com/image.png");
-    expect(detail.text).toContain("Prompt:\nDescribe the layout of this UI");
-    expect(detail.text).toContain("Analysis:\nThe image shows a three-column layout");
   });
 });

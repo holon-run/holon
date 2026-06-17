@@ -569,7 +569,7 @@ function projectKnownToolExecution(
   if (isWorkItemMutationTool(toolName)) return projectWorkItemMutationTool(payload);
   if (toolName === "ViewImage") return projectViewImageTool(payload);
   if (isWebSearchTool(toolName)) return projectWebSearchTool(toolName, payload);
-  if (isWebReaderTool(toolName)) return projectWebReaderTool(payload);
+  if (isWebFetchTool(toolName)) return projectWebFetchTool(payload);
   return undefined;
 }
 
@@ -578,11 +578,11 @@ function isWorkItemMutationTool(toolName: string): boolean {
 }
 
 function isWebSearchTool(toolName: string): boolean {
-  return toolName === "mcp__web-search-prime__web_search_prime" || toolName === "WebSearch";
+  return toolName === "WebSearch";
 }
 
-function isWebReaderTool(toolName: string): boolean {
-  return toolName === "mcp__web_reader__webReader";
+function isWebFetchTool(toolName: string): boolean {
+  return toolName === "WebFetch";
 }
 
 function toolStringPreview(
@@ -727,10 +727,9 @@ function projectWebSearchTool(
   toolName: string,
   payload: Record<string, unknown> | undefined,
 ): Pick<SessionItemDraft, "body" | "detail"> | undefined {
-  const input = asRecord(payload?.input) ?? payload;
-  const query = firstStringField(input, ["search_query", "query", "q"]);
-  const output = unwrapMcpOutput(payload?.output ?? payload?.result ?? payload);
-  const results = extractSearchResults(output);
+  const output = unwrapToolResult(payload);
+  const query = stringField(output, "query") ?? firstStringField(asRecord(payload?.input), ["query", "search_query", "q"]);
+  const results = arrayField(output, "results")?.map(asRecord).filter((r): r is Record<string, unknown> => Boolean(r)) ?? [];
   const body = compactJoin([
     "Web search",
     query,
@@ -742,12 +741,10 @@ function projectWebSearchTool(
         .slice(0, 10)
         .map((item, index) =>
           compactJoin([
-            `${index + 1}. ${firstStringField(item, ["title", "name"]) ?? "Untitled"}`,
-            firstStringField(item, ["url", "link", "href"]),
-            firstStringField(item, ["siteName", "site_name", "websiteName", "website_name"]),
-            firstStringField(item, ["summary", "snippet", "description"])
-              ? truncateText(firstStringField(item, ["summary", "snippet", "description"])!, 200)
-              : undefined,
+            `${index + 1}. ${stringField(item, "title") ?? "Untitled"}`,
+            stringField(item, "url"),
+            stringField(item, "source"),
+            stringField(item, "snippet") ? truncateText(stringField(item, "snippet")!, 200) : undefined,
           ]),
         )
         .join("\n\n")
@@ -759,98 +756,39 @@ function projectWebSearchTool(
   };
 }
 
-function projectWebReaderTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
-  const input = asRecord(payload?.input) ?? payload;
-  const url = firstStringField(input, ["url"]);
-  const output = unwrapMcpOutput(payload?.output ?? payload?.result ?? payload);
-  const title = firstStringField(asRecord(output), ["title", "pageTitle"]);
-  const contentLength = extractContentLength(output);
+function projectWebFetchTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const output = unwrapToolResult(payload);
+  const url = stringField(output, "url") ?? firstStringField(asRecord(payload?.input), ["url"]);
+  const status = numberField(output, "status");
+  const bytesRead = numberField(output, "bytes_read");
   const body = compactJoin([
-    "Read webpage",
-    title ?? (url ? truncateText(url, 80) : undefined),
-    contentLength > 0 ? formatContentLength(contentLength) : undefined,
+    "Web fetch",
+    url ? truncateText(url, 80) : undefined,
+    status != null ? `${status}` : undefined,
+    bytesRead != null ? formatBytesRead(bytesRead) : undefined,
   ]);
-  const preview = extractMarkdownPreview(output, 600);
+  const text = stringField(output, "text");
+  const truncated = output && typeof output === "object" && "truncated" in output ? output.truncated === true : false;
   return {
     body,
-    detail: preview ? { label: "Webpage content", text: preview, tone: "output" } : undefined,
+    detail: text
+      ? { label: truncated ? "Fetched content (truncated)" : "Fetched content", text: truncateText(text, 600), tone: "output" }
+      : undefined,
   };
 }
 
-function unwrapMcpOutput(value: unknown): unknown {
-  let current = value;
-  for (let depth = 0; depth < 4; depth++) {
-    const record = asRecord(current);
-    if (!record) break;
-    if (record.envelope && asRecord(record.envelope)) {
-      current = (record.envelope as Record<string, unknown>).result ?? record.envelope;
-      continue;
-    }
-    if (record.result !== undefined) {
-      current = record.result;
-      continue;
-    }
-    if (record.content !== undefined && Array.isArray(record.content)) {
-      current = record.content;
-      break;
-    }
-    break;
-  }
-  return current;
+function unwrapToolResult(payload: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!payload) return {};
+  const output = asRecord(payload.output) ?? asRecord(payload.result) ?? payload;
+  const envelope = asRecord(output.envelope);
+  if (envelope) return asRecord(envelope.result) ?? envelope;
+  return output;
 }
 
-function extractSearchResults(value: unknown): Record<string, unknown>[] {
-  const record = asRecord(value);
-  if (!record) return [];
-  for (const key of ["results", "search_results", "data", "items"]) {
-    const candidate = record[key];
-    if (Array.isArray(candidate)) {
-      return candidate.filter((item): item is Record<string, unknown> => Boolean(asRecord(item)));
-    }
-  }
-  return [];
-}
-
-function extractContentLength(value: unknown): number {
-  const record = asRecord(value);
-  if (!record) return 0;
-  const content = record.content;
-  if (typeof content === "string") return content.length;
-  if (record.markdown && typeof record.markdown === "string") return record.markdown.length;
-  if (record.text && typeof record.text === "string") return record.text.length;
-  if (Array.isArray(content)) {
-    return content.reduce((sum: number, item: unknown) => {
-      const text = asRecord(item)?.text;
-      return sum + (typeof text === "string" ? text.length : 0);
-    }, 0);
-  }
-  return 0;
-}
-
-function extractMarkdownPreview(value: unknown, maxChars: number): string | undefined {
-  const record = asRecord(value);
-  if (!record) return undefined;
-  for (const key of ["markdown", "content", "text"]) {
-    const candidate = record[key];
-    if (typeof candidate === "string" && candidate.trim()) {
-      return truncateText(candidate, maxChars);
-    }
-  }
-  const content = record.content;
-  if (Array.isArray(content)) {
-    const text = content
-      .map((item) => asRecord(item)?.text)
-      .filter((text): text is string => typeof text === "string")
-      .join("\n");
-    return text.trim() ? truncateText(text, maxChars) : undefined;
-  }
-  return undefined;
-}
-
-function formatContentLength(chars: number): string {
-  if (chars < 1000) return `${chars} chars`;
-  if (chars < 1_000_000) return `${(chars / 1000).toFixed(0)}K chars`;
-  return `${(chars / 1_000_000).toFixed(1)}M chars`;
+function formatBytesRead(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 function summarizeWorkItemRecords(items: unknown[] | undefined): string[] {
@@ -1039,7 +977,7 @@ function toolFriendlyLabel(toolName: string, failed: boolean): string {
   if (toolName === "PickWorkItem") return failed ? "Work item switch failed" : "Picked work item";
   if (toolName === "CompleteWorkItem") return failed ? "Work item completion failed" : "Completed work item";
   if (isWebSearchTool(toolName)) return failed ? "Web search failed" : "Web search completed";
-  if (isWebReaderTool(toolName)) return failed ? "Web page read failed" : "Web page read";
+  if (isWebFetchTool(toolName)) return failed ? "Web fetch failed" : "Web fetch completed";
   return failed ? "Tool failed" : "Tool finished";
 }
 

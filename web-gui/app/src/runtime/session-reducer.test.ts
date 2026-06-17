@@ -953,16 +953,19 @@ describe("WebSearch tool projection", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
         events: [
-          toolEvent("web-search-1", "mcp__web-search-prime__web_search_prime", {
+          toolEvent("web-search-1", "WebSearch", {
             duration_ms: 3200,
             input: {
-              search_query: "rust async runtime",
-              location: "cn",
+              query: "rust async runtime",
+              max_results: 5,
             },
             output: {
+              query: "rust async runtime",
+              provider: "brave",
+              mode: "single",
               results: [
-                { title: "Tokio", url: "https://tokio.rs", summary: "Async runtime" },
-                { title: "async-std", url: "https://async.rs", summary: "Fast runtime" },
+                { title: "Tokio", url: "https://tokio.rs", snippet: "Async runtime", source: "tokio.rs" },
+                { title: "async-std", url: "https://async.rs", snippet: "Fast runtime", source: "async.rs" },
               ],
             },
           }),
@@ -984,17 +987,22 @@ describe("WebSearch tool projection", () => {
   });
 });
 
-describe("WebReader tool projection", () => {
-  it("projects WebReader tool with URL and content on timeline", () => {
+describe("WebFetch tool projection", () => {
+  it("projects WebFetch tool with URL and content on timeline", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
         events: [
-          toolEvent("web-reader-1", "mcp__web_reader__webReader", {
+          toolEvent("web-fetch-1", "WebFetch", {
             duration_ms: 5400,
-            input: { url: "https://example.com/article" },
+            input: { url: "https://example.com/article", max_chars: 10000 },
             output: {
-              title: "Example Article",
-              markdown: "# Example Article\n\nContent here.",
+              url: "https://example.com/article",
+              final_url: "https://example.com/article",
+              status: 200,
+              content_type: "text/html",
+              bytes_read: 1024,
+              truncated: false,
+              text: "# Example Article\n\nContent here.",
             },
           }),
         ],
@@ -1004,11 +1012,11 @@ describe("WebReader tool projection", () => {
     expect(timeline[0]).toEqual(
       expect.objectContaining({
         kind: "tool",
-        label: "Web page read",
-        body: expect.stringContaining("Read webpage · Example Article"),
+        label: "Web fetch completed",
+        body: expect.stringContaining("Web fetch · https://example.com/article · 200"),
       }),
     );
-    expect(timeline[0].detail?.label).toBe("Webpage content");
+    expect(timeline[0].detail?.label).toBe("Fetched content");
     expect(timeline[0].detail?.text).toContain("# Example Article");
   });
 });
