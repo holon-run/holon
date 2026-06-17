@@ -18,7 +18,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response as AxumResponse,
     },
-    routing::{get, patch, post, put},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -334,7 +334,11 @@ pub fn router(state: AppState) -> Router {
         .route("/control/runtime/credentials", get(list_credentials))
         .route(
             "/control/runtime/credentials/{profile}",
-            put(set_credential).delete(delete_credential),
+            put(set_credential),
+        )
+        .route(
+            "/control/runtime/credentials/{profile}",
+            delete(delete_credential),
         )
         .route(
             "/control/agents/{agent_id}/debug-prompt",
