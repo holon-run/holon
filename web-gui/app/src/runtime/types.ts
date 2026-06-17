@@ -187,7 +187,7 @@ export interface RuntimeWebSearchProviderSummary {
 
 export interface RuntimeConfigUpdateResult {
   key: string;
-  effect: "accepted_requires_restart" | "rejected";
+  effect: "accepted_requires_restart" | "accepted_reloaded" | "rejected";
   reason: string;
 }
 

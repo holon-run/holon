@@ -189,7 +189,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? "Saved to config.json. Restart the daemon for these runtime defaults to take effect."
+          ? "Saved to config.json. Changes applied via hot-reload."
           : "No runtime config changes were persisted.",
     );
   }
@@ -211,7 +211,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} search setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? "Saved search settings to config.json. Restart the daemon for routing changes to take effect."
+          ? "Saved search settings to config.json. Changes applied via hot-reload."
           : "No search config changes were persisted.",
     );
   }
@@ -226,7 +226,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} vision setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? "Saved Vision default to config.json. Restart the daemon for ViewImage selection to take effect."
+          ? "Saved Vision default to config.json. Changes applied via hot-reload."
           : "No Vision config changes were persisted.",
     );
   }
@@ -267,7 +267,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} provider setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? `Saved ${providerId} provider settings to config.json. Restart the daemon for credential changes to take effect.`
+          ? `Saved ${providerId} provider settings to config.json. Changes applied via hot-reload.`
           : "No provider config changes were persisted.",
     );
   }
@@ -280,7 +280,7 @@ export function SettingsPage({
           <h1>Settings</h1>
           <p>
             Configure common runtime defaults from the Web GUI. Saved model defaults are persisted to config.json
-            and take effect after the daemon is restarted.
+            and take effect immediately via hot-reload.
           </p>
           <div className="settings-quickstart" aria-label="Settings overview">
             <div>
@@ -293,7 +293,7 @@ export function SettingsPage({
               <strong>
                 {configuredProviderCount}/{surface?.providers.length ?? 0} ready
               </strong>
-              <small>Credential changes may require daemon restart.</small>
+              <small>Credential changes apply via hot-reload.</small>
             </div>
             <div>
               <span>Web search</span>
