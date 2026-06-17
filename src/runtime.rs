@@ -235,6 +235,7 @@ pub struct RuntimeHandle {
 
 struct RuntimeInner {
     agent: Mutex<RuntimeAgent>,
+    projection_cache: Mutex<AgentRuntimeProjectionCache>,
     notify: Notify,
     storage: AppStorage,
     runtime_db: RuntimeDb,
@@ -261,6 +262,173 @@ struct RuntimeInner {
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
+}
+
+#[derive(Debug, Clone)]
+struct AgentRuntimeProjectionCache {
+    agent_id: String,
+    tasks: HashMap<String, TaskRecord>,
+    work_items: HashMap<String, crate::types::WorkItemRecord>,
+    timers: HashMap<String, TimerRecord>,
+    waiting_intents: HashMap<String, WaitingIntentRecord>,
+    external_triggers: HashMap<String, ExternalTriggerRecord>,
+}
+
+impl AgentRuntimeProjectionCache {
+    fn rebuild(
+        agent_id: String,
+        tasks: Vec<TaskRecord>,
+        work_items: Vec<crate::types::WorkItemRecord>,
+        timers: Vec<TimerRecord>,
+        waiting_intents: Vec<WaitingIntentRecord>,
+        external_triggers: Vec<ExternalTriggerRecord>,
+    ) -> Self {
+        crate::diagnostics::record_runtime_projection_cache_rebuild();
+        let task_agent_id = agent_id.clone();
+        let work_item_agent_id = agent_id.clone();
+        let timer_agent_id = agent_id.clone();
+        let waiting_intent_agent_id = agent_id.clone();
+        let external_trigger_agent_id = agent_id.clone();
+        Self {
+            agent_id,
+            tasks: latest_by(
+                tasks
+                    .into_iter()
+                    .filter(|record| record.agent_id == task_agent_id),
+                |record| record.id.clone(),
+            ),
+            work_items: latest_by(
+                work_items
+                    .into_iter()
+                    .filter(|record| record.agent_id == work_item_agent_id),
+                |record| record.id.clone(),
+            ),
+            timers: latest_by(
+                timers
+                    .into_iter()
+                    .filter(|record| record.agent_id == timer_agent_id),
+                |record| record.id.clone(),
+            ),
+            waiting_intents: latest_by(
+                waiting_intents
+                    .into_iter()
+                    .filter(|record| record.agent_id == waiting_intent_agent_id),
+                |record| record.id.clone(),
+            ),
+            external_triggers: latest_by(
+                external_triggers
+                    .into_iter()
+                    .filter(|record| record.target_agent_id == external_trigger_agent_id),
+                |record| record.external_trigger_id.clone(),
+            ),
+        }
+    }
+
+    fn upsert_task(&mut self, record: TaskRecord) {
+        if record.agent_id == self.agent_id {
+            self.tasks.insert(record.id.clone(), record);
+        }
+    }
+
+    fn upsert_work_item(&mut self, record: crate::types::WorkItemRecord) {
+        if record.agent_id == self.agent_id {
+            self.work_items.insert(record.id.clone(), record);
+        }
+    }
+
+    fn upsert_timer(&mut self, record: TimerRecord) {
+        if record.agent_id == self.agent_id {
+            self.timers.insert(record.id.clone(), record);
+        }
+    }
+
+    fn upsert_waiting_intent(&mut self, record: WaitingIntentRecord) {
+        if record.agent_id == self.agent_id {
+            self.waiting_intents.insert(record.id.clone(), record);
+        }
+    }
+
+    fn upsert_external_trigger(&mut self, record: ExternalTriggerRecord) {
+        if record.target_agent_id == self.agent_id {
+            self.external_triggers
+                .insert(record.external_trigger_id.clone(), record);
+        }
+    }
+
+    fn active_tasks(&self, limit: usize) -> Vec<TaskRecord> {
+        let mut records = self
+            .tasks
+            .values()
+            .filter(|record| {
+                matches!(
+                    record.status,
+                    TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| right.created_at.cmp(&left.created_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        take_limit(records, limit)
+    }
+
+    fn latest_work_items(&self, limit: usize) -> Vec<crate::types::WorkItemRecord> {
+        let mut records = self.work_items.values().cloned().collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| right.created_at.cmp(&left.created_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        take_limit(records, limit)
+    }
+
+    fn recent_timers(&self, limit: usize) -> Vec<TimerRecord> {
+        let mut records = self.timers.values().cloned().collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        take_limit(records, limit)
+    }
+
+    fn latest_waiting_intents(&self) -> Vec<WaitingIntentRecord> {
+        let mut records = self.waiting_intents.values().cloned().collect::<Vec<_>>();
+        records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        records
+    }
+
+    fn latest_external_triggers(&self) -> Vec<ExternalTriggerRecord> {
+        let mut records = self.external_triggers.values().cloned().collect::<Vec<_>>();
+        records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        records
+    }
+}
+
+fn latest_by<T, F>(records: impl IntoIterator<Item = T>, key: F) -> HashMap<String, T>
+where
+    F: Fn(&T) -> String,
+{
+    let mut latest = HashMap::new();
+    for record in records {
+        latest.insert(key(&record), record);
+    }
+    latest
+}
+
+fn take_limit<T>(mut records: Vec<T>, limit: usize) -> Vec<T> {
+    if records.len() > limit {
+        records.truncate(limit);
+    }
+    records
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -441,6 +609,60 @@ impl CurrentRunAbortSnapshot {
 }
 
 impl RuntimeHandle {
+    pub(crate) async fn record_task_projection(&self, record: &TaskRecord) -> Result<()> {
+        self.inner.storage.append_task(record)?;
+        self.inner
+            .projection_cache
+            .lock()
+            .await
+            .upsert_task(record.clone());
+        Ok(())
+    }
+
+    pub(crate) async fn record_work_item_projection(
+        &self,
+        record: &crate::types::WorkItemRecord,
+    ) -> Result<()> {
+        self.inner.storage.append_work_item(record)?;
+        self.inner
+            .projection_cache
+            .lock()
+            .await
+            .upsert_work_item(record.clone());
+        Ok(())
+    }
+
+    pub(crate) async fn record_timer_projection(&self, record: &TimerRecord) -> Result<()> {
+        self.inner.storage.append_timer(record)?;
+        self.inner
+            .projection_cache
+            .lock()
+            .await
+            .upsert_timer(record.clone());
+        Ok(())
+    }
+
+    pub(crate) async fn record_waiting_intent_projection(
+        &self,
+        record: &WaitingIntentRecord,
+    ) -> Result<()> {
+        self.inner.storage.append_waiting_intent(record)?;
+        self.inner
+            .projection_cache
+            .lock()
+            .await
+            .upsert_waiting_intent(record.clone());
+        Ok(())
+    }
+
+    pub(crate) async fn cache_external_trigger_projection(&self, record: &ExternalTriggerRecord) {
+        self.inner
+            .projection_cache
+            .lock()
+            .await
+            .upsert_external_trigger(record.clone());
+    }
+
     pub(crate) fn append_work_item_written_event(
         &self,
         action: &str,

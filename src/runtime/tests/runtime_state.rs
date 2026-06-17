@@ -96,6 +96,83 @@ fn append_state_changed_events_emits_single_lightweight_agent_event() {
     assert!(payload.get("context_summary").is_none());
 }
 
+#[test]
+fn runtime_projection_cache_rebuilds_current_agent_active_task_projection() {
+    let now = Utc::now();
+    let tasks = vec![
+        TaskRecord {
+            id: "task-old".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now - chrono::Duration::seconds(10),
+            updated_at: now - chrono::Duration::seconds(10),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            detail: None,
+            recovery: None,
+        },
+        TaskRecord {
+            id: "task-done".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Completed,
+            created_at: now - chrono::Duration::seconds(5),
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            detail: None,
+            recovery: None,
+        },
+        TaskRecord {
+            id: "task-other-agent".into(),
+            agent_id: "other".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now - chrono::Duration::seconds(4),
+            updated_at: now + chrono::Duration::seconds(4),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            detail: None,
+            recovery: None,
+        },
+        TaskRecord {
+            id: "task-new".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Queued,
+            created_at: now - chrono::Duration::seconds(2),
+            updated_at: now + chrono::Duration::seconds(2),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            detail: None,
+            recovery: None,
+        },
+    ];
+
+    let cache = AgentRuntimeProjectionCache::rebuild(
+        "default".into(),
+        tasks,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let active_tasks = cache.active_tasks(10);
+    assert_eq!(
+        active_tasks
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["task-new", "task-old"]
+    );
+}
+
 #[async_trait]
 impl AgentProvider for BlockingProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {

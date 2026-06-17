@@ -116,7 +116,7 @@ impl RuntimeHandle {
                 .runtime_db
                 .work_items()
                 .upsert(&record, current_focus)?;
-            self.inner.storage.append_work_item(&record)?;
+            self.record_work_item_projection(&record).await?;
             if plan_artifact_changed {
                 self.append_work_item_plan_artifact_refreshed_event(&record)?;
             }
@@ -504,11 +504,8 @@ impl RuntimeHandle {
     }
 
     pub async fn active_tasks(&self, limit: usize) -> Result<Vec<TaskRecord>> {
-        let agent_id = self.agent_id().await?;
-        self.inner
-            .runtime_db
-            .tasks()
-            .active_for_agent(&agent_id, limit)
+        crate::diagnostics::record_runtime_projection_cache_read();
+        Ok(self.inner.projection_cache.lock().await.active_tasks(limit))
     }
 
     pub async fn recent_transcript(&self, limit: usize) -> Result<Vec<TranscriptEntry>> {
@@ -582,6 +579,16 @@ impl RuntimeHandle {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<crate::types::WorkItemRecord>> {
+        let current_agent_id = self.agent_id().await?;
+        if agent_id == current_agent_id {
+            crate::diagnostics::record_runtime_projection_cache_read();
+            return Ok(self
+                .inner
+                .projection_cache
+                .lock()
+                .await
+                .latest_work_items(limit));
+        }
         self.inner
             .runtime_db
             .work_items()
@@ -656,7 +663,13 @@ impl RuntimeHandle {
     }
 
     pub async fn recent_timers(&self, limit: usize) -> Result<Vec<TimerRecord>> {
-        self.inner.storage.read_recent_timers(limit)
+        crate::diagnostics::record_runtime_projection_cache_read();
+        Ok(self
+            .inner
+            .projection_cache
+            .lock()
+            .await
+            .recent_timers(limit))
     }
 
     pub async fn latest_timer(&self, timer_id: &str) -> Result<Option<TimerRecord>> {

@@ -50,7 +50,7 @@ impl RuntimeHandle {
         }
 
         self.inner.runtime_db.tasks().upsert(task)?;
-        self.inner.storage.append_task(task)?;
+        self.record_task_projection(task).await?;
         {
             let mut guard = self.inner.agent.lock().await;
             if !matches!(guard.state.status, AgentStatus::Stopped) {

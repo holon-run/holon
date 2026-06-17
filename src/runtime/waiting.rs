@@ -315,7 +315,7 @@ impl RuntimeHandle {
             .runtime_db
             .work_items()
             .upsert(&record, current_focus)?;
-        self.inner.storage.append_work_item(&record)?;
+        self.record_work_item_projection(&record).await?;
         if plan_artifact_changed {
             self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
@@ -387,7 +387,7 @@ impl RuntimeHandle {
             .runtime_db
             .work_items()
             .upsert(&record, current_focus)?;
-        self.inner.storage.append_work_item(&record)?;
+        self.record_work_item_projection(&record).await?;
         if plan_artifact_changed {
             self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
@@ -422,7 +422,8 @@ impl RuntimeHandle {
             .filter(|record| record.scope == WaitingIntentScope::WorkItem)
             .filter(|record| record.work_item_id.as_deref() == Some(existing.id.as_str()))
             .collect::<Vec<_>>();
-        let cancelled_waiting_intent_ids = self.cancel_waiting_records(active_waiting_intents)?;
+        let cancelled_waiting_intent_ids =
+            self.cancel_waiting_records(active_waiting_intents).await?;
 
         let needs_record_write = existing.blocked_by.is_some()
             || existing.recheck_at.is_some()
@@ -455,7 +456,7 @@ impl RuntimeHandle {
             .runtime_db
             .work_items()
             .upsert(&record, current_focus)?;
-        self.inner.storage.append_work_item(&record)?;
+        self.record_work_item_projection(&record).await?;
         if plan_artifact_changed {
             self.append_work_item_plan_artifact_refreshed_event(&record)?;
         }
@@ -604,7 +605,7 @@ impl RuntimeHandle {
             last_fired_at: None,
             fire_count: 0,
         };
-        self.inner.storage.append_timer(&timer)?;
+        self.record_timer_projection(&timer).await?;
         self.inner
             .storage
             .append_event(&AuditEvent::new("timer_created", to_json_value(&timer)))?;
@@ -632,7 +633,7 @@ impl RuntimeHandle {
 
         timer.status = TimerStatus::Cancelled;
         timer.next_fire_at = None;
-        self.inner.storage.append_timer(&timer)?;
+        self.record_timer_projection(&timer).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "timer_cancelled",
             serde_json::json!({
@@ -744,7 +745,7 @@ impl RuntimeHandle {
             timer.status = TimerStatus::Completed;
             timer.next_fire_at = None;
         }
-        self.inner.storage.append_timer(timer)?;
+        self.record_timer_projection(timer).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "timer_fired",
             serde_json::json!({
@@ -759,6 +760,17 @@ impl RuntimeHandle {
     }
 
     pub async fn latest_waiting_intents(&self) -> Result<Vec<WaitingIntentRecord>> {
+        crate::diagnostics::record_runtime_projection_cache_read();
+        let cached = {
+            self.inner
+                .projection_cache
+                .lock()
+                .await
+                .latest_waiting_intents()
+        };
+        if !cached.is_empty() {
+            return Ok(cached);
+        }
         let agent_id = self.agent_id().await?;
         let mut records = self
             .inner
@@ -767,17 +779,40 @@ impl RuntimeHandle {
             .into_iter()
             .filter(|record| record.agent_id == agent_id)
             .collect::<Vec<_>>();
+        if !records.is_empty() {
+            let mut cache = self.inner.projection_cache.lock().await;
+            for record in &records {
+                cache.upsert_waiting_intent(record.clone());
+            }
+        }
         records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
         Ok(records)
     }
 
     pub async fn latest_external_triggers(&self) -> Result<Vec<ExternalTriggerRecord>> {
+        crate::diagnostics::record_runtime_projection_cache_read();
+        let cached = {
+            self.inner
+                .projection_cache
+                .lock()
+                .await
+                .latest_external_triggers()
+        };
+        if !cached.is_empty() {
+            return Ok(cached);
+        }
         let agent_id = self.agent_id().await?;
         let mut records = self
             .inner
             .runtime_db
             .external_triggers()
             .latest_for_agent(&agent_id)?;
+        if !records.is_empty() {
+            let mut cache = self.inner.projection_cache.lock().await;
+            for record in &records {
+                cache.upsert_external_trigger(record.clone());
+            }
+        }
         records.sort_by(|left, right| right.created_at.cmp(&left.created_at));
         Ok(records)
     }
@@ -851,7 +886,7 @@ impl RuntimeHandle {
             let mut updated = waiting.clone();
             updated.status = WaitingIntentStatus::Cancelled;
             updated.cancelled_at = Some(now);
-            self.inner.storage.append_waiting_intent(&updated)?;
+            self.record_waiting_intent_projection(&updated).await?;
             updated
         };
 
@@ -1082,7 +1117,10 @@ impl RuntimeHandle {
         Ok(cancelled)
     }
 
-    fn cancel_waiting_records(&self, waiting: Vec<WaitingIntentRecord>) -> Result<Vec<String>> {
+    async fn cancel_waiting_records(
+        &self,
+        waiting: Vec<WaitingIntentRecord>,
+    ) -> Result<Vec<String>> {
         let now = Utc::now();
         let mut cancelled = Vec::new();
         for record in waiting {
@@ -1092,7 +1130,7 @@ impl RuntimeHandle {
             let mut updated = record;
             updated.status = WaitingIntentStatus::Cancelled;
             updated.cancelled_at = Some(now);
-            self.inner.storage.append_waiting_intent(&updated)?;
+            self.record_waiting_intent_projection(&updated).await?;
             self.inner.storage.append_event(&AuditEvent::new(
                 "waiting_intent_cancelled",
                 serde_json::json!({

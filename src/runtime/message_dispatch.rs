@@ -178,8 +178,9 @@ impl RuntimeHandle {
         let final_closure = self.current_closure_decision().await?;
         {
             let mut guard = self.inner.agent.lock().await;
-            let work_refs_changed =
-                self.refresh_current_work_item_refs(&mut guard.state, &message)?;
+            let work_refs_changed = self
+                .refresh_current_work_item_refs(&mut guard.state, &message)
+                .await?;
             let memory_refresh =
                 refresh_working_memory(&self.inner.storage, &mut guard.state, &final_closure)?;
             let episode_changed = refresh_episode_memory(
@@ -207,7 +208,7 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    fn refresh_current_work_item_refs(
+    async fn refresh_current_work_item_refs(
         &self,
         agent: &mut AgentState,
         message: &MessageEnvelope,
@@ -246,7 +247,7 @@ impl RuntimeHandle {
         record.work_refs = merged;
         record.revision = record.revision.saturating_add(1);
         record.updated_at = Utc::now();
-        self.inner.storage.append_work_item(&record)?;
+        self.record_work_item_projection(&record).await?;
         self.inner.storage.append_event(&AuditEvent::new(
             "work_item_refs_updated",
             serde_json::json!({

@@ -55,6 +55,7 @@ impl RuntimeHandle {
             revoked.status = ExternalTriggerStatus::Revoked;
             revoked.revoked_at = Some(now);
             self.inner.runtime_db.external_triggers().upsert(&revoked)?;
+            self.cache_external_trigger_projection(&revoked).await;
         }
 
         let external_trigger_id = crate::ids::external_trigger_id();
@@ -79,6 +80,7 @@ impl RuntimeHandle {
             .runtime_db
             .external_triggers()
             .upsert(&descriptor)?;
+        self.cache_external_trigger_projection(&descriptor).await;
         self.inner.storage.append_event(&AuditEvent::new(
             "external_trigger_created",
             serde_json::json!({
@@ -164,7 +166,8 @@ impl RuntimeHandle {
                 }
                 linked_waiting.last_triggered_at = Some(now);
                 linked_waiting.trigger_count += 1;
-                self.inner.storage.append_waiting_intent(&linked_waiting)?;
+                self.record_waiting_intent_projection(&linked_waiting)
+                    .await?;
                 Some(linked_waiting)
             } else {
                 None
@@ -180,6 +183,8 @@ impl RuntimeHandle {
             .runtime_db
             .external_triggers()
             .upsert(&updated_descriptor)?;
+        self.cache_external_trigger_projection(&updated_descriptor)
+            .await;
 
         let updated_descriptor_id = updated_descriptor.external_trigger_id.clone();
         let descriptor_delivery_mode = updated_descriptor.delivery_mode.clone();
@@ -235,6 +240,7 @@ impl RuntimeHandle {
         revoked.status = ExternalTriggerStatus::Revoked;
         revoked.revoked_at = Some(Utc::now());
         self.inner.runtime_db.external_triggers().upsert(&revoked)?;
+        self.cache_external_trigger_projection(&revoked).await;
         self.inner.storage.append_event(&AuditEvent::new(
             "external_trigger_revoked",
             serde_json::json!({
