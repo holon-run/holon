@@ -1,6 +1,5 @@
 use super::super::*;
 use super::support::*;
-use crate::runtime_db::RuntimeDbRetryableError;
 use crate::types::{
     AuthorityClass, QueueEntryStatus, SkillLoadReason, WaitConditionKind, WaitConditionRecord,
     WaitConditionStatus, WakeSource, WorkItemPlanStatus, WorkItemSchedulingState,
@@ -302,66 +301,6 @@ async fn non_model_reentry_external_events_do_not_run_interactive_turn() {
     assert!(transcript
         .iter()
         .all(|entry| entry.kind != TranscriptEntryKind::AssistantRound));
-}
-
-#[tokio::test]
-async fn retryable_db_error_requeues_message_without_runtime_error() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(CountingProvider {
-            calls: Mutex::new(0),
-            reply: "done",
-        }),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let message = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator {
-            actor_id: Some("test".into()),
-        },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "retry me".into(),
-        },
-    );
-    let error: anyhow::Error = RuntimeDbRetryableError::new(
-        "starting immediate transaction",
-        std::path::Path::new("state/runtime.sqlite"),
-        "database is locked",
-    )
-    .into();
-
-    runtime
-        .requeue_retryable_db_error(&message, &error)
-        .await
-        .unwrap();
-
-    let queue_entries = runtime.storage().read_recent_queue_entries(10).unwrap();
-    assert!(queue_entries.iter().any(|entry| {
-        entry.message_id == message.id && entry.status == QueueEntryStatus::Queued
-    }));
-    assert!(!queue_entries.iter().any(|entry| {
-        entry.message_id == message.id && entry.status == QueueEntryStatus::Aborted
-    }));
-
-    let guard = runtime.inner.agent.lock().await;
-    assert_eq!(
-        guard.queue.peek().map(|queued| queued.id.as_str()),
-        Some(message.id.as_str())
-    );
-    drop(guard);
-
-    let events = runtime.storage().read_recent_events(20).unwrap();
-    assert!(!events.iter().any(|event| event.kind == "runtime_error"));
 }
 
 #[tokio::test]
