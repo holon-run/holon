@@ -18,7 +18,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response as AxumResponse,
     },
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -56,7 +56,9 @@ use crate::{
     config::{
         credential_store_path, load_credential_store_at, load_persisted_config_at,
         save_persisted_config_at, set_config_key, unset_config_key, ApiCorsConfigFile,
-        ControlTransportKind, HolonConfigFile, ModelRef,
+        ControlTransportKind, CredentialKind, CredentialProfileStatus, HolonConfigFile,
+        ModelRef, list_credential_profiles_at, remove_credential_profile_at,
+        set_credential_profile_at,
     },
     daemon::{
         graceful_runtime_shutdown, runtime_activity_summary, RuntimeConfigSurface,
@@ -330,6 +332,11 @@ pub fn router(state: AppState) -> Router {
         .route("/control/runtime/config", get(runtime_config))
         .route("/control/runtime/config", patch(runtime_config_update))
         .route("/control/runtime/shutdown", post(runtime_shutdown))
+        .route("/control/runtime/credentials", get(list_credentials))
+        .route(
+            "/control/runtime/credentials/{profile}",
+            put(set_credential).delete(delete_credential),
+        )
         .route(
             "/control/agents/{agent_id}/debug-prompt",
             post(control_debug_prompt),
@@ -1341,6 +1348,79 @@ fn config_value_as_raw(value: Value) -> String {
         other => other.to_string(),
     }
 }
+
+#[derive(Debug, Serialize)]
+struct CredentialListResponse {
+    ok: bool,
+    profiles: Vec<CredentialProfileStatus>,
+}
+
+pub async fn list_credentials(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let config = state.host.config();
+    let path = credential_store_path(&config.home_dir);
+    let profiles = list_credential_profiles_at(&path).map_err(error_response)?;
+    Ok(Json(CredentialListResponse {
+        ok: true,
+        profiles,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetCredentialRequest {
+    kind: String,
+    material: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SetCredentialResponse {
+    ok: bool,
+    profile: CredentialProfileStatus,
+}
+
+pub async fn set_credential(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(profile): Path<String>,
+    Json(request): Json<SetCredentialRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let config = state.host.config();
+    let path = credential_store_path(&config.home_dir);
+    let kind = CredentialKind::parse(&request.kind).map_err(error_response)?;
+    let profile_status = set_credential_profile_at(&path, &profile, kind, request.material)
+        .map_err(error_response)?;
+    Ok(Json(SetCredentialResponse {
+        ok: true,
+        profile: profile_status,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteCredentialResponse {
+    ok: bool,
+    profile: CredentialProfileStatus,
+}
+
+pub async fn delete_credential(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(profile): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
+    let config = state.host.config();
+    let path = credential_store_path(&config.home_dir);
+    let profile_status = remove_credential_profile_at(&path, &profile)
+        .map_err(error_response)?;
+    Ok(Json(DeleteCredentialResponse {
+        ok: true,
+        profile: profile_status,
+    }))
+}
+
 
 fn runtime_surfaces(
     state: &AppState,

@@ -3,6 +3,8 @@ import { reduceAgentSessionTimeline, transcriptEntryIdForPayload } from "./sessi
 import type {
   AgentDetail,
   AgentSummary,
+  CredentialProfileStatus,
+  CredentialStoreState,
   DashboardMetric,
   RuntimeBootstrap,
   RuntimeConfigState,
@@ -330,6 +332,23 @@ interface RuntimeConfigUpdateResultDto {
   reason?: string;
 }
 
+
+interface CredentialProfileStatusDto {
+  profile?: string;
+  kind?: string;
+  configured?: boolean;
+}
+
+interface CredentialListResponseDto {
+  ok?: boolean;
+  profiles?: CredentialProfileStatusDto[];
+}
+
+interface SetCredentialResponseDto {
+  ok?: boolean;
+  profile?: CredentialProfileStatusDto;
+}
+
 interface RuntimeWebSearchSummaryDto {
   enabled?: boolean;
   builtin_provider_enabled?: boolean;
@@ -470,6 +489,40 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       const response = await patchJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { updates }, requestHeaders);
       return projectRuntimeConfigState(response);
+    },
+    async listCredentials(): Promise<CredentialStoreState> {
+      if (!baseUrl) {
+        return { profiles: [] };
+      }
+      try {
+        const response = await getJson<CredentialListResponseDto>(fetchImpl, baseUrl, "/control/runtime/credentials", { headers: requestHeaders });
+        return {
+          profiles: (response.profiles ?? []).map((p) => ({
+            profile: p.profile ?? "unknown",
+            kind: p.kind ?? "unknown",
+            configured: p.configured ?? false,
+          })),
+        };
+      } catch (error) {
+        return { profiles: [], error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+    async setCredential(profile: string, kind: string, material: string): Promise<CredentialProfileStatus> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await putJson<SetCredentialResponseDto>(fetchImpl, baseUrl, `/control/runtime/credentials/${encodeURIComponent(profile)}`, { kind, material }, requestHeaders);
+      return {
+        profile: response.profile?.profile ?? profile,
+        kind: response.profile?.kind ?? kind,
+        configured: response.profile?.configured ?? true,
+      };
+    },
+    async deleteCredential(profile: string): Promise<void> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      await deleteJson<unknown>(fetchImpl, baseUrl, `/control/runtime/credentials/${encodeURIComponent(profile)}`, requestHeaders);
     },
     async search(query: string, options: { agentIds?: string[]; limit?: number } = {}): Promise<SearchResponse> {
       if (!baseUrl) {
@@ -753,6 +806,58 @@ async function patchJson<T>(
   }).finally(() => window.clearTimeout(timeout));
   if (!response.ok) {
     throw new Error(`PATCH ${path} failed with ${response.status}`);
+  }
+
+  const text = await response.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+
+async function putJson<T>(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const response = await fetchImpl(`${baseUrl}${path}`, {
+    method: "PUT",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      ...headers,
+    },
+    body: JSON.stringify(body),
+    signal: controller.signal,
+  }).finally(() => window.clearTimeout(timeout));
+  if (!response.ok) {
+    throw new Error(`PUT ${path} failed with ${response.status}`);
+  }
+
+  const text = await response.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+async function deleteJson<T>(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  path: string,
+  headers: Record<string, string> = {},
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const response = await fetchImpl(`${baseUrl}${path}`, {
+    method: "DELETE",
+    headers: {
+      Accept: "application/json",
+      ...headers,
+    },
+    signal: controller.signal,
+  }).finally(() => window.clearTimeout(timeout));
+  if (!response.ok) {
+    throw new Error(`DELETE ${path} failed with ${response.status}`);
   }
 
   const text = await response.text();

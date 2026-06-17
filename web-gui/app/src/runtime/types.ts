@@ -154,6 +154,18 @@ export interface RuntimeConfigState {
   error?: string;
 }
 
+
+export interface CredentialProfileStatus {
+  profile: string;
+  kind: string;
+  configured: boolean;
+}
+
+export interface CredentialStoreState {
+  profiles: CredentialProfileStatus[];
+  error?: string;
+}
+
 export interface SearchResultLocator {
   evidenceId?: string;
   messageId?: string;

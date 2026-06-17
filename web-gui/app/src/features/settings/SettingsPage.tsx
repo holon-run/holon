@@ -4,7 +4,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusChip } from "../../components/ui/StatusChip";
-import type { RuntimeConfigState, RuntimeConnection, RuntimeModelCatalog, RuntimeModelOption, RuntimeProviderSummary } from "../../runtime/types";
+import type { RuntimeConfigState, RuntimeConnection, RuntimeModelCatalog, RuntimeModelOption, RuntimeProviderSummary, CredentialStoreState } from "../../runtime/types";
 
 interface SettingsPageProps {
   connection: RuntimeConnection;
@@ -18,6 +18,11 @@ interface SettingsPageProps {
   onRefreshModels: () => Promise<void>;
   onRefreshRuntimeConfig: () => Promise<void>;
   onUpdateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
+  credentialStore: CredentialStoreState;
+  credentialStoreLoading: boolean;
+  onRefreshCredentialStore: () => Promise<void>;
+  onSetCredential: (profile: string, kind: string, material: string) => Promise<unknown>;
+  onDeleteCredential: (profile: string) => Promise<void>;
 }
 
 function splitCsv(value: string): string[] {
@@ -53,6 +58,11 @@ export function SettingsPage({
   onRefreshModels,
   onRefreshRuntimeConfig,
   onUpdateRuntimeConfig,
+  credentialStore,
+  credentialStoreLoading,
+  onRefreshCredentialStore,
+  onSetCredential,
+  onDeleteCredential,
 }: SettingsPageProps) {
   const groupedModels = groupModelsByProvider(modelCatalog.options);
   const availableCount = modelCatalog.options.filter((model) => model.available).length;
@@ -77,6 +87,8 @@ export function SettingsPage({
   const [searchSaveMessage, setSearchSaveMessage] = useState<string | undefined>();
   const [visionSaveMessage, setVisionSaveMessage] = useState<string | undefined>();
   const [providerSaveMessage, setProviderSaveMessage] = useState<string | undefined>();
+  const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
+  const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
   const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
 
@@ -119,6 +131,38 @@ export function SettingsPage({
     setVisionSaveMessage(undefined);
     setProviderSaveMessage(undefined);
   }, [surface]);
+
+  useEffect(() => {
+    void onRefreshCredentialStore();
+  }, [onRefreshCredentialStore]);
+
+  function isCredentialProfileConfigured(profile: string): boolean {
+    return credentialStore.profiles.some((p) => p.profile === profile && p.configured);
+  }
+
+  async function saveApiKey(providerId: string, credentialProfile: string, credentialKind: string) {
+    const key = apiKeyDrafts[providerId]?.trim();
+    if (!key || !credentialProfile) return;
+    setCredentialMessages((prev) => ({ ...prev, [providerId]: "Saving…" }));
+    const result = await onSetCredential(credentialProfile, credentialKind, key);
+    if (result) {
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: "API key saved to credential store." }));
+      setApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
+    } else {
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to save API key." }));
+    }
+  }
+
+  async function removeApiKey(providerId: string, credentialProfile: string) {
+    if (!credentialProfile) return;
+    setCredentialMessages((prev) => ({ ...prev, [providerId]: "Removing…" }));
+    try {
+      await onDeleteCredential(credentialProfile);
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: "API key removed from credential store." }));
+    } catch {
+      setCredentialMessages((prev) => ({ ...prev, [providerId]: "Failed to remove API key." }));
+    }
+  }
 
   const rejectedResults = runtimeConfig.results?.filter((result) => result.effect === "rejected") ?? [];
   const configuredProviderCount = surface?.providers.filter((provider) => provider.credentialConfigured).length ?? 0;
@@ -640,6 +684,52 @@ export function SettingsPage({
                         <span>External credential provider</span>
                         <input value={draft.credentialExternal ?? ""} onChange={(event) => updateProviderDraft(provider.id, { credentialExternal: event.target.value })} />
                       </label>
+                      {draft.credentialSource === "credential_profile" && draft.credentialProfile ? (
+                        <div className="settings-api-key-section">
+                          <div className="settings-api-key-header">
+                            <span>API Key for &quot;{draft.credentialProfile}&quot;</span>
+                            <StatusChip
+                              className={`settings-status ${isCredentialProfileConfigured(draft.credentialProfile) ? "available" : "unavailable"}`}
+                              tone={isCredentialProfileConfigured(draft.credentialProfile) ? "success" : "error"}
+                            >
+                              {isCredentialProfileConfigured(draft.credentialProfile) ? "key set" : "no key"}
+                            </StatusChip>
+                          </div>
+                          <div className="settings-form-row">
+                            <label>
+                              <span>API Key{credentialStoreLoading ? " (loading…)" : ""}</span>
+                              <input
+                                type="password"
+                                placeholder="Paste API key for this credential profile"
+                                value={apiKeyDrafts[provider.id] ?? ""}
+                                onChange={(event) => setApiKeyDrafts((prev) => ({ ...prev, [provider.id]: event.target.value }))}
+                              />
+                            </label>
+                          </div>
+                          <div className="settings-actions">
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              disabled={!apiKeyDrafts[provider.id]?.trim()}
+                              onClick={() => void saveApiKey(provider.id, draft.credentialProfile!, draft.credentialKind)}
+                            >
+                              Save API Key
+                            </Button>
+                            {isCredentialProfileConfigured(draft.credentialProfile) ? (
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                onClick={() => void removeApiKey(provider.id, draft.credentialProfile!)}
+                              >
+                                Remove Key
+                              </Button>
+                            ) : null}
+                          </div>
+                          {credentialMessages[provider.id] ? (
+                            <span className="settings-save-message">{credentialMessages[provider.id]}</span>
+                          ) : null}
+                        </div>
+                      ) : null}
                       <div className="settings-actions">
                         <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
                           {runtimeConfigSaving ? "Saving…" : `Save ${provider.id}`}
