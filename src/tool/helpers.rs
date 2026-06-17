@@ -517,10 +517,10 @@ mod tests {
 
     #[test]
     fn coerce_string_to_number_float() {
-        let result = coerce_string("2.718");
+        let result = coerce_string("4.567");
         assert_eq!(
             result,
-            Some(Value::Number(serde_json::Number::from_f64(2.718).unwrap()))
+            Some(Value::Number(serde_json::Number::from_f64(4.567).unwrap()))
         );
     }
 
@@ -548,7 +548,7 @@ mod tests {
             "count": "42",
             "enabled": "true",
             "nested": {
-                "ratio": "2.718",
+                "ratio": "4.567",
                 "flag": "false"
             }
         });
@@ -560,7 +560,7 @@ mod tests {
                 "count": 42,
                 "enabled": true,
                 "nested": {
-                    "ratio": 2.718,
+                    "ratio": 4.567,
                     "flag": false
                 }
             })
