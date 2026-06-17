@@ -533,12 +533,18 @@ function projectToolExecution(
   const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status");
   const durationMs = numberField(payload, "duration_ms") ?? numberField(result, "duration_ms");
   const error = toolErrorMessage(payload);
+  const disposition = firstStringField(payload, ["exec_command_disposition"]) ?? firstStringField(result, ["disposition"]);
+  const promoted = disposition === "promoted_to_task";
   const stringPreview = toolStringPreview(toolName, payload, commandPreview) || undefined;
   const toolSummary = projection?.body ?? stringPreview ?? summary ?? genericToolDescription(toolName, payload) ?? toolName;
+  // For promoted tasks, duration_ms is the yield_time timeout, not real execution time — suppress it.
+  const effectiveDuration = promoted ? undefined : durationMs;
+  const promotedTaskId = promoted ? firstStringField(asRecord(payload?.task_handle), ["task_id"]) : undefined;
   const body = compactJoin([
     toolSummary,
+    promotedTaskId ? `task ${shortTaskId(promotedTaskId)}` : undefined,
     exitStatus == null ? undefined : `exit ${exitStatus}`,
-    durationMs == null ? undefined : formatDuration(durationMs),
+    effectiveDuration == null ? undefined : formatDuration(effectiveDuration),
     error,
   ]);
   const outputPreview = commandOutputPreview(payload);
@@ -551,6 +557,10 @@ function projectToolExecution(
     detail,
     minDisplayLevel: toolTimelineDisplayLevel(toolName),
   };
+}
+
+function shortTaskId(taskId: string): string {
+  return taskId.length > 20 ? taskId.slice(0, 20) + "…" : taskId;
 }
 
 function toolTimelineDisplayLevel(toolName: string): DisplayLevel {
@@ -570,6 +580,8 @@ function projectKnownToolExecution(
   if (toolName === "ViewImage") return projectViewImageTool(payload);
   if (isWebSearchTool(toolName)) return projectWebSearchTool(toolName, payload);
   if (isWebFetchTool(toolName)) return projectWebFetchTool(payload);
+  if (toolName === "MemorySearch") return projectMemorySearchTool(payload);
+  if (toolName === "MemoryGet") return projectMemoryGetTool(payload);
   return undefined;
 }
 
@@ -783,6 +795,50 @@ function unwrapToolResult(payload: Record<string, unknown> | undefined): Record<
   const envelope = asRecord(output.envelope);
   if (envelope) return asRecord(envelope.result) ?? envelope;
   return output;
+}
+
+function projectMemorySearchTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const output = unwrapToolResult(payload);
+  const query = stringField(output, "query") ?? firstStringField(asRecord(payload?.input), ["query"]);
+  const results = arrayField(output, "results") ?? [];
+  const resultCount = results.length;
+  const body = compactJoin([
+    "Memory search",
+    query ? `“${truncateText(query, 60)}”` : undefined,
+    resultCount === 0 ? "no matches" : `${resultCount} ${resultCount === 1 ? "result" : "results"}`,
+  ]);
+  const detailText = results.length
+    ? results
+        .map((item) => {
+          const record = asRecord(item);
+          const sourceRef = stringField(record, "source_ref");
+          const preview = stringField(record, "preview");
+          return compactJoin([sourceRef, preview]);
+        })
+        .filter(Boolean)
+        .join("\n\n")
+    : undefined;
+  return {
+    body,
+    detail: detailText ? { label: "Memory results", text: detailText, tone: "output" } : undefined,
+  };
+}
+
+function projectMemoryGetTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const output = unwrapToolResult(payload);
+  const sourceRef = stringField(output, "source_ref") ?? firstStringField(asRecord(payload?.input), ["source_ref"]);
+  const content = stringField(output, "content");
+  const body = compactJoin([
+    "Memory get",
+    sourceRef ? truncateText(sourceRef, 80) : undefined,
+    content ? `${formatBytesRead(content.length)} retrieved` : undefined,
+  ]);
+  return {
+    body,
+    detail: content
+      ? { label: "Memory content", text: truncateText(content, 800), tone: "output" }
+      : undefined,
+  };
 }
 
 function formatBytesRead(bytes: number): string {

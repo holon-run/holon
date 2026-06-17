@@ -107,6 +107,8 @@ function formatKnownToolExecutionDetail(record: RuntimeToolExecutionRecord): { t
   if (isWorkItemTool(record.tool_name)) return formatWorkItemToolExecution(record);
   if (isWebSearchTool(record.tool_name)) return formatWebSearchToolExecution(record);
   if (isWebFetchTool(record.tool_name)) return formatWebFetchToolExecution(record);
+  if (record.tool_name === "MemorySearch") return formatMemorySearchToolExecution(record);
+  if (record.tool_name === "MemoryGet") return formatMemoryGetToolExecution(record);
   return undefined;
 }
 
@@ -264,6 +266,47 @@ function formatWebFetchToolExecution(record: RuntimeToolExecutionRecord): { text
     labelledText("Status", status),
     labelledText("Content-Type", contentType),
     labelledText("Bytes read", bytesRead),
+    truncated ? labelledText("Truncated", "yes") : "",
+    labelledText("Content", contentPreview),
+    labelledText("Error", record.error),
+  ].filter(Boolean);
+  return { text: lines.join("\n\n") || formatInspectorJson(record), tone: contentPreview ? "output" : "data" };
+}
+
+function formatMemorySearchToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+  const input = isRecord(record.input) ? record.input : {};
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const results = arrayRecords(nestedValue(output, ["results"]));
+  const query = nestedValue(output, ["query"]) ?? nestedValue(input, ["query"]);
+  const resultLines = results.slice(0, 15).map((item, index) => {
+    const sourceRef = nestedValue(item, ["source_ref"]);
+    const preview = nestedValue(item, ["preview"]);
+    const score = nestedValue(item, ["score"]);
+    return labelledText(
+      `${index + 1}. ${sourceRef ?? "Unknown source"}`,
+      [typeof score === "string" ? `score: ${score}` : undefined, typeof preview === "string" ? truncateInspectorText(preview, 300) : undefined]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  });
+  const lines = [
+    labelledText("Query", query),
+    labelledText("Results", `${results.length} found`),
+    ...resultLines,
+    labelledText("Error", record.error),
+  ].filter(Boolean);
+  return { text: lines.join("\n\n") || formatInspectorJson(record), tone: results.length ? "output" : "data" };
+}
+
+function formatMemoryGetToolExecution(record: RuntimeToolExecutionRecord): { text: string; tone: "output" | "data" } {
+  const input = isRecord(record.input) ? record.input : {};
+  const output = unwrapToolOutput(record.output ?? record.result);
+  const sourceRef = nestedValue(output, ["source_ref"]) ?? nestedValue(input, ["source_ref"]);
+  const content = nestedText(output, ["content"]);
+  const contentPreview = typeof content === "string" && content.trim() ? truncateInspectorText(content, 2000) : undefined;
+  const truncated = nestedValue(output, ["truncated"]);
+  const lines = [
+    labelledText("Source ref", sourceRef),
     truncated ? labelledText("Truncated", "yes") : "",
     labelledText("Content", contentPreview),
     labelledText("Error", record.error),
