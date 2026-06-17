@@ -670,7 +670,11 @@ impl WorkItemRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, work_item_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_work_item_payload(&row?)).collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_work_item_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 }
 
@@ -737,8 +741,11 @@ impl WorkspaceEntryRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, workspace_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_workspace_entry_payload(&row?))
-            .collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_workspace_entry_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 }
 
@@ -773,8 +780,11 @@ impl WorkspaceOccupancyRepository<'_> {
              ORDER BY acquired_at DESC, occupancy_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_workspace_occupancy_payload(&row?))
-            .collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_workspace_occupancy_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 }
 
@@ -809,8 +819,11 @@ impl AgentIdentityRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, agent_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_agent_identity_payload(&row?))
-            .collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_agent_identity_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 
     pub fn latest(&self, agent_id: &str) -> Result<Option<AgentIdentityRecord>> {
@@ -858,8 +871,11 @@ impl WorkItemDelegationRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, delegation_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_work_item_delegation_payload(&row?))
-            .collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_work_item_delegation_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 
     pub fn recent(&self, limit: usize) -> Result<Vec<WorkItemDelegationRecord>> {
@@ -1013,8 +1029,11 @@ impl WorkItemContinuationRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, continuation_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_work_item_continuation_payload(&row?))
-            .collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_work_item_continuation_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 }
 
@@ -1202,8 +1221,11 @@ impl ExternalTriggerRepository<'_> {
              ORDER BY created_at DESC, external_trigger_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_external_trigger_payload(&row?))
-            .collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_external_trigger_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 }
 
@@ -1254,7 +1276,11 @@ impl TaskRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, task_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_task_payload(&row?)).collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_task_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 
     pub fn latest_for_agent(&self, agent_id: &str, limit: usize) -> Result<Vec<TaskRecord>> {
@@ -1581,7 +1607,11 @@ impl TimerRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, timer_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_timer_payload(&row?)).collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_timer_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 
     pub fn recent(&self, limit: usize) -> Result<Vec<TimerRecord>> {

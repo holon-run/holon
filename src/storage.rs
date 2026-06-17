@@ -2586,15 +2586,18 @@ impl AppStorage {
     }
 
     pub fn latest_queue_entries(&self) -> Result<Vec<QueueEntryRecord>> {
-        if let Some(runtime_db) = self.scheduler_control_plane_db()? {
+        let records = if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             if let Some(agent_id) = self.current_agent_id()? {
-                return runtime_db
+                runtime_db
                     .queue_entries()
-                    .recent(Some(&agent_id), usize::MAX);
+                    .recent(Some(&agent_id), usize::MAX)?
+            } else {
+                runtime_db.queue_entries().latest_all()?
             }
-            return runtime_db.queue_entries().latest_all();
-        }
-        let records = self.read_recent_queue_entries(usize::MAX)?;
+        } else {
+            self.read_recent_queue_entries(usize::MAX)?
+        };
+        // Deduplicate by message_id, keeping the latest entry (last in chronological order)
         let mut latest = std::collections::BTreeMap::new();
         for record in records {
             latest.insert(record.message_id.clone(), record);
