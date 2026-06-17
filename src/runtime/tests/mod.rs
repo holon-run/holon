@@ -3,6 +3,7 @@ mod runtime_state;
 mod scheduler;
 mod support;
 mod task_recovery;
+mod tasks;
 mod timers;
 mod tui_pipeline_e2e;
 mod turns;
