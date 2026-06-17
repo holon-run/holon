@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use anyhow::{bail, Result};
 use serde_json::Value;
 
 use crate::{
+    object_query_cache::ObjectQueryCache,
     storage::AppStorage,
     types::{
         BriefContentSource, BriefRecord, MessageEnvelope, ToolExecutionRecord, TranscriptEntry,
@@ -51,14 +54,102 @@ impl ToolExecutionSelector {
 
 pub struct RuntimeObjectResolver<'a> {
     storage: &'a AppStorage,
+    cache: Option<Arc<ObjectQueryCache>>,
 }
 
 impl<'a> RuntimeObjectResolver<'a> {
     pub fn new(storage: &'a AppStorage) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            cache: None,
+        }
+    }
+
+    pub fn with_cache(storage: &'a AppStorage, cache: Arc<ObjectQueryCache>) -> Self {
+        Self {
+            storage,
+            cache: Some(cache),
+        }
     }
 
     pub fn resolve_ref(&self, object_ref: &str) -> Result<Option<ResolvedRuntimeObject>> {
+        // Check cache first
+        if let Some(cache) = &self.cache {
+            if let Some(cached) = cache.get(object_ref) {
+                return Ok(Some(cached));
+            }
+        }
+
+        let Some((kind, rest)) = object_ref.split_once(':') else {
+            bail!("runtime object ref must use kind:id syntax: {object_ref}");
+        };
+        if rest.trim().is_empty() {
+            bail!("runtime object ref is missing id: {object_ref}");
+        }
+
+        let result = match kind {
+            "message" => Ok(self
+                .resolve_message(rest)?
+                .map(ResolvedRuntimeObject::Message)),
+            "transcript" => Ok(self
+                .resolve_transcript_entry(rest)?
+                .map(ResolvedRuntimeObject::TranscriptEntry)),
+            "brief" => Ok(self.resolve_brief(rest)?.map(ResolvedRuntimeObject::Brief)),
+            "turn" => Ok(self.resolve_turn(rest)?.map(ResolvedRuntimeObject::Turn)),
+            "tool_execution" => Ok(self
+                .resolve_tool_execution_ref(rest)?
+                .map(ResolvedRuntimeObject::ToolExecution)),
+            _ => bail!("unsupported runtime object ref kind: {kind}"),
+        };
+
+        // Populate cache on success
+        if let (Some(cache), Ok(Some(ref obj))) = (&self.cache, &result) {
+            cache.insert(object_ref.to_string(), obj.clone());
+        }
+
+        result
+    }
+
+    /// Batch resolve multiple object refs, using cache and batch DB reads where available.
+    pub fn resolve_refs(
+        &self,
+        object_refs: &[String],
+    ) -> Result<Vec<(String, Option<ResolvedRuntimeObject>)>> {
+        let mut results = Vec::with_capacity(object_refs.len());
+        let mut uncached = Vec::new();
+
+        // Check cache first for all refs
+        for object_ref in object_refs {
+            if let Some(cache) = &self.cache {
+                if let Some(cached) = cache.get(object_ref) {
+                    results.push((object_ref.clone(), Some(cached)));
+                    continue;
+                }
+            }
+            uncached.push(object_ref.clone());
+            results.push((object_ref.clone(), None));
+        }
+
+        // Resolve uncached refs
+        for object_ref in &uncached {
+            if let Ok(Some(obj)) = self.resolve_ref_uncached(object_ref) {
+                if let Some(cache) = &self.cache {
+                    cache.insert(object_ref.clone(), obj.clone());
+                }
+                // Update results
+                for (ref_key, ref_val) in &mut results {
+                    if ref_key == object_ref && ref_val.is_none() {
+                        *ref_val = Some(obj.clone());
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    fn resolve_ref_uncached(&self, object_ref: &str) -> Result<Option<ResolvedRuntimeObject>> {
         let Some((kind, rest)) = object_ref.split_once(':') else {
             bail!("runtime object ref must use kind:id syntax: {object_ref}");
         };

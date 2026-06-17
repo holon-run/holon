@@ -221,6 +221,7 @@ impl RuntimeHandle {
                     current_run_abort: None,
                 }),
                 projection_cache: Mutex::new(projection_cache),
+                object_query_cache: Arc::new(crate::object_query_cache::ObjectQueryCache::new(256)),
                 notify: Notify::new(),
                 storage,
                 runtime_db,
