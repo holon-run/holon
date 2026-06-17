@@ -35,6 +35,7 @@ const RUNTIME_DB_BUSY_TIMEOUT: Duration = Duration::from_millis(30_000);
 const RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(25);
 const RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY: Duration = Duration::from_millis(1_000);
 const RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL: Duration = Duration::from_secs(30);
+const RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL: Duration = Duration::from_secs(30);
 const RUNTIME_DB_APPEND_RETRY_MAX_DELAY: Duration = Duration::from_millis(5_000);
 const RUNTIME_DB_WRITE_QUEUE_CAPACITY: usize = 1024;
 
@@ -411,7 +412,7 @@ impl RuntimeDbWriter {
         }
     }
 
-    fn append_wait<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+    fn append_wait<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.state.append_wait(f)
     }
 
@@ -435,14 +436,18 @@ impl RuntimeDbWriter {
     fn append_wait_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
-        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+        f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         self.state.append_wait_with_context(context, f)
+    }
+
+    fn append_wait_once<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        self.state.append_wait_once(f)
     }
 }
 
 impl RuntimeDbWriterState {
-    fn append_wait<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+    fn append_wait<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.append_wait_with_context(
             RuntimeDbWriteContext::sync("runtime_db.transaction", "unknown"),
             f,
@@ -452,7 +457,7 @@ impl RuntimeDbWriterState {
     fn append_wait_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
-        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+        mut f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         let queue_wait_started_at = Instant::now();
         let _turn = self.queue.wait_turn()?;
@@ -463,7 +468,76 @@ impl RuntimeDbWriterState {
             .lock()
             .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
         let mutex_wait = mutex_wait_started_at.elapsed();
-        run_transaction_on_connection(&connection, &self.path, context, queue_wait, mutex_wait, f)
+        let started_at = Instant::now();
+        let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
+        let mut retry_count = 0u32;
+        let mut next_warn_at = RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL;
+        loop {
+            match run_transaction_on_connection(
+                &connection,
+                &self.path,
+                context,
+                queue_wait,
+                mutex_wait,
+                |tx| f(tx),
+            ) {
+                Ok(value) => return Ok(value),
+                Err(error) if is_retryable_db_error(&error) => {
+                    retry_count += 1;
+                    let elapsed = started_at.elapsed();
+                    tracing::trace!(
+                        error = %error,
+                        path = %self.path.display(),
+                        operation = context.operation,
+                        table = context.table,
+                        mode = context.mode.as_str(),
+                        retry_count,
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "runtime db transaction retrying"
+                    );
+                    if elapsed >= next_warn_at {
+                        tracing::warn!(
+                            error = %error,
+                            path = %self.path.display(),
+                            operation = context.operation,
+                            table = context.table,
+                            mode = context.mode.as_str(),
+                            retry_count,
+                            elapsed_ms = elapsed.as_millis(),
+                            retry_delay_ms = retry_delay.as_millis(),
+                            "runtime db transaction still locked"
+                        );
+                        next_warn_at += RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL;
+                    }
+                    thread::sleep(retry_delay);
+                    retry_delay = next_runtime_db_retry_delay(
+                        retry_delay,
+                        RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn append_wait_once<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        let queue_wait_started_at = Instant::now();
+        let _turn = self.queue.wait_turn()?;
+        let queue_wait = queue_wait_started_at.elapsed();
+        let mutex_wait_started_at = Instant::now();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+        let mutex_wait = mutex_wait_started_at.elapsed();
+        run_transaction_on_connection(
+            &connection,
+            &self.path,
+            RuntimeDbWriteContext::sync("runtime_db.transaction_once", "unknown"),
+            queue_wait,
+            mutex_wait,
+            f,
+        )
     }
 }
 
@@ -5268,16 +5342,20 @@ impl RuntimeDb {
         open_connection(&self.path)
     }
 
-    pub fn transaction<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+    pub fn transaction<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.writer.append_wait(f)
     }
 
     fn transaction_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
-        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+        f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         self.writer.append_wait_with_context(context, f)
+    }
+
+    fn transaction_once<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        self.writer.append_wait_once(f)
     }
 
     pub fn append(
@@ -5571,7 +5649,7 @@ impl RuntimeDb {
         canonical_source: &'static str,
         checkpoint: serde_json::Value,
     ) -> Result<()> {
-        self.transaction(|tx| {
+        self.transaction_once(|tx| {
             upsert_storage_domain(tx, domain, "complete", canonical_source, Some(checkpoint))
         })
     }
@@ -5600,7 +5678,7 @@ impl RuntimeDb {
                 existing_checkpoint,
             )
         })?;
-        let result = self.transaction(|tx| {
+        let result = self.transaction_once(|tx| {
             let checkpoint = import(tx)?;
             upsert_storage_domain(tx, domain, "complete", complete_source, Some(checkpoint))?;
             Ok(())
@@ -5610,7 +5688,7 @@ impl RuntimeDb {
                 "error": error.to_string(),
                 "retry": "restart runtime to retry legacy import",
             });
-            self.transaction(|tx| {
+            self.transaction_once(|tx| {
                 upsert_storage_domain(tx, domain, "failed", importing_source, Some(checkpoint))
             })?;
             return Err(error).with_context(|| format!("importing legacy storage domain {domain}"));
@@ -6236,6 +6314,36 @@ mod tests {
             &busy.context("updating transcript entry")
         ));
         assert!(!is_retryable_db_error(&constraint));
+    }
+
+    #[test]
+    fn runtime_db_sync_transaction_retries_retryable_body_error() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut attempts = 0usize;
+
+        db.transaction(|tx| {
+            attempts += 1;
+            if attempts == 1 {
+                return Err(RuntimeDbRetryableError::new(
+                    "inserting audit event",
+                    &db_path,
+                    "database is locked",
+                )
+                .into());
+            }
+            insert_audit_event_tx(
+                tx,
+                Some("agent-a"),
+                &AuditEvent::new("runtime_db_retry_body", serde_json::json!({})),
+            )
+        })?;
+
+        assert_eq!(attempts, 2);
+        let events = db.audit_events().recent(Some("agent-a"), 10)?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "runtime_db_retry_body");
+        Ok(())
     }
 
     fn task_record(id: &str, agent_id: &str, status: TaskStatus, offset: i64) -> TaskRecord {
