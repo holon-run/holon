@@ -95,6 +95,8 @@ impl RuntimeHandle {
                 loop_control,
             )
             .await?;
+        crate::diagnostics::record_turn_total(context_build_started.elapsed());
+        let cleanup_started = std::time::Instant::now();
 
         if outcome.terminal_kind.is_failure() {
             let mut brief =
@@ -143,6 +145,7 @@ impl RuntimeHandle {
             }
         }
 
+        crate::diagnostics::record_turn_cleanup(cleanup_started.elapsed());
         Ok(())
     }
 

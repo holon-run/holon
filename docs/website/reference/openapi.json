@@ -558,7 +558,111 @@
             },
             "type": "array"
           },
+          "provider": {
+            "items": {
+              "properties": {
+                "avg_bytes": {
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "avg_ms": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "count": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "max_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "total_bytes": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "total_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "count",
+                "total_ms",
+                "max_ms",
+                "avg_ms"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "scheduler": {
+            "items": {
+              "properties": {
+                "avg_bytes": {
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "avg_ms": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "count": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "max_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "total_bytes": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "total_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "count",
+                "total_ms",
+                "max_ms",
+                "avg_ms"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "turn": {
             "items": {
               "properties": {
                 "avg_bytes": {
@@ -617,7 +721,9 @@
           "http",
           "projections",
           "db",
-          "scheduler"
+          "scheduler",
+          "turn",
+          "provider"
         ],
         "title": "PerformanceDiagnosticsSnapshot",
         "type": "object"

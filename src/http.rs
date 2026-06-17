@@ -1087,6 +1087,7 @@ pub async fn list_agent_entries(
         .list_agent_entries()
         .await
         .map_err(error_response)?;
+    crate::diagnostics::record_projection_agents_list(started_at.elapsed());
     traced_json("/agents/list", started_at, agents)
 }
 
@@ -1586,6 +1587,7 @@ pub async fn agent_state(
         .await
         .map_err(agent_access_error)?;
     let mut agent = runtime.agent_summary().await.map_err(error_response)?;
+    let tasks_started = std::time::Instant::now();
     let tasks = runtime
         .active_tasks(STATE_BOOTSTRAP_TASK_LIMIT)
         .await
@@ -1593,7 +1595,11 @@ pub async fn agent_state(
         .into_iter()
         .map(slim_state_task_record)
         .collect();
+    crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
+    let timers_started = std::time::Instant::now();
     let timers = runtime.recent_timers(50).await.map_err(error_response)?;
+    crate::diagnostics::record_projection_state_timers(timers_started.elapsed());
+    let work_items_started = std::time::Instant::now();
     let mut work_items = runtime
         .latest_work_items_for_agent(&agent_id, STATE_BOOTSTRAP_WORK_ITEM_LIMIT)
         .await
@@ -1601,7 +1607,9 @@ pub async fn agent_state(
         .into_iter()
         .map(slim_state_work_item_record)
         .collect::<Vec<_>>();
+    crate::diagnostics::record_projection_state_work_items(work_items_started.elapsed());
     sort_state_work_items(&mut work_items);
+    let waiting_started = std::time::Instant::now();
     let waiting_intents = runtime
         .latest_waiting_intents()
         .await
@@ -1609,6 +1617,8 @@ pub async fn agent_state(
         .into_iter()
         .map(slim_state_waiting_intent_record)
         .collect();
+    crate::diagnostics::record_projection_state_waiting_intents(waiting_started.elapsed());
+    let triggers_started = std::time::Instant::now();
     let external_triggers = runtime
         .latest_external_triggers()
         .await
@@ -1616,6 +1626,7 @@ pub async fn agent_state(
         .into_iter()
         .map(ExternalTriggerStateSnapshot::from)
         .collect();
+    crate::diagnostics::record_projection_state_external_triggers(triggers_started.elapsed());
     let workspace = state_workspace_snapshot(&agent);
     slim_state_agent_summary(&mut agent);
     let session = StateSessionSnapshot {

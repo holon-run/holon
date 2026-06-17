@@ -2275,6 +2275,7 @@ impl TurnExecution<'_> {
 
             let context_build_started = Instant::now();
 
+            let provider_round_started = std::time::Instant::now();
             let (
                 response,
                 attempt_timeline,
@@ -2284,11 +2285,13 @@ impl TurnExecution<'_> {
                 provider_completed_at,
                 provider_round_ms,
             ) = if round == 1 {
+                let request_build_started = std::time::Instant::now();
                 let request = build_provider_turn_request(
                     &effective_prompt,
                     available_tools.clone(),
                     native_web_search.clone(),
                 );
+                crate::diagnostics::record_provider_request_build(request_build_started.elapsed());
                 let context_management = context_management_diagnostic(provider.as_ref(), &request);
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
@@ -2671,6 +2674,8 @@ impl TurnExecution<'_> {
                 }
             }
 
+            crate::diagnostics::record_turn_provider_round(provider_round_started.elapsed());
+            crate::diagnostics::record_provider_round_total(provider_round_started.elapsed());
             let completed_round_assistant_blocks = assistant_blocks.clone();
             let only_sleep_tools =
                 !tool_calls.is_empty() && tool_calls.iter().all(|call| call.name == "Sleep");
@@ -3131,6 +3136,7 @@ impl TurnExecution<'_> {
                         .clone()
                         .or_else(|| guard.state.current_work_item_id.clone())
                 };
+                let tool_exec_started = std::time::Instant::now();
                 let tool_execution = if let Some(snapshot) = runtime.current_run_abort_token().await
                 {
                     tokio::select! {
@@ -3147,6 +3153,7 @@ impl TurnExecution<'_> {
                         .execute(runtime, agent_id, &authority_class, &call)
                         .await
                 };
+                crate::diagnostics::record_turn_tool_execution(tool_exec_started.elapsed());
                 match tool_execution {
                     Ok((result, mut record)) => {
                         let result_content =

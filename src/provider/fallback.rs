@@ -472,7 +472,9 @@ impl AgentProvider for FallbackProvider {
                             backoff_ms = backoff.as_millis(),
                             "provider turn failed; retrying"
                         );
+                        let retry_started = std::time::Instant::now();
                         sleep(backoff).await;
+                        crate::diagnostics::record_provider_retry(retry_started.elapsed());
                         last_error = Some(error);
                         continue;
                     }
