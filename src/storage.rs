@@ -657,10 +657,10 @@ impl AppStorage {
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.evidence().append_brief(brief)?;
-            return self.enqueue_memory_index_brief(brief);
+            return self.enqueue_memory_index_brief_best_effort(brief);
         }
         self.append_jsonl(&self.briefs_path, brief)?;
-        self.enqueue_memory_index_brief(brief)
+        self.enqueue_memory_index_brief_best_effort(brief)
     }
 
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
@@ -686,10 +686,10 @@ impl AppStorage {
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.tasks().upsert(task)?;
-            return self.enqueue_memory_index_task(task);
+            return self.enqueue_memory_index_task_best_effort(task);
         }
         self.append_jsonl(&self.tasks_path, task)?;
-        self.enqueue_memory_index_task(task)
+        self.enqueue_memory_index_task_best_effort(task)
     }
 
     pub fn append_work_item(&self, record: &WorkItemRecord) -> Result<()> {
@@ -700,10 +700,10 @@ impl AppStorage {
                 .as_deref()
                 == Some(record.id.as_str());
             runtime_db.work_items().upsert(record, current_focus)?;
-            return self.enqueue_memory_index_work_item(record);
+            return self.enqueue_memory_index_work_item_best_effort(record);
         }
         self.append_jsonl(&self.work_items_path, record)?;
-        self.enqueue_memory_index_work_item(record)
+        self.enqueue_memory_index_work_item_best_effort(record)
     }
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
@@ -745,7 +745,7 @@ impl AppStorage {
                 record.tool_name.as_str(),
                 "ExecCommand" | "ExecCommandBatch"
             ) {
-                self.enqueue_memory_index_tool_execution(record)?;
+                self.enqueue_memory_index_tool_execution_best_effort(record)?;
             }
             return Ok(());
         }
@@ -754,7 +754,7 @@ impl AppStorage {
             record.tool_name.as_str(),
             "ExecCommand" | "ExecCommandBatch"
         ) {
-            self.enqueue_memory_index_tool_execution(record)?;
+            self.enqueue_memory_index_tool_execution_best_effort(record)?;
         }
         Ok(())
     }
@@ -864,19 +864,19 @@ impl AppStorage {
     pub fn append_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.context_episodes().upsert(record)?;
-            return self.enqueue_memory_index_context_episode(record);
+            return self.enqueue_memory_index_context_episode_best_effort(record);
         }
         self.append_jsonl(&self.context_episodes_path, record)?;
-        self.enqueue_memory_index_context_episode(record)
+        self.enqueue_memory_index_context_episode_best_effort(record)
     }
 
     pub fn append_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
             runtime_db.workspace_entries().upsert(entry)?;
-            return self.enqueue_memory_index_workspace_entry(entry);
+            return self.enqueue_memory_index_workspace_entry_best_effort(entry);
         }
         self.append_jsonl(&self.workspaces_path, entry)?;
-        self.enqueue_memory_index_workspace_entry(entry)
+        self.enqueue_memory_index_workspace_entry_best_effort(entry)
     }
 
     pub fn append_workspace_occupancy(&self, entry: &WorkspaceOccupancyRecord) -> Result<()> {
@@ -924,12 +924,32 @@ impl AppStorage {
         self.enqueue_memory_index_source("brief", &brief.id, &format!("brief:{}", brief.id))
     }
 
+    fn enqueue_memory_index_brief_best_effort(&self, brief: &BriefRecord) -> Result<()> {
+        let result = self.enqueue_memory_index_brief(brief);
+        self.finish_memory_index_enqueue(result, "brief", &brief.id, &format!("brief:{}", brief.id))
+    }
+
     fn enqueue_memory_index_task(&self, task: &TaskRecord) -> Result<()> {
         self.enqueue_memory_index_source("task", &task.id, &format!("task:{}", task.id))
     }
 
+    fn enqueue_memory_index_task_best_effort(&self, task: &TaskRecord) -> Result<()> {
+        let result = self.enqueue_memory_index_task(task);
+        self.finish_memory_index_enqueue(result, "task", &task.id, &format!("task:{}", task.id))
+    }
+
     fn enqueue_memory_index_work_item(&self, record: &WorkItemRecord) -> Result<()> {
         self.enqueue_memory_index_source(
+            "work_item",
+            &record.id,
+            &format!("work_item:{}", record.id),
+        )
+    }
+
+    fn enqueue_memory_index_work_item_best_effort(&self, record: &WorkItemRecord) -> Result<()> {
+        let result = self.enqueue_memory_index_work_item(record);
+        self.finish_memory_index_enqueue(
+            result,
             "work_item",
             &record.id,
             &format!("work_item:{}", record.id),
@@ -944,8 +964,34 @@ impl AppStorage {
         )
     }
 
+    fn enqueue_memory_index_context_episode_best_effort(
+        &self,
+        record: &ContextEpisodeRecord,
+    ) -> Result<()> {
+        let result = self.enqueue_memory_index_context_episode(record);
+        self.finish_memory_index_enqueue(
+            result,
+            "context_episode",
+            &record.id,
+            &format!("episode:{}", record.id),
+        )
+    }
+
     fn enqueue_memory_index_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
         self.enqueue_memory_index_source(
+            "workspace_profile",
+            &entry.workspace_id,
+            &format!("workspace_profile:{}", entry.workspace_id),
+        )
+    }
+
+    fn enqueue_memory_index_workspace_entry_best_effort(
+        &self,
+        entry: &WorkspaceEntry,
+    ) -> Result<()> {
+        let result = self.enqueue_memory_index_workspace_entry(entry);
+        self.finish_memory_index_enqueue(
+            result,
             "workspace_profile",
             &entry.workspace_id,
             &format!("workspace_profile:{}", entry.workspace_id),
@@ -1003,6 +1049,44 @@ impl AppStorage {
                     &source_ref,
                     &source_ref,
                 )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn enqueue_memory_index_tool_execution_best_effort(
+        &self,
+        record: &ToolExecutionRecord,
+    ) -> Result<()> {
+        let result = self.enqueue_memory_index_tool_execution(record);
+        self.finish_memory_index_enqueue(result, &record.tool_name, &record.id, &record.id)
+    }
+
+    fn finish_memory_index_enqueue(
+        &self,
+        result: Result<()>,
+        source_kind: &str,
+        source_id: &str,
+        source_ref: &str,
+    ) -> Result<()> {
+        if let Err(error) = result {
+            tracing::warn!(
+                error = %error,
+                agent_id = self.agent_id.as_deref().unwrap_or("<global>"),
+                source_kind,
+                source_id,
+                source_ref,
+                "memory index enqueue failed after canonical storage write"
+            );
+            if let Err(dirty_error) = self.mark_memory_index_dirty() {
+                tracing::warn!(
+                    error = %dirty_error,
+                    agent_id = self.agent_id.as_deref().unwrap_or("<global>"),
+                    source_kind,
+                    source_id,
+                    source_ref,
+                    "failed to mark memory index dirty after enqueue failure"
+                );
             }
         }
         Ok(())
@@ -4153,6 +4237,48 @@ mod tests {
             Some("delivery evidence".into())
         );
         assert_eq!(storage.count_briefs().unwrap(), 1);
+    }
+
+    #[test]
+    fn memory_index_enqueue_failure_does_not_fail_tool_evidence_append() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db)
+            .unwrap();
+        fs::create_dir_all(storage.shared_indexes_dir().join("memory.sqlite3")).unwrap();
+
+        let tool = ToolExecutionRecord {
+            id: "tool-index-failure".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 0,
+            turn_id: Some("turn-index-failure".into()),
+            tool_name: "ExecCommand".into(),
+            created_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            duration_ms: 1,
+            authority_class: AuthorityClass::OperatorInstruction,
+            status: ToolExecutionStatus::Success,
+            input: serde_json::json!({ "cmd": "echo indexed later" }),
+            output: serde_json::json!({ "exit_code": 0 }),
+            summary: "command exited".into(),
+            invocation_surface: None,
+        };
+
+        storage.append_tool_execution(&tool).unwrap();
+
+        assert_eq!(storage.read_recent_tool_executions(10).unwrap(), vec![tool]);
+        assert!(storage
+            .shared_indexes_dir()
+            .join("memory.default.dirty")
+            .exists());
     }
 
     #[test]
