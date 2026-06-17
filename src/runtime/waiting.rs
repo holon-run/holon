@@ -80,7 +80,7 @@ impl RuntimeHandle {
         let (kind, subject_ref, wake_sources) = wait_condition_parts(wake, resource.clone())?;
         let recheck_at = recheck_after_ms.map(|delay| recheck_at_from(now, delay));
         let mut work_item = None;
-        let mut cancelled_wait_condition_ids = Vec::new();
+        let cancelled_wait_condition_ids;
         if let Some(work_item_id) = work_item_id.as_deref() {
             let existing = self.validate_owned_work_item(agent_id, work_item_id)?;
             if existing.state != WorkItemState::Open {
@@ -102,6 +102,12 @@ impl RuntimeHandle {
             self.clear_current_turn_work_item_if_matches(agent_id, &updated, "work_item_waiting")
                 .await?;
             work_item = Some(updated);
+        } else {
+            // Agent-scoped wait: cancel prior active agent-scoped waits,
+            // symmetric with the work-item-scoped branch above.
+            cancelled_wait_condition_ids = self
+                .cancel_active_wait_conditions_for_agent(agent_id, "wait_for_replaced")
+                .await?;
         }
 
         let condition = WaitConditionRecord {
@@ -192,6 +198,40 @@ impl RuntimeHandle {
                 serde_json::json!({
                     "agent_id": agent_id,
                     "work_item_id": work_item_id,
+                    "reason": reason,
+                    "wait_condition_ids": cancelled,
+                }),
+            ))?;
+        }
+        Ok(cancelled)
+    }
+
+    pub(super) async fn cancel_active_wait_conditions_for_agent(
+        &self,
+        agent_id: &str,
+        reason: &str,
+    ) -> Result<Vec<String>> {
+        let now = Utc::now();
+        let active = self
+            .inner
+            .storage
+            .latest_active_wait_conditions_for_agent(agent_id)?;
+        let mut cancelled = Vec::new();
+        for condition in active {
+            let mut cancelled_condition = condition.clone();
+            cancelled_condition.status = WaitConditionStatus::Cancelled;
+            cancelled_condition.updated_at = now;
+            cancelled_condition.cancelled_at = Some(now);
+            self.inner
+                .storage
+                .append_wait_condition(&cancelled_condition)?;
+            cancelled.push(condition.id);
+        }
+        if !cancelled.is_empty() {
+            self.inner.storage.append_event(&AuditEvent::new(
+                "wait_conditions_cancelled",
+                serde_json::json!({
+                    "agent_id": agent_id,
                     "reason": reason,
                     "wait_condition_ids": cancelled,
                 }),
