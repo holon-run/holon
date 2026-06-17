@@ -42,6 +42,7 @@ export function App() {
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const setRuntimeConnection = useRuntimeStore((state) => state.setRuntimeConnection);
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
+  const rosterActivityByAgentId = useRuntimeStore((state) => state.rosterActivityByAgentId);
   const activeAgentId = route === "agent" ? selectedAgent?.id ?? selectedAgentId : undefined;
   const selectedAgentSession = useRuntimeStore((state) =>
     activeAgentId ? state.sessionsByAgentId[activeAgentId] : undefined,
@@ -225,6 +226,7 @@ export function App() {
             bootstrap.agents.map((agent) => {
               const status = deriveAgentDisplayStatus(agent);
               const workSummary = agent.currentWork?.objective;
+              const unreadCount = rosterActivityByAgentId[agent.id]?.unreadCount ?? 0;
 
               return (
                 <button
@@ -238,6 +240,11 @@ export function App() {
                   <span className="agent-row-main">
                     <span className="agent-row-title">
                       <strong>{agent.id}</strong>
+                      {unreadCount > 0 ? (
+                        <span className="agent-row-unread" aria-label={`${unreadCount} unread updates`}>
+                          {formatUnreadCount(unreadCount)}
+                        </span>
+                      ) : null}
                       <StatusBadge className="agent-row-status" kind="agent" value={status.tone} aria-label={status.title} title={status.title}>
                         {status.label}
                       </StatusBadge>
@@ -516,6 +523,10 @@ function MissingAgentPage({ agentId, loading }: { agentId: string; loading: bool
       </div>
     </section>
   );
+}
+
+function formatUnreadCount(count: number): string {
+  return count > 99 ? "99+" : String(count);
 }
 
 function pageTitle(route: RouteKey): string {

@@ -94,9 +94,12 @@ function cachedAgentsByIdFromState(state: RuntimeStoreState): Record<string, Age
   return agentsById;
 }
 
-interface AgentRosterActivity {
+export interface AgentRosterActivity {
   operatorAt?: string;
   briefAt?: string;
+  unreadCount?: number;
+  lastUnreadSeq?: number;
+  lastReadSeq?: number;
 }
 
 function appendOptimisticOperatorPrompt(detail: AgentDetail | null, agent: AgentSummary | undefined, prompt: string): AgentDetail | null {
@@ -203,6 +206,7 @@ const LEGACY_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1
 const ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.activeRuntimeConnection.v1";
 const RUNTIME_CONNECTION_PROFILES_STORAGE_KEY = "holon.webGui.runtimeConnectionProfiles.v1";
 const DISPLAY_LEVEL_STORAGE_KEY = "holon.webGui.displayLevelsByAgentId.v1";
+const ROSTER_ACTIVITY_STORAGE_KEY = "holon.webGui.rosterActivityByRemote.v1";
 let runtimeConnectionConfig = readStoredRuntimeConnectionConfig();
 let runtimeClient = createRuntimeClient(runtimeClientOptions(runtimeConnectionConfig));
 const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
@@ -391,6 +395,58 @@ function writeStoredDisplayLevels(displayLevelsByAgentId: Record<string, Display
   }
 }
 
+export function readStoredRosterActivity(remoteKey: string): Record<string, AgentRosterActivity> {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = readStoredJson(window.localStorage, ROSTER_ACTIVITY_STORAGE_KEY);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const byRemote = parsed as Record<string, unknown>;
+    const rawActivity = byRemote[remoteKey];
+    if (!rawActivity || typeof rawActivity !== "object" || Array.isArray(rawActivity)) return {};
+    const activityByAgentId: Record<string, AgentRosterActivity> = {};
+    for (const [agentId, value] of Object.entries(rawActivity)) {
+      if (typeof agentId !== "string" || !agentId || !value || typeof value !== "object" || Array.isArray(value)) continue;
+      const activity = coerceRosterActivity(value);
+      if (activity) activityByAgentId[agentId] = activity;
+    }
+    return activityByAgentId;
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredRosterActivity(remoteKey: string, activityByAgentId: Record<string, AgentRosterActivity>): void {
+  if (typeof window === "undefined") return;
+  try {
+    const parsed = readStoredJson(window.localStorage, ROSTER_ACTIVITY_STORAGE_KEY);
+    const byRemote =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, Record<string, AgentRosterActivity>>)
+        : {};
+    byRemote[remoteKey] = activityByAgentId;
+    window.localStorage.setItem(ROSTER_ACTIVITY_STORAGE_KEY, JSON.stringify(byRemote));
+  } catch {
+    // Ignore storage failures; unread state falls back to memory-only.
+  }
+}
+
+function coerceRosterActivity(value: unknown): AgentRosterActivity | undefined {
+  const parsed = value as Partial<AgentRosterActivity>;
+  const activity: AgentRosterActivity = {};
+  if (typeof parsed.operatorAt === "string") activity.operatorAt = parsed.operatorAt;
+  if (typeof parsed.briefAt === "string") activity.briefAt = parsed.briefAt;
+  if (typeof parsed.unreadCount === "number" && Number.isFinite(parsed.unreadCount) && parsed.unreadCount > 0) {
+    activity.unreadCount = Math.floor(parsed.unreadCount);
+  }
+  if (typeof parsed.lastUnreadSeq === "number" && Number.isFinite(parsed.lastUnreadSeq)) {
+    activity.lastUnreadSeq = Math.floor(parsed.lastUnreadSeq);
+  }
+  if (typeof parsed.lastReadSeq === "number" && Number.isFinite(parsed.lastReadSeq)) {
+    activity.lastReadSeq = Math.floor(parsed.lastReadSeq);
+  }
+  return Object.keys(activity).length ? activity : undefined;
+}
+
 function isDisplayLevel(value: unknown): value is DisplayLevel {
   return value === "info" || value === "verbose" || value === "debug";
 }
@@ -482,16 +538,27 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   runtimeConfigSaving: false,
   search: null,
   searchLoading: false,
-  rosterActivityByAgentId: {},
+  rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig)),
   sessionsByAgentId: {},
 
   setRoute: (route) => set({ route }),
   openAgent: (agentId) =>
-    set((state) => ({
-      selectedAgentId: agentId,
-      route: "agent",
-      displayLevel: state.displayLevelsByAgentId[agentId] ?? "info",
-    })),
+    set((state) => {
+      const rosterActivityByAgentId = markAgentRead(
+        state.rosterActivityByAgentId,
+        agentId,
+        state.sessionsByAgentId[agentId]?.newestSeq,
+      );
+      if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
+        writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
+      }
+      return {
+        selectedAgentId: agentId,
+        route: "agent",
+        displayLevel: state.displayLevelsByAgentId[agentId] ?? "info",
+        rosterActivityByAgentId,
+      };
+    }),
   setDisplayLevel: (displayLevel, agentId) =>
     set((state) => {
       const targetAgentId = agentId ?? state.selectedAgentId;
@@ -590,6 +657,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       search: null,
       searchError: undefined,
       sessionsByAgentId: {},
+      rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(normalizedConfig)),
       selectedAgentId: "",
       route: "dashboard",
     });
@@ -894,6 +962,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
     set((state) => {
       const rosterActivityByAgentId = touchRosterActivity(state.rosterActivityByAgentId, agentId, "operator", new Date().toISOString());
+      if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
+        writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
+      }
       return {
         bootstrap: sortBootstrapAgents(state.bootstrap, rosterActivityByAgentId),
         rosterActivityByAgentId,
@@ -1682,18 +1753,64 @@ function touchRosterActivity(
   };
 }
 
-function touchRosterActivityFromEvent(
+function markAgentRead(
+  current: Record<string, AgentRosterActivity>,
+  agentId: string,
+  newestSeq: number | undefined,
+): Record<string, AgentRosterActivity> {
+  const existing = current[agentId];
+  if (!existing?.unreadCount && (newestSeq == null || existing?.lastReadSeq === newestSeq)) return current;
+  return {
+    ...current,
+    [agentId]: {
+      ...existing,
+      unreadCount: 0,
+      lastReadSeq: Math.max(newestSeq ?? 0, existing?.lastUnreadSeq ?? 0, existing?.lastReadSeq ?? 0),
+    },
+  };
+}
+
+export function touchRosterActivityFromEvent(
+  current: Record<string, AgentRosterActivity>,
+  agentId: string,
+  event: StreamEventEnvelopeDto,
+  selectedAgentId: string,
+): Record<string, AgentRosterActivity> {
+  let next = current;
+  if (event.type === "brief_created") {
+    next = touchRosterActivity(next, agentId, "brief", eventTimestamp(event));
+  }
+  if (event.type === "message_enqueued" && messageOrigin(event.payload) === "operator") {
+    next = touchRosterActivity(next, agentId, "operator", eventTimestamp(event));
+  }
+  if (isUnreadEvent(event) && agentId !== selectedAgentId) {
+    next = incrementUnreadFromEvent(next, agentId, event);
+  }
+  return next;
+}
+
+function isUnreadEvent(event: StreamEventEnvelopeDto): boolean {
+  if (event.type === "brief_created") return true;
+  return event.type === "message_enqueued" && messageOrigin(event.payload) !== "operator";
+}
+
+function incrementUnreadFromEvent(
   current: Record<string, AgentRosterActivity>,
   agentId: string,
   event: StreamEventEnvelopeDto,
 ): Record<string, AgentRosterActivity> {
-  if (event.type === "brief_created") {
-    return touchRosterActivity(current, agentId, "brief", eventTimestamp(event));
-  }
-  if (event.type === "message_enqueued" && messageOrigin(event.payload) === "operator") {
-    return touchRosterActivity(current, agentId, "operator", eventTimestamp(event));
-  }
-  return current;
+  const existing = current[agentId];
+  const seq = event.event_seq;
+  if (seq != null && existing?.lastReadSeq != null && seq <= existing.lastReadSeq) return current;
+  if (seq != null && existing?.lastUnreadSeq != null && seq <= existing.lastUnreadSeq) return current;
+  return {
+    ...current,
+    [agentId]: {
+      ...existing,
+      unreadCount: (existing?.unreadCount ?? 0) + 1,
+      lastUnreadSeq: seq ?? existing?.lastUnreadSeq,
+    },
+  };
 }
 
 function eventTimestamp(event: StreamEventEnvelopeDto): string | undefined {
@@ -1887,9 +2004,13 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
       };
     }
     const rosterActivityByAgentId = uniqueEvents.reduce(
-      (activityByAgentId, event) => touchRosterActivityFromEvent(activityByAgentId, agentId, event),
+      (activityByAgentId, event) =>
+        touchRosterActivityFromEvent(activityByAgentId, agentId, event, state.route === "agent" ? state.selectedAgentId : ""),
       state.rosterActivityByAgentId,
     );
+    if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
+      writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
+    }
     const eventsBySeq = {
       ...current.eventsBySeq,
       ...eventsBySeqFromPage(uniqueEvents),

@@ -301,6 +301,21 @@ button {
   margin-left: auto;
 }
 
+.agent-row-unread {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 780;
+  line-height: 1;
+}
+
 .agent-row strong,
 .connection-status strong {
   display: block;
