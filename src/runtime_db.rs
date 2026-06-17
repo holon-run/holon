@@ -1459,7 +1459,11 @@ impl QueueEntryRepository<'_> {
              ORDER BY updated_at DESC, created_at DESC, message_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| decode_queue_entry_payload(&row?)).collect()
+        let mut records: Vec<_> = rows
+            .map(|row| decode_queue_entry_payload(&row?))
+            .collect::<Result<_>>()?;
+        records.reverse();
+        Ok(records)
     }
 
     pub fn recent(&self, agent_id: Option<&str>, limit: usize) -> Result<Vec<QueueEntryRecord>> {
