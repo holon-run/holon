@@ -42,7 +42,6 @@ type ProviderDraft = Pick<
   "transport" | "baseUrl" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
 >;
 
-const providerTransports = ["openai_codex_responses", "openai_responses", "openai_chat_completions", "anthropic_messages", "gemini_generate_content"];
 const credentialSources = ["env", "credential_profile", "external_cli", "credential_process", "none"];
 const credentialKinds = ["api_key", "bearer_token", "oauth", "session_token", "aws_sdk", "none"];
 
@@ -251,7 +250,6 @@ export function SettingsPage({
     if (!draft) return;
     setProviderSaveMessage(undefined);
     const result = await onUpdateRuntimeConfig([
-      { key: `providers.${providerId}.transport`, value: draft.transport },
       { key: `providers.${providerId}.base_url`, value: draft.baseUrl.trim() },
       { key: `providers.${providerId}.auth.source`, value: draft.credentialSource },
       { key: `providers.${providerId}.auth.kind`, value: draft.credentialKind },
@@ -265,7 +263,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} provider setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? `Saved ${providerId} provider settings to config.json. Restart the daemon for transport or credential changes to take effect.`
+          ? `Saved ${providerId} provider settings to config.json. Restart the daemon for credential changes to take effect.`
           : "No provider config changes were persisted.",
     );
   }
@@ -291,7 +289,7 @@ export function SettingsPage({
               <strong>
                 {configuredProviderCount}/{surface?.providers.length ?? 0} ready
               </strong>
-              <small>Credentials and transports may require daemon restart.</small>
+              <small>Credential changes may require daemon restart.</small>
             </div>
             <div>
               <span>Web search</span>
@@ -604,12 +602,12 @@ export function SettingsPage({
             {!surface ? (
               <div className="settings-callout">
                 <strong>Provider config unavailable</strong>
-                <span>Connect to a live runtime and refresh this page to edit model provider transports and credentials.</span>
+                <span>Connect to a live runtime and refresh this page to edit model provider credentials.</span>
               </div>
             ) : (
               <div className="settings-provider-list">
                 <p className="settings-muted">
-                  Configure one provider account/profile, then choose the transport under it. The same credential profile can be reused across transports.
+                  Configure one provider account and its credential profile. Transport is determined automatically by the runtime.
                 </p>
                 {surface.providers.map((provider) => {
                   const draft = providerDrafts[provider.id];
@@ -636,14 +634,8 @@ export function SettingsPage({
                       </header>
                       <div className="settings-form-row">
                         <label>
-                          <span>Transport</span>
-                          <select value={draft.transport} onChange={(event) => updateProviderDraft(provider.id, { transport: event.target.value })}>
-                            {providerTransports.map((transport) => (
-                              <option key={transport} value={transport}>
-                                {transport}
-                              </option>
-                            ))}
-                          </select>
+                          <span>Transport <small className="settings-muted">(read-only)</small></span>
+                          <input value={provider.transport} readOnly disabled />
                         </label>
                         <label>
                           <span>Base URL</span>

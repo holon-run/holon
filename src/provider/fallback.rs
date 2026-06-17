@@ -198,19 +198,19 @@ mod tests {
         let provider = FallbackProvider {
             candidates: vec![
                 ProviderCandidate {
-                    model_ref: "zai-anthropic/glm-4.7".into(),
-                    provider_name: "zai-anthropic".into(),
+                    model_ref: "zai/glm-4.7".into(),
+                    provider_name: "zai".into(),
                     provider: Arc::new(SearchProvider {
                         capability: Some(search_capability(
-                            "zai-anthropic",
-                            "zai-anthropic/glm-4.7",
+                            "zai",
+                            "zai/glm-4.7",
                             "zai_web_search_prime",
                         )),
                     }),
                 },
                 ProviderCandidate {
-                    model_ref: "deepseek-anthropic/deepseek-chat".into(),
-                    provider_name: "deepseek-anthropic".into(),
+                    model_ref: "deepseek/deepseek-chat".into(),
+                    provider_name: "deepseek".into(),
                     provider: Arc::new(SearchProvider { capability: None }),
                 },
             ],
@@ -219,8 +219,8 @@ mod tests {
         let capability = provider
             .builtin_web_search()
             .expect("active candidate should expose builtin search");
-        assert_eq!(capability.provider_id, "zai-anthropic");
-        assert_eq!(capability.provider_model_ref, "zai-anthropic/glm-4.7");
+        assert_eq!(capability.provider_id, "zai");
+        assert_eq!(capability.provider_model_ref, "zai/glm-4.7");
         assert_eq!(capability.backend_kind, "zai_web_search_prime");
     }
 
