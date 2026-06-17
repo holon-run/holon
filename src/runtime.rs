@@ -236,6 +236,7 @@ pub struct RuntimeHandle {
 struct RuntimeInner {
     agent: Mutex<RuntimeAgent>,
     projection_cache: Mutex<AgentRuntimeProjectionCache>,
+    object_query_cache: Arc<crate::object_query_cache::ObjectQueryCache>,
     notify: Notify,
     storage: AppStorage,
     runtime_db: RuntimeDb,
@@ -728,6 +729,10 @@ impl RuntimeHandle {
 
     pub fn storage(&self) -> &AppStorage {
         &self.inner.storage
+    }
+
+    pub fn object_query_cache(&self) -> Arc<crate::object_query_cache::ObjectQueryCache> {
+        self.inner.object_query_cache.clone()
     }
 
     pub fn poll_activity_marker(&self) -> Result<PollActivityMarker> {

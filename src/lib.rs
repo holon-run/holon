@@ -20,6 +20,7 @@ pub mod memory;
 pub mod model_catalog;
 pub mod model_discovery;
 pub mod notes_catalog;
+pub mod object_query_cache;
 pub mod object_resolver;
 pub mod onboarding;
 pub mod onboarding_tui;

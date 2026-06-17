@@ -23,6 +23,9 @@ static PROJECTION_RUNTIME_CACHE_REBUILD: MetricAccumulator =
     MetricAccumulator::new("projection.runtime_current_cache.rebuild");
 static PROJECTION_RUNTIME_CACHE_READ: MetricAccumulator =
     MetricAccumulator::new("projection.runtime_current_cache.read");
+static OBJECT_QUERY_CACHE_HIT: MetricAccumulator = MetricAccumulator::new("object_query_cache.hit");
+static OBJECT_QUERY_CACHE_MISS: MetricAccumulator =
+    MetricAccumulator::new("object_query_cache.miss");
 static DB_CONNECTION_OPEN: MetricAccumulator = MetricAccumulator::new("db.connection.open");
 
 static SCHEDULER_POLL_ALL: MetricAccumulator = MetricAccumulator::new("scheduler.poll.all");
@@ -134,6 +137,16 @@ pub fn record_runtime_projection_cache_read() {
     PROJECTION_RUNTIME_CACHE_READ.record(Duration::ZERO, None);
 }
 
+pub fn record_object_query_cache_hit() {
+    process_started_at();
+    OBJECT_QUERY_CACHE_HIT.record(Duration::ZERO, None);
+}
+
+pub fn record_object_query_cache_miss() {
+    process_started_at();
+    OBJECT_QUERY_CACHE_MISS.record(Duration::ZERO, None);
+}
+
 pub fn record_runtime_db_connection_open(elapsed: Duration) {
     process_started_at();
     DB_CONNECTION_OPEN.record(elapsed, None);
@@ -162,6 +175,8 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             PROJECTION_AGENT_SUMMARY.snapshot(false),
             PROJECTION_RUNTIME_CACHE_REBUILD.snapshot(false),
             PROJECTION_RUNTIME_CACHE_READ.snapshot(false),
+            OBJECT_QUERY_CACHE_HIT.snapshot(false),
+            OBJECT_QUERY_CACHE_MISS.snapshot(false),
         ],
         db: vec![DB_CONNECTION_OPEN.snapshot(false)],
         scheduler: vec![

@@ -250,9 +250,12 @@ fn completion_report_for_record(
     {
         if let Some(brief) = runtime.storage().read_brief_by_id(brief_id)? {
             if !brief.text.trim().is_empty() {
-                let text = RuntimeObjectResolver::new(runtime.storage())
-                    .resolve_brief_content(&brief)
-                    .unwrap_or_else(|_| brief.text.clone());
+                let text = RuntimeObjectResolver::with_cache(
+                    runtime.storage(),
+                    runtime.object_query_cache(),
+                )
+                .resolve_brief_content(&brief)
+                .unwrap_or_else(|_| brief.text.clone());
                 return Ok(Some(completion_report_view_from_brief(brief, text)));
             }
         }

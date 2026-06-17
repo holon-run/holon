@@ -2185,6 +2185,42 @@ impl EvidenceRepository<'_> {
             .map_err(Into::into)
     }
 
+    pub fn payloads_by_ids(
+        &self,
+        kind: EvidenceKind,
+        agent_id: &str,
+        evidence_ids: &[String],
+    ) -> Result<Vec<EvidencePayloadRow>> {
+        if evidence_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = evidence_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT payload_json FROM {} WHERE agent_id = ?1 AND evidence_id IN ({})",
+            kind.table_name(),
+            placeholders
+        );
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(&sql)?;
+        let mut all_params: Vec<Box<dyn ToSql>> = Vec::with_capacity(1 + evidence_ids.len());
+        all_params.push(Box::new(agent_id.to_string()));
+        for id in evidence_ids {
+            all_params.push(Box::new(id.clone()));
+        }
+        let param_refs: Vec<&dyn ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
+        let rows = statement.query_map(param_refs.as_slice(), |row| {
+            Ok(EvidencePayloadRow {
+                payload_json: row.get(0)?,
+            })
+        })?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
     pub fn recent_briefs(&self, agent_id: &str, limit: usize) -> Result<Vec<BriefRecord>> {
         self.recent_payloads(EvidenceKind::Brief, agent_id, limit)?
             .into_iter()
