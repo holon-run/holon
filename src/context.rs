@@ -405,6 +405,7 @@ pub fn build_context_with_default_external_ingress(
     if let Some(anchor) = render_continuation_anchor(
         &continuation_anchor_messages,
         current_message,
+        continuation,
         current_work_item,
         remaining_budget,
     ) {
@@ -1747,6 +1748,7 @@ fn render_current_input_body_with_budget(
 fn render_continuation_anchor(
     messages: &[MessageEnvelope],
     current_message: &MessageEnvelope,
+    continuation: Option<&ContinuationResolution>,
     current_work_item: Option<&WorkItemRecord>,
     budget: usize,
 ) -> Option<String> {
@@ -1768,7 +1770,7 @@ fn render_continuation_anchor(
                     .map(|seq| format!("message_seq {seq}"))
                     .unwrap_or_else(|| operator.id.clone())
             ));
-        } else {
+        } else if continuation_needs_full_anchor(continuation) {
             let prefix = "Latest trusted operator input:\n";
             let reserved = estimate_text_tokens("Continuation anchor:\nCurrent input relation:");
             let body_budget = budget.saturating_sub(reserved).max(32);
@@ -1778,6 +1780,14 @@ fn render_continuation_anchor(
                 body_budget,
                 Some("\n[truncated trusted operator input]"),
             ));
+        } else {
+            lines.push(format!(
+                "Latest trusted operator input: {}.",
+                operator
+                    .message_seq
+                    .map(|seq| format!("message_seq {seq}"))
+                    .unwrap_or_else(|| operator.id.clone())
+            ));
         }
     }
 
@@ -1786,6 +1796,21 @@ fn render_continuation_anchor(
     }
 
     Some(lines.join("\n"))
+}
+
+/// Returns true when the continuation genuinely needs the full operator message
+/// body to reconstruct lost context. Routine continuations (system_tick,
+/// task_result, timer, etc.) only need a lightweight message_seq reference
+/// because the model already has recent turns and continuation context.
+fn continuation_needs_full_anchor(continuation: Option<&ContinuationResolution>) -> bool {
+    let Some(continuation) = continuation else {
+        return false;
+    };
+    // ResumeOverride means the prior wait was overridden — the agent needs
+    // full context to understand what changed. All other continuation classes
+    // (ResumeExpectedWait, LocalContinuation, LivenessOnly) are routine
+    // resumptions where recent turns provide sufficient context.
+    matches!(continuation.class, ContinuationClass::ResumeOverride)
 }
 
 fn latest_trusted_operator_input<'a>(
@@ -6837,9 +6862,12 @@ mod tests {
             .iter()
             .find(|section| section.name == "continuation_anchor")
             .expect("continuation_anchor section should be present");
-        assert!(anchor
+        // Routine continuations (system_tick, LocalContinuation) should NOT
+        // show the full operator message body — only a lightweight seq ref.
+        assert!(!anchor
             .content
             .contains("请实现 continuation anchor，并保持中文回复。"));
+        assert!(anchor.content.contains("Latest trusted operator input:"));
         assert!(anchor.content.contains("runtime system-tick continuation"));
         assert!(anchor.content.contains("not a new operator request"));
     }
@@ -6905,7 +6933,15 @@ mod tests {
             &execution_snapshot_for(&session),
             &crate::types::SkillsRuntimeView::default(),
             &recovery,
-            None,
+            Some(&ContinuationResolution {
+                trigger_kind: ContinuationTriggerKind::SystemTick,
+                class: ContinuationClass::ResumeOverride,
+                model_reentry: true,
+                prior_closure_outcome: crate::types::ClosureOutcome::Continuable,
+                prior_waiting_reason: None,
+                matched_waiting_reason: false,
+                evidence: vec![],
+            }),
             &ContextConfig {
                 recent_messages: 2,
                 recent_briefs: 4,
