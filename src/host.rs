@@ -1129,6 +1129,34 @@ impl RuntimeHost {
                 .await;
             let _ = entry.task.await;
         }
+        // Cancel any active wait conditions before removing the data directory.
+        // This produces audit events and avoids orphaned active waits.
+        let now = chrono::Utc::now();
+        if let Ok(storage) = self.agent_storage(agent_id) {
+            if let Ok(active) = storage.latest_active_wait_conditions_for_agent(agent_id) {
+                let mut cancelled_ids = Vec::new();
+                for condition in active {
+                    let mut cancelled = condition.clone();
+                    cancelled.status = crate::types::WaitConditionStatus::Cancelled;
+                    cancelled.updated_at = now;
+                    cancelled.cancelled_at = Some(now);
+                    if storage.append_wait_condition(&cancelled).is_ok() {
+                        cancelled_ids.push(condition.id);
+                    }
+                }
+                if !cancelled_ids.is_empty() {
+                    let _ = storage.append_event(&crate::types::AuditEvent::new(
+                        "wait_conditions_cancelled",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "reason": "agent_archived",
+                            "wait_condition_ids": cancelled_ids,
+                        }),
+                    ));
+                }
+            }
+        }
+
         let data_dir = self.agent_data_dir(agent_id);
         if data_dir.exists() {
             fs::remove_dir_all(&data_dir)?;

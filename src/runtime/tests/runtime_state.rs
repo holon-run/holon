@@ -3189,3 +3189,68 @@ fn wake_hint_preserved_when_replaced_during_critical_window() {
     let events = runtime.storage().read_recent_events(10).unwrap();
     assert!(events.iter().any(|e| e.kind == "system_tick_emitted"));
 }
+
+#[tokio::test]
+async fn register_wait_for_agent_scoped_cancels_prior_agent_scoped_waits() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    // First agent-scoped wait
+    let first = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::OperatorInput,
+            None,
+            "first agent wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(first.cancelled_wait_condition_ids.is_empty());
+
+    // Second agent-scoped wait should cancel the first
+    let second = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::OperatorInput,
+            None,
+            "second agent wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.cancelled_wait_condition_ids.len(), 1);
+    assert_eq!(second.cancelled_wait_condition_ids[0], first.condition.id);
+
+    // The first wait condition should now be cancelled
+    let active = runtime
+        .storage()
+        .latest_active_wait_conditions_for_agent("default")
+        .unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].id, second.condition.id);
+    assert_eq!(active[0].status, WaitConditionStatus::Active);
+
+    // Verify the first condition was cancelled
+    let all_conditions = runtime.storage().latest_wait_conditions().unwrap();
+    let first_record = all_conditions
+        .iter()
+        .find(|c| c.id == first.condition.id)
+        .unwrap();
+    assert_eq!(first_record.status, WaitConditionStatus::Cancelled);
+}
