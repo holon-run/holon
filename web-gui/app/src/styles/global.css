@@ -2570,6 +2570,16 @@ code {
   min-width: 0;
 }
 
+.settings-provider-hint {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--surface-warn-soft, rgba(255, 180, 0, 0.08));
+  color: var(--text-muted, #888);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .settings-provider-editor label {
   display: grid;
   gap: 6px;

@@ -90,6 +90,10 @@ export function SettingsPage({
   const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
   const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
+  const providersWithModels = useMemo(
+    () => new Set(modelCatalog.options.map((m) => m.provider)),
+    [modelCatalog.options],
+  );
 
   useEffect(() => {
     if (!surface) return;
@@ -546,6 +550,11 @@ export function SettingsPage({
                         {provider.credentialConfigured ? "credential ready" : "credential missing"}
                       </StatusChip>
                     </header>
+                    {provider.credentialConfigured && !providersWithModels.has(provider.id) ? (
+                      <p className="settings-provider-hint">
+                        No models in catalog for this provider — it will not appear in the model selector. Add model entries under <strong>Model overrides</strong> or configure model discovery to make its models available.
+                      </p>
+                    ) : null}
                     {/* Primary: API Key management */}
                     {draft.credentialSource === "credential_profile" && draft.credentialProfile ? (
                       <div className="settings-api-key-section">
