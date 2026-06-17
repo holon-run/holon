@@ -15,6 +15,7 @@ http_async_tests!(
     control_prompt_is_open_on_loopback_auto,
     agent_state_route_returns_aggregated_snapshot,
     agent_brief_route_returns_full_brief_by_id,
+    agent_state_route_scopes_work_items_to_requested_agent,
     agent_state_route_includes_bootstrap_projection_fields_when_present,
     list_skills_includes_all_agent_skill_roots,
     install_skill_existing_destination_returns_conflict,
