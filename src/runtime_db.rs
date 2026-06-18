@@ -2096,7 +2096,7 @@ impl MessageRepository<'_> {
                 "SELECT payload_json
                  FROM messages
                  WHERE agent_id = ?1
-                 ORDER BY COALESCE(message_seq, 9223372036854775807) DESC, created_at DESC, message_id ASC
+                 ORDER BY message_seq IS NULL ASC, message_seq DESC, created_at DESC, message_id ASC
                  LIMIT ?2",
             )?;
             let rows =
@@ -2107,7 +2107,7 @@ impl MessageRepository<'_> {
             let mut statement = connection.prepare(
                 "SELECT payload_json
                  FROM messages
-                 ORDER BY COALESCE(message_seq, 9223372036854775807) DESC, created_at DESC, message_id ASC
+                 ORDER BY message_seq IS NULL ASC, message_seq DESC, created_at DESC, message_id ASC
                  LIMIT ?1",
             )?;
             let rows = statement.query_map([limit], |row| row.get::<_, String>(0))?;
@@ -2134,7 +2134,7 @@ impl MessageRepository<'_> {
                 "SELECT payload_json
                  FROM messages
                  WHERE agent_id = ?1
-                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC
+                 ORDER BY message_seq IS NULL DESC, message_seq ASC, created_at ASC, message_id ASC
                  LIMIT -1 OFFSET ?2",
             )?;
             let rows =
@@ -2145,7 +2145,7 @@ impl MessageRepository<'_> {
             let mut statement = connection.prepare(
                 "SELECT payload_json
                  FROM messages
-                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC
+                 ORDER BY message_seq IS NULL DESC, message_seq ASC, created_at ASC, message_id ASC
                  LIMIT -1 OFFSET ?1",
             )?;
             let rows = statement.query_map([offset], |row| row.get::<_, String>(0))?;
@@ -2165,7 +2165,7 @@ impl MessageRepository<'_> {
                 "SELECT payload_json
                  FROM messages
                  WHERE agent_id = ?1
-                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC",
+                 ORDER BY message_seq IS NULL DESC, message_seq ASC, created_at ASC, message_id ASC",
             )?;
             let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
             rows.map(|row| decode_message_payload(&row?)).collect()
@@ -2173,7 +2173,7 @@ impl MessageRepository<'_> {
             let mut statement = connection.prepare(
                 "SELECT payload_json
                  FROM messages
-                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC, created_at ASC, message_id ASC",
+                 ORDER BY message_seq IS NULL DESC, message_seq ASC, created_at ASC, message_id ASC",
             )?;
             let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
             rows.map(|row| decode_message_payload(&row?)).collect()
@@ -7475,6 +7475,58 @@ CREATE TABLE working_memory_deltas (
             connection.query_row("SELECT COUNT(*) FROM queue_entries", [], |row| row.get(0))?;
         assert_eq!(rows, 1);
         assert!(db.queue_entries().queued_for_agent("agent-a")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn message_repository_orders_null_message_seq_as_legacy_history() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let base = Utc::now();
+
+        let mut sequenced_1 = MessageEnvelope::new(
+            "agent-a",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator { actor_id: None },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text { text: "one".into() },
+        );
+        sequenced_1.id = "msg-seq-1".into();
+        sequenced_1.message_seq = Some(1);
+        sequenced_1.created_at = base;
+
+        let mut sequenced_2 = sequenced_1.clone();
+        sequenced_2.id = "msg-seq-2".into();
+        sequenced_2.message_seq = Some(2);
+        sequenced_2.created_at = base + chrono::Duration::seconds(1);
+
+        let mut legacy_without_sequence = sequenced_1.clone();
+        legacy_without_sequence.id = "msg-legacy".into();
+        legacy_without_sequence.message_seq = None;
+        legacy_without_sequence.created_at = base + chrono::Duration::seconds(2);
+
+        db.messages().upsert_many(&[
+            sequenced_1.clone(),
+            sequenced_2.clone(),
+            legacy_without_sequence.clone(),
+        ])?;
+
+        let all_ids = db
+            .messages()
+            .all(Some("agent-a"))?
+            .into_iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(all_ids, vec!["msg-legacy", "msg-seq-1", "msg-seq-2"]);
+
+        let recent_ids = db
+            .messages()
+            .recent(Some("agent-a"), 2)?
+            .into_iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(recent_ids, vec!["msg-seq-1", "msg-seq-2"]);
         Ok(())
     }
 

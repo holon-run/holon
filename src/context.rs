@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -1817,14 +1818,31 @@ fn latest_trusted_operator_input<'a>(
     messages: &'a [MessageEnvelope],
     current_message: &'a MessageEnvelope,
 ) -> Option<&'a MessageEnvelope> {
-    std::iter::once(current_message)
-        .chain(messages.iter().rev())
-        .find(|message| is_trusted_operator_input(message))
+    if is_trusted_operator_input(current_message) {
+        return Some(current_message);
+    }
+
+    messages
+        .iter()
+        .filter(|message| is_trusted_operator_input(message))
+        .max_by(|left, right| compare_message_recency(left, right))
 }
 
 fn is_trusted_operator_input(message: &MessageEnvelope) -> bool {
     message.authority_class == AuthorityClass::OperatorInstruction
         && matches!(message.origin, MessageOrigin::Operator { .. })
+}
+
+fn compare_message_recency(left: &MessageEnvelope, right: &MessageEnvelope) -> Ordering {
+    match (left.message_seq, right.message_seq) {
+        (Some(left_seq), Some(right_seq)) => left_seq.cmp(&right_seq),
+        (Some(_), None) => Ordering::Greater,
+        (None, Some(_)) => Ordering::Less,
+        (None, None) => left
+            .created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id)),
+    }
 }
 
 fn current_input_relation(
@@ -7854,6 +7872,61 @@ mod tests {
         let record = TurnRecord::new("default", "", 4);
 
         assert!(!turn_record_matches_message(&record, &message));
+    }
+
+    #[test]
+    fn latest_trusted_operator_input_prefers_sequenced_history_over_legacy_null_sequence() {
+        let mut sequenced = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "new sequenced request".into(),
+            },
+        );
+        sequenced.id = "msg-sequenced".into();
+        sequenced.message_seq = Some(42);
+        sequenced.created_at = chrono::DateTime::parse_from_rfc3339("2026-06-18T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        let mut legacy_without_sequence = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "old legacy request without message_seq".into(),
+            },
+        );
+        legacy_without_sequence.id = "msg-legacy".into();
+        legacy_without_sequence.message_seq = None;
+        legacy_without_sequence.created_at =
+            chrono::DateTime::parse_from_rfc3339("2026-06-18T11:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::TaskResult,
+            MessageOrigin::System {
+                subsystem: "task".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "task completed".into(),
+            },
+        );
+
+        let messages = vec![sequenced.clone(), legacy_without_sequence];
+        let latest = latest_trusted_operator_input(&messages, &current_message)
+            .expect("sequenced operator message should be selected");
+
+        assert_eq!(latest.id, "msg-sequenced");
     }
 
     fn execution_snapshot_for(session: &AgentState) -> ExecutionSnapshot {
