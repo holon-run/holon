@@ -6769,4 +6769,60 @@ mod tests {
         );
         assert!(projection.current.is_none());
     }
+
+    #[test]
+    fn read_agent_returns_error_on_corrupted_json() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+
+        // Write corrupted JSON to agent file
+        let agent_path = dir.path().join(".holon/state/agent.json");
+        fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+        fs::write(&agent_path, "{invalid json}").unwrap();
+
+        let result = storage.read_agent();
+        assert!(result.is_err(), "read_agent should error on corrupted JSON");
+    }
+
+    #[test]
+    fn write_agent_cleans_up_tmp_file_on_rename_failure() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new(dir.path()).unwrap();
+        let agent = AgentState::new("default");
+
+        // Write agent successfully first
+        storage.write_agent(&agent).unwrap();
+
+        // Count tmp files (should be 0 after successful write)
+        let state_dir = dir.path().join(".holon/state");
+        let tmp_files: Vec<_> = fs::read_dir(&state_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".agent.json."))
+            .collect();
+        assert_eq!(
+            tmp_files.len(),
+            0,
+            "no tmp files should remain after successful write"
+        );
+    }
+
+    #[test]
+    fn write_agent_rejects_mismatched_agent_id() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "agent-a").unwrap();
+
+        let agent = AgentState::new("agent-b");
+        let result = storage.write_agent(&agent);
+
+        assert!(
+            result.is_err(),
+            "should reject agent state with mismatched id"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("cannot write agent state"),
+            "error should mention agent id mismatch"
+        );
+    }
 }
