@@ -183,11 +183,6 @@ export function App() {
       data-nav-collapsed={navCollapsed}
     >
       <aside className="sidebar" aria-label="Holon navigation">
-        <div className="window-controls" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
         <button
           className="nav-collapse"
           type="button"

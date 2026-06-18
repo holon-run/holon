@@ -140,22 +140,6 @@ button {
   color: #324354;
 }
 
-.window-controls {
-  display: flex;
-  gap: 8px;
-  height: 28px;
-  align-items: center;
-  padding-left: 8px;
-}
-
-.window-controls span {
-  width: 11px;
-  height: 11px;
-  border: 1px solid color-mix(in srgb, var(--line-strong) 60%, transparent);
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--sidebar-soft) 74%, #fff);
-}
-
 .nav-collapse {
   position: absolute;
   top: 12px;
@@ -184,7 +168,7 @@ button {
 }
 
 .global-nav {
-  margin: 6px 0 18px;
+  margin: 34px 0 18px;
 }
 
 .global-nav button,
