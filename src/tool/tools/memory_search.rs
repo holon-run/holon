@@ -27,6 +27,7 @@ pub(crate) struct MemorySearchArgs {
 struct MemorySearchResponse {
     query: String,
     results: Vec<crate::memory::MemorySearchResult>,
+    index_status: crate::memory::MemorySearchIndexStatus,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -47,12 +48,19 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: MemorySearchArgs = parse_tool_args(NAME, input)?;
     let query = validate_non_empty(args.query, NAME, "query")?;
-    let results = runtime
+    let response = runtime
         .search_memory(
             &query,
             args.limit.unwrap_or(10),
             args.include_all_workspaces,
         )
         .await?;
-    serialize_success(NAME, &MemorySearchResponse { query, results })
+    serialize_success(
+        NAME,
+        &MemorySearchResponse {
+            query,
+            results: response.results,
+            index_status: response.index_status,
+        },
+    )
 }
