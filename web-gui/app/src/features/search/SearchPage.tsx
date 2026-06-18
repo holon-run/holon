@@ -115,6 +115,7 @@ export function SearchPage({ agents, search, loading, error, onSearch, onOpenAge
 }
 
 function SearchResultCard({ result, onOpenAgent }: { result: SearchResultItem; onOpenAgent: (agentId: string, eventSeq?: number) => void }) {
+  const preview = formatSearchPreview(result.preview);
   const locator = [
     result.locator.eventSeq != null ? `event #${result.locator.eventSeq}` : undefined,
     result.locator.turnId ? `turn ${shortId(result.locator.turnId)}` : undefined,
@@ -138,7 +139,20 @@ function SearchResultCard({ result, onOpenAgent }: { result: SearchResultItem; o
         ) : null}
         <time>{formatTimestamp(result.createdAt)}</time>
       </header>
-      <p>{result.preview}</p>
+      <div className="search-result-preview">
+        {preview.title ? <strong>{preview.title}</strong> : null}
+        <p>{preview.summary}</p>
+        {preview.meta.length > 0 ? (
+          <dl>
+            {preview.meta.map(([label, value]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+      </div>
       {locator.length > 0 ? <footer>{locator.join(" · ")}</footer> : null}
       <details className="search-result-details">
         <summary>Details</summary>
@@ -155,10 +169,165 @@ function SearchResultCard({ result, onOpenAgent }: { result: SearchResultItem; o
             <dt>Locator</dt>
             <dd>{locator.length > 0 ? locator.join(" · ") : "no locator ids"}</dd>
           </div>
+          {preview.isFormatted ? (
+            <div>
+              <dt>Raw preview</dt>
+              <dd>
+                <pre>{result.preview}</pre>
+              </dd>
+            </div>
+          ) : null}
         </dl>
       </details>
     </article>
   );
+}
+
+interface FormattedSearchPreview {
+  title?: string;
+  summary: string;
+  meta: Array<[string, string]>;
+  isFormatted: boolean;
+}
+
+function formatSearchPreview(value: string): FormattedSearchPreview {
+  const text = value.trim();
+  if (!text) return { summary: "No preview available.", meta: [], isFormatted: false };
+
+  const parsed = parseJsonPreview(text);
+  if (!parsed) return { summary: text, meta: [], isFormatted: false };
+
+  const record = asRecord(parsed);
+  if (!record) {
+    return { summary: summarizeJsonValue(parsed), meta: [], isFormatted: true };
+  }
+
+  const title = previewTitle(record);
+  const summary = previewSummary(record) ?? summarizeJsonValue(parsed);
+  const meta = previewMeta(record);
+  return { title, summary, meta, isFormatted: true };
+}
+
+function parseJsonPreview(value: string): unknown | undefined {
+  if (!value.startsWith("{") && !value.startsWith("[")) return undefined;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function previewTitle(record: Record<string, unknown>): string | undefined {
+  const toolName = stringField(record, "tool_name") ?? stringField(record, "tool") ?? stringField(record, "function_name");
+  if (toolName) return `Tool call: ${toolName}`;
+
+  const role = stringField(record, "role") ?? stringField(record, "source") ?? stringField(record, "origin");
+  const kind = stringField(record, "kind") ?? stringField(record, "type");
+  if (role && kind) return `${formatLabel(role)} ${formatLabel(kind)}`;
+  if (kind) return formatLabel(kind);
+  return undefined;
+}
+
+function previewSummary(record: Record<string, unknown>): string | undefined {
+  const direct = firstStringField(record, [
+    "summary",
+    "summary_text",
+    "text_preview",
+    "output_preview",
+    "stdout_preview",
+    "stderr_preview",
+    "result_summary",
+    "result_summary_preview",
+    "message",
+    "text",
+    "content",
+    "reason",
+  ]);
+  if (direct) return direct;
+
+  const body = asRecord(record.body);
+  if (body) return previewSummary(body);
+
+  const output = asRecord(record.output) ?? asRecord(record.result);
+  if (output) return previewSummary(output);
+
+  const command = commandText(record);
+  if (command) return command;
+
+  const objective = firstStringField(record, ["objective", "objective_preview", "title"]);
+  if (objective) return objective;
+
+  return undefined;
+}
+
+function previewMeta(record: Record<string, unknown>): Array<[string, string]> {
+  const entries: Array<[string, string | undefined]> = [
+    ["Status", firstStringField(record, ["status", "state", "effect"])],
+    ["Command", commandText(record)],
+    ["Path", firstStringField(record, ["path", "file", "config_file_path"])],
+    ["Task", firstStringField(record, ["task_id", "taskId"])],
+    ["Work item", firstStringField(record, ["work_item_id", "workItemId"])],
+    ["Evidence", firstStringField(record, ["evidence_id", "evidenceId", "source_ref"])],
+  ];
+
+  const result = asRecord(record.result) ?? asRecord(record.output);
+  if (result) {
+    entries.push(
+      ["Exit", numberField(result, "exit_status")],
+      ["Changed", numberField(result, "changed_file_count")],
+      ["Summary", firstStringField(result, ["summary", "summary_text", "result_summary", "result_summary_preview"])],
+    );
+  }
+
+  return entries
+    .filter((entry): entry is [string, string] => Boolean(entry[1]))
+    .slice(0, 4);
+}
+
+function commandText(record: Record<string, unknown>): string | undefined {
+  const command = asRecord(record.command);
+  return (
+    firstStringField(record, ["cmd", "cmd_preview", "command"]) ??
+    (command ? firstStringField(command, ["cmd", "cmd_preview", "command"]) : undefined)
+  );
+}
+
+function summarizeJsonValue(value: unknown): string {
+  if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  const record = asRecord(value);
+  if (!record) return String(value);
+  const keys = Object.keys(record).slice(0, 6);
+  return keys.length ? `Structured runtime record with ${keys.join(", ")}.` : "Structured runtime record.";
+}
+
+function firstStringField(record: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = stringField(record, key);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function formatLabel(value: string): string {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function numberFromInput(value: string, fallback: number): number {
