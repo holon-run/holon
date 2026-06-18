@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
 
-import holonMarkUrl from "../assets/holon-mark.jpg";
+import holonMarkUrl from "../assets/holon-mark.png";
 import { AgentPage } from "../features/agent/AgentPage";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";

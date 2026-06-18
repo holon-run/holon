@@ -182,15 +182,13 @@ button {
   width: 28px;
   height: 28px;
   border-radius: 9px;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
-  box-shadow: 0 8px 18px rgba(24, 34, 48, 0.14);
+  background: transparent;
 }
 
 .brand-mark img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .brand-name {
