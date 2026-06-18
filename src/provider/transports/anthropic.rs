@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use reqwest::Client;
+use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -17,9 +17,10 @@ use crate::{
     },
     prompt::PromptStability,
     provider::{
-        builtin_web_search_probe_turn_request, http_trace::ProviderHttpTrace, AgentProvider,
-        AnthropicPromptCacheDiagnostics, CacheBreakpointInfo, ConversationMessage, ModelBlock,
-        PromptContentBlock, ProviderBuiltinWebSearchCapability, ProviderCacheUsage,
+        builtin_web_search_probe_turn_request,
+        http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
+        AgentProvider, AnthropicPromptCacheDiagnostics, CacheBreakpointInfo, ConversationMessage,
+        ModelBlock, PromptContentBlock, ProviderBuiltinWebSearchCapability, ProviderCacheUsage,
         ProviderContextManagementPolicy, ProviderNativeWebSearchDiagnostics,
         ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderPromptCapability,
         ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest, ProviderTurnRequest,
@@ -27,10 +28,12 @@ use crate::{
     },
 };
 
-use super::{build_http_client, request_send_timeout};
+use super::{build_http_client, request_send_timeout, stream_idle_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
-    invalid_response_error, invalid_response_error_with_trace,
+    invalid_response_error_with_trace, provider_transport_error,
+    timeout_transport_error_with_trace, ProviderFailureClassification, ProviderFailureKind,
+    RetryDisposition,
 };
 
 #[derive(Clone)]
@@ -52,6 +55,7 @@ pub struct AnthropicProvider {
 struct MessagesRequest<'a> {
     model: &'a str,
     max_tokens: u32,
+    stream: bool,
     system: Value,
     messages: Vec<ApiMessage>,
     tools: Vec<Value>,
@@ -96,7 +100,7 @@ struct ApiMessage {
     content: Value,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct MessagesResponse {
     content: Vec<ApiResponseBlock>,
     stop_reason: Option<String>,
@@ -104,7 +108,7 @@ struct MessagesResponse {
     context_management: Option<Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct ApiResponseBlock {
     #[serde(rename = "type")]
     kind: String,
@@ -117,7 +121,7 @@ struct ApiResponseBlock {
     input: Option<Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct ApiUsage {
     input_tokens: Option<u64>,
     cache_creation_input_tokens: Option<u64>,
@@ -198,6 +202,7 @@ impl AgentProvider for AnthropicProvider {
         let request_body = MessagesRequest {
             model: &self.model,
             max_tokens: self.max_output_tokens,
+            stream: true,
             system: build_anthropic_system(&request, cache_strategy),
             messages,
             tools: build_anthropic_tools(&request),
@@ -287,113 +292,32 @@ impl AgentProvider for AnthropicProvider {
             ));
         }
 
-        let response_body = response.text().await.map_err(|error| {
-            classify_reqwest_transport_error_with_trace(
-                "Anthropic response body failed",
-                "response_body",
-                "anthropic",
-                Some(&model_ref),
-                Some(url.as_str()),
-                error,
+        let parsed = if anthropic_response_is_sse(&response) {
+            read_anthropic_streaming_response(
+                response,
+                &model_ref,
+                url.as_str(),
                 request_trace.as_ref(),
             )
-        })?;
-        if let Some(trace) = request_trace.as_ref() {
-            trace.write_response_body(&response_body);
-        }
-        let parsed: MessagesResponse = serde_json::from_str(&response_body)
-            .map_err(|error| invalid_response_error("invalid Anthropic JSON", error))?;
-        let input_tokens = parsed
-            .usage
-            .as_ref()
-            .and_then(|usage| usage.input_tokens)
-            .unwrap_or(0);
-        let output_tokens = parsed
-            .usage
-            .as_ref()
-            .and_then(|usage| usage.output_tokens)
-            .unwrap_or(0);
-        let cache_usage = parsed.usage.as_ref().map(|usage| ProviderCacheUsage {
-            read_input_tokens: usage.cache_read_input_tokens.unwrap_or(0),
-            creation_input_tokens: usage.cache_creation_input_tokens.unwrap_or(0),
-        });
-        let tools_available = !request.tools.is_empty();
-        for (block_index, block) in parsed.content.iter().enumerate() {
-            warn_unsupported_anthropic_response_block(
-                block,
-                self.provider_id.as_str(),
-                self.model.as_str(),
-                block_index,
-                parsed.stop_reason.as_deref(),
-                tools_available,
-            );
-        }
-        if anthropic_response_has_text_form_tool_call_violation(
-            &parsed.content,
-            parsed.stop_reason.as_deref(),
-            tools_available,
-        ) {
-            warn!(
-                provider = %self.provider_id,
-                model = %self.model,
-                stop_reason = ?parsed.stop_reason,
-                tools_available,
-                "anthropic response stopped for tool_use but returned only text-form tool-call markup"
-            );
-            return Err(invalid_response_error_with_trace(
-                "invalid Anthropic tool response",
-                "response_protocol",
-                "anthropic",
-                Some(&model_ref),
-                Some(url.as_str()),
-                "stop_reason=tool_use without native tool_use block; text block contains tool-call-looking markup",
-                request_trace.as_ref(),
-            ));
-        }
-        let response_format_tool_name = anthropic_response_format_tool_name(&request);
-        let blocks = parsed
-            .content
-            .into_iter()
-            .filter_map(|block| {
-                api_response_block_to_model(block, response_format_tool_name.as_deref())
-            })
-            .collect::<Vec<_>>();
-        if blocks.is_empty() {
-            return Err(anyhow!(
-                "Anthropic response contained no supported content blocks"
-            ));
-        }
-
-        let cache_diagnostics = collect_anthropic_cache_diagnostics(
+            .await?
+        } else {
+            read_anthropic_json_response(response, &model_ref, url.as_str(), request_trace.as_ref())
+                .await?
+        };
+        anthropic_messages_response_to_turn_response(
+            parsed,
             &request,
             &wire_conversation,
             rolling_cache_marker,
             &request_payload,
-            &self.model,
+            self.provider_id.as_str(),
+            self.model.as_str(),
             cache_strategy,
             &self.context_management.betas,
-        );
-
-        // Determine the actual request lowering mode based on system block structure
-        let request_lowering_mode = anthropic_request_lowering_mode(&request, cache_strategy);
-
-        Ok(ProviderTurnResponse {
-            blocks,
-            stop_reason: parsed.stop_reason,
-            input_tokens,
-            output_tokens,
-            cache_usage,
-            request_diagnostics: Some(crate::provider::ProviderRequestDiagnostics {
-                request_lowering_mode: request_lowering_mode.to_string(),
-                anthropic_cache: Some(cache_diagnostics),
-                anthropic_context_management: parsed.context_management,
-                openai_request_controls: None,
-                incremental_continuation: None,
-                openai_remote_compaction: None,
-                native_web_search: native_web_search_diagnostics(&request),
-                response_format: response_format_diagnostics(&request),
-            }),
-        })
+            &model_ref,
+            url.as_str(),
+            request_trace.as_ref(),
+        )
     }
 
     #[cfg(test)]
@@ -454,6 +378,537 @@ fn build_anthropic_wire_conversation(
     match cache_strategy {
         AnthropicCacheStrategy::MessagesNative => request.conversation.clone(),
         AnthropicCacheStrategy::ClaudeCodePromptCache => strip_initial_context_message(request),
+    }
+}
+
+fn anthropic_response_is_sse(response: &Response) -> bool {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("text/event-stream"))
+}
+
+async fn read_anthropic_json_response(
+    response: Response,
+    model_ref: &str,
+    url: &str,
+    trace: Option<&ProviderHttpTraceRequest>,
+) -> Result<MessagesResponse> {
+    let response_body = response.text().await.map_err(|error| {
+        classify_reqwest_transport_error_with_trace(
+            "Anthropic response body failed",
+            "response_body",
+            "anthropic",
+            Some(model_ref),
+            Some(url),
+            error,
+            trace,
+        )
+    })?;
+    if let Some(trace) = trace {
+        trace.write_response_body(&response_body);
+    }
+    serde_json::from_str(&response_body).map_err(|error| {
+        invalid_response_error_with_trace(
+            "invalid Anthropic JSON",
+            "response_parse",
+            "anthropic",
+            Some(model_ref),
+            Some(url),
+            error.to_string(),
+            trace,
+        )
+    })
+}
+
+async fn read_anthropic_streaming_response(
+    mut response: Response,
+    model_ref: &str,
+    url: &str,
+    trace: Option<&ProviderHttpTraceRequest>,
+) -> Result<MessagesResponse> {
+    let mut parser = SseParser::default();
+    let mut accumulator = AnthropicStreamAccumulator::default();
+    let idle_timeout = stream_idle_timeout();
+
+    loop {
+        let next = tokio::time::timeout(idle_timeout, response.chunk())
+            .await
+            .map_err(|_| {
+                timeout_transport_error_with_trace(
+                    "Anthropic streaming response timed out",
+                    "streaming_response_body",
+                    "anthropic",
+                    Some(model_ref),
+                    Some(url),
+                    format!(
+                        "no Anthropic stream bytes received for {} ms",
+                        idle_timeout.as_millis()
+                    ),
+                    trace,
+                )
+            })?;
+
+        match next {
+            Ok(Some(chunk)) => {
+                if let Some(trace) = trace {
+                    trace.write_stream_chunk(&chunk);
+                }
+                for event in parser.push(&chunk).map_err(|error| {
+                    invalid_response_error_with_trace(
+                        "invalid Anthropic stream event",
+                        "streaming_response_parse",
+                        "anthropic",
+                        Some(model_ref),
+                        Some(url),
+                        error,
+                        trace,
+                    )
+                })? {
+                    accumulator.apply(event, model_ref, url, trace)?;
+                }
+            }
+            Err(error) => {
+                return Err(classify_reqwest_transport_error_with_trace(
+                    "Anthropic streaming response body failed",
+                    "streaming_response_body",
+                    "anthropic",
+                    Some(model_ref),
+                    Some(url),
+                    error,
+                    trace,
+                ));
+            }
+            Ok(None) => break,
+        }
+    }
+
+    for event in parser.finish().map_err(|error| {
+        invalid_response_error_with_trace(
+            "invalid Anthropic stream event",
+            "streaming_response_parse",
+            "anthropic",
+            Some(model_ref),
+            Some(url),
+            error,
+            trace,
+        )
+    })? {
+        accumulator.apply(event, model_ref, url, trace)?;
+    }
+    let response = accumulator.finish(model_ref, url, trace)?;
+    if let Some(trace) = trace {
+        trace.write_stream_terminal(&serde_json::to_value(&response).unwrap_or_else(|_| json!({})));
+    }
+    Ok(response)
+}
+
+fn anthropic_messages_response_to_turn_response(
+    parsed: MessagesResponse,
+    request: &ProviderTurnRequest,
+    wire_conversation: &[ConversationMessage],
+    rolling_cache_marker: Option<(usize, usize)>,
+    request_payload: &Value,
+    provider_id: &str,
+    model: &str,
+    cache_strategy: AnthropicCacheStrategy,
+    betas: &[String],
+    model_ref: &str,
+    url: &str,
+    trace: Option<&ProviderHttpTraceRequest>,
+) -> Result<ProviderTurnResponse> {
+    let input_tokens = parsed
+        .usage
+        .as_ref()
+        .and_then(|usage| usage.input_tokens)
+        .unwrap_or(0);
+    let output_tokens = parsed
+        .usage
+        .as_ref()
+        .and_then(|usage| usage.output_tokens)
+        .unwrap_or(0);
+    let cache_usage = parsed.usage.as_ref().map(|usage| ProviderCacheUsage {
+        read_input_tokens: usage.cache_read_input_tokens.unwrap_or(0),
+        creation_input_tokens: usage.cache_creation_input_tokens.unwrap_or(0),
+    });
+    let tools_available = !request.tools.is_empty();
+    for (block_index, block) in parsed.content.iter().enumerate() {
+        warn_unsupported_anthropic_response_block(
+            block,
+            provider_id,
+            model,
+            block_index,
+            parsed.stop_reason.as_deref(),
+            tools_available,
+        );
+    }
+    if anthropic_response_has_text_form_tool_call_violation(
+        &parsed.content,
+        parsed.stop_reason.as_deref(),
+        tools_available,
+    ) {
+        warn!(
+            provider = provider_id,
+            model = model,
+            stop_reason = ?parsed.stop_reason,
+            tools_available,
+            "anthropic response stopped for tool_use but returned only text-form tool-call markup"
+        );
+        return Err(invalid_response_error_with_trace(
+            "invalid Anthropic tool response",
+            "response_protocol",
+            "anthropic",
+            Some(model_ref),
+            Some(url),
+            "stop_reason=tool_use without native tool_use block; text block contains tool-call-looking markup",
+            trace,
+        ));
+    }
+    let response_format_tool_name = anthropic_response_format_tool_name(request);
+    let blocks = parsed
+        .content
+        .into_iter()
+        .filter_map(|block| {
+            api_response_block_to_model(block, response_format_tool_name.as_deref())
+        })
+        .collect::<Vec<_>>();
+    if blocks.is_empty() {
+        return Err(invalid_response_error_with_trace(
+            "invalid Anthropic response",
+            "response_protocol",
+            "anthropic",
+            Some(model_ref),
+            Some(url),
+            "Anthropic response contained no supported content blocks",
+            trace,
+        ));
+    }
+
+    let cache_diagnostics = collect_anthropic_cache_diagnostics(
+        request,
+        wire_conversation,
+        rolling_cache_marker,
+        request_payload,
+        model,
+        cache_strategy,
+        betas,
+    );
+    let request_lowering_mode = anthropic_request_lowering_mode(request, cache_strategy);
+
+    Ok(ProviderTurnResponse {
+        blocks,
+        stop_reason: parsed.stop_reason,
+        input_tokens,
+        output_tokens,
+        cache_usage,
+        request_diagnostics: Some(crate::provider::ProviderRequestDiagnostics {
+            request_lowering_mode: request_lowering_mode.to_string(),
+            anthropic_cache: Some(cache_diagnostics),
+            anthropic_context_management: parsed.context_management,
+            openai_request_controls: None,
+            incremental_continuation: None,
+            openai_remote_compaction: None,
+            native_web_search: native_web_search_diagnostics(request),
+            response_format: response_format_diagnostics(request),
+        }),
+    })
+}
+
+#[derive(Default)]
+struct SseParser {
+    buffer: Vec<u8>,
+}
+
+impl SseParser {
+    fn push(&mut self, chunk: &[u8]) -> std::result::Result<Vec<AnthropicStreamEvent>, String> {
+        self.buffer.extend_from_slice(chunk);
+        let mut events = Vec::new();
+        loop {
+            let Some(end) = find_sse_event_end(&self.buffer) else {
+                break;
+            };
+            let raw = self.buffer.drain(..end).collect::<Vec<_>>();
+            let separator_len = if self.buffer.starts_with(b"\r\n\r\n") {
+                4
+            } else {
+                2
+            };
+            self.buffer.drain(..separator_len);
+            if let Some(event) = parse_sse_event(&raw)? {
+                events.push(event);
+            }
+        }
+        Ok(events)
+    }
+
+    fn finish(mut self) -> std::result::Result<Vec<AnthropicStreamEvent>, String> {
+        if self.buffer.is_empty() {
+            return Ok(Vec::new());
+        }
+        let raw = std::mem::take(&mut self.buffer);
+        parse_sse_event(&raw).map(|event| event.into_iter().collect())
+    }
+}
+
+fn find_sse_event_end(buffer: &[u8]) -> Option<usize> {
+    buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .or_else(|| buffer.windows(2).position(|window| window == b"\n\n"))
+}
+
+fn parse_sse_event(raw: &[u8]) -> std::result::Result<Option<AnthropicStreamEvent>, String> {
+    let text = std::str::from_utf8(raw).map_err(|error| error.to_string())?;
+    let mut data = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("data:") {
+            data.push(value.strip_prefix(' ').unwrap_or(value));
+        }
+    }
+    if data.is_empty() {
+        return Ok(None);
+    }
+    let data = data.join("\n");
+    if data.trim() == "[DONE]" {
+        return Ok(None);
+    }
+    serde_json::from_str(&data)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicStreamEvent {
+    #[serde(rename = "type")]
+    kind: String,
+    message: Option<MessagesResponse>,
+    index: Option<usize>,
+    content_block: Option<ApiResponseBlock>,
+    delta: Option<AnthropicStreamDelta>,
+    usage: Option<ApiUsage>,
+    error: Option<AnthropicStreamError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicStreamDelta {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    text: Option<String>,
+    thinking: Option<String>,
+    signature: Option<String>,
+    partial_json: Option<String>,
+    stop_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicStreamError {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    message: Option<String>,
+}
+
+#[derive(Default)]
+struct AnthropicStreamAccumulator {
+    response: Option<MessagesResponse>,
+    content: Vec<ApiResponseBlock>,
+    saw_message_stop: bool,
+}
+
+impl AnthropicStreamAccumulator {
+    fn apply(
+        &mut self,
+        event: AnthropicStreamEvent,
+        model_ref: &str,
+        url: &str,
+        trace: Option<&ProviderHttpTraceRequest>,
+    ) -> Result<()> {
+        match event.kind.as_str() {
+            "message_start" => {
+                if let Some(mut message) = event.message {
+                    message.content.clear();
+                    self.response = Some(message);
+                }
+            }
+            "content_block_start" => {
+                let index = event.index.unwrap_or(self.content.len());
+                let Some(mut block) = event.content_block else {
+                    return Ok(());
+                };
+                normalize_stream_start_block(&mut block);
+                if self.content.len() <= index {
+                    self.content
+                        .resize_with(index + 1, ApiResponseBlock::default);
+                }
+                self.content[index] = block;
+            }
+            "content_block_delta" => {
+                let Some(index) = event.index else {
+                    return Ok(());
+                };
+                if self.content.len() <= index {
+                    self.content
+                        .resize_with(index + 1, ApiResponseBlock::default);
+                }
+                apply_stream_delta(&mut self.content[index], event.delta);
+            }
+            "message_delta" => {
+                let response = self.response.get_or_insert_with(MessagesResponse::default);
+                if let Some(delta) = event.delta {
+                    if let Some(stop_reason) = delta.stop_reason {
+                        response.stop_reason = Some(stop_reason);
+                    }
+                }
+                if let Some(usage) = event.usage {
+                    merge_anthropic_usage(
+                        response.usage.get_or_insert_with(ApiUsage::default),
+                        usage,
+                    );
+                }
+            }
+            "message_stop" => {
+                self.saw_message_stop = true;
+            }
+            "ping" | "content_block_stop" => {}
+            "error" => {
+                let detail = event
+                    .error
+                    .map(|error| {
+                        format!(
+                            "{}: {}",
+                            error.kind.unwrap_or_else(|| "error".into()),
+                            error.message.unwrap_or_default()
+                        )
+                    })
+                    .unwrap_or_else(|| "Anthropic stream error event".into());
+                return Err(provider_transport_error(
+                    ProviderFailureClassification {
+                        kind: ProviderFailureKind::ServerError,
+                        disposition: RetryDisposition::Retryable,
+                    },
+                    None,
+                    None,
+                    format!("Anthropic stream failed: {detail}"),
+                ));
+            }
+            _ => {}
+        }
+        let _ = (model_ref, url, trace);
+        Ok(())
+    }
+
+    fn finish(
+        mut self,
+        model_ref: &str,
+        url: &str,
+        trace: Option<&ProviderHttpTraceRequest>,
+    ) -> Result<MessagesResponse> {
+        let Some(mut response) = self.response.take() else {
+            return Err(invalid_response_error_with_trace(
+                "invalid Anthropic stream",
+                "streaming_response_protocol",
+                "anthropic",
+                Some(model_ref),
+                Some(url),
+                "stream completed without message_start",
+                trace,
+            ));
+        };
+        if !self.saw_message_stop {
+            return Err(invalid_response_error_with_trace(
+                "invalid Anthropic stream",
+                "streaming_response_protocol",
+                "anthropic",
+                Some(model_ref),
+                Some(url),
+                "stream completed without message_stop",
+                trace,
+            ));
+        }
+        response.content = self
+            .content
+            .into_iter()
+            .filter(|block| !block.kind.is_empty())
+            .map(finalize_stream_block)
+            .collect();
+        Ok(response)
+    }
+}
+
+fn normalize_stream_start_block(block: &mut ApiResponseBlock) {
+    match block.kind.as_str() {
+        "text" => block.text = Some(String::new()),
+        "thinking" => {
+            block.thinking = Some(String::new());
+            block.signature = None;
+        }
+        "tool_use" => block.input = Some(Value::String(String::new())),
+        _ => {}
+    }
+}
+
+fn apply_stream_delta(block: &mut ApiResponseBlock, delta: Option<AnthropicStreamDelta>) {
+    let Some(delta) = delta else {
+        return;
+    };
+    match delta.kind.as_deref() {
+        Some("text_delta") => {
+            block
+                .text
+                .get_or_insert_with(String::new)
+                .push_str(delta.text.as_deref().unwrap_or_default());
+        }
+        Some("thinking_delta") => {
+            block
+                .thinking
+                .get_or_insert_with(String::new)
+                .push_str(delta.thinking.as_deref().unwrap_or_default());
+        }
+        Some("signature_delta") => {
+            block.signature = delta.signature;
+        }
+        Some("input_json_delta") => {
+            let current = block
+                .input
+                .get_or_insert_with(|| Value::String(String::new()))
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            *block.input.as_mut().expect("input inserted") = Value::String(format!(
+                "{}{}",
+                current,
+                delta.partial_json.unwrap_or_default()
+            ));
+        }
+        _ => {}
+    }
+}
+
+fn finalize_stream_block(mut block: ApiResponseBlock) -> ApiResponseBlock {
+    if block.kind == "tool_use" {
+        if let Some(Value::String(raw)) = block.input.take() {
+            block.input = Some(serde_json::from_str(&raw).unwrap_or_else(|_| json!({})));
+        }
+    }
+    block
+}
+
+fn merge_anthropic_usage(target: &mut ApiUsage, update: ApiUsage) {
+    if update.input_tokens.is_some() {
+        target.input_tokens = update.input_tokens;
+    }
+    if update.output_tokens.is_some() {
+        target.output_tokens = update.output_tokens;
+    }
+    if update.cache_read_input_tokens.is_some() {
+        target.cache_read_input_tokens = update.cache_read_input_tokens;
+    }
+    if update.cache_creation_input_tokens.is_some() {
+        target.cache_creation_input_tokens = update.cache_creation_input_tokens;
     }
 }
 
@@ -2159,6 +2614,7 @@ mod tests {
         let body = MessagesRequest {
             model: "claude-sonnet-4-6",
             max_tokens: 4096,
+            stream: true,
             system: if request.prompt_frame.has_structured_system_blocks() {
                 Value::Array(
                     request
@@ -2205,6 +2661,79 @@ mod tests {
             .expect("tools should be an array")
             .iter()
             .any(|tool| tool == &json!({ "type": "web_search_20250305", "name": "web_search" })));
+    }
+
+    #[test]
+    fn anthropic_request_payload_enables_streaming() {
+        let request = ProviderTurnRequest::plain(
+            "system",
+            vec![ConversationMessage::UserText("hello".into())],
+            vec![],
+        );
+
+        let payload = anthropic_request_payload_for_test(&request);
+
+        assert_eq!(payload["stream"], true);
+    }
+
+    #[test]
+    fn anthropic_sse_parser_accumulates_text_usage_and_tool_json() {
+        let stream = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":3}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"ExecCommand\",\"input\":{}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\":\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"echo ok\\\"}\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":7}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        let events = SseParser::default()
+            .push(stream.as_bytes())
+            .expect("stream should parse");
+        let mut accumulator = AnthropicStreamAccumulator::default();
+        for event in events {
+            accumulator
+                .apply(event, "anthropic/claude-test", "https://example.test", None)
+                .expect("event should accumulate");
+        }
+
+        let response = accumulator
+            .finish("anthropic/claude-test", "https://example.test", None)
+            .expect("stream should finish");
+
+        assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
+        assert_eq!(
+            response.usage.as_ref().and_then(|usage| usage.input_tokens),
+            Some(3)
+        );
+        assert_eq!(
+            response
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.output_tokens),
+            Some(7)
+        );
+        assert_eq!(response.content[0].text.as_deref(), Some("hello"));
+        assert_eq!(response.content[1].kind, "tool_use");
+        assert_eq!(
+            response.content[1].input.as_ref(),
+            Some(&json!({ "cmd": "echo ok" }))
+        );
     }
 
     #[test]
