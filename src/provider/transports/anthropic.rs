@@ -28,7 +28,7 @@ use crate::{
     },
 };
 
-use super::{build_http_client, request_send_timeout, stream_idle_timeout};
+use super::{build_http_client, request_send_timeout, response_body_timeout, stream_idle_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
     invalid_response_error_with_trace, provider_transport_error,
@@ -276,7 +276,10 @@ impl AgentProvider for AnthropicProvider {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+                Ok(Ok(text)) => text,
+                _ => String::new(),
+            };
             if let Some(trace) = request_trace.as_ref() {
                 trace.write_response_body(&body);
             }
@@ -395,17 +398,31 @@ async fn read_anthropic_json_response(
     url: &str,
     trace: Option<&ProviderHttpTraceRequest>,
 ) -> Result<MessagesResponse> {
-    let response_body = response.text().await.map_err(|error| {
-        classify_reqwest_transport_error_with_trace(
-            "Anthropic response body failed",
-            "response_body",
-            "anthropic",
-            Some(model_ref),
-            Some(url),
-            error,
-            trace,
-        )
-    })?;
+    let response_body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+        Ok(Ok(text)) => text,
+        Ok(Err(error)) => {
+            return Err(classify_reqwest_transport_error_with_trace(
+                "Anthropic response body failed",
+                "response_body",
+                "anthropic",
+                Some(model_ref),
+                Some(url),
+                error,
+                trace,
+            ));
+        }
+        Err(_elapsed) => {
+            return Err(timeout_transport_error_with_trace(
+                "Anthropic response body read timed out",
+                "response_body",
+                "anthropic",
+                Some(model_ref),
+                Some(url),
+                format!("timed out after {:?}", response_body_timeout()),
+                trace,
+            ));
+        }
+    };
     if let Some(trace) = trace {
         trace.write_response_body(&response_body);
     }
