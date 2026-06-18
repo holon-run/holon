@@ -38,7 +38,7 @@ use crate::{
     token_estimate::estimate_json_tokens,
 };
 
-use super::{build_http_client, request_send_timeout, stream_idle_timeout};
+use super::{build_http_client, request_send_timeout, response_body_timeout, stream_idle_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
     invalid_response_error, provider_transport_error, timeout_transport_error_with_trace,
@@ -3397,7 +3397,10 @@ async fn send_chat_completion_request(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+            Ok(Ok(text)) => text,
+            _ => String::new(),
+        };
         trace_response_body(request_trace.as_ref(), &body);
         return Err(classify_chat_completion_status_error(
             "OpenAI Chat Completions request failed",
@@ -3409,17 +3412,31 @@ async fn send_chat_completion_request(
         ));
     }
 
-    let body = response.text().await.map_err(|error| {
-        classify_reqwest_transport_error_with_trace(
-            "OpenAI Chat Completions response body failed",
-            "response_body",
-            "openai",
-            Some(&model_ref),
-            Some(url.as_str()),
-            error,
-            request_trace.as_ref(),
-        )
-    })?;
+    let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+        Ok(Ok(text)) => text,
+        Ok(Err(error)) => {
+            return Err(classify_reqwest_transport_error_with_trace(
+                "OpenAI Chat Completions response body failed",
+                "response_body",
+                "openai",
+                Some(&model_ref),
+                Some(url.as_str()),
+                error,
+                request_trace.as_ref(),
+            ));
+        }
+        Err(_elapsed) => {
+            return Err(timeout_transport_error_with_trace(
+                "OpenAI Chat Completions response body read timed out",
+                "response_body",
+                "openai",
+                Some(&model_ref),
+                Some(url.as_str()),
+                format!("timed out after {:?}", response_body_timeout()),
+                request_trace.as_ref(),
+            ));
+        }
+    };
     trace_response_body(request_trace.as_ref(), &body);
 
     let parsed: Value = serde_json::from_str(&body)
@@ -3732,7 +3749,10 @@ pub(crate) async fn send_chat_completion_stream_request(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+            Ok(Ok(text)) => text,
+            _ => String::new(),
+        };
         return Err(classify_chat_completion_status_error(
             "OpenAI Chat Completions streaming request failed",
             status,
@@ -4085,7 +4105,10 @@ async fn send_openai_responses_request(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+            Ok(Ok(text)) => text,
+            _ => String::new(),
+        };
         trace_response_body(request_trace.as_ref(), &body);
         return Err(classify_status_error_with_trace(
             "OpenAI-style request failed",
@@ -4099,17 +4122,31 @@ async fn send_openai_responses_request(
         ));
     }
 
-    let body = response.text().await.map_err(|error| {
-        classify_reqwest_transport_error_with_trace(
-            "OpenAI-style response body failed",
-            "response_body",
-            "openai",
-            Some(&model_ref),
-            Some(url.as_str()),
-            error,
-            request_trace.as_ref(),
-        )
-    })?;
+    let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+        Ok(Ok(text)) => text,
+        Ok(Err(error)) => {
+            return Err(classify_reqwest_transport_error_with_trace(
+                "OpenAI-style response body failed",
+                "response_body",
+                "openai",
+                Some(&model_ref),
+                Some(url.as_str()),
+                error,
+                request_trace.as_ref(),
+            ));
+        }
+        Err(_elapsed) => {
+            return Err(timeout_transport_error_with_trace(
+                "OpenAI-style response body read timed out",
+                "response_body",
+                "openai",
+                Some(&model_ref),
+                Some(url.as_str()),
+                format!("timed out after {:?}", response_body_timeout()),
+                request_trace.as_ref(),
+            ));
+        }
+    };
     trace_response_body(request_trace.as_ref(), &body);
     let parsed: Value = serde_json::from_str(&body)
         .map_err(|error| invalid_response_error("invalid OpenAI-style JSON", error))?;
@@ -4160,7 +4197,10 @@ async fn send_openai_compact_request(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+            Ok(Ok(text)) => text,
+            _ => String::new(),
+        };
         trace_response_body(request_trace.as_ref(), &body);
         return Err(classify_status_error_with_trace(
             "OpenAI compact request failed",
@@ -4174,17 +4214,31 @@ async fn send_openai_compact_request(
         ));
     }
 
-    let response_body = response.text().await.map_err(|error| {
-        classify_reqwest_transport_error_with_trace(
-            "OpenAI compact response body failed",
-            "response_body",
-            "openai",
-            Some(&model_ref),
-            Some(url.as_str()),
-            error,
-            request_trace.as_ref(),
-        )
-    })?;
+    let response_body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+        Ok(Ok(text)) => text,
+        Ok(Err(error)) => {
+            return Err(classify_reqwest_transport_error_with_trace(
+                "OpenAI compact response body failed",
+                "response_body",
+                "openai",
+                Some(&model_ref),
+                Some(url.as_str()),
+                error,
+                request_trace.as_ref(),
+            ));
+        }
+        Err(_elapsed) => {
+            return Err(timeout_transport_error_with_trace(
+                "OpenAI compact response body read timed out",
+                "response_body",
+                "openai",
+                Some(&model_ref),
+                Some(url.as_str()),
+                format!("timed out after {:?}", response_body_timeout()),
+                request_trace.as_ref(),
+            ));
+        }
+    };
     trace_response_body(request_trace.as_ref(), &response_body);
     let parsed: Value = serde_json::from_str(&response_body)
         .map_err(|error| invalid_response_error("invalid OpenAI compact JSON", error))?;
@@ -4248,7 +4302,10 @@ async fn send_openai_responses_streaming_request(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+            Ok(Ok(text)) => text,
+            _ => String::new(),
+        };
         trace_response_body(request_trace.as_ref(), &body);
         return Err(classify_status_error_with_trace(
             openai_codex_status_error_context(status),

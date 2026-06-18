@@ -15,10 +15,10 @@ use crate::{
     },
 };
 
-use super::{build_http_client, request_send_timeout};
+use super::{build_http_client, request_send_timeout, response_body_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
-    invalid_response_error,
+    invalid_response_error, timeout_transport_error_with_trace,
 };
 
 #[derive(Clone)]
@@ -193,7 +193,10 @@ impl AgentProvider for GeminiProvider {
         }
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+                Ok(Ok(text)) => text,
+                _ => String::new(),
+            };
             if let Some(trace) = request_trace.as_ref() {
                 trace.write_response_body(&body);
             }
@@ -209,17 +212,32 @@ impl AgentProvider for GeminiProvider {
             ));
         }
 
-        let response_body = response.text().await.map_err(|error| {
-            classify_reqwest_transport_error_with_trace(
-                "Gemini response body failed",
-                "response_body",
-                "gemini",
-                Some(&model_ref),
-                Some(url.as_str()),
-                error,
-                request_trace.as_ref(),
-            )
-        })?;
+        let response_body =
+            match tokio::time::timeout(response_body_timeout(), response.text()).await {
+                Ok(Ok(text)) => text,
+                Ok(Err(error)) => {
+                    return Err(classify_reqwest_transport_error_with_trace(
+                        "Gemini response body failed",
+                        "response_body",
+                        "gemini",
+                        Some(&model_ref),
+                        Some(url.as_str()),
+                        error,
+                        request_trace.as_ref(),
+                    ));
+                }
+                Err(_elapsed) => {
+                    return Err(timeout_transport_error_with_trace(
+                        "Gemini response body read timed out",
+                        "response_body",
+                        "gemini",
+                        Some(&model_ref),
+                        Some(url.as_str()),
+                        format!("timed out after {:?}", response_body_timeout()),
+                        request_trace.as_ref(),
+                    ));
+                }
+            };
         if let Some(trace) = request_trace.as_ref() {
             trace.write_response_body(&response_body);
         }

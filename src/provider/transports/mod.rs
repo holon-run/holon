@@ -67,3 +67,12 @@ pub(super) fn request_send_timeout() -> Duration {
         .unwrap_or(DEFAULT_REQUEST_SEND_TIMEOUT_SECS);
     Duration::from_secs(timeout_secs)
 }
+
+pub(super) fn response_body_timeout() -> Duration {
+    let timeout_secs = env::var("HOLON_PROVIDER_RESPONSE_BODY_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(request_send_timeout().as_secs());
+    Duration::from_secs(timeout_secs)
+}
