@@ -199,13 +199,17 @@ function formatTaskOutputToolExecution(record: RuntimeToolExecutionRecord): { te
   const result = asResultRecord(output, "task_output_result") ?? (isRecord(output) ? output : undefined);
   const task = isRecord(result?.task) ? result.task : isRecord(result?.task_record) ? result.task_record : undefined;
   const taskId = nestedValue(task, ["task_id", "id"]) ?? nestedValue(record.input, ["task_id"]);
-  const status = nestedValue(task, ["status"]) ?? nestedValue(result, ["status", "retrieval_status"]);
+  const status = nestedValue(task, ["status"]) ?? nestedValue(result, ["status"]);
+  const retrievalStatus = nestedValue(result, ["retrieval_status"]);
   const exitStatus = nestedValue(task, ["exit_status"]) ?? nestedValue(result, ["exit_status"]);
-  const outputText = nestedText(result, ["output_preview", "output", "stdout", "stderr", "combined_output_preview"]);
-  const truncated = nestedValue(result, ["output_truncated", "truncated"]) === true;
+  const outputText =
+    nestedText(task, ["output_preview", "output", "stdout", "stderr", "combined_output_preview"]) ??
+    nestedText(result, ["output_preview", "output", "stdout", "stderr", "combined_output_preview"]);
+  const truncated = nestedValue(task, ["output_truncated"]) === true || nestedValue(result, ["output_truncated", "truncated"]) === true;
   const lines = [
     labelledText("Task ID", taskId),
     labelledText("Status", status),
+    labelledText("Retrieval", retrievalStatus),
     labelledText("Exit", exitStatus),
     labelledText("Summary", nestedValue(task, ["summary"]) ?? nestedValue(result, ["summary", "result_summary"])),
     outputText ? labelledText(truncated ? "Output (truncated)" : "Output", outputText) : "",

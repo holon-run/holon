@@ -700,7 +700,9 @@ function projectListTasksTool(payload: Record<string, unknown> | undefined): Pic
 function extractTaskFromOutput(payload: Record<string, unknown> | undefined): {
   task?: Record<string, unknown>;
   taskId?: string;
-  status?: string;
+  taskStatus?: string;
+  retrievalStatus?: string;
+  kind?: string;
   summary?: string;
   exitStatus?: number;
   outputPreview?: string;
@@ -708,17 +710,34 @@ function extractTaskFromOutput(payload: Record<string, unknown> | undefined): {
 } {
   const result = asRecord(payload?.task_output_result) ?? unwrapToolResult(payload);
   const task = asRecord(result.task) ?? asRecord(result.task_record);
-  const taskId = firstStringField(task, ["task_id", "id"]) ?? stringField(payload, "task_id");
-  const status = firstStringField(task, ["status"]) ?? stringField(result, "status") ?? stringField(result, "retrieval_status");
+  const taskId = firstStringField(task, ["task_id", "id"]) ?? stringField(result, "task_id") ?? stringField(payload, "task_id");
+  const resultStatus = stringField(result, "status");
+  const taskStatus =
+    firstStringField(task, ["status"]) ?? (resultStatus && !isTaskOutputRetrievalStatus(resultStatus) ? resultStatus : undefined);
+  const retrievalStatus =
+    stringField(result, "retrieval_status") ?? (resultStatus && isTaskOutputRetrievalStatus(resultStatus) ? resultStatus : undefined);
+  const kind = stringField(task, "kind") ?? stringField(result, "kind");
   const summary = stringField(task, "summary") ?? stringField(result, "summary") ?? stringField(result, "result_summary");
   const exitStatus = numberField(task, "exit_status") ?? numberField(result, "exit_status");
   const outputPreview =
+    stringField(task, "output_preview") ??
     stringField(result, "output_preview") ??
     stringField(result, "output") ??
     stringField(result, "stdout") ??
     stringField(result, "stderr");
-  const truncated = result.output_truncated === true || result.truncated === true;
-  return { task, taskId, status, summary, exitStatus, outputPreview, truncated };
+  const truncated = task?.output_truncated === true || result.output_truncated === true || result.truncated === true;
+  return { task, taskId, taskStatus, retrievalStatus, kind, summary, exitStatus, outputPreview, truncated };
+}
+
+function isTaskOutputRetrievalStatus(status: string): boolean {
+  return status === "success" || status === "timeout" || status === "not_ready";
+}
+
+function formatTaskOutputRetrievalStatus(status: string | undefined): string | undefined {
+  if (!status || status === "success") return undefined;
+  if (status === "timeout") return "retrieval timeout";
+  if (status === "not_ready") return "not ready";
+  return status;
 }
 
 function projectTaskOutputTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
@@ -726,7 +745,9 @@ function projectTaskOutputTool(payload: Record<string, unknown> | undefined): Pi
   const body = compactJoin([
     "Task output",
     info.taskId ? shortTaskId(info.taskId) : undefined,
-    info.status,
+    formatTaskOutputRetrievalStatus(info.retrievalStatus),
+    info.taskStatus,
+    info.kind,
     info.summary,
     info.exitStatus != null ? `exit ${info.exitStatus}` : undefined,
     info.truncated ? "truncated" : undefined,
@@ -752,7 +773,7 @@ function projectTaskStatusTool(payload: Record<string, unknown> | undefined): Pi
   const body = compactJoin([
     "Task status",
     taskId ? shortTaskId(taskId) : undefined,
-    status,
+    status === "success" ? undefined : status,
     kind,
     summary,
   ]);
@@ -769,7 +790,7 @@ function projectTaskStopTool(payload: Record<string, unknown> | undefined): Pick
   const body = compactJoin([
     "Stopped task",
     taskId ? shortTaskId(taskId) : undefined,
-    status,
+    status === "success" ? undefined : status,
   ]);
   return {
     body,

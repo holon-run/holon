@@ -239,13 +239,14 @@ describe("reduceAgentSessionTimeline", () => {
         events: [
           toolEvent("task-output", "TaskOutput", {
             task_output_result: {
+              retrieval_status: "success",
               task: {
                 task_id: "task_abc123",
                 status: "completed",
                 summary: "Run command: cargo build",
                 exit_status: 0,
+                output_preview: "Compiling holon v0.1.0\nFinished",
               },
-              output_preview: "Compiling holon v0.1.0\nFinished",
             },
           }),
         ],
@@ -260,7 +261,37 @@ describe("reduceAgentSessionTimeline", () => {
     );
     // Duration should be suppressed for read/control tools
     expect(timeline[0].body).not.toContain("ms");
+    expect(timeline[0].body).not.toContain("success");
     expect(timeline[0].detail?.tone).toBe("output");
+  });
+
+  it("projects TaskOutput retrieval status without collapsing to success or timeout", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("task-output-timeout", "TaskOutput", {
+            task_output_result: {
+              retrieval_status: "timeout",
+              task: {
+                task_id: "task_waiting",
+                kind: "command_task",
+                status: "running",
+                summary: "Run command: npm run dev",
+                output_preview: "server booting",
+              },
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        body: "Task output · task_waiting · retrieval timeout · running · command_task · Run command: npm run dev",
+      }),
+    );
+    expect(timeline[0].body).not.toBe("timeout");
   });
 
   it("projects TaskOutput with truncated flag", () => {
