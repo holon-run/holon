@@ -37,6 +37,11 @@ function numberFromInput(value: string): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
+export function buildVisionConfigUpdates(visionDefault: string): Array<{ key: string; value?: unknown; unset?: boolean }> {
+  const trimmed = visionDefault.trim();
+  return [trimmed ? { key: "vision.default", value: trimmed } : { key: "vision.default", unset: true }];
+}
+
 type ProviderDraft = Pick<
   RuntimeProviderSummary,
   "transport" | "baseUrl" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
@@ -222,8 +227,7 @@ export function SettingsPage({
 
   async function saveVisionConfig() {
     setVisionSaveMessage(undefined);
-    const trimmed = visionDefault.trim();
-    const result = await onUpdateRuntimeConfig([trimmed ? { key: "vision.default", value: trimmed } : { key: "vision.default", unset: true }]);
+    const result = await onUpdateRuntimeConfig(buildVisionConfigUpdates(visionDefault));
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
     setVisionSaveMessage(
@@ -302,7 +306,7 @@ export function SettingsPage({
           <span className="eyebrow">Runtime configuration</span>
           <h1>Settings</h1>
           <p>
-            Configure common runtime defaults from the Web GUI. Saved model defaults are persisted to config.json
+            Configure common runtime defaults from the Web GUI. Saved model and vision defaults are persisted to config.json
             and take effect immediately via hot-reload.
           </p>
           <div className="settings-quickstart" aria-label="Settings overview">
@@ -334,12 +338,12 @@ export function SettingsPage({
         </Card>
 
         <div className="settings-grid">
-          {/* ── Model & Vision ── */}
+          {/* ── Model defaults ── */}
           <Card className="settings-card">
             <div className="settings-card-head">
               <div>
                 <span className="eyebrow">Runtime defaults</span>
-                <h2>Model &amp; Vision</h2>
+                <h2>Model</h2>
               </div>
               <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
                 {runtimeConfigLoading ? "Refreshing…" : "Refresh"}
@@ -373,17 +377,6 @@ export function SettingsPage({
                 <details className="settings-advanced">
                   <summary>Advanced</summary>
                   <label>
-                    <span>Vision default model</span>
-                    <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider/model or empty for auto" />
-                    <datalist id="vision-models">
-                      {visionModels.map((model) => (
-                        <option key={model.model} value={model.model}>
-                          {model.displayName}
-                        </option>
-                      ))}
-                    </datalist>
-                  </label>
-                  <label>
                     <span>Fallback models</span>
                     <input value={modelFallbacks} onChange={(event) => setModelFallbacks(event.target.value)} placeholder="provider/model, provider/model" />
                   </label>
@@ -415,7 +408,6 @@ export function SettingsPage({
                     {runtimeConfigSaving ? "Saving…" : "Save"}
                   </Button>
                   {saveMessage ? <span>{saveMessage}</span> : null}
-                  {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
                 </div>
                 {rejectedResults.length ? (
                   <div className="settings-error-banner">
@@ -442,6 +434,60 @@ export function SettingsPage({
                 <dd>{configuredProviderCount}</dd>
               </div>
             </dl>
+          </Card>
+
+          {/* ── Vision defaults ── */}
+          <Card className="settings-card">
+            <div className="settings-card-head">
+              <div>
+                <span className="eyebrow">Vision</span>
+                <h2>Image observation</h2>
+              </div>
+            </div>
+            {!surface ? (
+              <div className="settings-callout">
+                <strong>Vision config unavailable</strong>
+                <span>Connect to a live runtime and refresh this page to edit the Vision default model.</span>
+              </div>
+            ) : (
+              <form
+                className="settings-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveVisionConfig();
+                }}
+              >
+                <label>
+                  <span>Vision default model</span>
+                  <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider/model or empty for auto" />
+                  <datalist id="vision-models">
+                    {visionModels.map((model) => (
+                      <option key={model.model} value={model.model}>
+                        {model.displayName}
+                      </option>
+                    ))}
+                  </datalist>
+                </label>
+                <p className="settings-hint">
+                  Leave empty to let ViewImage auto-discover an authenticated image-capable model.
+                </p>
+                <div className="settings-actions">
+                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                    {runtimeConfigSaving ? "Saving…" : "Save Vision"}
+                  </Button>
+                  {visionDefault ? (
+                    <StatusChip className={`settings-status ${visionProviderReady ? "available" : "unavailable"}`} tone={visionProviderReady ? "success" : "error"}>
+                      {visionProviderReady ? "provider ready" : "provider credential missing"}
+                    </StatusChip>
+                  ) : (
+                    <StatusChip className="settings-status available" tone="success">
+                      auto-discovery
+                    </StatusChip>
+                  )}
+                  {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
+                </div>
+              </form>
+            )}
           </Card>
 
           {/* ── Web search ── */}

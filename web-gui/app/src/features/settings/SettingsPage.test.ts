@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sortProvidersForSettings } from "./SettingsPage";
+import { buildVisionConfigUpdates, sortProvidersForSettings } from "./SettingsPage";
 import type { RuntimeProviderSummary } from "../../runtime/types";
 
 function provider(id: string, credentialConfigured: boolean): RuntimeProviderSummary {
@@ -26,5 +26,17 @@ describe("sortProvidersForSettings", () => {
     ]);
 
     expect(sorted.map((entry) => entry.id)).toEqual(["ready-a", "ready-b", "missing-a", "missing-b"]);
+  });
+});
+
+describe("buildVisionConfigUpdates", () => {
+  it("persists a trimmed Vision default model", () => {
+    expect(buildVisionConfigUpdates(" openai/gpt-5.1 ")).toEqual([
+      { key: "vision.default", value: "openai/gpt-5.1" },
+    ]);
+  });
+
+  it("unsets Vision default when left empty for auto-discovery", () => {
+    expect(buildVisionConfigUpdates("   ")).toEqual([{ key: "vision.default", unset: true }]);
   });
 });
