@@ -1306,7 +1306,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(valid_model_payload["changed"], true);
     assert_eq!(
         valid_model_payload["results"][0]["effect"],
-        "accepted_requires_restart"
+        "accepted_reloaded"
     );
 
     let persisted = load_persisted_config_at(&config.config_file_path)?;
@@ -1336,7 +1336,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(valid_cors_payload["changed"], true);
     assert_eq!(
         valid_cors_payload["results"][0]["effect"],
-        "accepted_requires_restart"
+        "accepted_reloaded"
     );
 
     let persisted = load_persisted_config_at(&config.config_file_path)?;
