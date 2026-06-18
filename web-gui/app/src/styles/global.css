@@ -2379,6 +2379,53 @@ code {
   overflow-wrap: anywhere;
 }
 
+.settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface-soft);
+}
+
+.settings-tab {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.settings-tab:hover,
+.settings-tab.active {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.settings-tab span {
+  font-weight: 780;
+}
+
+.settings-tab small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2394,6 +2441,14 @@ code {
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--shadow-card);
+}
+
+.settings-card[hidden] {
+  display: none;
+}
+
+.settings-primary-card {
+  grid-column: 1 / -1;
 }
 
 .settings-card-head {
@@ -2749,6 +2804,7 @@ code {
 @media (max-width: 900px) {
   .settings-quickstart,
   .settings-grid,
+  .settings-tabs,
   .settings-form-row {
     grid-template-columns: 1fr;
   }

@@ -137,6 +137,16 @@ const standardSearchProviders: StandardSearchProviderDefinition[] = [
 const standardSearchProviderById = new Map(standardSearchProviders.map((provider) => [provider.id, provider]));
 const standardSearchProviderIds = new Set(standardSearchProviders.map((provider) => provider.id));
 
+type SettingsTabKey = "general" | "models" | "vision" | "search" | "advanced";
+
+const settingsTabs: Array<{ key: SettingsTabKey; label: string; description: string }> = [
+  { key: "general", label: "General", description: "connection and runtime basics" },
+  { key: "models", label: "Models", description: "defaults and provider keys" },
+  { key: "vision", label: "Vision", description: "image observation model" },
+  { key: "search", label: "Search", description: "routing and search providers" },
+  { key: "advanced", label: "Advanced", description: "diagnostics and raw config" },
+];
+
 function defaultSearchProviderDraft(providerId: string): SearchProviderDraft {
   const definition = standardSearchProviderById.get(providerId);
   return {
@@ -199,6 +209,7 @@ export function SettingsPage({
   const [searchProviderSaveMessage, setSearchProviderSaveMessage] = useState<string | undefined>();
   const [visionSaveMessage, setVisionSaveMessage] = useState<string | undefined>();
   const [providerSaveMessage, setProviderSaveMessage] = useState<string | undefined>();
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>("models");
   const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
   const [searchApiKeyDrafts, setSearchApiKeyDrafts] = useState<Record<string, string>>({});
   const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
@@ -546,9 +557,74 @@ export function SettingsPage({
           </div>
         </Card>
 
+        <div className="settings-tabs" role="tablist" aria-label="Settings sections">
+          {settingsTabs.map((tab) => (
+            <button
+              aria-selected={activeTab === tab.key}
+              className={`settings-tab ${activeTab === tab.key ? "active" : ""}`}
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              role="tab"
+              type="button"
+            >
+              <span>{tab.label}</span>
+              <small>{tab.description}</small>
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "general" ? (
+          <div className="settings-grid">
+            <Card className="settings-card settings-primary-card">
+              <div className="settings-card-head">
+                <div>
+                  <span className="eyebrow">General</span>
+                  <h2>Runtime overview</h2>
+                </div>
+                <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
+                  {runtimeConfigLoading ? "Refreshing…" : "Refresh"}
+                </Button>
+              </div>
+              {runtimeConfigError ? <div className="settings-error-banner">{runtimeConfigError}</div> : null}
+              <dl className="settings-list compact">
+                <div>
+                  <dt>Connection</dt>
+                  <dd>{connection.source === "http" ? "Live runtime" : "Preview data"}</dd>
+                </div>
+                <div>
+                  <dt>API base</dt>
+                  <dd>{connection.baseUrl ?? "not configured"}</dd>
+                </div>
+                <div>
+                  <dt>Config file</dt>
+                  <dd>{runtimeConfig.configFilePath ?? "not reported"}</dd>
+                </div>
+                <div>
+                  <dt>Provider fallback</dt>
+                  <dd>{surface?.disableProviderFallback ? "disabled" : "enabled"}</dd>
+                </div>
+                <div>
+                  <dt>Model providers</dt>
+                  <dd>
+                    {configuredProviderCount}/{surface?.providers.length ?? 0} credential ready
+                  </dd>
+                </div>
+                <div>
+                  <dt>Search</dt>
+                  <dd>{surface?.webSearch?.enabled ? "enabled" : "disabled"}</dd>
+                </div>
+                <div>
+                  <dt>Vision</dt>
+                  <dd>{surface?.visionDefault ? surface.visionDefault : "auto-discovery"}</dd>
+                </div>
+              </dl>
+            </Card>
+          </div>
+        ) : null}
+
         <div className="settings-grid">
           {/* ── Model defaults ── */}
-          <Card className="settings-card">
+          <Card className="settings-card settings-primary-card" hidden={activeTab !== "models"}>
             <div className="settings-card-head">
               <div>
                 <span className="eyebrow">Runtime defaults</span>
@@ -646,7 +722,7 @@ export function SettingsPage({
           </Card>
 
           {/* ── Vision defaults ── */}
-          <Card className="settings-card">
+          <Card className="settings-card settings-primary-card" hidden={activeTab !== "vision"}>
             <div className="settings-card-head">
               <div>
                 <span className="eyebrow">Vision</span>
@@ -700,7 +776,7 @@ export function SettingsPage({
           </Card>
 
           {/* ── Web search ── */}
-          <Card className="settings-card">
+          <Card className="settings-card settings-primary-card" hidden={activeTab !== "search"}>
             <div className="settings-card-head">
               <div>
                 <span className="eyebrow">Runtime defaults</span>
@@ -794,7 +870,7 @@ export function SettingsPage({
         </div>
 
         {/* ── Web search providers ── */}
-        <Card className="settings-card">
+        <Card className="settings-card" hidden={activeTab !== "search"}>
           <div className="settings-card-head">
             <div>
               <span className="eyebrow">Provider accounts</span>
@@ -1045,7 +1121,7 @@ export function SettingsPage({
         </Card>
 
         {/* ── Model providers ── */}
-        <Card className="settings-card">
+        <Card className="settings-card" hidden={activeTab !== "models"}>
           <div className="settings-card-head">
             <div>
               <span className="eyebrow">Provider accounts</span>
@@ -1225,8 +1301,40 @@ export function SettingsPage({
           )}
         </Card>
 
+        <Card className="settings-card" hidden={activeTab !== "advanced"}>
+          <div className="settings-card-head">
+            <div>
+              <span className="eyebrow">Advanced</span>
+              <h2>Raw config</h2>
+            </div>
+            <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
+              {runtimeConfigLoading ? "Refreshing…" : "Refresh"}
+            </Button>
+          </div>
+          <div className="settings-callout">
+            <strong>Raw config editing is not exposed in the Web GUI yet.</strong>
+            <span>Use the focused tabs for common changes, or edit the config file directly for uncommon runtime fields.</span>
+          </div>
+          <dl className="settings-list compact">
+            <div>
+              <dt>Config file</dt>
+              <dd>{runtimeConfig.configFilePath ?? "not reported"}</dd>
+            </div>
+            <div>
+              <dt>Model catalog</dt>
+              <dd>
+                {modelCatalog.options.length} model{modelCatalog.options.length === 1 ? "" : "s"} across {groupedModels.length} provider{groupedModels.length === 1 ? "" : "s"}
+              </dd>
+            </div>
+            <div>
+              <dt>Search providers</dt>
+              <dd>{surface?.webSearchProviders.map((provider) => provider.id).join(", ") || "builtin defaults"}</dd>
+            </div>
+          </dl>
+        </Card>
+
         {/* ── Model catalog diagnostics ── */}
-        <Card className="settings-card settings-models">
+        <Card className="settings-card settings-models" hidden={activeTab !== "advanced"}>
           <div className="settings-card-head">
             <div>
               <span className="eyebrow">Models / Providers</span>
