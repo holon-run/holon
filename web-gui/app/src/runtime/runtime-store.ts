@@ -26,6 +26,7 @@ import type {
   RouteKey,
   RuntimeBootstrap,
   RuntimeConnectionConfig,
+  RuntimeConnectionProfile,
   RuntimeConfigState,
   CredentialProfileStatus,
   CredentialStoreState,
@@ -351,6 +352,16 @@ function writeStoredRemoteProfile(config: RuntimeConnectionConfig): void {
   }
 }
 
+export function readStoredRemoteConnectionProfiles(): RuntimeConnectionProfile[] {
+  return Object.values(readStoredRemoteProfiles())
+    .filter((profile): profile is RuntimeConnectionConfig & { mode: "remote"; baseUrl: string } => profile.mode === "remote" && Boolean(profile.baseUrl))
+    .map((profile) => ({
+      baseUrl: profile.baseUrl,
+      hasToken: Boolean(profile.token),
+    }))
+    .sort((left, right) => left.baseUrl.localeCompare(right.baseUrl));
+}
+
 function normalizeConnectionBaseUrl(value: string | undefined): string {
   return value?.trim().replace(/\/+$/, "") ?? "";
 }
@@ -605,11 +616,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
         : undefined;
     const normalizedConfig: RuntimeConnectionConfig =
       config.mode === "remote"
-        ? {
-            mode: "remote",
-            baseUrl: normalizedBaseUrl,
-            token: config.token?.trim() || retainedToken,
-          }
+        ? withStoredRemoteProfileToken({
+          mode: "remote",
+          baseUrl: normalizedBaseUrl,
+          token: config.token?.trim() || retainedToken,
+        })
         : { mode: "local" };
     runtimeConnectionConfig = normalizedConfig;
     runtimeClient = createRuntimeClient(runtimeClientOptions(normalizedConfig));

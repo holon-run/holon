@@ -17,6 +17,11 @@ export interface RuntimeConnectionConfig {
   token?: string;
 }
 
+export interface RuntimeConnectionProfile {
+  baseUrl: string;
+  hasToken: boolean;
+}
+
 export interface WorkItemSummary {
   id: string;
   objective: string;

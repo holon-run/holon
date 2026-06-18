@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 
 import holonMarkUrl from "../assets/holon-mark.png";
 import { AgentPage } from "../features/agent/AgentPage";
@@ -12,10 +12,10 @@ import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { deriveAgentDisplayStatus } from "../runtime/agent-status";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
-import { useRuntimeStore } from "../runtime/runtime-store";
+import { readStoredRemoteConnectionProfiles, useRuntimeStore } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
-import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig } from "../runtime/types";
+import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
 import { pushBrowserRoute, routeFromLocation } from "./routes";
 
 const globalRoutes: Array<{ key: RouteKey; label: string; icon: string }> = [
@@ -466,16 +466,46 @@ function ConnectionSwitcher({
   const [token, setToken] = useState("");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | undefined>();
+  const [savedRemotes, setSavedRemotes] = useState<RuntimeConnectionProfile[]>(() => readStoredRemoteConnectionProfiles());
+  const switcherRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (connection.mode === "remote") setBaseUrl(connection.baseUrl ?? "");
   }, [connection.baseUrl, connection.mode]);
+
+  useEffect(() => {
+    if (!compact || !open) return;
+    const closeOnOutside = (event: MouseEvent) => {
+      if (!switcherRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [compact, open]);
+
+  function toggleOpen() {
+    setOpen((value) => {
+      const nextOpen = !value;
+      if (nextOpen) {
+        setSavedRemotes(readStoredRemoteConnectionProfiles());
+        setFormError(undefined);
+      }
+      return nextOpen;
+    });
+  }
 
   async function applyConnection(config: RuntimeConnectionConfig) {
     setSaving(true);
     setFormError(undefined);
     try {
       await onSetConnection(config);
+      setSavedRemotes(readStoredRemoteConnectionProfiles());
       if (compact) setOpen(false);
     } catch (error) {
       setFormError(error instanceof Error ? error.message : String(error));
@@ -485,8 +515,14 @@ function ConnectionSwitcher({
   }
 
   return (
-    <div className={`connection-switcher ${open ? "is-open" : ""}`}>
-      <button className="connection-status" type="button" onClick={() => setOpen((value) => !value)}>
+    <div className={`connection-switcher ${open ? "is-open" : ""} ${compact ? "is-popover" : ""}`} ref={switcherRef}>
+      <button
+        className="connection-status"
+        type="button"
+        aria-expanded={open}
+        aria-haspopup={compact ? "dialog" : undefined}
+        onClick={toggleOpen}
+      >
         <span className={`runtime-dot ${connection.error ? "error" : ""}`} />
         <span>
           <strong>{connection.mode}</strong>
@@ -496,6 +532,8 @@ function ConnectionSwitcher({
       {open ? (
         <form
           className="connection-panel"
+          role={compact ? "dialog" : undefined}
+          aria-label="Runtime connection"
           onSubmit={(event) => {
             event.preventDefault();
             const trimmedBaseUrl = baseUrl.trim();
@@ -506,6 +544,56 @@ function ConnectionSwitcher({
             void applyConnection({ mode: "remote", baseUrl: trimmedBaseUrl, token: token.trim() || undefined });
           }}
         >
+          <div className="connection-panel-head">
+            <div>
+              <strong>Runtime connection</strong>
+              <span>Switch local or saved remote without leaving this page.</span>
+            </div>
+            {compact ? (
+              <button type="button" aria-label="Close connection panel" onClick={() => setOpen(false)}>
+                ×
+              </button>
+            ) : null}
+          </div>
+          <button
+            className={`saved-remote-row ${connection.mode === "local" ? "is-selected" : ""}`}
+            type="button"
+            disabled={saving}
+            onClick={() => void applyConnection({ mode: "local" })}
+          >
+            <span>
+              <strong>Localhost</strong>
+              <small>Local runtime on this machine</small>
+            </span>
+            <span>{connection.mode === "local" ? "Current" : "Use"}</span>
+          </button>
+          <div className="saved-remotes" aria-label="Saved remotes">
+            <span className="connection-section-label">Saved remotes</span>
+            {savedRemotes.length > 0 ? (
+              savedRemotes.map((remote) => {
+                const selected = connection.mode === "remote" && connection.baseUrl === remote.baseUrl;
+                return (
+                  <button
+                    className={`saved-remote-row ${selected ? "is-selected" : ""}`}
+                    type="button"
+                    key={remote.baseUrl}
+                    title={remote.baseUrl}
+                    disabled={saving}
+                    onClick={() => void applyConnection({ mode: "remote", baseUrl: remote.baseUrl })}
+                  >
+                    <span>
+                      <strong>{remoteLabel(remote.baseUrl)}</strong>
+                      <small>{remote.baseUrl}</small>
+                    </span>
+                    <span>{selected ? "Current" : remote.hasToken ? "Saved token" : "Use"}</span>
+                  </button>
+                );
+              })
+            ) : (
+              <p className="saved-remotes-empty">No saved remotes yet. Add one below to reuse it later.</p>
+            )}
+          </div>
+          <span className="connection-section-label">Add remote</span>
           <label>
             Remote URL
             <input
@@ -526,9 +614,6 @@ function ConnectionSwitcher({
           </label>
           {formError ? <span className="connection-error">{formError}</span> : null}
           <div className="connection-actions">
-            <Button type="button" size="sm" variant="secondary" disabled={saving} onClick={() => void applyConnection({ mode: "local" })}>
-              Localhost
-            </Button>
             <Button type="submit" size="sm" disabled={saving}>
               {saving ? "Connecting…" : "Use remote"}
             </Button>
@@ -537,6 +622,14 @@ function ConnectionSwitcher({
       ) : null}
     </div>
   );
+}
+
+function remoteLabel(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return baseUrl;
+  }
 }
 
 function MissingAgentPage({ agentId, loading }: { agentId: string; loading: boolean }) {

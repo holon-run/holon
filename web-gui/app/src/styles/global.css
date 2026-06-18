@@ -508,10 +508,12 @@ button {
 }
 
 .sidebar-bottom {
+  position: relative;
   margin-top: auto;
 }
 
 .connection-switcher {
+  position: relative;
   display: grid;
   gap: 8px;
 }
@@ -538,6 +540,133 @@ button {
   border-radius: 12px;
   background: color-mix(in srgb, var(--surface) 84%, var(--sidebar-soft));
   box-shadow: 0 8px 24px rgba(30, 42, 58, 0.08);
+}
+
+.connection-switcher.is-popover .connection-panel {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  z-index: 8;
+  width: min(340px, calc(100vw - 28px));
+  margin: 0;
+}
+
+.connection-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 2px;
+}
+
+.connection-panel-head div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.connection-panel-head strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.connection-panel-head span,
+.saved-remotes-empty {
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.connection-panel-head button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.connection-panel-head button:hover {
+  background: color-mix(in srgb, var(--sidebar-soft) 70%, transparent);
+  color: var(--text);
+}
+
+.saved-remotes {
+  display: grid;
+  gap: 6px;
+}
+
+.connection-section-label {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.saved-remote-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 54%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-soft) 78%, transparent);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+.saved-remote-row:hover:not(:disabled),
+.saved-remote-row.is-selected {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line-strong));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.saved-remote-row:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.saved-remote-row > span:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.saved-remote-row strong,
+.saved-remote-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-remote-row strong {
+  font-size: 12px;
+}
+
+.saved-remote-row small {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.saved-remote-row > span:last-child {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.saved-remotes-empty {
+  margin: 0;
 }
 
 .connection-panel label {
