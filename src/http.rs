@@ -54,11 +54,10 @@ use tower::ServiceExt;
 
 use crate::{
     config::{
-        credential_store_path, load_credential_store_at, load_persisted_config_at,
-        save_persisted_config_at, set_config_key, unset_config_key, ApiCorsConfigFile,
-        ControlTransportKind, CredentialKind, CredentialProfileStatus, HolonConfigFile,
-        ModelRef, list_credential_profiles_at, remove_credential_profile_at,
-        set_credential_profile_at,
+        credential_store_path, list_credential_profiles_at, load_credential_store_at,
+        load_persisted_config_at, remove_credential_profile_at, save_persisted_config_at,
+        set_config_key, set_credential_profile_at, unset_config_key, ApiCorsConfigFile,
+        ControlTransportKind, CredentialKind, CredentialProfileStatus, HolonConfigFile, ModelRef,
     },
     daemon::{
         graceful_runtime_shutdown, runtime_activity_summary, RuntimeConfigSurface,
@@ -1363,10 +1362,7 @@ pub async fn list_credentials(
     let config = state.host.config();
     let path = credential_store_path(&config.home_dir);
     let profiles = list_credential_profiles_at(&path).map_err(error_response)?;
-    Ok(Json(CredentialListResponse {
-        ok: true,
-        profiles,
-    }))
+    Ok(Json(CredentialListResponse { ok: true, profiles }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1413,14 +1409,12 @@ pub async fn delete_credential(
     authorize_control(&headers, &state).map_err(|err| forbidden(err.to_string()))?;
     let config = state.host.config();
     let path = credential_store_path(&config.home_dir);
-    let profile_status = remove_credential_profile_at(&path, &profile)
-        .map_err(error_response)?;
+    let profile_status = remove_credential_profile_at(&path, &profile).map_err(error_response)?;
     Ok(Json(DeleteCredentialResponse {
         ok: true,
         profile: profile_status,
     }))
 }
-
 
 fn runtime_surfaces(
     state: &AppState,
