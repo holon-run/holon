@@ -28,6 +28,7 @@ use crate::{
 };
 
 const INDEX_FILENAME: &str = "memory.v2.sqlite3";
+const LEGACY_INDEX_FILENAME: &str = "memory.sqlite3";
 const DIRTY_FILENAME: &str = "memory.dirty";
 const SEARCH_LIMIT_MAX: usize = 50;
 const MEMORY_INDEX_OUTBOX_CONSUME_LIMIT: usize = 500;
@@ -63,6 +64,10 @@ pub struct MemorySearchIndexStatus {
     pub cursor: i64,
     pub high_watermark: i64,
     pub lag: i64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub consumption_was_limited: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skipped_error_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_indexed_at: Option<DateTime<Utc>>,
 }
@@ -109,6 +114,10 @@ struct MemoryDocument {
 
 pub fn memory_index_path(storage: &AppStorage) -> PathBuf {
     storage.shared_indexes_dir().join(INDEX_FILENAME)
+}
+
+fn legacy_memory_index_path(storage: &AppStorage) -> PathBuf {
+    storage.shared_indexes_dir().join(LEGACY_INDEX_FILENAME)
 }
 
 pub fn rebuild_memory_index(storage: &AppStorage, active_workspace_id: Option<&str>) -> Result<()> {
@@ -233,6 +242,7 @@ fn ensure_memory_index_current(
     storage: &AppStorage,
     active_workspace_id: Option<&str>,
 ) -> Result<MemoryIndex> {
+    log_legacy_index_deprecation(storage);
     let mut index = MemoryIndex::open(storage)?;
     index.consume_runtime_outbox(storage, MEMORY_INDEX_OUTBOX_CONSUME_LIMIT)?;
     index.consume_pending_sources(storage, MEMORY_INDEX_OUTBOX_CONSUME_LIMIT)?;
@@ -246,6 +256,18 @@ fn ensure_memory_index_current(
         );
     }
     Ok(index)
+}
+
+fn log_legacy_index_deprecation(storage: &AppStorage) {
+    let v2_path = memory_index_path(storage);
+    let legacy_path = legacy_memory_index_path(storage);
+    if !v2_path.exists() && legacy_path.exists() {
+        tracing::warn!(
+            legacy_index_path = %legacy_path.display(),
+            v2_index_path = %v2_path.display(),
+            "legacy memory index v1 is ignored by memory index v2; run explicit rebuild/backfill if historical search results are needed"
+        );
+    }
 }
 
 fn repair_known_markdown_sources(storage: &AppStorage, index: &MemoryIndex) -> Result<()> {
@@ -327,6 +349,8 @@ fn dirty_filename_for_agent(agent_id: &str) -> String {
 
 struct MemoryIndex {
     connection: Connection,
+    last_outbox_consume_reached_limit: bool,
+    last_outbox_error_count: usize,
 }
 
 impl MemoryIndex {
@@ -338,7 +362,11 @@ impl MemoryIndex {
             )
         })?;
         let connection = Connection::open(memory_index_path(storage))?;
-        let index = Self { connection };
+        let index = Self {
+            connection,
+            last_outbox_consume_reached_limit: false,
+            last_outbox_error_count: 0,
+        };
         index.connection.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -572,27 +600,7 @@ impl MemoryIndex {
         let pending = self.pending_sources_for_agent_with_limit(&agent_id, limit)?;
         for source in pending {
             let transaction = self.connection.transaction()?;
-            let result = if source.operation == "delete" {
-                delete_document_tx(&transaction, &source.document_key)
-            } else {
-                match document_for_pending_source(storage, &source)? {
-                    Some(document) => {
-                        let hash = content_hash(&document.body);
-                        let existing_hash = transaction
-                            .query_row(
-                                "SELECT content_hash FROM memory_index_source_state WHERE document_key = ?1",
-                                [&source.document_key],
-                                |row| row.get::<_, String>(0),
-                            )
-                            .optional()?;
-                        if existing_hash.as_deref() != Some(hash.as_str()) {
-                            upsert_document_tx(&transaction, &document)?;
-                        }
-                        upsert_source_state_tx(&transaction, &document, &source.source_id)
-                    }
-                    None => delete_document_tx(&transaction, &source.document_key),
-                }
-            };
+            let result = apply_pending_source_tx(&transaction, storage, &source);
             match result {
                 Ok(()) => {
                     transaction.execute(
@@ -616,6 +624,8 @@ impl MemoryIndex {
     }
 
     fn consume_runtime_outbox(&mut self, storage: &AppStorage, limit: usize) -> Result<()> {
+        self.last_outbox_consume_reached_limit = false;
+        self.last_outbox_error_count = 0;
         let Some(runtime_db) = storage.runtime_db()? else {
             return Ok(());
         };
@@ -625,33 +635,23 @@ impl MemoryIndex {
         let rows = runtime_db
             .runtime_index_outbox()
             .read_after(&agent_id, cursor, limit)?;
+        let row_count = rows.len();
         let mut last_change_seq = cursor;
         for row in rows {
             last_change_seq = last_change_seq.max(row.change_seq);
             let source = pending_source_from_outbox_row(&row);
             let transaction = self.connection.transaction()?;
-            let result = if row.operation == RuntimeIndexOperation::Delete {
-                delete_document_tx(&transaction, &source.document_key)
-            } else {
-                match document_for_pending_source(storage, &source)? {
-                    Some(document) => {
-                        let hash = content_hash(&document.body);
-                        let existing_hash = transaction
-                            .query_row(
-                                "SELECT content_hash FROM memory_index_source_state WHERE document_key = ?1",
-                                [&source.document_key],
-                                |row| row.get::<_, String>(0),
-                            )
-                            .optional()?;
-                        if existing_hash.as_deref() != Some(hash.as_str()) {
-                            upsert_document_tx(&transaction, &document)?;
-                        }
-                        upsert_source_state_tx(&transaction, &document, &source.source_id)
-                    }
-                    None => delete_document_tx(&transaction, &source.document_key),
-                }
-            };
-            result?;
+            if let Err(error) = apply_pending_source_tx(&transaction, storage, &source) {
+                self.last_outbox_error_count += 1;
+                tracing::warn!(
+                    agent_id = %row.agent_id,
+                    change_seq = row.change_seq,
+                    source_kind = %row.source_kind,
+                    source_ref = %row.source_ref,
+                    error = %error,
+                    "skipping failed memory index outbox row"
+                );
+            }
             upsert_cursor_tx(
                 &transaction,
                 &runtime_id,
@@ -661,6 +661,7 @@ impl MemoryIndex {
             )?;
             transaction.commit()?;
         }
+        self.last_outbox_consume_reached_limit = limit > 0 && row_count >= limit;
         Ok(())
     }
 
@@ -709,6 +710,8 @@ impl MemoryIndex {
                 cursor: 0,
                 high_watermark: 0,
                 lag: 0,
+                consumption_was_limited: false,
+                skipped_error_count: self.last_outbox_error_count,
                 last_indexed_at: None,
             });
         };
@@ -730,6 +733,8 @@ impl MemoryIndex {
             cursor,
             high_watermark,
             lag,
+            consumption_was_limited: self.last_outbox_consume_reached_limit && lag > 0,
+            skipped_error_count: self.last_outbox_error_count,
             last_indexed_at: self.cursor_updated_at(
                 &runtime_id,
                 agent_id,
@@ -947,6 +952,33 @@ fn pending_source_from_outbox_row(row: &RuntimeIndexOutboxRow) -> PendingSource 
         source_kind: row.source_kind.clone(),
         source_id: row.source_id.clone(),
         operation: row.operation.as_str().to_string(),
+    }
+}
+
+fn apply_pending_source_tx(
+    connection: &Connection,
+    storage: &AppStorage,
+    source: &PendingSource,
+) -> Result<()> {
+    if source.operation == RuntimeIndexOperation::Delete.as_str() {
+        return delete_document_tx(connection, &source.document_key);
+    }
+    match document_for_pending_source(storage, source)? {
+        Some(document) => {
+            let hash = content_hash(&document.body);
+            let existing_hash = connection
+                .query_row(
+                    "SELECT content_hash FROM memory_index_source_state WHERE document_key = ?1",
+                    [&source.document_key],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            if existing_hash.as_deref() != Some(hash.as_str()) {
+                upsert_document_tx(connection, &document)?;
+            }
+            upsert_source_state_tx(connection, &document, &source.source_id)
+        }
+        None => delete_document_tx(connection, &source.document_key),
     }
 }
 
@@ -2505,6 +2537,14 @@ fn truncate_chars(text: &str, max_chars: usize) -> (String, bool) {
     (content, truncated)
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -2512,6 +2552,7 @@ mod tests {
     use super::*;
     use crate::{
         agent_template::ensure_agent_home_layout,
+        runtime_db::RuntimeIndexChange,
         types::{
             AgentState, BriefContentSource, BriefKind, ContextEpisodeRecord, EpisodeBoundaryReason,
             TaskKind, TaskRecord, TaskStatus, TodoItem, TodoItemState, TranscriptEntry,
@@ -3091,6 +3132,51 @@ mod tests {
             .any(|result| result.source_ref == brief_ref));
         assert_eq!(response.index_status.freshness, "fresh");
         assert_eq!(response.index_status.lag, 0);
+        assert!(!response.index_status.consumption_was_limited);
+        assert_eq!(response.index_status.skipped_error_count, 0);
+    }
+
+    #[test]
+    fn memory_search_status_reports_limited_runtime_outbox_consumption() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+        let consume_limit = 2;
+        let changes = (0..=consume_limit)
+            .map(|index| RuntimeIndexChange {
+                agent_id: "default".into(),
+                source_kind: "brief".into(),
+                source_id: format!("missing-{index}"),
+                source_ref: format!("brief:missing-{index}"),
+                operation: RuntimeIndexOperation::Upsert,
+                source_updated_at: Some(Utc::now()),
+                reason: "test_backlog".into(),
+            })
+            .collect::<Vec<_>>();
+        runtime_db
+            .runtime_index_outbox()
+            .append_changes(&changes)
+            .unwrap();
+
+        let mut index = MemoryIndex::open(&storage).unwrap();
+        index
+            .consume_runtime_outbox(&storage, consume_limit)
+            .unwrap();
+        let status = index.index_status(&storage, "default").unwrap();
+
+        assert_eq!(status.cursor, consume_limit as i64);
+        assert_eq!(status.high_watermark, (consume_limit + 1) as i64);
+        assert_eq!(status.lag, 1);
+        assert!(status.consumption_was_limited);
+        assert_eq!(status.skipped_error_count, 0);
     }
 
     #[test]
