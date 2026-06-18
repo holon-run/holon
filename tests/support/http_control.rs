@@ -1345,6 +1345,13 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
             .and_then(|provider| provider["credential_env"].as_str()),
         Some("OPENAI_API_KEY_TEST")
     );
+    assert_eq!(
+        provider_config_payload["runtime_surface"]["providers"]
+            .as_array()
+            .and_then(|providers| providers.iter().find(|provider| provider["id"] == "openai"))
+            .and_then(|provider| provider["configured_in_config"].as_bool()),
+        Some(true)
+    );
 
     let provider_remove_response = client
         .patch(format!("http://{addr}/control/runtime/config"))
@@ -1366,6 +1373,13 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(
         provider_remove_payload["results"][0]["effect"],
         "accepted_reloaded"
+    );
+    assert_eq!(
+        provider_remove_payload["runtime_surface"]["providers"]
+            .as_array()
+            .and_then(|providers| providers.iter().find(|provider| provider["id"] == "openai"))
+            .and_then(|provider| provider["configured_in_config"].as_bool()),
+        Some(false)
     );
 
     let persisted = load_persisted_config_at(&config.config_file_path)?;
