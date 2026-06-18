@@ -3411,13 +3411,6 @@ fn built_in_provider_registry_with_settings(
     )?;
     insert_openai_compatible_provider(
         &mut registry,
-        "qwen",
-        "https://coding-intl.dashscope.aliyuncs.com/v1",
-        &["QWEN_API_KEY", "DASHSCOPE_API_KEY"],
-        settings_env,
-    )?;
-    insert_openai_compatible_provider(
-        &mut registry,
         "stepfun",
         "https://api.stepfun.ai/v1",
         &["STEPFUN_API_KEY"],
@@ -6092,9 +6085,7 @@ mod tests {
         assert_eq!(gemini.auth.env.as_deref(), Some("GEMINI_API_KEY"));
         assert_eq!(gemini.credential.as_deref(), Some("gemini-key"));
 
-        let qwen = providers.get(&ProviderId::parse("qwen").unwrap()).unwrap();
-        assert_eq!(qwen.auth.env.as_deref(), Some("DASHSCOPE_API_KEY"));
-        assert_eq!(qwen.credential.as_deref(), Some("dashscope-key"));
+        assert!(providers.get(&ProviderId::parse("qwen").unwrap()).is_none());
 
         let dashscope = providers
             .get(&ProviderId::parse("dashscope").unwrap())
