@@ -119,11 +119,11 @@ impl RuntimeHandle {
                 }
             }
             MessageKind::TaskStatus => {
-                let task = task.expect("task status message should parse task");
+                let task = task.ok_or_else(|| anyhow!("task status message should parse task"))?;
                 self.reduce_task_status_message(task).await?;
             }
             MessageKind::TaskResult => {
-                let task = task.expect("task result message should parse task");
+                let task = task.ok_or_else(|| anyhow!("task result message should parse task"))?;
                 self.reduce_task_result_message(
                     &message,
                     task,

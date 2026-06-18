@@ -491,3 +491,223 @@ async fn queued_work_item_update_wakes_sleeping_runtime_and_surfaces_it() {
     }));
     runtime_task.abort();
 }
+
+// ── submit_wake_hint state machine coverage (issue #1858 P1) ───────
+//
+// These tests pin down the per-status disposition of `submit_wake_hint`
+// without spinning up the runtime loop. They complement the existing
+// recovery + restart tests, which only exercise the
+// `Booting|AwakeIdle|Asleep + empty-queue → Triggered` path.
+
+fn wake_hint_smoke() -> WakeHint {
+    WakeHint {
+        agent_id: "default".into(),
+        reason: "state-machine probe".into(),
+        description: None,
+        source: Some("test".into()),
+        scope: None,
+        waiting_intent_id: None,
+        external_trigger_id: None,
+        resource: None,
+        body: Some(MessageBody::Text {
+            text: "wake body".into(),
+        }),
+        content_type: None,
+        correlation_id: Some("corr-sm".into()),
+        causation_id: None,
+    }
+}
+
+#[tokio::test]
+async fn wake_hint_when_awake_running_is_coalesced() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("wake done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
+    assert_eq!(disposition, WakeDisposition::Coalesced);
+
+    let state = runtime.agent_state().await.unwrap();
+    let pending = state
+        .pending_wake_hint
+        .expect("pending_wake_hint must be set after Coalesced");
+    assert_eq!(pending.reason, "state-machine probe");
+    assert_eq!(pending.correlation_id.as_deref(), Some("corr-sm"));
+
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "wake_hint_coalesced"
+            && event.data["agent_id"] == "default"
+            && event.data["correlation_id"] == "corr-sm"
+    }));
+}
+
+#[tokio::test]
+async fn wake_hint_when_awaiting_task_is_coalesced() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("wake done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwaitingTask;
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
+    assert_eq!(disposition, WakeDisposition::Coalesced);
+
+    let state = runtime.agent_state().await.unwrap();
+    assert!(
+        state.pending_wake_hint.is_some(),
+        "AwaitingTask should still set pending_wake_hint"
+    );
+}
+
+#[tokio::test]
+async fn wake_hint_when_stopped_is_ignored() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("wake done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::Stopped;
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
+    assert_eq!(disposition, WakeDisposition::Ignored);
+
+    let state = runtime.agent_state().await.unwrap();
+    assert!(
+        state.pending_wake_hint.is_none(),
+        "Stopped must NOT populate pending_wake_hint"
+    );
+
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(
+        events.iter().any(|event| event.kind == "wake_hint_ignored"),
+        "Stopped disposition must be recorded as wake_hint_ignored"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.kind == "wake_hint_coalesced" || event.kind == "wake_hint_triggered"),
+        "Stopped must not record Triggered or Coalesced"
+    );
+}
+
+#[tokio::test]
+async fn wake_hint_when_awake_idle_with_nonempty_queue_is_coalesced() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("wake done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeIdle;
+        guard.queue.push(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "queued while idle".into(),
+            },
+        ));
+        guard.state.pending = guard.queue.len();
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
+    assert_eq!(
+        disposition,
+        WakeDisposition::Coalesced,
+        "AwakeIdle + non-empty queue must coalesce instead of triggering immediately"
+    );
+
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.pending_wake_hint.is_some());
+}
+
+#[tokio::test]
+async fn wake_hint_when_asleep_with_nonempty_queue_is_coalesced() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("wake done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::Asleep;
+        guard.queue.push(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator { actor_id: None },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "queued while asleep".into(),
+            },
+        ));
+        guard.state.pending = guard.queue.len();
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
+    assert_eq!(
+        disposition,
+        WakeDisposition::Coalesced,
+        "Asleep + non-empty queue must coalesce instead of triggering immediately"
+    );
+
+    let state = runtime.agent_state().await.unwrap();
+    assert!(state.pending_wake_hint.is_some());
+}
