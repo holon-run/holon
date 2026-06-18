@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-const API_VERSION: &str = env!("HOLON_VERSION");
+const API_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Copy)]
 struct RouteSpec {
