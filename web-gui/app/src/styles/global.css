@@ -2548,6 +2548,28 @@ code {
   line-height: 1.5;
 }
 
+.settings-builtins {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.settings-builtins div {
+  display: grid;
+  gap: 3px;
+}
+
+.settings-builtins span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .settings-provider-editor {
   display: grid;
   gap: 12px;

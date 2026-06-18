@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildVisionConfigUpdates, sortProvidersForSettings, sortSearchProvidersForSettings } from "./SettingsPage";
+import { buildSearchProviderConfigUpdates, buildVisionConfigUpdates, sortProvidersForSettings, sortSearchProvidersForSettings } from "./SettingsPage";
 import type { RuntimeProviderSummary, RuntimeWebSearchProviderSummary } from "../../runtime/types";
 
 function provider(id: string, credentialConfigured: boolean): RuntimeProviderSummary {
@@ -60,5 +60,35 @@ describe("buildVisionConfigUpdates", () => {
 
   it("unsets Vision default when left empty for auto-discovery", () => {
     expect(buildVisionConfigUpdates("   ")).toEqual([{ key: "vision.default", unset: true }]);
+  });
+});
+
+describe("buildSearchProviderConfigUpdates", () => {
+  it("persists a standard API-backed provider profile without exposing kind selection to the caller", () => {
+    expect(
+      buildSearchProviderConfigUpdates("brave", {
+        kind: "brave",
+        baseUrl: "",
+        credentialProfile: " brave:default ",
+      }),
+    ).toEqual([
+      { key: "web.providers.brave.kind", value: "brave" },
+      { key: "web.providers.brave.base_url", value: "" },
+      { key: "web.providers.brave.credential_profile", value: "brave:default" },
+    ]);
+  });
+
+  it("does not require a credential profile for no-key providers", () => {
+    expect(
+      buildSearchProviderConfigUpdates("searxng", {
+        kind: "searxng",
+        baseUrl: " https://search.example.test ",
+        credentialProfile: "",
+      }),
+    ).toEqual([
+      { key: "web.providers.searxng.kind", value: "searxng" },
+      { key: "web.providers.searxng.base_url", value: "https://search.example.test" },
+      { key: "web.providers.searxng.credential_profile", value: "" },
+    ]);
   });
 });
