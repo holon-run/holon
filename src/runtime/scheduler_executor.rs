@@ -533,4 +533,62 @@ mod tests {
         assert_eq!(state.status, AgentStatus::AwakeIdle);
         assert_eq!(state.current_run_id, None);
     }
+
+    #[test]
+    fn bootstrap_recovery_with_pending_wake_hint_becomes_idle() {
+        let mut state = bootstrap_state(AgentStatus::Asleep);
+        state.pending_wake_hint = Some(crate::types::PendingWakeHint {
+            reason: "external".into(),
+            description: None,
+            source: None,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
+            resource: None,
+            body: None,
+            content_type: None,
+            correlation_id: None,
+            causation_id: None,
+            created_at: chrono::Utc::now(),
+        });
+        assert!(apply_bootstrap_recovered_projection(
+            &mut state,
+            BootstrapRecoveryFacts { queued_messages: 0 },
+        ));
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+    }
+
+    #[test]
+    fn bootstrap_recovery_awaiting_task_transitions_to_idle() {
+        let mut state = bootstrap_state(AgentStatus::AwaitingTask);
+        state.current_run_id = Some("run-task".into());
+        assert!(apply_bootstrap_recovered_projection(
+            &mut state,
+            BootstrapRecoveryFacts { queued_messages: 0 },
+        ));
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(state.current_run_id, None);
+    }
+
+    #[test]
+    fn bootstrap_recovery_already_idle_clears_run_id() {
+        let mut state = bootstrap_state(AgentStatus::AwakeIdle);
+        state.current_run_id = Some("stale-run".into());
+        assert!(apply_bootstrap_recovered_projection(
+            &mut state,
+            BootstrapRecoveryFacts { queued_messages: 0 },
+        ));
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(state.current_run_id, None);
+    }
+
+    #[test]
+    fn bootstrap_recovery_no_change_when_already_idle_without_pending() {
+        let mut state = bootstrap_state(AgentStatus::AwakeIdle);
+        // Already AwakeIdle, no run_id, no pending → returns false (no state change)
+        assert!(!apply_bootstrap_recovered_projection(
+            &mut state,
+            BootstrapRecoveryFacts { queued_messages: 0 },
+        ));
+    }
 }

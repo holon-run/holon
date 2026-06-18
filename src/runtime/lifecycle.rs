@@ -1693,4 +1693,135 @@ mod tests {
         assert_eq!(snapshot.waiting_reason, None);
         assert_ne!(snapshot.phase, ChildAgentPhase::Blocked);
     }
+
+    // --- resolve_enter_cwd: path escape safety ---
+
+    #[test]
+    fn resolve_enter_cwd_none_returns_execution_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let result = resolve_enter_cwd(&root, None).unwrap();
+        assert_eq!(result, root);
+    }
+
+    #[test]
+    fn resolve_enter_cwd_relative_inside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        let nested = root.join("src").join("lib");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let result = resolve_enter_cwd(&root, Some(Path::new("src/lib"))).unwrap();
+        assert_eq!(result, root.join("src/lib"));
+    }
+
+    #[test]
+    fn resolve_enter_cwd_absolute_inside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        let nested = root.join("src");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let abs = root.join("src");
+        let result = resolve_enter_cwd(&root, Some(&abs)).unwrap();
+        assert_eq!(result, abs);
+    }
+
+    #[test]
+    fn resolve_enter_cwd_relative_escape_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let result = resolve_enter_cwd(&root, Some(Path::new("../escape")));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("escapes execution root"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_enter_cwd_absolute_escape_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let result = resolve_enter_cwd(&root, Some(&outside));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("escapes execution root"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_enter_cwd_dotdot_within_root_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        let deep = root.join("a").join("b");
+        std::fs::create_dir_all(&deep).unwrap();
+
+        // "a/b/../c" resolves to "a/c" which is still inside root
+        let result = resolve_enter_cwd(&root, Some(Path::new("a/b/../c"))).unwrap();
+        assert_eq!(result, root.join("a/b/../c"));
+    }
+
+    #[test]
+    fn resolve_enter_cwd_multiple_dotdot_escape_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let result = resolve_enter_cwd(&root, Some(Path::new("../../escape")));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_enter_cwd_exact_root_via_dotdot_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // "sub/.." resolves to root itself, which is valid
+        let result = resolve_enter_cwd(&root, Some(Path::new("sub/.."))).unwrap();
+        assert_eq!(result, root.join("sub/.."));
+    }
+
+    // --- workspace_paths_match ---
+
+    #[test]
+    fn workspace_paths_match_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("workspace");
+        std::fs::create_dir_all(&path).unwrap();
+        assert!(workspace_paths_match(&path, &path));
+    }
+
+    #[test]
+    fn workspace_paths_match_different() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        assert!(!workspace_paths_match(&a, &b));
+    }
+
+    #[test]
+    fn workspace_paths_match_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(workspace_paths_match(&real, &link));
+    }
 }
