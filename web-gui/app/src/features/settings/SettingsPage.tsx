@@ -94,6 +94,10 @@ export function SettingsPage({
     () => new Set(modelCatalog.options.map((m) => m.provider)),
     [modelCatalog.options],
   );
+  const sortedProviders = useMemo(
+    () => sortProvidersForSettings(surface?.providers ?? []),
+    [surface?.providers],
+  );
 
   useEffect(() => {
     if (!surface) return;
@@ -546,7 +550,7 @@ export function SettingsPage({
               <p className="settings-muted">
                 Configure each provider account. Enter the API key in the primary section; expand Advanced for transport and credential details.
               </p>
-              {surface.providers.map((provider) => {
+              {sortedProviders.map((provider) => {
                 const draft = providerDrafts[provider.id];
                 if (!draft) return null;
                 return (
@@ -779,4 +783,14 @@ function groupModelsByProvider(options: RuntimeModelOption[]): Array<[string, Ru
     grouped.set(option.provider, models);
   }
   return Array.from(grouped.entries()).sort(([left], [right]) => left.localeCompare(right));
+}
+
+export function sortProvidersForSettings(providers: RuntimeProviderSummary[]): RuntimeProviderSummary[] {
+  return providers
+    .map((provider, index) => ({ provider, index }))
+    .sort((a, b) => {
+      const credentialRank = Number(b.provider.credentialConfigured) - Number(a.provider.credentialConfigured);
+      return credentialRank || a.index - b.index;
+    })
+    .map(({ provider }) => provider);
 }
