@@ -479,33 +479,6 @@ fn catalog_model(
     }
 }
 
-fn extend_catalog_model_aliases_from_source(
-    entries: &mut Vec<BuiltInModelMetadata>,
-    source_provider: &str,
-    alias_providers: &[&str],
-) {
-    let source_provider_id = provider_id(source_provider);
-    let source_entries = entries
-        .iter()
-        .filter(|entry| entry.model_ref.provider == source_provider_id)
-        .cloned()
-        .collect::<Vec<_>>();
-
-    for provider in alias_providers {
-        let alias_provider_id = provider_id(provider);
-        for source_entry in &source_entries {
-            let mut alias_entry = source_entry.clone();
-            alias_entry.model_ref =
-                ModelRef::new(alias_provider_id.clone(), &source_entry.model_ref.model);
-            alias_entry.description = format!(
-                "Holon built-in runtime metadata for the {}/{} compatible provider model.",
-                provider, source_entry.model_ref.model
-            );
-            entries.push(alias_entry);
-        }
-    }
-}
-
 fn built_in_entries() -> Vec<BuiltInModelMetadata> {
     let mut entries = vec![
         BuiltInModelMetadata {
@@ -912,42 +885,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model(
             "deepseek",
-            "deepseek-reasoner",
-            "DeepSeek Reasoner",
-            131_072,
-            65_536,
-            true,
-            false,
-        ),
-        catalog_model(
-            "deepseek-anthropic",
-            "deepseek-v4-flash",
-            "DeepSeek V4 Flash",
-            1_000_000,
-            384_000,
-            true,
-            false,
-        ),
-        catalog_model(
-            "deepseek-anthropic",
-            "deepseek-v4-pro",
-            "DeepSeek V4 Pro",
-            1_000_000,
-            384_000,
-            true,
-            false,
-        ),
-        catalog_model(
-            "deepseek-anthropic",
-            "deepseek-chat",
-            "DeepSeek Chat",
-            131_072,
-            8_192,
-            false,
-            false,
-        ),
-        catalog_model(
-            "deepseek-anthropic",
             "deepseek-reasoner",
             "DeepSeek Reasoner",
             131_072,
@@ -1994,8 +1931,15 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model("zai", "glm-5.2", "GLM-5.2", 1_000_000, 131_072, true, false),
+        catalog_model(
+            "bigmodel", "glm-5.2", "GLM-5.2", 1_000_000, 131_072, true, false,
+        ),
         catalog_model("zai", "glm-5.1", "GLM-5.1", 202_800, 131_100, true, false),
+        catalog_model(
+            "bigmodel", "glm-5.1", "GLM-5.1", 202_800, 131_100, true, false,
+        ),
         catalog_model("zai", "glm-5", "GLM-5", 202_800, 131_100, true, false),
+        catalog_model("bigmodel", "glm-5", "GLM-5", 202_800, 131_100, true, false),
         catalog_model(
             "zai",
             "glm-5-turbo",
@@ -2056,45 +2000,18 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model("zai", "glm-4.5v", "GLM-4.5V", 64_000, 16_384, true, true),
     ];
-    extend_catalog_model_aliases_from_source(&mut entries, "deepseek", &["deepseek-openai"]);
-    extend_catalog_model_aliases_from_source(
-        &mut entries,
-        "xiaomi",
-        &["xiaomi-anthropic", "xiaomi-openai"],
-    );
-    extend_catalog_model_aliases_from_source(
-        &mut entries,
-        "xiaomi-token-plan",
-        &["xiaomi-token-plan-anthropic", "xiaomi-token-plan-openai"],
-    );
-    extend_catalog_model_aliases_from_source(
-        &mut entries,
-        "zai",
-        &[
-            "zai-anthropic",
-            "zai-openai",
-            "bigmodel",
-            "bigmodel-anthropic",
-            "bigmodel-openai",
-        ],
-    );
-    extend_catalog_model_aliases_from_source(
-        &mut entries,
-        "qwen",
-        &["dashscope", "dashscope-openai"],
-    );
     entries.extend([
         catalog_model(
             "dashscope",
-            "deepseek-v4-pro",
-            "DeepSeek V4 Pro",
+            "qwen3.7-plus",
+            "Qwen3.7 Plus",
             1_000_000,
-            384_000,
+            65_536,
             true,
-            false,
+            true,
         ),
         catalog_model(
-            "dashscope-openai",
+            "dashscope",
             "deepseek-v4-pro",
             "DeepSeek V4 Pro",
             1_000_000,
@@ -2112,25 +2029,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "dashscope-openai",
-            "deepseek-v4-flash",
-            "DeepSeek V4 Flash",
-            1_000_000,
-            384_000,
-            true,
-            false,
-        ),
-        catalog_model(
             "dashscope",
-            "glm-5.1",
-            "glm-5.1",
-            202_752,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-openai",
             "glm-5.1",
             "glm-5.1",
             202_752,
@@ -2148,15 +2047,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "dashscope-openai",
-            "kimi-k2.6",
-            "kimi-k2.6",
-            262_144,
-            98_304,
-            true,
-            false,
-        ),
-        catalog_model(
             "dashscope",
             "MiniMax-M2.5",
             "MiniMax-M2.5",
@@ -2166,25 +2056,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "dashscope-openai",
-            "MiniMax-M2.5",
-            "MiniMax-M2.5",
-            196_608,
-            32_768,
-            true,
-            false,
-        ),
-        catalog_model(
             "dashscope",
-            "mimo-v2.5-pro",
-            "MiMo V2.5 Pro",
-            1_000_000,
-            131_072,
-            true,
-            false,
-        ),
-        catalog_model(
-            "dashscope-openai",
             "mimo-v2.5-pro",
             "MiMo V2.5 Pro",
             1_000_000,
@@ -2194,15 +2066,6 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
         ),
         catalog_model("dashscope", "glm-5", "glm-5", 202_752, 16_384, false, false),
         catalog_model(
-            "dashscope-openai",
-            "glm-5",
-            "glm-5",
-            202_752,
-            16_384,
-            false,
-            false,
-        ),
-        catalog_model(
             "dashscope",
             "glm-4.7",
             "glm-4.7",
@@ -2212,25 +2075,7 @@ fn compatible_provider_model_entries() -> Vec<BuiltInModelMetadata> {
             false,
         ),
         catalog_model(
-            "dashscope-openai",
-            "glm-4.7",
-            "glm-4.7",
-            202_752,
-            16_384,
-            false,
-            false,
-        ),
-        catalog_model(
             "dashscope",
-            "kimi-k2.5",
-            "kimi-k2.5",
-            262_144,
-            32_768,
-            false,
-            true,
-        ),
-        catalog_model(
-            "dashscope-openai",
             "kimi-k2.5",
             "kimi-k2.5",
             262_144,
@@ -2353,7 +2198,7 @@ mod tests {
         let catalog = BuiltInModelCatalog::new();
 
         let deepseek = catalog.resolve_policy(
-            &ModelRef::parse("deepseek-anthropic/deepseek-v4-flash").unwrap(),
+            &ModelRef::parse("deepseek/deepseek-v4-flash").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
             None,
@@ -2365,19 +2210,8 @@ mod tests {
         assert_eq!(deepseek.runtime_max_output_tokens, 384_000);
         assert_eq!(deepseek.source, ModelMetadataSource::BuiltInCatalog);
 
-        let deepseek_openai = catalog.resolve_policy(
-            &ModelRef::parse("deepseek-openai/deepseek-v4-flash").unwrap(),
-            &HashMap::new(),
-            &HashMap::new(),
-            None,
-            &base_context(),
-            8192,
-        );
-        assert_eq!(deepseek_openai.display_name, "DeepSeek V4 Flash");
-        assert_eq!(deepseek_openai.source, ModelMetadataSource::BuiltInCatalog);
-
         let xiaomi = catalog.resolve_policy(
-            &ModelRef::parse("xiaomi-token-plan-openai/mimo-v2.5-pro").unwrap(),
+            &ModelRef::parse("xiaomi/mimo-v2.5-pro").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
             None,
@@ -2391,7 +2225,7 @@ mod tests {
         assert_eq!(xiaomi.source, ModelMetadataSource::BuiltInCatalog);
 
         let xiaomi_ultraspeed = catalog.resolve_policy(
-            &ModelRef::parse("xiaomi-anthropic/mimo-v2.5-pro-ultraspeed").unwrap(),
+            &ModelRef::parse("xiaomi/mimo-v2.5-pro-ultraspeed").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
             None,
@@ -2421,7 +2255,7 @@ mod tests {
             .is_none());
 
         let zai = catalog.resolve_policy(
-            &ModelRef::parse("zai-anthropic/glm-5.2").unwrap(),
+            &ModelRef::parse("zai/glm-5.2").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
             None,
@@ -2434,7 +2268,7 @@ mod tests {
         assert_eq!(zai.source, ModelMetadataSource::BuiltInCatalog);
 
         let bigmodel = catalog.resolve_policy(
-            &ModelRef::parse("bigmodel-openai/glm-5.2").unwrap(),
+            &ModelRef::parse("bigmodel/glm-5.2").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
             None,
@@ -2511,10 +2345,10 @@ mod tests {
             .is_some());
         assert!(catalog
             .get(&ModelRef::parse("dashscope-openai/qwen3.7-plus").unwrap())
-            .is_some());
+            .is_none());
         assert!(catalog
             .get(&ModelRef::parse("dashscope-openai/MiniMax-M2.5").unwrap())
-            .is_some());
+            .is_none());
     }
 
     #[test]

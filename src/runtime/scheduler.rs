@@ -1010,3 +1010,177 @@ pub(crate) fn wake_hint_idempotency_key(pending: &PendingWakeHint) -> String {
         pending.created_at.timestamp_micros()
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AdmissionContext, AgentState, MessageBody, MessageDeliverySurface};
+
+    // --- apply_start_projection ---
+
+    #[test]
+    fn apply_start_sets_awake_idle_and_clears_run() {
+        let mut state = AgentState::new("test");
+        state.status = AgentStatus::Stopped;
+        state.current_run_id = Some("stale".into());
+        apply_start_projection(&mut state);
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(state.current_run_id, None);
+    }
+
+    // --- apply_stop_projection ---
+
+    #[test]
+    fn apply_stop_clears_all_runtime_state() {
+        let mut state = AgentState::new("test");
+        state.status = AgentStatus::AwakeRunning;
+        state.current_run_id = Some("run-1".into());
+        state.sleeping_until = Some(Utc::now());
+        state.pending_wake_hint = Some(PendingWakeHint {
+            reason: "test".into(),
+            description: None,
+            source: None,
+            scope: None,
+            waiting_intent_id: None,
+            external_trigger_id: None,
+            resource: None,
+            body: None,
+            content_type: None,
+            correlation_id: None,
+            causation_id: None,
+            created_at: Utc::now(),
+        });
+        apply_stop_projection(&mut state);
+        assert_eq!(state.status, AgentStatus::Stopped);
+        assert_eq!(state.current_run_id, None);
+        assert_eq!(state.sleeping_until, None);
+        assert_eq!(state.pending_wake_hint, None);
+    }
+
+    // --- apply_sleep_projection ---
+
+    #[test]
+    fn apply_sleep_sets_status_and_clears_run() {
+        let mut state = AgentState::new("test");
+        state.status = AgentStatus::AwakeRunning;
+        state.current_run_id = Some("run-1".into());
+        let until = Utc::now() + chrono::Duration::hours(1);
+        apply_sleep_projection(&mut state, Some(until));
+        assert_eq!(state.status, AgentStatus::Asleep);
+        assert_eq!(state.current_run_id, None);
+        assert_eq!(state.sleeping_until, Some(until));
+    }
+
+    #[test]
+    fn apply_sleep_indefinite_clears_sleeping_until() {
+        let mut state = AgentState::new("test");
+        state.sleeping_until = Some(Utc::now());
+        apply_sleep_projection(&mut state, None);
+        assert_eq!(state.status, AgentStatus::Asleep);
+        assert_eq!(state.sleeping_until, None);
+    }
+
+    // --- apply_running_projection ---
+
+    #[test]
+    fn apply_running_sets_awake_running_with_run_id() {
+        let mut state = AgentState::new("test");
+        state.status = AgentStatus::AwakeIdle;
+        apply_running_projection(&mut state, "run-42".into());
+        assert_eq!(state.status, AgentStatus::AwakeRunning);
+        assert_eq!(state.current_run_id.as_deref(), Some("run-42"));
+    }
+
+    // --- apply_message_wake_projection ---
+
+    #[test]
+    fn apply_message_wake_from_asleep_returns_true() {
+        let mut state = AgentState::new("test");
+        state.status = AgentStatus::Asleep;
+        state.sleeping_until = Some(Utc::now());
+        assert!(apply_message_wake_projection(&mut state));
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(state.sleeping_until, None);
+    }
+
+    #[test]
+    fn apply_message_wake_from_booting_returns_true() {
+        let mut state = AgentState::new("test");
+        state.status = AgentStatus::Booting;
+        assert!(apply_message_wake_projection(&mut state));
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+    }
+
+    #[test]
+    fn apply_message_wake_from_running_returns_false() {
+        let mut state = AgentState::new("test");
+        state.status = AgentStatus::AwakeRunning;
+        assert!(!apply_message_wake_projection(&mut state));
+        assert_eq!(state.status, AgentStatus::AwakeRunning);
+    }
+
+    // --- is_operator_interjection_message ---
+
+    #[test]
+    fn operator_interjection_detected() {
+        let msg = MessageEnvelope::new(
+            "agent-1",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("user".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Interject,
+            MessageBody::Text {
+                text: "urgent".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        assert!(is_operator_interjection_message(&msg));
+    }
+
+    #[test]
+    fn non_interjection_priority_rejected() {
+        let msg = MessageEnvelope::new(
+            "agent-1",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("user".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "normal".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        assert!(!is_operator_interjection_message(&msg));
+    }
+
+    #[test]
+    fn non_operator_kind_rejected() {
+        let msg = MessageEnvelope::new(
+            "agent-1",
+            MessageKind::SystemTick,
+            MessageOrigin::Operator {
+                actor_id: Some("user".into()),
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Interject,
+            MessageBody::Text {
+                text: "tick".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        assert!(!is_operator_interjection_message(&msg));
+    }
+}

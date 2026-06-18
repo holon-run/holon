@@ -3071,8 +3071,14 @@ impl TurnExecution<'_> {
                             "exec_command_batch_items": command_batch_preview_field(&call),
                             "exec_command_cost": command_cost_field(
                                 &call,
-                                runtime.inner.default_tool_output_tokens,
-                                runtime.inner.max_tool_output_tokens
+                                {
+                                    let snap = runtime.inner.config_snapshot.load();
+                                    snap.default_tool_output_tokens
+                                },
+                                {
+                                    let snap = runtime.inner.config_snapshot.load();
+                                    snap.max_tool_output_tokens
+                                },
                             ),
                             "error": audit_error,
                             "error_kind": error.kind.clone(),
@@ -3215,8 +3221,12 @@ impl TurnExecution<'_> {
                                 exec_command_batch_items: command_batch_preview_field(&call),
                                 exec_command_cost: command_cost_field(
                                     &call,
-                                    runtime.inner.default_tool_output_tokens,
-                                    runtime.inner.max_tool_output_tokens,
+                                    runtime
+                                        .inner
+                                        .config_snapshot
+                                        .load()
+                                        .default_tool_output_tokens,
+                                    runtime.inner.config_snapshot.load().max_tool_output_tokens,
                                 ),
                                 exec_command_disposition: exec_command_disposition_field(
                                     &call,
@@ -3275,8 +3285,8 @@ impl TurnExecution<'_> {
                                 "exec_command_batch_items": command_batch_preview_field(&call),
                                 "exec_command_cost": command_cost_field(
                                     &call,
-                                    runtime.inner.default_tool_output_tokens,
-                                    runtime.inner.max_tool_output_tokens
+                                    runtime.inner.config_snapshot.load().default_tool_output_tokens,
+                                    runtime.inner.config_snapshot.load().max_tool_output_tokens
                                 ),
                                 "error": audit_error,
                                 "error_kind": error.kind.clone(),
@@ -5638,5 +5648,844 @@ mod tests {
         assert!(!recap.contains("Round 11"), "unexpected recap: {recap}");
         assert!(!recap.contains("Round 12"), "unexpected recap: {recap}");
         assert!(recap.contains(omission_line), "unexpected recap: {recap}");
+    }
+
+    // -----------------------------------------------------------------------
+    // degraded_round_messages tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn degraded_round_messages_no_trimmable_returns_exact() {
+        let call = ToolCall {
+            id: "call_1".to_string(),
+            name: "ExecCommand".to_string(),
+            input: serde_json::json!({"cmd": "echo hi"}),
+        };
+        let round = TurnRoundRecord {
+            round: 1,
+            assistant_blocks: vec![ModelBlock::ToolUse {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                input: call.input.clone(),
+            }],
+            text_blocks: Vec::new(),
+            tool_calls: vec![call],
+            tool_results: Vec::new(),
+            tool_result_envelopes: Vec::new(),
+            follow_up_user_texts: Vec::new(),
+            estimated_tokens: 10,
+        };
+
+        let (messages, trimmed) = degraded_round_messages(&round, 100);
+        assert!(!trimmed, "should not be trimmed when no trimmable content");
+        assert_eq!(
+            messages.len(),
+            1,
+            "should have exactly one message (assistant blocks)"
+        );
+    }
+
+    #[test]
+    fn degraded_round_messages_short_text_not_trimmed() {
+        let short_text = "hello world";
+        let round = fixture_round(1, short_text);
+
+        let (messages, trimmed) = degraded_round_messages(&round, 10_000);
+        assert!(!trimmed);
+        let has_marker = messages
+            .iter()
+            .any(|m| matches!(m, ConversationMessage::UserText(t) if t.contains("trimmed")));
+        assert!(
+            !has_marker,
+            "should not have provenance marker for short text"
+        );
+    }
+
+    #[test]
+    fn degraded_round_messages_large_text_is_trimmed_with_marker() {
+        let large_text = "word ".repeat(500);
+        let round = fixture_round(1, &large_text);
+
+        let (messages, trimmed) = degraded_round_messages(&round, 100);
+        assert!(trimmed, "large text should be trimmed");
+        match &messages[0] {
+            ConversationMessage::UserText(t) => {
+                assert!(
+                    t.contains("trimmed to fit prompt budget"),
+                    "first message should be provenance marker, got: {t}"
+                );
+            }
+            other => panic!("expected UserText provenance marker, got: {:?}", other),
+        }
+        match &messages[1] {
+            ConversationMessage::AssistantBlocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                match &blocks[0] {
+                    ModelBlock::Text { text } => {
+                        assert!(text.contains("[runtime: assistant text trimmed from"));
+                        assert!(text.chars().count() < large_text.chars().count());
+                    }
+                    other => panic!("expected Text block, got: {:?}", other),
+                }
+            }
+            other => panic!("expected AssistantBlocks, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn degraded_round_messages_tool_results_trimmed() {
+        let content = "output line\n".repeat(300);
+        let round = fixture_round_with_large_tool_result(1, "short", &content);
+
+        let (messages, trimmed) = degraded_round_messages(&round, 200);
+        assert!(trimmed);
+
+        let results_msg = messages
+            .iter()
+            .find(|m| matches!(m, ConversationMessage::UserToolResults(_)));
+        assert!(results_msg.is_some(), "should have tool results message");
+        if let Some(ConversationMessage::UserToolResults(results)) = results_msg {
+            assert_eq!(results.len(), 1);
+            assert!(results[0]
+                .content
+                .contains("[runtime: tool output trimmed from"));
+        }
+    }
+
+    #[test]
+    fn degraded_round_messages_respects_minimum_content_chars_floor() {
+        let text = "x".repeat(150);
+        let round = fixture_round(1, &text);
+
+        let (_messages, trimmed) = degraded_round_messages(&round, 1);
+        assert!(
+            !trimmed,
+            "text shorter than DEGRADED_ROUND_MINIMUM_CONTENT_CHARS should not be trimmed"
+        );
+    }
+
+    #[test]
+    fn degraded_round_messages_preserves_follow_up_texts() {
+        let large_text = "content ".repeat(500);
+        let follow_up = "user follow-up instruction";
+        let round = fixture_round_with_follow_up(1, &large_text, follow_up);
+
+        let (messages, trimmed) = degraded_round_messages(&round, 100);
+        assert!(trimmed);
+
+        let last_msg = messages.last().unwrap();
+        match last_msg {
+            ConversationMessage::UserText(t) => assert_eq!(t, follow_up),
+            other => panic!("expected follow-up UserText, got: {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // completion_report_texts_by_tool_id tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn completion_report_texts_captures_text_before_complete_work_item() {
+        let blocks = vec![
+            ModelBlock::Text {
+                text: "This is the completion report.".to_string(),
+            },
+            ModelBlock::ToolUse {
+                id: "call_cw1".to_string(),
+                name: "CompleteWorkItem".to_string(),
+                input: serde_json::json!({"work_item_id": "work_123"}),
+            },
+        ];
+
+        let reports = completion_report_texts_by_tool_id(&blocks);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, "call_cw1");
+        assert_eq!(reports[0].1, "This is the completion report.");
+    }
+
+    #[test]
+    fn completion_report_texts_skips_thinking_blocks() {
+        let blocks = vec![
+            ModelBlock::Text {
+                text: "Report text.".to_string(),
+            },
+            ModelBlock::Thinking {
+                text: "internal reasoning".to_string(),
+                signature: "sig1".to_string(),
+            },
+            ModelBlock::ToolUse {
+                id: "call_cw2".to_string(),
+                name: "CompleteWorkItem".to_string(),
+                input: serde_json::json!({"work_item_id": "work_456"}),
+            },
+        ];
+
+        let reports = completion_report_texts_by_tool_id(&blocks);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, "call_cw2");
+        assert_eq!(reports[0].1, "Report text.");
+    }
+
+    #[test]
+    fn completion_report_texts_clears_pending_on_non_complete_tool() {
+        let blocks = vec![
+            ModelBlock::Text {
+                text: "Some analysis text.".to_string(),
+            },
+            ModelBlock::ToolUse {
+                id: "call_exec".to_string(),
+                name: "ExecCommand".to_string(),
+                input: serde_json::json!({"cmd": "echo hi"}),
+            },
+            ModelBlock::Text {
+                text: "Completion report.".to_string(),
+            },
+            ModelBlock::ToolUse {
+                id: "call_cw3".to_string(),
+                name: "CompleteWorkItem".to_string(),
+                input: serde_json::json!({"work_item_id": "work_789"}),
+            },
+        ];
+
+        let reports = completion_report_texts_by_tool_id(&blocks);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, "call_cw3");
+        assert_eq!(reports[0].1, "Completion report.");
+    }
+
+    #[test]
+    fn completion_report_texts_multiple_complete_work_items() {
+        let blocks = vec![
+            ModelBlock::Text {
+                text: "First report.".to_string(),
+            },
+            ModelBlock::ToolUse {
+                id: "call_cw_a".to_string(),
+                name: "CompleteWorkItem".to_string(),
+                input: serde_json::json!({"work_item_id": "work_a"}),
+            },
+            ModelBlock::Text {
+                text: "Second report.".to_string(),
+            },
+            ModelBlock::ToolUse {
+                id: "call_cw_b".to_string(),
+                name: "CompleteWorkItem".to_string(),
+                input: serde_json::json!({"work_item_id": "work_b"}),
+            },
+        ];
+
+        let reports = completion_report_texts_by_tool_id(&blocks);
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].0, "call_cw_a");
+        assert_eq!(reports[0].1, "First report.");
+        assert_eq!(reports[1].0, "call_cw_b");
+        assert_eq!(reports[1].1, "Second report.");
+    }
+
+    #[test]
+    fn completion_report_texts_empty_when_no_text_precedes() {
+        let blocks = vec![ModelBlock::ToolUse {
+            id: "call_cw_empty".to_string(),
+            name: "CompleteWorkItem".to_string(),
+            input: serde_json::json!({"work_item_id": "work_x"}),
+        }];
+
+        let reports = completion_report_texts_by_tool_id(&blocks);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].0, "call_cw_empty");
+        assert_eq!(reports[0].1, "");
+    }
+
+    // -----------------------------------------------------------------------
+    // round_has_post_completion_non_completion_tool_call tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn post_completion_false_when_no_tools() {
+        let blocks = vec![ModelBlock::Text {
+            text: "hello".to_string(),
+        }];
+        assert!(!round_has_post_completion_non_completion_tool_call(&blocks));
+    }
+
+    #[test]
+    fn post_completion_false_when_only_complete_work_item() {
+        let blocks = vec![
+            ModelBlock::Text {
+                text: "report".to_string(),
+            },
+            ModelBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "CompleteWorkItem".to_string(),
+                input: serde_json::json!({}),
+            },
+        ];
+        assert!(!round_has_post_completion_non_completion_tool_call(&blocks));
+    }
+
+    #[test]
+    fn post_completion_true_when_tool_after_complete() {
+        let blocks = vec![
+            ModelBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "CompleteWorkItem".to_string(),
+                input: serde_json::json!({}),
+            },
+            ModelBlock::ToolUse {
+                id: "call_2".to_string(),
+                name: "ExecCommand".to_string(),
+                input: serde_json::json!({"cmd": "echo hi"}),
+            },
+        ];
+        assert!(round_has_post_completion_non_completion_tool_call(&blocks));
+    }
+
+    #[test]
+    fn post_completion_false_when_multiple_completes_no_other() {
+        let blocks = vec![
+            ModelBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "CompleteWorkItem".to_string(),
+                input: serde_json::json!({}),
+            },
+            ModelBlock::ToolUse {
+                id: "call_2".to_string(),
+                name: "CompleteWorkItem".to_string(),
+                input: serde_json::json!({}),
+            },
+        ];
+        assert!(!round_has_post_completion_non_completion_tool_call(&blocks));
+    }
+
+    // -----------------------------------------------------------------------
+    // tool_result_invalidates_checkpoint_anchor tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn invalidates_checkpoint_for_successful_state_mutation_tools() {
+        for tool_name in [
+            "CreateWorkItem",
+            "PickWorkItem",
+            "UpdateWorkItem",
+            "CompleteWorkItem",
+            "ApplyPatch",
+        ] {
+            let envelope = ToolResultEnvelope {
+                tool_name: tool_name.to_string(),
+                status: ToolResultStatus::Success,
+                summary_text: None,
+                result: Some(serde_json::json!({"ok": true})),
+                error: None,
+            };
+            assert!(
+                tool_result_invalidates_checkpoint_anchor(&envelope),
+                "{tool_name} success should invalidate checkpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_invalidate_checkpoint_for_failed_state_mutation() {
+        let envelope = ToolResultEnvelope {
+            tool_name: "CreateWorkItem".to_string(),
+            status: ToolResultStatus::Error,
+            summary_text: None,
+            result: None,
+            error: Some(ToolError {
+                kind: "invalid_input".to_string(),
+                message: "bad input".to_string(),
+                details: None,
+                recovery_hint: None,
+                retryable: false,
+            }),
+        };
+        assert!(!tool_result_invalidates_checkpoint_anchor(&envelope));
+    }
+
+    #[test]
+    fn does_not_invalidate_checkpoint_for_non_state_tools() {
+        for tool_name in [
+            "ExecCommand",
+            "WebFetch",
+            "ListTasks",
+            "WaitFor",
+            "SpawnAgent",
+        ] {
+            let envelope = ToolResultEnvelope {
+                tool_name: tool_name.to_string(),
+                status: ToolResultStatus::Success,
+                summary_text: None,
+                result: Some(serde_json::json!({"ok": true})),
+                error: None,
+            };
+            assert!(
+                !tool_result_invalidates_checkpoint_anchor(&envelope),
+                "{tool_name} success should NOT invalidate checkpoint"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // round_invalidates_checkpoint_anchor tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn round_invalidates_when_any_envelope_invalidates() {
+        let mut round = fixture_round(1, "text");
+        round.tool_result_envelopes = vec![
+            ToolResultEnvelope {
+                tool_name: "ExecCommand".to_string(),
+                status: ToolResultStatus::Success,
+                summary_text: None,
+                result: Some(serde_json::json!({})),
+                error: None,
+            },
+            ToolResultEnvelope {
+                tool_name: "ApplyPatch".to_string(),
+                status: ToolResultStatus::Success,
+                summary_text: None,
+                result: Some(serde_json::json!({})),
+                error: None,
+            },
+        ];
+        assert!(round_invalidates_checkpoint_anchor(&round));
+    }
+
+    #[test]
+    fn round_does_not_invalidate_when_no_state_mutations() {
+        let mut round = fixture_round(1, "text");
+        round.tool_result_envelopes = vec![
+            ToolResultEnvelope {
+                tool_name: "ExecCommand".to_string(),
+                status: ToolResultStatus::Success,
+                summary_text: None,
+                result: Some(serde_json::json!({})),
+                error: None,
+            },
+            ToolResultEnvelope {
+                tool_name: "WebFetch".to_string(),
+                status: ToolResultStatus::Success,
+                summary_text: None,
+                result: Some(serde_json::json!({})),
+                error: None,
+            },
+        ];
+        assert!(!round_invalidates_checkpoint_anchor(&round));
+    }
+
+    #[test]
+    fn round_does_not_invalidate_when_empty_envelopes() {
+        let round = fixture_round(1, "text");
+        assert!(!round_invalidates_checkpoint_anchor(&round));
+    }
+
+    // -----------------------------------------------------------------------
+    // round_updated_work_item tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn round_updated_work_item_true_for_successful_work_item_tools() {
+        for tool_name in [
+            "CreateWorkItem",
+            "PickWorkItem",
+            "UpdateWorkItem",
+            "CompleteWorkItem",
+        ] {
+            let mut round = fixture_round(1, "text");
+            round.tool_result_envelopes = vec![ToolResultEnvelope {
+                tool_name: tool_name.to_string(),
+                status: ToolResultStatus::Success,
+                summary_text: None,
+                result: Some(serde_json::json!({})),
+                error: None,
+            }];
+            assert!(
+                round_updated_work_item(&round),
+                "{tool_name} success should count as work item update"
+            );
+        }
+    }
+
+    #[test]
+    fn round_updated_work_item_false_for_apply_patch() {
+        let mut round = fixture_round(1, "text");
+        round.tool_result_envelopes = vec![ToolResultEnvelope {
+            tool_name: "ApplyPatch".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: Some(serde_json::json!({})),
+            error: None,
+        }];
+        assert!(!round_updated_work_item(&round));
+    }
+
+    #[test]
+    fn round_updated_work_item_false_for_failed_work_item_tool() {
+        let mut round = fixture_round(1, "text");
+        round.tool_result_envelopes = vec![ToolResultEnvelope {
+            tool_name: "CreateWorkItem".to_string(),
+            status: ToolResultStatus::Error,
+            summary_text: None,
+            result: None,
+            error: Some(ToolError {
+                kind: "invalid".to_string(),
+                message: "bad".to_string(),
+                details: None,
+                recovery_hint: None,
+                retryable: false,
+            }),
+        }];
+        assert!(!round_updated_work_item(&round));
+    }
+
+    // -----------------------------------------------------------------------
+    // result_work_item_id tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn result_work_item_id_extracts_from_nested_result() {
+        let envelope = ToolResultEnvelope {
+            tool_name: "CompleteWorkItem".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: Some(serde_json::json!({
+                "work_item": {
+                    "id": "work_abc123"
+                }
+            })),
+            error: None,
+        };
+        assert_eq!(
+            result_work_item_id(&envelope),
+            Some("work_abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn result_work_item_id_none_when_missing_result() {
+        let envelope = ToolResultEnvelope {
+            tool_name: "CompleteWorkItem".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: None,
+            error: None,
+        };
+        assert_eq!(result_work_item_id(&envelope), None);
+    }
+
+    #[test]
+    fn result_work_item_id_none_when_missing_nested_path() {
+        let envelope = ToolResultEnvelope {
+            tool_name: "CompleteWorkItem".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: Some(serde_json::json!({"other": "data"})),
+            error: None,
+        };
+        assert_eq!(result_work_item_id(&envelope), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // envelope_completes_work_item tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn envelope_completes_work_item_true_for_valid_completion() {
+        let envelope = ToolResultEnvelope {
+            tool_name: "CompleteWorkItem".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: Some(serde_json::json!({
+                "completed_transition": true,
+                "work_item": {"id": "work_1"}
+            })),
+            error: None,
+        };
+        assert!(envelope_completes_work_item(&envelope));
+    }
+
+    #[test]
+    fn envelope_completes_work_item_false_for_failed() {
+        let envelope = ToolResultEnvelope {
+            tool_name: "CompleteWorkItem".to_string(),
+            status: ToolResultStatus::Error,
+            summary_text: None,
+            result: Some(serde_json::json!({"completed_transition": true})),
+            error: None,
+        };
+        assert!(!envelope_completes_work_item(&envelope));
+    }
+
+    #[test]
+    fn envelope_completes_work_item_false_for_wrong_tool() {
+        let envelope = ToolResultEnvelope {
+            tool_name: "UpdateWorkItem".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: Some(serde_json::json!({"completed_transition": true})),
+            error: None,
+        };
+        assert!(!envelope_completes_work_item(&envelope));
+    }
+
+    #[test]
+    fn envelope_completes_work_item_false_for_missing_transition() {
+        let envelope = ToolResultEnvelope {
+            tool_name: "CompleteWorkItem".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: Some(serde_json::json!({"work_item": {"id": "work_1"}})),
+            error: None,
+        };
+        assert!(!envelope_completes_work_item(&envelope));
+    }
+
+    // -----------------------------------------------------------------------
+    // provider_lineage_failure_text tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn provider_lineage_failure_text_empty_becomes_default() {
+        assert_eq!(provider_lineage_failure_text(""), "provider failed");
+        assert_eq!(provider_lineage_failure_text("   "), "provider failed");
+    }
+
+    #[test]
+    fn provider_lineage_failure_text_non_empty_is_truncated() {
+        let short = "connection timeout";
+        assert_eq!(provider_lineage_failure_text(short), short);
+
+        let long = "a".repeat(5000);
+        let result = provider_lineage_failure_text(&long);
+        assert!(
+            result.ends_with("..."),
+            "long text should be truncated with ellipsis"
+        );
+        assert!(result.len() < long.len());
+    }
+
+    // -----------------------------------------------------------------------
+    // provider_lineage_operator_message tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn operator_message_side_effect_crossed() {
+        let msg =
+            provider_lineage_operator_message("anthropic/claude-sonnet", true, "rate limited");
+        assert!(msg.contains("Turn stopped after the active provider lineage failed"));
+        assert!(msg.contains("Queued recovery turn"));
+        assert!(msg.contains("anthropic/claude-sonnet"));
+        assert!(msg.contains("rate limited"));
+    }
+
+    #[test]
+    fn operator_message_no_side_effect() {
+        let msg = provider_lineage_operator_message("openai/gpt-4", false, "context too long");
+        assert!(msg.contains("Turn stopped before provider output was accepted"));
+        assert!(msg.contains("Queued fallback turn"));
+        assert!(msg.contains("openai/gpt-4"));
+        assert!(msg.contains("context too long"));
+    }
+
+    // -----------------------------------------------------------------------
+    // estimate_text_tokens tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn estimate_text_tokens_ascii() {
+        assert_eq!(estimate_text_tokens(""), 0);
+        assert_eq!(estimate_text_tokens("a"), 1);
+        assert_eq!(estimate_text_tokens("abcd"), 1);
+        assert_eq!(estimate_text_tokens("abcde"), 2);
+        assert_eq!(estimate_text_tokens(&"x".repeat(100)), 25);
+    }
+
+    #[test]
+    fn estimate_text_tokens_multibyte() {
+        let chinese = "你好世界";
+        assert_eq!(estimate_text_tokens(chinese), 1);
+
+        let japanese = "こんにちは世界テスト";
+        assert_eq!(estimate_text_tokens(japanese), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // completion_report_warning tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn completion_report_warning_produces_correct_json() {
+        let warning = completion_report_warning("missing_completion_report", "no report found");
+        assert_eq!(
+            warning.get("kind").and_then(Value::as_str),
+            Some("missing_completion_report")
+        );
+        assert_eq!(
+            warning.get("message").and_then(Value::as_str),
+            Some("no report found")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // append_completion_warning tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn append_completion_warning_creates_array_when_missing() {
+        let mut envelope = ToolResultEnvelope {
+            tool_name: "CompleteWorkItem".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: Some(serde_json::json!({"ok": true})),
+            error: None,
+        };
+        let warning = completion_report_warning("test_kind", "test message");
+        append_completion_warning(&mut envelope, warning);
+
+        let warnings = envelope
+            .result
+            .as_ref()
+            .unwrap()
+            .get("warnings")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(
+            warnings[0].get("kind").and_then(Value::as_str),
+            Some("test_kind")
+        );
+    }
+
+    #[test]
+    fn append_completion_warning_appends_to_existing_array() {
+        let mut envelope = ToolResultEnvelope {
+            tool_name: "CompleteWorkItem".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: Some(serde_json::json!({
+                "ok": true,
+                "warnings": [serde_json::json!({"kind": "existing", "message": "old"})]
+            })),
+            error: None,
+        };
+        let warning = completion_report_warning("new_kind", "new message");
+        append_completion_warning(&mut envelope, warning);
+
+        let warnings = envelope
+            .result
+            .as_ref()
+            .unwrap()
+            .get("warnings")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn append_completion_warning_noop_when_no_result() {
+        let mut envelope = ToolResultEnvelope {
+            tool_name: "CompleteWorkItem".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: None,
+            error: None,
+        };
+        let warning = completion_report_warning("test", "test");
+        append_completion_warning(&mut envelope, warning);
+        assert!(envelope.result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // update_tool_result_block_content tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn update_tool_result_block_content_updates_correct_index() {
+        let mut blocks = vec![
+            ToolResultBlock {
+                tool_use_id: "call_1".to_string(),
+                content: "original_1".to_string(),
+                is_error: false,
+                error: None,
+            },
+            ToolResultBlock {
+                tool_use_id: "call_2".to_string(),
+                content: "original_2".to_string(),
+                is_error: false,
+                error: None,
+            },
+        ];
+        let envelope = ToolResultEnvelope {
+            tool_name: "CompleteWorkItem".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: Some(serde_json::json!({"completion_report_promoted": true})),
+            error: None,
+        };
+
+        let result = update_tool_result_block_content(1, &mut blocks, &envelope);
+        assert!(result.is_ok());
+        assert_eq!(
+            blocks[0].content, "original_1",
+            "index 0 should be unchanged"
+        );
+        assert!(
+            blocks[1].content.contains("completion_report_promoted"),
+            "index 1 should be updated"
+        );
+    }
+
+    #[test]
+    fn update_tool_result_block_content_out_of_bounds_is_noop() {
+        let mut blocks = vec![ToolResultBlock {
+            tool_use_id: "call_1".to_string(),
+            content: "original".to_string(),
+            is_error: false,
+            error: None,
+        }];
+        let envelope = ToolResultEnvelope {
+            tool_name: "Test".to_string(),
+            status: ToolResultStatus::Success,
+            summary_text: None,
+            result: Some(serde_json::json!({})),
+            error: None,
+        };
+
+        let result = update_tool_result_block_content(5, &mut blocks, &envelope);
+        assert!(result.is_ok());
+        assert_eq!(
+            blocks[0].content, "original",
+            "content should be unchanged for out-of-bounds index"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // append_follow_up_user_texts tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn append_follow_up_user_texts_empty_is_noop() {
+        let mut round = fixture_round(1, "text");
+        let original_tokens = round.estimated_tokens;
+        append_follow_up_user_texts(&mut round, Vec::new());
+        assert!(round.follow_up_user_texts.is_empty());
+        assert_eq!(round.estimated_tokens, original_tokens);
+    }
+
+    #[test]
+    fn append_follow_up_user_texts_extends_and_recalculates_tokens() {
+        let mut round = fixture_round(1, "text");
+        let original_tokens = round.estimated_tokens;
+        append_follow_up_user_texts(
+            &mut round,
+            vec!["follow up 1".to_string(), "follow up 2".to_string()],
+        );
+        assert_eq!(round.follow_up_user_texts.len(), 2);
+        assert!(
+            round.estimated_tokens > original_tokens,
+            "tokens should increase after adding follow-up texts"
+        );
     }
 }

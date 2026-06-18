@@ -68,7 +68,7 @@ fn render_live_inventory() -> String {
     let source = std::fs::read_to_string(HTTP_SOURCE_PATH)
         .unwrap_or_else(|err| panic!("failed to read {HTTP_SOURCE_PATH}: {err}"));
     let routes = parse_axum_routes(&source);
-    assert_eq!(routes.len(), 67, "unexpected parsed HTTP route count");
+    assert_eq!(routes.len(), 70, "unexpected parsed HTTP route count");
 
     let openapi = holon::openapi::generate_openapi_json();
     let mut entries = Vec::new();
@@ -136,7 +136,7 @@ fn balanced_call_end(source: &str, start: usize) -> Option<usize> {
 fn parse_route_call(call: &str) -> HttpRoute {
     let (path, after_path) = parse_first_string(call);
     let call_tail = after_path.trim_start_matches(|ch: char| ch == ',' || ch.is_whitespace());
-    for method in ["get", "post", "patch"] {
+    for method in ["delete", "get", "patch", "post", "put"] {
         let prefix = format!("{method}(");
         if let Some(handler_start) = call_tail.find(&prefix) {
             let handler_start = handler_start + prefix.len();

@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -95,7 +96,7 @@ export function DashboardPage({ agents, metrics, connection, loading, onRefresh,
               {agents.map((agent) => (
                 <Card className="agent-card" key={agent.id}>
                   <div className="agent-card-head">
-                    <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
+                    <span className={`agent-badge ${agent.badgeTone ?? ""}`} style={agent.badgeHue != null && !agent.badgeTone ? ({ "--badge-hue": `${agent.badgeHue}` } as CSSProperties) : undefined}>{agent.badge}</span>
                     <div className="agent-card-title">
                       <strong>{agent.id}</strong>
                       <small>{agent.profile}</small>

@@ -1601,6 +1601,7 @@
                 "effect": {
                   "enum": [
                     "accepted_requires_restart",
+                    "accepted_reloaded",
                     "rejected"
                   ],
                   "type": "string"
@@ -1942,6 +1943,11 @@
         "type": "object"
       },
       "SetAgentModelRequest": {
+        "additionalProperties": true,
+        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "type": "object"
+      },
+      "SetCredentialRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
@@ -7694,6 +7700,158 @@
           }
         ],
         "summary": "Update runtime config",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/control/runtime/credentials": {
+      "get": {
+        "description": "List credential profiles stored in the runtime credential store.",
+        "operationId": "runtimeCredentials",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Runtime credential profiles",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/control/runtime/credentials/{profile}": {
+      "delete": {
+        "description": "Remove a credential profile from the runtime credential store.",
+        "operationId": "deleteRuntimeCredential",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Delete runtime credential",
+        "tags": [
+          "runtime"
+        ]
+      },
+      "put": {
+        "description": "Set an API key credential profile in the runtime credential store.",
+        "operationId": "setRuntimeCredential",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetCredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Set runtime credential",
         "tags": [
           "runtime"
         ]

@@ -1,5 +1,5 @@
 import { agentDetailFixtures } from "./fixtures";
-import { reduceAgentSessionTimeline, transcriptEntryIdForPayload } from "./session-reducer";
+import { briefIdForPayload, reduceAgentSessionTimeline, transcriptEntryIdForPayload } from "./session-reducer";
 import type {
   AgentDetail,
   AgentSummary,
@@ -10,10 +10,13 @@ import type {
   RuntimeConfigState,
   RuntimeConfigSurface,
   RuntimeConnection,
+  RuntimeBriefRecord,
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeModelOption,
+  RuntimeTaskOutputResult,
   RuntimeTranscriptEntry,
+  RuntimeToolExecutionRecord,
   SearchResponse,
   TaskSummary,
   WorkItemSummary,
@@ -22,6 +25,7 @@ import type {
 } from "./types";
 
 export interface RuntimeClientOptions {
+  mode?: "local" | "remote";
   baseUrl?: string;
   token?: string;
   fetchImpl?: typeof fetch;
@@ -67,6 +71,32 @@ function disconnectedAgentDetail(agentId: string, error: string): AgentDetail {
   };
 }
 
+function disconnectedAgentSummary(agentId: string, error: string): AgentSummary {
+  return {
+    id: agentId,
+    badge: "!",
+    badgeTone: "muted",
+    profile: "unavailable",
+    lifecycle: "unknown",
+    focusSummary: "Runtime API unavailable",
+    workspace: "unavailable",
+    attention: "API disconnected",
+    model: "unavailable",
+    modelReasoningEffort: undefined,
+    footer: "disconnected",
+    subtitle: "Runtime API unavailable",
+    lastBrief: "",
+    lastTurnTime: "",
+    pending: 0,
+    activeTaskCount: 0,
+    waitingCount: 0,
+    posture: "disconnected",
+    postureReason: error,
+    tasks: [],
+    workItems: [],
+  };
+}
+
 async function fetchAgentDetail(
   baseUrl: string,
   fetchImpl: typeof fetch,
@@ -76,7 +106,7 @@ async function fetchAgentDetail(
 ): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
   const eventDisplayLevel = displayLevel;
-  const [entry, state, events] = await Promise.all([
+  const [entry, state, events, workItems] = await Promise.all([
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers })
       .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
       .catch(() => undefined),
@@ -85,26 +115,47 @@ async function fetchAgentDetail(
       events: [],
       has_older: false,
     })),
+    fetchAgentWorkItems(baseUrl, fetchImpl, headers, agentId, { limit: 50 }).catch((): WorkItemDto[] => []),
   ]);
   const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
   const transcriptEntriesById = await fetchTranscriptEntriesForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? []);
+  const briefRecordsById = await fetchBriefRecordsForEvents(baseUrl, fetchImpl, headers, agentId, events.events ?? [], transcriptEntriesById);
   const agent = projectAgent(
     fallbackEntry,
     state,
-    newestBriefFromEvents(events.events ?? [], transcriptEntriesById),
+    newestBriefFromEvents(events.events ?? [], transcriptEntriesById, briefRecordsById),
+    workItems,
   );
-  const timeline = reduceAgentSessionTimeline({ events, eventDisplayLevel, transcriptEntriesById });
+  const timeline = reduceAgentSessionTimeline({ events, eventDisplayLevel, transcriptEntriesById, briefRecordsById });
 
   return {
     agent,
     source: "http",
     timeline,
     events: events.events ?? [],
+    briefRecordsById,
     eventCursorSeq: events.cursor_seq,
     newestEventSeq: events.newest_seq,
     oldestEventSeq: events.oldest_seq,
     hasOlderEvents: events.has_older,
   };
+}
+
+async function fetchAgentState(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+): Promise<AgentSummary> {
+  const encodedAgentId = encodeURIComponent(agentId);
+  const [entry, state] = await Promise.all([
+    getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers })
+      .then((agents) => agents.find((agent) => agent.identity?.agent_id === agentId))
+      .catch(() => undefined),
+    getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers }),
+  ]);
+  const fallbackEntry: AgentListEntryDto = entry ?? { identity: { agent_id: agentId } };
+  return projectAgent(fallbackEntry, state);
 }
 
 interface AgentListEntryDto {
@@ -135,6 +186,8 @@ interface AgentListEntryDto {
     workspace_anchor?: string;
     execution_root?: string;
     cwd?: string;
+    projection_kind?: string;
+    access_mode?: string;
     projection_metadata?: {
       worktree_branch?: string;
       worktree_path?: string;
@@ -179,20 +232,52 @@ interface AgentStateDto {
   workspace?: AgentWorkspaceDto;
 }
 
+interface WorkItemDto {
+  id?: string;
+  agent_id?: string;
+  revision?: number;
+  objective?: string;
+  state?: string;
+  plan_status?: string;
+  plan_artifact?: {
+    path?: string;
+    relative_path?: string;
+    workspace_alias?: string;
+    preview?: string;
+    preview_complete?: boolean;
+    updated_at?: string;
+  };
+  todo_list?: Array<{
+    text?: string;
+    state?: string;
+  }>;
+  work_refs?: Array<{
+    kind?: string;
+    ref?: string;
+    title?: string;
+    reason?: string;
+    status?: string;
+    last_seen_at?: string;
+  }>;
+  blocked_by?: string;
+  recheck_at?: string;
+  result_brief_id?: string;
+  result_summary?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 interface AgentWorkspaceDto {
     active_workspace_entry?: AgentListEntryDto["active_workspace_entry"];
     worktree_session?: {
+      original_branch?: string;
+      original_cwd?: string;
       worktree_branch?: string;
       worktree_path?: string;
     } | null;
 }
 
-interface BriefRecordDto {
-  id?: string;
-  created_at?: string;
-  text?: string;
-  kind?: string;
-}
+type BriefRecordDto = RuntimeBriefRecord;
 
 export interface EventPageResponseDto {
   events?: EventEnvelopeDto[];
@@ -328,7 +413,7 @@ interface RuntimeProviderSummaryDto {
 
 interface RuntimeConfigUpdateResultDto {
   key?: string;
-  effect?: "accepted_requires_restart" | "rejected";
+  effect?: "accepted_requires_restart" | "accepted_reloaded" | "rejected";
   reason?: string;
 }
 
@@ -410,18 +495,20 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
   const fetchImpl = options.fetchImpl ?? fetch;
   const requestHeaders = authorizationHeaders(options.token);
+  const connectionMode = options.mode ?? (options.baseUrl ? "remote" : "local");
+  const hasToken = Boolean(options.token?.trim());
 
   return {
     async getBootstrap(): Promise<RuntimeBootstrap> {
       if (!baseUrl) {
-        return buildDisconnectedBootstrap(undefined, "Holon API base URL is not configured.");
+        return buildDisconnectedBootstrap(undefined, "Holon API base URL is not configured.", connectionMode, hasToken);
       }
 
       try {
-        return await fetchRuntimeBootstrap(baseUrl, fetchImpl, requestHeaders);
+        return await fetchRuntimeBootstrap(baseUrl, fetchImpl, requestHeaders, connectionMode, hasToken);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return buildDisconnectedBootstrap(baseUrl, message);
+        return buildDisconnectedBootstrap(baseUrl, message, connectionMode, hasToken);
       }
     },
     async getAgentDetail(agentId: string, displayLevel: DisplayLevel = "info"): Promise<AgentDetail> {
@@ -435,6 +522,31 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         const message = error instanceof Error ? error.message : String(error);
         return disconnectedAgentDetail(agentId, message);
       }
+    },
+    async getAgentState(agentId: string): Promise<AgentSummary> {
+      if (!baseUrl) {
+        return disconnectedAgentSummary(agentId, "Holon API base URL is not configured.");
+      }
+      try {
+        return await fetchAgentState(baseUrl, fetchImpl, requestHeaders, agentId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return disconnectedAgentSummary(agentId, message);
+      }
+    },
+    async getAgentWorkItems(agentId: string, options: { limit?: number } = {}): Promise<WorkItemSummary[]> {
+      if (!baseUrl) {
+        return [];
+      }
+      const workItems = await fetchAgentWorkItems(baseUrl, fetchImpl, requestHeaders, agentId, options);
+      return projectWorkItems(workItems);
+    },
+    async getAgentWorkItem(agentId: string, workItemId: string): Promise<WorkItemSummary | undefined> {
+      if (!baseUrl || !workItemId) {
+        return undefined;
+      }
+      const workItem = await fetchAgentWorkItem(baseUrl, fetchImpl, requestHeaders, agentId, workItemId);
+      return projectWorkItem(workItem);
     },
     async getAgentEvents(agentId: string, options: AgentEventPageOptions = {}): Promise<EventPageResponseDto> {
       if (!baseUrl) {
@@ -464,6 +576,34 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         `/agents/${encodeURIComponent(agentId)}/transcript:batchGet`,
         { entry_ids: entryIds },
         requestHeaders,
+      );
+    },
+    async getAgentBriefsById(agentId: string, briefIds: string[]): Promise<Record<string, RuntimeBriefRecord>> {
+      if (!baseUrl || !briefIds.length) {
+        return {};
+      }
+      return fetchBriefRecordsById(baseUrl, fetchImpl, requestHeaders, agentId, briefIds);
+    },
+    async getToolExecution(agentId: string, toolExecutionId: string): Promise<RuntimeToolExecutionRecord> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      return getJson<RuntimeToolExecutionRecord>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/tool-executions/${encodeURIComponent(toolExecutionId)}`,
+        { headers: requestHeaders },
+      );
+    },
+    async getTaskOutput(agentId: string, taskId: string): Promise<RuntimeTaskOutputResult> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      return getJson<RuntimeTaskOutputResult>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}/output?block=false`,
+        { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers: requestHeaders },
       );
     },
     async getModels(): Promise<RuntimeModelCatalog> {
@@ -540,6 +680,10 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) return undefined;
       return streamAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
     },
+    streamGlobalEvents(options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
+      if (!baseUrl) return undefined;
+      return streamGlobalEvents(baseUrl, fetchImpl, requestHeaders, options);
+    },
     async sendOperatorPrompt(agentId: string, text: string): Promise<void> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
@@ -593,6 +737,39 @@ async function fetchAgentEvents(
   return getJson<EventPageResponseDto>(fetchImpl, baseUrl, path, { headers });
 }
 
+async function fetchAgentWorkItems(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+  options: { limit?: number } = {},
+): Promise<WorkItemDto[]> {
+  const query = new URLSearchParams();
+  if (options.limit != null) query.set("limit", String(options.limit));
+  const queryString = query.toString();
+  return getJson<WorkItemDto[]>(
+    fetchImpl,
+    baseUrl,
+    `/agents/${encodeURIComponent(agentId)}/work-items${queryString ? `?${queryString}` : ""}`,
+    { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers },
+  );
+}
+
+async function fetchAgentWorkItem(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+  workItemId: string,
+): Promise<WorkItemDto> {
+  return getJson<WorkItemDto>(
+    fetchImpl,
+    baseUrl,
+    `/agents/${encodeURIComponent(agentId)}/work-items/${encodeURIComponent(workItemId)}`,
+    { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers },
+  );
+}
+
 async function fetchTranscriptEntriesForEvents(
   baseUrl: string,
   fetchImpl: typeof fetch,
@@ -618,6 +795,47 @@ async function fetchTranscriptEntriesForEvents(
   return Object.fromEntries((response.entries ?? []).flatMap((entry) => (entry.id ? [[entry.id, entry]] : [])));
 }
 
+async function fetchBriefRecordsForEvents(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+  events: EventEnvelopeDto[],
+  transcriptEntriesById: Record<string, RuntimeTranscriptEntry>,
+): Promise<Record<string, RuntimeBriefRecord>> {
+  const briefIds = Array.from(
+    new Set(
+      events
+        .filter((event) => event.type === "brief_created")
+        .filter((event) => {
+          const payload = asRecord(event.payload);
+          const entryId = transcriptEntryIdForPayload(payload);
+          return !((entryId ? transcriptEntryText(transcriptEntriesById[entryId]) : undefined) ?? stringValue(payload?.text));
+        })
+        .map((event) => briefIdForPayload(asRecord(event.payload)))
+        .filter((briefId): briefId is string => Boolean(briefId)),
+    ),
+  );
+  if (!briefIds.length) return {};
+  return fetchBriefRecordsById(baseUrl, fetchImpl, headers, agentId, briefIds);
+}
+
+async function fetchBriefRecordsById(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  agentId: string,
+  briefIds: string[],
+): Promise<Record<string, RuntimeBriefRecord>> {
+  const records = await Promise.all(
+    briefIds.map(async (briefId): Promise<RuntimeBriefRecord | undefined> => {
+      const path = `/agents/${encodeURIComponent(agentId)}/briefs/${encodeURIComponent(briefId)}`;
+      return getJson<RuntimeBriefRecord>(fetchImpl, baseUrl, path, { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers }).catch(() => undefined);
+    }),
+  );
+  return Object.fromEntries(records.flatMap((record) => (record?.id ? [[record.id, record]] : [])));
+}
+
 function streamAgentEvents(
   baseUrl: string,
   fetchImpl: typeof fetch,
@@ -635,6 +853,19 @@ function streamAgentEvents(
 
   void readEventStream(fetchImpl, `${baseUrl}${path}`, headers, controller.signal, options);
 
+  return {
+    close: () => controller.abort(),
+  };
+}
+function streamGlobalEvents(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  options: AgentEventStreamOptions,
+): AgentEventStreamSubscription {
+  const controller = new AbortController();
+  const path = "/events/stream";
+  void readEventStream(fetchImpl, `${baseUrl}${path}`, headers, controller.signal, options);
   return {
     close: () => controller.abort(),
   };
@@ -715,7 +946,13 @@ function parseSseEventFrame(frame: string): StreamEventEnvelopeDto | undefined {
   return JSON.parse(dataLines.join("\n")) as StreamEventEnvelopeDto;
 }
 
-async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch, headers: Record<string, string>): Promise<RuntimeBootstrap> {
+async function fetchRuntimeBootstrap(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  headers: Record<string, string>,
+  connectionMode: "local" | "remote",
+  hasToken: boolean,
+): Promise<RuntimeBootstrap> {
   const [handshake, agentEntries] = await Promise.all([
     getJson<{ auth?: { mode?: string } }>(fetchImpl, baseUrl, "/handshake", { headers }),
     getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { headers }),
@@ -726,10 +963,11 @@ async function fetchRuntimeBootstrap(baseUrl: string, fetchImpl: typeof fetch, h
   const activeTaskCount = agents.reduce((sum, agent) => sum + agent.activeTaskCount, 0);
   const currentWorkCount = agents.filter((agent) => agent.currentWork).length;
   const connection: RuntimeConnection = {
-    mode: handshake.auth?.mode === "bearer" ? "remote" : "local",
+    mode: connectionMode,
     source: "http",
     baseUrl,
-    summary: `${baseUrl} · ${handshake.auth?.mode ?? "local"} · existing /agents routes`,
+    hasToken,
+    summary: `${baseUrl} · ${connectionMode}${hasToken ? " bearer" : ""} · existing /agents routes`,
   };
 
   return {
@@ -747,11 +985,11 @@ async function getJson<T>(
   options: { timeoutMs?: number; headers?: Record<string, string> } = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     headers: { Accept: "application/json", ...options.headers },
     signal: controller.signal,
-  }).finally(() => window.clearTimeout(timeout));
+  }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
     throw new Error(`GET ${path} failed with ${response.status}`);
   }
@@ -766,7 +1004,7 @@ async function postJson<T>(
   headers: Record<string, string> = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
@@ -776,7 +1014,7 @@ async function postJson<T>(
     },
     body: JSON.stringify(body),
     signal: controller.signal,
-  }).finally(() => window.clearTimeout(timeout));
+  }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
     throw new Error(`POST ${path} failed with ${response.status}`);
   }
@@ -793,7 +1031,7 @@ async function patchJson<T>(
   headers: Record<string, string> = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     method: "PATCH",
     headers: {
@@ -803,7 +1041,7 @@ async function patchJson<T>(
     },
     body: JSON.stringify(body),
     signal: controller.signal,
-  }).finally(() => window.clearTimeout(timeout));
+  }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
     throw new Error(`PATCH ${path} failed with ${response.status}`);
   }
@@ -942,21 +1180,22 @@ function projectSearchResponse(response: SearchResponseDto): SearchResponse {
   };
 }
 
-function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: BriefRecordDto): AgentSummary {
+function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: BriefRecordDto, workItemRecords?: WorkItemDto[]): AgentSummary {
   const id = entry.identity?.agent_id ?? state?.agent?.agent?.id ?? "unknown-agent";
   const status = state?.agent?.agent?.status ?? entry.status ?? "unknown";
   const profile = compactJoin([entry.identity?.visibility ?? "public", entry.identity?.ownership, entry.identity?.profile_preset]);
   const workspaceEntry = state?.workspace?.active_workspace_entry ?? entry.active_workspace_entry;
   const workspace = workspaceEntry?.workspace_alias ?? workspaceEntry?.workspace_id ?? state?.workspace?.worktree_session?.worktree_branch ?? "not bound";
   const workspaceSummary = projectWorkspace(workspaceEntry, state?.workspace?.worktree_session);
-  const currentWork = selectCurrentWork(state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
-  const workItems = selectOpenWorkItems(state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
+  const currentWork = selectCurrentWork(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
+  const workItems = selectWorkItems(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
   const tasks = projectTasks(state?.tasks ?? []);
   const pending = state?.session?.pending_count ?? entry.pending ?? 0;
   const activeTaskCount = state?.tasks?.length ?? state?.agent?.active_task_count ?? 0;
   const waitingCount = state?.waiting_intents?.length ?? state?.agent?.active_waiting_intents?.length ?? (entry.waiting_reason ? 1 : 0);
   const posture = state?.agent?.scheduling_posture?.posture ?? entry.scheduling_posture?.posture ?? "unknown";
   const postureReason = state?.agent?.scheduling_posture?.reason ?? entry.scheduling_posture?.reason ?? "posture unavailable";
+  const focusSummary = currentWork?.objective ?? postureReason;
   const model = state?.agent?.model?.active_model ?? state?.agent?.model?.effective_model ?? entry.model?.active_model ?? entry.model?.effective_model ?? "runtime default";
   const modelSource = state?.agent?.model?.source ?? entry.model?.source;
   const modelReasoningEffort = state?.agent?.model?.override_reasoning_effort ?? entry.model?.override_reasoning_effort ?? undefined;
@@ -966,9 +1205,10 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   return {
     id,
     badge: badgeFor(id),
+    badgeHue: hueFor(id),
     profile,
     lifecycle: normalizeKebab(status),
-    focusSummary: postureReason,
+    focusSummary,
     workspace,
     attention: attentionLabel(pending, waitingCount),
     model,
@@ -1005,9 +1245,19 @@ function projectWorkspace(
     id: workspaceEntry?.workspace_id ?? "not bound",
     name,
     anchor,
+    projectionKind: workspaceEntry?.projection_kind,
+    accessMode: workspaceEntry?.access_mode,
     executionRoot: workspaceEntry?.execution_root,
     cwd: workspaceEntry?.cwd,
-    worktree: worktreeBranch || worktreePath ? { branch: worktreeBranch, path: worktreePath } : undefined,
+    worktree:
+      worktreeBranch || worktreePath
+        ? {
+            branch: worktreeBranch,
+            path: worktreePath,
+            originalBranch: worktreeSession?.original_branch,
+            originalCwd: worktreeSession?.original_cwd,
+          }
+        : undefined,
   };
 }
 
@@ -1038,13 +1288,16 @@ function projectTasks(tasks: NonNullable<AgentStateDto["tasks"]>): TaskSummary[]
 function newestBriefFromEvents(
   events: EventEnvelopeDto[],
   transcriptEntriesById: Record<string, RuntimeTranscriptEntry> = {},
+  briefRecordsById: Record<string, RuntimeBriefRecord> = {},
 ): BriefRecordDto | undefined {
   return events
     .filter((event) => event.type === "brief_created")
     .map((event) => {
       const payload = event.payload && typeof event.payload === "object" ? (event.payload as Record<string, unknown>) : {};
       const entryId = transcriptEntryIdForPayload(payload);
+      const briefId = briefIdForPayload(payload);
       const text = (entryId ? transcriptEntryText(transcriptEntriesById[entryId]) : undefined) ??
+        (briefId ? briefRecordsById[briefId]?.text : undefined) ??
         (typeof payload.text === "string" ? payload.text : undefined);
       const createdAt = typeof payload.created_at === "string" ? payload.created_at : event.ts;
       const kind = typeof payload.kind === "string" ? payload.kind : undefined;
@@ -1123,7 +1376,7 @@ function compareModelOptions(left: RuntimeModelOption, right: RuntimeModelOption
 }
 
 function selectCurrentWork(
-  workItems: Array<{ id?: string; objective?: string; state?: string }>,
+  workItems: Array<{ id?: string; objective?: string; state?: string; plan_status?: string }>,
   currentWorkItemId?: string | null,
 ): WorkItemSummary | undefined {
   if (!currentWorkItemId) return undefined;
@@ -1133,23 +1386,70 @@ function selectCurrentWork(
     id: selected.id,
     objective: selected.objective ?? selected.id,
     state: selected.state ?? "unknown",
+    planStatus: selected.plan_status,
     current: true,
   };
 }
 
-function selectOpenWorkItems(
+function projectWorkItems(
+  workItems: Array<{ id?: string; objective?: string; state?: string; plan_status?: string }>,
+): WorkItemSummary[] {
+  return selectWorkItems(workItems);
+}
+
+function projectWorkItem(workItem: WorkItemDto | undefined, currentWorkItemId?: string | null): WorkItemSummary | undefined {
+  if (!workItem?.id) return undefined;
+  const planArtifact = workItem.plan_artifact;
+  return {
+    id: workItem.id,
+    objective: workItem.objective ?? workItem.id,
+    state: workItem.state ?? "unknown",
+    planStatus: workItem.plan_status,
+    current: workItem.id === currentWorkItemId,
+    revision: workItem.revision,
+    createdAt: workItem.created_at,
+    updatedAt: workItem.updated_at,
+    blockedBy: workItem.blocked_by,
+    recheckAt: workItem.recheck_at,
+    resultBriefId: workItem.result_brief_id,
+    resultSummary: workItem.result_summary,
+    planArtifact: planArtifact
+      ? {
+          path: planArtifact.path,
+          relativePath: planArtifact.relative_path,
+          workspaceAlias: planArtifact.workspace_alias,
+          preview: planArtifact.preview,
+          previewComplete: planArtifact.preview_complete,
+          updatedAt: planArtifact.updated_at,
+        }
+      : undefined,
+    todoList: (workItem.todo_list ?? [])
+      .filter((item) => item.text)
+      .map((item) => ({
+        text: item.text ?? "",
+        state: item.state ?? "unknown",
+      })),
+    workRefs: (workItem.work_refs ?? [])
+      .filter((item) => item.ref)
+      .map((item) => ({
+        kind: item.kind ?? "other",
+        ref: item.ref ?? "",
+        title: item.title,
+        reason: item.reason,
+        status: item.status,
+        lastSeenAt: item.last_seen_at,
+      })),
+  };
+}
+
+function selectWorkItems(
   workItems: Array<{ id?: string; objective?: string; state?: string; plan_status?: string }>,
   currentWorkItemId?: string | null,
 ): WorkItemSummary[] {
   return workItems
-    .filter((item) => item.id && item.state !== "completed")
-    .map((item) => ({
-      id: item.id ?? "unknown-work-item",
-      objective: item.objective ?? item.id ?? "Work item",
-      state: item.state ?? "unknown",
-      planStatus: item.plan_status,
-      current: item.id === currentWorkItemId,
-    }))
+    .filter((item) => item.id)
+    .map((item) => projectWorkItem(item as WorkItemDto, currentWorkItemId))
+    .filter((item): item is WorkItemSummary => Boolean(item))
     .sort((left, right) => {
       if (left.current !== right.current) return left.current ? -1 : 1;
       return left.objective.localeCompare(right.objective);
@@ -1164,13 +1464,19 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
-function buildDisconnectedBootstrap(baseUrl: string | undefined, error: string): RuntimeBootstrap {
+function buildDisconnectedBootstrap(
+  baseUrl: string | undefined,
+  error: string,
+  mode: "local" | "remote" = "local",
+  hasToken = false,
+): RuntimeBootstrap {
   return {
     attentionCount: 0,
     connection: {
       source: "fixture",
-      mode: "local",
+      mode,
       baseUrl,
+      hasToken,
       error,
       summary: baseUrl ? `${baseUrl} unavailable` : "Holon API unavailable",
     },
@@ -1206,6 +1512,20 @@ function compactJoin(parts: Array<string | undefined | null>): string {
 function badgeFor(id: string): string {
   const words = id.split(/[-_]/).filter(Boolean);
   return (words.length > 1 ? words.map((word) => word[0]).join("") : id.slice(0, 3)).slice(0, 4).toUpperCase();
+}
+
+/**
+ * Deterministic hue (0-360) from agent id for avatar color.
+ * Uses a curated palette of 20 evenly-spaced hues with controlled
+ * saturation/lightness so white text stays readable (WCAG AA).
+ */
+function hueFor(id: string): number {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = ((hash << 5) - hash + id.charCodeAt(i)) | 0;
+  }
+  const palette = [0, 18, 35, 52, 90, 130, 160, 175, 190, 205, 220, 240, 260, 275, 290, 310, 325, 340, 355, 8];
+  return palette[Math.abs(hash) % palette.length];
 }
 
 function attentionLabel(pending: number, waiting: number): string {

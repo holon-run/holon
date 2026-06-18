@@ -34,6 +34,8 @@ const CONTEXT_EPISODE_ANCHORS_DOMAIN: &str = "context_episode_anchors";
 const RUNTIME_DB_BUSY_TIMEOUT: Duration = Duration::from_millis(30_000);
 const RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(25);
 const RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY: Duration = Duration::from_millis(1_000);
+const RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL: Duration = Duration::from_secs(30);
+const RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL: Duration = Duration::from_secs(30);
 const RUNTIME_DB_APPEND_RETRY_MAX_DELAY: Duration = Duration::from_millis(5_000);
 const RUNTIME_DB_WRITE_QUEUE_CAPACITY: usize = 1024;
 
@@ -243,6 +245,56 @@ pub struct ContextEpisodeRepository<'a> {
     db: &'a RuntimeDb,
 }
 
+pub struct RuntimeIndexOutboxRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeIndexOperation {
+    Upsert,
+    Delete,
+}
+
+impl RuntimeIndexOperation {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Upsert => "upsert",
+            Self::Delete => "delete",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        match value {
+            "delete" => Self::Delete,
+            _ => Self::Upsert,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeIndexChange {
+    pub agent_id: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub source_ref: String,
+    pub operation: RuntimeIndexOperation,
+    pub source_updated_at: Option<DateTime<Utc>>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeIndexOutboxRow {
+    pub change_seq: i64,
+    pub agent_id: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub source_ref: String,
+    pub operation: RuntimeIndexOperation,
+    pub source_updated_at: Option<DateTime<Utc>>,
+    pub reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageDomainSnapshot {
     pub domain: String,
@@ -304,6 +356,107 @@ impl EvidenceKind {
             Self::DeliverySummary => "delivery_summaries",
             Self::ArtifactMetadata => "artifact_metadata",
         }
+    }
+}
+
+impl RuntimeIndexOutboxRepository<'_> {
+    pub fn append_changes(&self, changes: &[RuntimeIndexChange]) -> Result<()> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        self.db
+            .transaction(|tx| insert_runtime_index_changes_tx(tx, changes))
+    }
+
+    pub fn high_watermark(&self) -> Result<i64> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT COALESCE(MAX(change_seq), 0) FROM runtime_index_outbox",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn high_watermark_for_agent(&self, agent_id: &str) -> Result<i64> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT COALESCE(MAX(change_seq), 0)
+                 FROM runtime_index_outbox
+                 WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn read_after(
+        &self,
+        agent_id: &str,
+        after_change_seq: i64,
+        limit: usize,
+    ) -> Result<Vec<RuntimeIndexOutboxRow>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT change_seq, agent_id, source_kind, source_id, source_ref, operation,
+                    source_updated_at, reason, created_at
+             FROM runtime_index_outbox
+             WHERE agent_id = ?1 AND change_seq > ?2
+             ORDER BY change_seq ASC
+             LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![agent_id, after_change_seq, limit], |row| {
+            let source_updated_at: Option<String> = row.get(6)?;
+            let created_at: String = row.get(8)?;
+            Ok(RuntimeIndexOutboxRow {
+                change_seq: row.get(0)?,
+                agent_id: row.get(1)?,
+                source_kind: row.get(2)?,
+                source_id: row.get(3)?,
+                source_ref: row.get(4)?,
+                operation: RuntimeIndexOperation::parse(&row.get::<_, String>(5)?),
+                source_updated_at: source_updated_at
+                    .as_deref()
+                    .map(DateTime::parse_from_rfc3339)
+                    .transpose()
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            6,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?
+                    .map(|dt| dt.with_timezone(&Utc)),
+                reason: row.get(7)?,
+                created_at: DateTime::parse_from_rfc3339(&created_at)
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            8,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?
+                    .with_timezone(&Utc),
+            })
+        })?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
+    pub fn delete_through(&self, agent_id: &str, through_change_seq: i64) -> Result<usize> {
+        self.db.transaction(|tx| {
+            tx.execute(
+                "DELETE FROM runtime_index_outbox
+                 WHERE agent_id = ?1 AND change_seq <= ?2",
+                params![agent_id, through_change_seq],
+            )
+            .map_err(Into::into)
+        })
     }
 }
 
@@ -410,7 +563,7 @@ impl RuntimeDbWriter {
         }
     }
 
-    fn append_wait<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+    fn append_wait<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.state.append_wait(f)
     }
 
@@ -434,14 +587,18 @@ impl RuntimeDbWriter {
     fn append_wait_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
-        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+        f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         self.state.append_wait_with_context(context, f)
+    }
+
+    fn append_wait_once<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        self.state.append_wait_once(f)
     }
 }
 
 impl RuntimeDbWriterState {
-    fn append_wait<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+    fn append_wait<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.append_wait_with_context(
             RuntimeDbWriteContext::sync("runtime_db.transaction", "unknown"),
             f,
@@ -451,7 +608,7 @@ impl RuntimeDbWriterState {
     fn append_wait_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
-        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+        mut f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         let queue_wait_started_at = Instant::now();
         let _turn = self.queue.wait_turn()?;
@@ -462,7 +619,76 @@ impl RuntimeDbWriterState {
             .lock()
             .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
         let mutex_wait = mutex_wait_started_at.elapsed();
-        run_transaction_on_connection(&connection, &self.path, context, queue_wait, mutex_wait, f)
+        let started_at = Instant::now();
+        let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
+        let mut retry_count = 0u32;
+        let mut next_warn_at = RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL;
+        loop {
+            match run_transaction_on_connection(
+                &connection,
+                &self.path,
+                context,
+                queue_wait,
+                mutex_wait,
+                |tx| f(tx),
+            ) {
+                Ok(value) => return Ok(value),
+                Err(error) if is_retryable_db_error(&error) => {
+                    retry_count += 1;
+                    let elapsed = started_at.elapsed();
+                    tracing::trace!(
+                        error = %error,
+                        path = %self.path.display(),
+                        operation = context.operation,
+                        table = context.table,
+                        mode = context.mode.as_str(),
+                        retry_count,
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "runtime db transaction retrying"
+                    );
+                    if elapsed >= next_warn_at {
+                        tracing::warn!(
+                            error = %error,
+                            path = %self.path.display(),
+                            operation = context.operation,
+                            table = context.table,
+                            mode = context.mode.as_str(),
+                            retry_count,
+                            elapsed_ms = elapsed.as_millis(),
+                            retry_delay_ms = retry_delay.as_millis(),
+                            "runtime db transaction still locked"
+                        );
+                        next_warn_at += RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL;
+                    }
+                    thread::sleep(retry_delay);
+                    retry_delay = next_runtime_db_retry_delay(
+                        retry_delay,
+                        RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn append_wait_once<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        let queue_wait_started_at = Instant::now();
+        let _turn = self.queue.wait_turn()?;
+        let queue_wait = queue_wait_started_at.elapsed();
+        let mutex_wait_started_at = Instant::now();
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+        let mutex_wait = mutex_wait_started_at.elapsed();
+        run_transaction_on_connection(
+            &connection,
+            &self.path,
+            RuntimeDbWriteContext::sync("runtime_db.transaction_once", "unknown"),
+            queue_wait,
+            mutex_wait,
+            f,
+        )
     }
 }
 
@@ -614,6 +840,18 @@ impl WorkItemRepository<'_> {
     pub fn upsert(&self, record: &WorkItemRecord, current_focus: bool) -> Result<()> {
         self.db
             .transaction(|tx| upsert_work_item_tx(tx, record, current_focus))
+    }
+
+    pub fn upsert_with_index_changes(
+        &self,
+        record: &WorkItemRecord,
+        current_focus: bool,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            upsert_work_item_tx(tx, record, current_focus)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
     }
 
     pub fn set_current_focus(&self, agent_id: &str, work_item_id: Option<&str>) -> Result<()> {
@@ -775,6 +1013,17 @@ impl WorkspaceEntryRepository<'_> {
     pub fn upsert(&self, record: &WorkspaceEntry) -> Result<()> {
         self.db
             .transaction(|tx| upsert_workspace_entry_tx(tx, record))
+    }
+
+    pub fn upsert_with_index_changes(
+        &self,
+        record: &WorkspaceEntry,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            upsert_workspace_entry_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
     }
 
     pub fn latest_all(&self) -> Result<Vec<WorkspaceEntry>> {
@@ -1104,6 +1353,17 @@ impl ContextEpisodeRepository<'_> {
             .transaction(|tx| upsert_context_episode_tx(tx, record))
     }
 
+    pub fn upsert_with_index_changes(
+        &self,
+        record: &ContextEpisodeRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            upsert_context_episode_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
+    }
+
     pub fn recent(&self, limit: usize) -> Result<Vec<ContextEpisodeRecord>> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -1297,6 +1557,17 @@ impl TaskRepository<'_> {
 
     pub fn upsert(&self, record: &TaskRecord) -> Result<()> {
         self.db.transaction(|tx| upsert_task_tx(tx, record))
+    }
+
+    pub fn upsert_with_index_changes(
+        &self,
+        record: &TaskRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            upsert_task_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
     }
 
     pub fn latest(&self, task_id: &str) -> Result<Option<TaskRecord>> {
@@ -2244,9 +2515,31 @@ impl EvidenceRepository<'_> {
             .transaction(|tx| insert_tool_evidence_tx(tx, record))
     }
 
+    pub fn append_tool_execution_with_index_changes(
+        &self,
+        record: &ToolExecutionRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            insert_tool_evidence_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
+    }
+
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
         self.db
             .transaction(|tx| insert_brief_evidence_tx(tx, brief))
+    }
+
+    pub fn append_brief_with_index_changes(
+        &self,
+        brief: &BriefRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            insert_brief_evidence_tx(tx, brief)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
     }
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
@@ -3109,6 +3402,31 @@ fn upsert_transcript_entry_tx(tx: &Transaction<'_>, entry: &TranscriptEntry) -> 
             payload_json,
         ],
     )?;
+    Ok(())
+}
+
+fn insert_runtime_index_changes_tx(
+    tx: &Transaction<'_>,
+    changes: &[RuntimeIndexChange],
+) -> Result<()> {
+    for change in changes {
+        tx.execute(
+            "INSERT INTO runtime_index_outbox (
+                agent_id, source_kind, source_id, source_ref, operation,
+                source_updated_at, reason, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                change.agent_id,
+                change.source_kind,
+                change.source_id,
+                change.source_ref,
+                change.operation.as_str(),
+                change.source_updated_at.map(timestamp),
+                change.reason,
+                timestamp(Utc::now()),
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -4838,14 +5156,13 @@ CREATE TABLE IF NOT EXISTS wait_conditions (
 );
 
 CREATE TABLE IF NOT EXISTS queue_entries (
-  message_id TEXT NOT NULL,
+  message_id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
   priority TEXT NOT NULL,
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  PRIMARY KEY (message_id, status)
+  payload_json TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS timers (
@@ -5191,6 +5508,17 @@ SELECT 1;
         version: 18,
         name: "queue_entries_current_view",
         sql: r#"
+CREATE TABLE IF NOT EXISTS queue_entries (
+  message_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (message_id, status)
+);
+
 CREATE TABLE IF NOT EXISTS queue_entries_current (
   message_id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
@@ -5227,6 +5555,29 @@ CREATE INDEX IF NOT EXISTS idx_queue_entries_agent_status
   ON queue_entries(agent_id, status, updated_at);
 "#,
     },
+    Migration {
+        version: 19,
+        name: "runtime_index_outbox",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS runtime_index_outbox (
+  change_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  source_ref TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  source_updated_at TEXT,
+  reason TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_index_outbox_agent_seq
+  ON runtime_index_outbox(agent_id, change_seq);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_index_outbox_source
+  ON runtime_index_outbox(source_kind, source_id);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -5257,16 +5608,20 @@ impl RuntimeDb {
         open_connection(&self.path)
     }
 
-    pub fn transaction<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+    pub fn transaction<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.writer.append_wait(f)
     }
 
     fn transaction_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
-        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+        f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         self.writer.append_wait_with_context(context, f)
+    }
+
+    fn transaction_once<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        self.writer.append_wait_once(f)
     }
 
     pub fn append(
@@ -5356,6 +5711,10 @@ impl RuntimeDb {
 
     pub fn context_episodes(&self) -> ContextEpisodeRepository<'_> {
         ContextEpisodeRepository { db: self }
+    }
+
+    pub fn runtime_index_outbox(&self) -> RuntimeIndexOutboxRepository<'_> {
+        RuntimeIndexOutboxRepository { db: self }
     }
 
     pub const fn expected_storage_domains() -> &'static [ExpectedStorageDomain] {
@@ -5560,7 +5919,7 @@ impl RuntimeDb {
         canonical_source: &'static str,
         checkpoint: serde_json::Value,
     ) -> Result<()> {
-        self.transaction(|tx| {
+        self.transaction_once(|tx| {
             upsert_storage_domain(tx, domain, "complete", canonical_source, Some(checkpoint))
         })
     }
@@ -5589,7 +5948,7 @@ impl RuntimeDb {
                 existing_checkpoint,
             )
         })?;
-        let result = self.transaction(|tx| {
+        let result = self.transaction_once(|tx| {
             let checkpoint = import(tx)?;
             upsert_storage_domain(tx, domain, "complete", complete_source, Some(checkpoint))?;
             Ok(())
@@ -5599,7 +5958,7 @@ impl RuntimeDb {
                 "error": error.to_string(),
                 "retry": "restart runtime to retry legacy import",
             });
-            self.transaction(|tx| {
+            self.transaction_once(|tx| {
                 upsert_storage_domain(tx, domain, "failed", importing_source, Some(checkpoint))
             })?;
             return Err(error).with_context(|| format!("importing legacy storage domain {domain}"));
@@ -5782,15 +6141,15 @@ fn begin_immediate_transaction_with_retry<'connection>(
     let started_at = Instant::now();
     let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
     let mut retry_count = 0;
+    let mut next_warn_at = RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL;
     loop {
         // The writer mutex prevents concurrent transactions on this connection;
         // the retry loop absorbs transient locks from external processes or connections.
         match Transaction::new_unchecked(connection, TransactionBehavior::Immediate) {
             Ok(transaction) => return Ok((transaction, retry_count, started_at.elapsed())),
-            Err(error)
-                if is_sqlite_locked(&error) && started_at.elapsed() < RUNTIME_DB_BUSY_TIMEOUT =>
-            {
+            Err(error) if is_sqlite_locked(&error) => {
                 retry_count += 1;
+                let elapsed = started_at.elapsed();
                 tracing::trace!(
                     error = %error,
                     path = %path.display(),
@@ -5798,19 +6157,22 @@ fn begin_immediate_transaction_with_retry<'connection>(
                     retry_delay_ms = retry_delay.as_millis(),
                     "runtime db begin immediate transaction retrying"
                 );
+                if elapsed >= next_warn_at {
+                    tracing::warn!(
+                        error = %error,
+                        path = %path.display(),
+                        retry_count,
+                        elapsed_ms = elapsed.as_millis(),
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "runtime db begin immediate transaction still locked"
+                    );
+                    next_warn_at += RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL;
+                }
                 thread::sleep(retry_delay);
                 retry_delay = next_runtime_db_retry_delay(
                     retry_delay,
                     RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
                 );
-            }
-            Err(error) if is_sqlite_locked(&error) => {
-                return Err(RuntimeDbRetryableError::new(
-                    "starting immediate transaction",
-                    path,
-                    error,
-                )
-                .into());
             }
             Err(error) => {
                 return Err(error).with_context(|| {
@@ -6222,6 +6584,36 @@ mod tests {
             &busy.context("updating transcript entry")
         ));
         assert!(!is_retryable_db_error(&constraint));
+    }
+
+    #[test]
+    fn runtime_db_sync_transaction_retries_retryable_body_error() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut attempts = 0usize;
+
+        db.transaction(|tx| {
+            attempts += 1;
+            if attempts == 1 {
+                return Err(RuntimeDbRetryableError::new(
+                    "inserting audit event",
+                    &db_path,
+                    "database is locked",
+                )
+                .into());
+            }
+            insert_audit_event_tx(
+                tx,
+                Some("agent-a"),
+                &AuditEvent::new("runtime_db_retry_body", serde_json::json!({})),
+            )
+        })?;
+
+        assert_eq!(attempts, 2);
+        let events = db.audit_events().recent(Some("agent-a"), 10)?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "runtime_db_retry_body");
+        Ok(())
     }
 
     fn task_record(id: &str, agent_id: &str, status: TaskStatus, offset: i64) -> TaskRecord {
@@ -7044,6 +7436,45 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(latest.len(), 1);
         assert_eq!(latest[0].message_id, "message-1");
         assert_eq!(latest[0].status, QueueEntryStatus::Dequeued);
+        Ok(())
+    }
+
+    #[test]
+    fn queue_entries_table_uses_message_id_as_current_state_key() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = db.connection()?;
+        let primary_key_columns: Vec<String> = {
+            let mut statement = connection.prepare("PRAGMA table_info(queue_entries)")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+            })?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter_map(|(name, pk)| (pk > 0).then_some(name))
+                .collect()
+        };
+        assert_eq!(primary_key_columns, vec!["message_id"]);
+
+        let now = Utc::now();
+        let queued = QueueEntryRecord {
+            message_id: "message-current".into(),
+            agent_id: "agent-a".into(),
+            priority: crate::types::Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut processed = queued.clone();
+        processed.status = QueueEntryStatus::Processed;
+        processed.updated_at = now + chrono::Duration::seconds(1);
+        db.queue_entries().upsert(&queued)?;
+        db.queue_entries().upsert(&processed)?;
+
+        let rows: i64 =
+            connection.query_row("SELECT COUNT(*) FROM queue_entries", [], |row| row.get(0))?;
+        assert_eq!(rows, 1);
+        assert!(db.queue_entries().queued_for_agent("agent-a")?.is_empty());
         Ok(())
     }
 
@@ -7883,6 +8314,269 @@ CREATE TABLE working_memory_deltas (
 
         let second = RuntimeDbLock::try_lock(&lock_path)?;
         assert_eq!(second.path(), lock_path.as_path());
+        Ok(())
+    }
+    #[test]
+    fn backfill_wait_condition_payload_columns_adds_columns_and_fills_data() -> Result<()> {
+        let (_temp_dir, db_path, _lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE wait_conditions (
+                wait_condition_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                work_item_id TEXT,
+                status TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                source TEXT,
+                subject_ref TEXT,
+                waiting_for TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT,
+                resolved_at TEXT,
+                cancelled_at TEXT,
+                last_turn_id TEXT,
+                payload_json TEXT NOT NULL
+            );",
+        )?;
+
+        let now = chrono::Utc::now();
+        let payload = serde_json::json!({
+            "id": "wc-1",
+            "agent_id": "agent-a",
+            "status": "active",
+            "kind": "external",
+            "source": "test",
+            "subject_ref": "github:owner/repo#1",
+            "waiting_for": "external",
+            "wake_sources": [{"kind": "external_ingress", "external_trigger_id": "trigger-123"}],
+            "continuation": {"action": "check_pr"},
+            "created_at": now.to_rfc3339(),
+            "updated_at": now.to_rfc3339()
+        });
+        let payload_json = serde_json::to_string(&payload)?;
+
+        conn.execute(
+            "INSERT INTO wait_conditions (wait_condition_id, agent_id, status, kind, waiting_for, created_at, updated_at, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params!["wc-1", "agent-a", "active", "external", "external", timestamp(now), timestamp(now), payload_json],
+        )?;
+
+        super::backfill_wait_condition_payload_columns(&conn)?;
+
+        let wake_sources: String = conn.query_row(
+            "SELECT wake_sources_json FROM wait_conditions WHERE wait_condition_id = 'wc-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(wake_sources.contains("external_ingress"));
+
+        let continuation: String = conn.query_row(
+            "SELECT continuation_json FROM wait_conditions WHERE wait_condition_id = 'wc-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(continuation.contains("check_pr"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn backfill_wait_condition_payload_columns_skips_existing_values() -> Result<()> {
+        let (_temp_dir, db_path, _lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE wait_conditions (
+                wait_condition_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                work_item_id TEXT,
+                status TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                source TEXT,
+                subject_ref TEXT,
+                waiting_for TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT,
+                resolved_at TEXT,
+                cancelled_at TEXT,
+                last_turn_id TEXT,
+                payload_json TEXT NOT NULL,
+                wake_sources_json TEXT NOT NULL DEFAULT '[]',
+                continuation_json TEXT
+            );",
+        )?;
+
+        let now = chrono::Utc::now();
+        conn.execute(
+            "INSERT INTO wait_conditions (wait_condition_id, agent_id, status, kind, waiting_for, created_at, updated_at, payload_json, wake_sources_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params!["wc-2", "agent-a", "active", "external", "external", timestamp(now), timestamp(now), "{}", "[\"existing\"]"],
+        )?;
+
+        super::backfill_wait_condition_payload_columns(&conn)?;
+
+        let wake_sources: String = conn.query_row(
+            "SELECT wake_sources_json FROM wait_conditions WHERE wait_condition_id = 'wc-2'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(wake_sources, "[\"existing\"]");
+
+        Ok(())
+    }
+
+    #[test]
+    fn backfill_wait_condition_payload_columns_handles_missing_table() -> Result<()> {
+        let (_temp_dir, db_path, _lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        super::backfill_wait_condition_payload_columns(&conn)?;
+        Ok(())
+    }
+
+    #[test]
+    fn backfill_work_item_recheck_columns_adds_columns_and_fills_data() -> Result<()> {
+        let (_temp_dir, db_path, _lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE work_items (
+                work_item_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                objective TEXT NOT NULL,
+                plan_status TEXT,
+                readiness TEXT,
+                revision INTEGER NOT NULL,
+                current_focus INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                plan_artifact_path TEXT,
+                last_turn_id TEXT,
+                last_message_id TEXT,
+                causation_id TEXT,
+                correlation_id TEXT,
+                payload_json TEXT NOT NULL
+            );",
+        )?;
+
+        let now = chrono::Utc::now();
+        let recheck_time = now + chrono::Duration::hours(1);
+        let payload = serde_json::json!({
+            "id": "wi-1",
+            "agent_id": "agent-a",
+            "workspace_id": "ws-test",
+            "revision": 1,
+            "objective": "Test work item",
+            "state": "open",
+            "plan_status": "draft",
+            "blocked_by": "external:github:owner/repo#1",
+            "recheck_at": recheck_time.to_rfc3339(),
+            "created_at": now.to_rfc3339(),
+            "updated_at": now.to_rfc3339()
+        });
+        let payload_json = serde_json::to_string(&payload)?;
+
+        conn.execute(
+            "INSERT INTO work_items (work_item_id, agent_id, state, objective, revision, current_focus, created_at, updated_at, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params!["wi-1", "agent-a", "open", "Test work item", 1, 0, timestamp(now), timestamp(now), payload_json],
+        )?;
+
+        super::backfill_work_item_recheck_columns(&conn)?;
+
+        let blocked_by: String = conn.query_row(
+            "SELECT blocked_by FROM work_items WHERE work_item_id = 'wi-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(blocked_by, "external:github:owner/repo#1");
+
+        let recheck_at: String = conn.query_row(
+            "SELECT recheck_at FROM work_items WHERE work_item_id = 'wi-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(!recheck_at.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn backfill_work_item_recheck_columns_skips_when_no_values() -> Result<()> {
+        let (_temp_dir, db_path, _lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE work_items (
+                work_item_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                objective TEXT NOT NULL,
+                plan_status TEXT,
+                readiness TEXT,
+                revision INTEGER NOT NULL,
+                current_focus INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                plan_artifact_path TEXT,
+                last_turn_id TEXT,
+                last_message_id TEXT,
+                causation_id TEXT,
+                correlation_id TEXT,
+                payload_json TEXT NOT NULL
+            );",
+        )?;
+
+        let now = chrono::Utc::now();
+        let payload = serde_json::json!({
+            "id": "wi-2",
+            "agent_id": "agent-a",
+            "workspace_id": "ws-test",
+            "revision": 1,
+            "objective": "Test work item",
+            "state": "open",
+            "plan_status": "draft",
+            "created_at": now.to_rfc3339(),
+            "updated_at": now.to_rfc3339()
+        });
+        let payload_json = serde_json::to_string(&payload)?;
+
+        conn.execute(
+            "INSERT INTO work_items (work_item_id, agent_id, state, objective, revision, current_focus, created_at, updated_at, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params!["wi-2", "agent-a", "open", "Test work item", 1, 0, timestamp(now), timestamp(now), payload_json],
+        )?;
+
+        super::backfill_work_item_recheck_columns(&conn)?;
+
+        let blocked_by: Option<String> = conn.query_row(
+            "SELECT blocked_by FROM work_items WHERE work_item_id = 'wi-2'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(blocked_by.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn backfill_work_item_recheck_columns_handles_missing_table() -> Result<()> {
+        let (_temp_dir, db_path, _lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        super::backfill_work_item_recheck_columns(&conn)?;
         Ok(())
     }
 }

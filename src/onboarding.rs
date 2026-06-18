@@ -1176,8 +1176,6 @@ mod tests {
             },
         );
         let deepseek = ProviderId::parse("deepseek").unwrap();
-        let deepseek_anthropic = ProviderId::parse("deepseek-anthropic").unwrap();
-        let deepseek_openai = ProviderId::parse("deepseek-openai").unwrap();
         let deepseek_config = ProviderRuntimeConfig {
             id: deepseek.clone(),
             transport: ProviderTransportKind::AnthropicMessages,
@@ -1200,22 +1198,6 @@ mod tests {
         config
             .providers
             .insert(deepseek.clone(), deepseek_config.clone());
-        config.providers.insert(
-            deepseek_anthropic.clone(),
-            ProviderRuntimeConfig {
-                id: deepseek_anthropic.clone(),
-                ..deepseek_config.clone()
-            },
-        );
-        config.providers.insert(
-            deepseek_openai.clone(),
-            ProviderRuntimeConfig {
-                id: deepseek_openai.clone(),
-                transport: ProviderTransportKind::OpenAiChatCompletions,
-                base_url: "https://api.deepseek.com/v1".into(),
-                ..deepseek_config
-            },
-        );
         config.default_model = ModelRef::parse("openai/custom-default").unwrap();
         config.fallback_models = vec![ModelRef::parse("openai/custom-fallback").unwrap()];
         config.validated_model_overrides.insert(
@@ -1245,12 +1227,6 @@ mod tests {
         assert_eq!(custom.credential_profile, "custom-openai");
         assert!(custom.configured);
         assert!(providers.iter().any(|provider| provider.id == deepseek));
-        assert!(!providers
-            .iter()
-            .any(|provider| provider.id == deepseek_anthropic));
-        assert!(!providers
-            .iter()
-            .any(|provider| provider.id == deepseek_openai));
 
         let models = onboarding_model_choices(&config, &ProviderId::openai());
         assert_eq!(models[0].model.as_string(), "openai/custom-default");

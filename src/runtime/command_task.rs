@@ -434,10 +434,11 @@ impl RuntimeHandle {
     }
 
     fn apply_command_output_policy(&self, spec: &mut CommandTaskSpec) {
+        let snap = self.inner.config_snapshot.load();
         let effective = effective_tool_output_tokens(
             spec.max_output_tokens,
-            self.inner.default_tool_output_tokens,
-            self.inner.max_tool_output_tokens,
+            snap.default_tool_output_tokens,
+            snap.max_tool_output_tokens,
         );
         spec.max_output_tokens = Some(effective);
     }
@@ -446,10 +447,11 @@ impl RuntimeHandle {
         command_cost_diagnostics(
             &spec.cmd,
             spec.max_output_tokens.unwrap_or_else(|| {
+                let snap = self.inner.config_snapshot.load();
                 effective_tool_output_tokens(
                     None,
-                    self.inner.default_tool_output_tokens,
-                    self.inner.max_tool_output_tokens,
+                    snap.default_tool_output_tokens,
+                    snap.max_tool_output_tokens,
                 )
             }),
         )

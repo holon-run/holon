@@ -17,6 +17,7 @@ export const runtimeFixture: RuntimeBootstrap = {
     {
       id: "holon-pm",
       badge: "PM",
+      badgeHue: 190,
       profile: "public · project manager profile",
       lifecycle: "asleep",
       focusSummary: "standalone Web GUI implementation plan",
@@ -42,11 +43,15 @@ export const runtimeFixture: RuntimeBootstrap = {
         id: "ws_fixture",
         name: "holon",
         anchor: "/Users/jolestar/opensource/src/github.com/holon-run/holon",
+        projectionKind: "git_worktree_root",
+        accessMode: "direct",
         executionRoot: "/Users/jolestar/opensource/src/github.com/holon-run/.holon-worktrees-holon/web-gui-prototype",
         cwd: "/Users/jolestar/opensource/src/github.com/holon-run/.holon-worktrees-holon/web-gui-prototype",
         worktree: {
           branch: "web-gui-prototype",
           path: "/Users/jolestar/opensource/src/github.com/holon-run/.holon-worktrees-holon/web-gui-prototype",
+          originalBranch: "main",
+          originalCwd: "/Users/jolestar/opensource/src/github.com/holon-run/holon",
         },
       },
       tasks: [
@@ -78,6 +83,7 @@ export const runtimeFixture: RuntimeBootstrap = {
       id: "holon-dev",
       badge: "DEV",
       badgeTone: "muted",
+      badgeHue: 210,
       profile: "public · implementation profile",
       lifecycle: "stopped",
       focusSummary: "no active workspace",

@@ -206,20 +206,24 @@ pub async fn tasks_and_state_routes_return_active_latest_tasks_only() -> Result<
         .json()
         .await?;
     let second_id = second["id"].as_str().expect("task id").to_string();
-    create_task("terminal task", "printf done", 1000)
+    let terminal: serde_json::Value = create_task("terminal task", "printf done", 1000)
         .send()
         .await?
-        .error_for_status()?;
+        .json()
+        .await?;
+    let terminal_id = terminal["id"].as_str().expect("task id").to_string();
 
     let runtime = host.default_runtime().await?;
     eventually_async(|| {
         let runtime = runtime.clone();
         let first_id = first_id.clone();
         let second_id = second_id.clone();
+        let terminal_id = terminal_id.clone();
         async move {
             let tasks = runtime.active_tasks(10).await?;
             Ok(tasks.iter().any(|task| task.id == first_id)
-                && tasks.iter().any(|task| task.id == second_id))
+                && tasks.iter().any(|task| task.id == second_id)
+                && tasks.iter().all(|task| task.id != terminal_id))
         }
     })
     .await?;

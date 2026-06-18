@@ -5,6 +5,7 @@ import type {
   AgentTimelineItemKind,
   DisplayLevel,
   RuntimeMessageEnvelope,
+  RuntimeBriefRecord,
   RuntimeTranscriptEntry,
 } from "./types";
 
@@ -34,6 +35,7 @@ export interface ReduceAgentSessionInput {
   includeDebug?: boolean;
   messagesById?: Record<string, RuntimeMessageEnvelope>;
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>;
+  briefRecordsById?: Record<string, RuntimeBriefRecord>;
 }
 
 interface SessionItemDraft {
@@ -81,6 +83,7 @@ export function reduceAgentSessionTimeline(input: ReduceAgentSessionInput): Agen
       input.includeDebug ?? false,
       input.messagesById,
       input.transcriptEntriesById,
+      input.briefRecordsById,
     ),
   );
 
@@ -144,12 +147,13 @@ function projectEventEnvelope(
   includeDebug: boolean,
   messagesById: Record<string, RuntimeMessageEnvelope> | undefined,
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
+  briefRecordsById?: Record<string, RuntimeBriefRecord>,
 ): AgentTimelineItem | undefined {
   if (!event.id && event.event_seq == null) return undefined;
   const id = event.id ?? `event-${event.event_seq}`;
   const payload = asRecord(event.payload);
   const eventType = event.type ?? "runtime_event";
-  const projection = projectRuntimeEvent(eventType, payload, messagesById, transcriptEntriesById);
+  const projection = projectRuntimeEvent(eventType, payload, messagesById, transcriptEntriesById, briefRecordsById);
   if (!projection) return undefined;
   const meta = eventMeta(eventType, payload, event.event_seq);
 
@@ -233,6 +237,7 @@ function projectRuntimeEvent(
   payload: Record<string, unknown> | undefined,
   messagesById?: Record<string, RuntimeMessageEnvelope>,
   transcriptEntriesById?: Record<string, RuntimeTranscriptEntry>,
+  briefRecordsById?: Record<string, RuntimeBriefRecord>,
 ): (Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> & { timestamp?: string }) | undefined {
   if (eventType === "message_enqueued") {
     const message = messageEnvelopeProjection(payload, messagesById);
@@ -257,7 +262,11 @@ function projectRuntimeEvent(
     return {
       kind: "assistant",
       label: stringField(payload, "kind") === "result" ? "Result" : "Brief Created",
-      body: transcriptTextForPayload(payload, transcriptEntriesById) || readableTextWithoutSummary(payload) || "Brief text unavailable.",
+      body:
+        transcriptTextForPayload(payload, transcriptEntriesById) ||
+        briefTextForPayload(payload, briefRecordsById) ||
+        readableTextWithoutSummary(payload) ||
+        "Brief text unavailable.",
       timestamp: stringField(payload, "created_at"),
       minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
@@ -281,6 +290,22 @@ function projectRuntimeEvent(
     };
   }
 
+  if (eventType === "turn_started") {
+    const turnIndex = numberField(payload, "turn_index");
+    const messageKind = stringField(payload, "message_kind");
+    const triggerLabel = messageKind ? turnTriggerLabel(messageKind) : undefined;
+    return {
+      kind: "system",
+      label: "Turn started",
+      body: compactJoin([
+        turnIndex != null ? `Turn #${turnIndex}` : undefined,
+        triggerLabel,
+      ]) || "Turn started",
+      timestamp: stringField(payload, "created_at"),
+      minDisplayLevel: "info",
+    };
+  }
+
   if (debugRuntimeEvents.has(eventType)) {
     return {
       kind: "system",
@@ -288,6 +313,10 @@ function projectRuntimeEvent(
       body: summarizeSystemRuntimeEvent(eventType, payload),
       minDisplayLevel: runtimeEventDisplayLevel(eventType),
     };
+  }
+
+  if (eventType === "task_created" || eventType === "task_status_updated" || eventType === "task_result_received") {
+    return projectTaskLifecycleEvent(eventType, payload);
   }
 
   if (eventType.startsWith("work_item_")) {
@@ -373,7 +402,7 @@ function projectAssistantRoundRecorded(
 
 function timelineDedupeKey(item: AgentTimelineItem): string {
   if (item.kind === "operator") {
-    return `operator:${normalizeTextKey(item.body)}`;
+    return `operator:${item.sourceIds[0] ?? item.id}`;
   }
   if (item.kind === "assistant") {
     return `assistant:${item.id}`;
@@ -504,12 +533,20 @@ function projectToolExecution(
   const exitStatus = numberField(payload, "exit_status") ?? numberField(result, "exit_status");
   const durationMs = numberField(payload, "duration_ms") ?? numberField(result, "duration_ms");
   const error = toolErrorMessage(payload);
+  const disposition = firstStringField(payload, ["exec_command_disposition"]) ?? firstStringField(result, ["disposition"]);
+  const promoted = disposition === "promoted_to_task";
   const stringPreview = toolStringPreview(toolName, payload, commandPreview) || undefined;
   const toolSummary = projection?.body ?? stringPreview ?? summary ?? genericToolDescription(toolName, payload) ?? toolName;
+  // Suppress duration for promoted tasks (yield_time, not real execution) and for read/control tools
+  // where duration_ms is just API round-trip time with no user-facing meaning.
+  const suppressDuration = promoted || isReadControlTool(toolName);
+  const effectiveDuration = suppressDuration ? undefined : durationMs;
+  const promotedTaskId = promoted ? firstStringField(asRecord(payload?.task_handle), ["task_id"]) : undefined;
   const body = compactJoin([
     toolSummary,
+    promotedTaskId ? `task ${shortTaskId(promotedTaskId)}` : undefined,
     exitStatus == null ? undefined : `exit ${exitStatus}`,
-    durationMs == null ? undefined : formatDuration(durationMs),
+    effectiveDuration == null ? undefined : formatDuration(effectiveDuration),
     error,
   ]);
   const outputPreview = commandOutputPreview(payload);
@@ -524,6 +561,10 @@ function projectToolExecution(
   };
 }
 
+function shortTaskId(taskId: string): string {
+  return taskId.length > 20 ? taskId.slice(0, 20) + "…" : taskId;
+}
+
 function toolTimelineDisplayLevel(toolName: string): DisplayLevel {
   if (debugOnlyToolNames.has(toolName)) return "debug";
   return "verbose";
@@ -534,15 +575,50 @@ function projectKnownToolExecution(
   payload: Record<string, unknown> | undefined,
 ): Pick<SessionItemDraft, "body" | "detail"> | undefined {
   if (toolName === "ApplyPatch") return projectApplyPatchTool(payload);
+  if (toolName === "ListTasks") return projectListTasksTool(payload);
   if (toolName === "ListWorkItems") return projectListWorkItemsTool(payload);
   if (toolName === "GetWorkItem") return projectGetWorkItemTool(payload);
   if (isWorkItemMutationTool(toolName)) return projectWorkItemMutationTool(payload);
   if (toolName === "ViewImage") return projectViewImageTool(payload);
+  if (isWebSearchTool(toolName)) return projectWebSearchTool(toolName, payload);
+  if (isWebFetchTool(toolName)) return projectWebFetchTool(payload);
+  if (toolName === "MemorySearch") return projectMemorySearchTool(payload);
+  if (toolName === "MemoryGet") return projectMemoryGetTool(payload);
+  if (toolName === "TaskOutput") return projectTaskOutputTool(payload);
+  if (toolName === "TaskStatus") return projectTaskStatusTool(payload);
+  if (toolName === "TaskStop") return projectTaskStopTool(payload);
+  if (toolName === "TaskInput") return projectTaskInputTool(payload);
   return undefined;
 }
 
 function isWorkItemMutationTool(toolName: string): boolean {
   return toolName === "CreateWorkItem" || toolName === "UpdateWorkItem" || toolName === "PickWorkItem" || toolName === "CompleteWorkItem";
+}
+
+function isWebSearchTool(toolName: string): boolean {
+  return toolName === "WebSearch";
+}
+
+function isWebFetchTool(toolName: string): boolean {
+  return toolName === "WebFetch";
+}
+
+/**
+ * Read/control tools where duration_ms is just API round-trip time, not meaningful execution time.
+ * Suppress showing it in the timeline to avoid noise like "success · 272ms".
+ */
+function isReadControlTool(toolName: string): boolean {
+  return (
+    toolName === "TaskOutput" ||
+    toolName === "TaskStatus" ||
+    toolName === "TaskStop" ||
+    toolName === "TaskInput" ||
+    toolName === "ListTasks" ||
+    toolName === "ListWorkItems" ||
+    toolName === "GetWorkItem" ||
+    toolName === "MemorySearch" ||
+    toolName === "MemoryGet"
+  );
 }
 
 function toolStringPreview(
@@ -600,6 +676,140 @@ function projectApplyPatchTool(payload: Record<string, unknown> | undefined): Pi
           tone: "diff",
         }
       : undefined,
+  };
+}
+
+function projectListTasksTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.list_tasks_result) ?? asRecord(payload?.result);
+  const tasks = arrayField(result, "tasks") ?? arrayField(result, "active_tasks");
+  const total = numberField(result, "total_active") ?? numberField(result, "total") ?? tasks?.length;
+  const returned = numberField(result, "returned") ?? tasks?.length;
+  const taskSummaries = summarizeTaskRecords(tasks);
+  return {
+    body: compactJoin([
+      total == null ? "Listed tasks" : `${total} active task${total === 1 ? "" : "s"}`,
+      returned != null && total != null && returned !== total ? `${returned} returned` : undefined,
+      taskSummaries.length ? taskSummaries.slice(0, 3).join("; ") : undefined,
+    ]),
+    detail: taskSummaries.length
+      ? { label: "Tasks", text: taskSummaries.join("\n"), tone: "data" }
+      : { label: "Result", text: debugJson(result ?? payload ?? {}), tone: "data" },
+  };
+}
+
+function extractTaskFromOutput(payload: Record<string, unknown> | undefined): {
+  task?: Record<string, unknown>;
+  taskId?: string;
+  taskStatus?: string;
+  retrievalStatus?: string;
+  kind?: string;
+  summary?: string;
+  exitStatus?: number;
+  outputPreview?: string;
+  truncated?: boolean;
+} {
+  const result = asRecord(payload?.task_output_result) ?? unwrapToolResult(payload);
+  const task = asRecord(result.task) ?? asRecord(result.task_record);
+  const taskId = firstStringField(task, ["task_id", "id"]) ?? stringField(result, "task_id") ?? stringField(payload, "task_id");
+  const resultStatus = stringField(result, "status");
+  const taskStatus =
+    firstStringField(task, ["status"]) ?? (resultStatus && !isTaskOutputRetrievalStatus(resultStatus) ? resultStatus : undefined);
+  const retrievalStatus =
+    stringField(result, "retrieval_status") ?? (resultStatus && isTaskOutputRetrievalStatus(resultStatus) ? resultStatus : undefined);
+  const kind = stringField(task, "kind") ?? stringField(result, "kind");
+  const summary = stringField(task, "summary") ?? stringField(result, "summary") ?? stringField(result, "result_summary");
+  const exitStatus = numberField(task, "exit_status") ?? numberField(result, "exit_status");
+  const outputPreview =
+    stringField(task, "output_preview") ??
+    stringField(result, "output_preview") ??
+    stringField(result, "output") ??
+    stringField(result, "stdout") ??
+    stringField(result, "stderr");
+  const truncated = task?.output_truncated === true || result.output_truncated === true || result.truncated === true;
+  return { task, taskId, taskStatus, retrievalStatus, kind, summary, exitStatus, outputPreview, truncated };
+}
+
+function isTaskOutputRetrievalStatus(status: string): boolean {
+  return status === "success" || status === "timeout" || status === "not_ready";
+}
+
+function formatTaskOutputRetrievalStatus(status: string | undefined): string | undefined {
+  if (!status || status === "success") return undefined;
+  if (status === "timeout") return "retrieval timeout";
+  if (status === "not_ready") return "not ready";
+  return status;
+}
+
+function projectTaskOutputTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const info = extractTaskFromOutput(payload);
+  const body = compactJoin([
+    "Task output",
+    info.taskId ? shortTaskId(info.taskId) : undefined,
+    formatTaskOutputRetrievalStatus(info.retrievalStatus),
+    info.taskStatus,
+    info.kind,
+    info.summary,
+    info.exitStatus != null ? `exit ${info.exitStatus}` : undefined,
+    info.truncated ? "truncated" : undefined,
+  ]);
+  return {
+    body,
+    detail: info.outputPreview
+      ? {
+          label: info.truncated ? "Task output (truncated)" : "Task output",
+          text: truncateText(info.outputPreview, 2000),
+          tone: "output",
+        }
+      : undefined,
+  };
+}
+
+function projectTaskStatusTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.task_status_result) ?? unwrapToolResult(payload);
+  const taskId = stringField(result, "task_id") ?? stringField(payload, "task_id");
+  const status = stringField(result, "status");
+  const summary = stringField(result, "summary");
+  const kind = stringField(result, "kind");
+  const body = compactJoin([
+    "Task status",
+    taskId ? shortTaskId(taskId) : undefined,
+    status === "success" ? undefined : status,
+    kind,
+    summary,
+  ]);
+  return {
+    body,
+    detail: undefined,
+  };
+}
+
+function projectTaskStopTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.task_stop_result) ?? unwrapToolResult(payload);
+  const taskId = stringField(result, "task_id") ?? stringField(payload, "task_id");
+  const status = stringField(result, "status");
+  const body = compactJoin([
+    "Stopped task",
+    taskId ? shortTaskId(taskId) : undefined,
+    status === "success" ? undefined : status,
+  ]);
+  return {
+    body,
+    detail: undefined,
+  };
+}
+
+function projectTaskInputTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const result = asRecord(payload?.task_input_result) ?? unwrapToolResult(payload);
+  const taskId = stringField(result, "task_id") ?? stringField(payload, "task_id");
+  const input = stringField(payload, "input") ?? stringField(result, "input");
+  const body = compactJoin([
+    "Task input",
+    taskId ? shortTaskId(taskId) : undefined,
+    input ? truncateText(input.replace(/\s+/g, " ").trim(), 100) : undefined,
+  ]);
+  return {
+    body,
+    detail: undefined,
   };
 }
 
@@ -665,6 +875,118 @@ function projectViewImageTool(payload: Record<string, unknown> | undefined): Pic
   };
 }
 
+function projectWebSearchTool(
+  toolName: string,
+  payload: Record<string, unknown> | undefined,
+): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const output = unwrapToolResult(payload);
+  const query = stringField(output, "query") ?? firstStringField(asRecord(payload?.input), ["query", "search_query", "q"]);
+  const results = arrayField(output, "results")?.map(asRecord).filter((r): r is Record<string, unknown> => Boolean(r)) ?? [];
+  const body = compactJoin([
+    "Web search",
+    query,
+    results.length ? `${results.length} result${results.length === 1 ? "" : "s"}` : undefined,
+  ]);
+
+  const detailText = results.length
+    ? results
+        .slice(0, 10)
+        .map((item, index) =>
+          compactJoin([
+            `${index + 1}. ${stringField(item, "title") ?? "Untitled"}`,
+            stringField(item, "url"),
+            stringField(item, "source"),
+            stringField(item, "snippet") ? truncateText(stringField(item, "snippet")!, 200) : undefined,
+          ]),
+        )
+        .join("\n\n")
+    : undefined;
+
+  return {
+    body,
+    detail: detailText ? { label: "Search results", text: detailText, tone: "output" } : undefined,
+  };
+}
+
+function projectWebFetchTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const output = unwrapToolResult(payload);
+  const url = stringField(output, "url") ?? firstStringField(asRecord(payload?.input), ["url"]);
+  const status = numberField(output, "status");
+  const bytesRead = numberField(output, "bytes_read");
+  const body = compactJoin([
+    "Web fetch",
+    url ? truncateText(url, 80) : undefined,
+    status != null ? `${status}` : undefined,
+    bytesRead != null ? formatBytesRead(bytesRead) : undefined,
+  ]);
+  const text = stringField(output, "text");
+  const truncated = output && typeof output === "object" && "truncated" in output ? output.truncated === true : false;
+  return {
+    body,
+    detail: text
+      ? { label: truncated ? "Fetched content (truncated)" : "Fetched content", text: truncateText(text, 600), tone: "output" }
+      : undefined,
+  };
+}
+
+function unwrapToolResult(payload: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!payload) return {};
+  const output = asRecord(payload.output) ?? asRecord(payload.result) ?? payload;
+  const envelope = asRecord(output.envelope);
+  if (envelope) return asRecord(envelope.result) ?? envelope;
+  return output;
+}
+
+function projectMemorySearchTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const output = unwrapToolResult(payload);
+  const query = stringField(output, "query") ?? firstStringField(asRecord(payload?.input), ["query"]);
+  const results = arrayField(output, "results") ?? [];
+  const resultCount = results.length;
+  const body = compactJoin([
+    "Memory search",
+    query ? `“${truncateText(query, 60)}”` : undefined,
+    resultCount === 0 ? "no matches" : `${resultCount} ${resultCount === 1 ? "result" : "results"}`,
+  ]);
+  const detailText = results.length
+    ? results
+        .map((item) => {
+          const record = asRecord(item);
+          const sourceRef = stringField(record, "source_ref");
+          const preview = stringField(record, "preview");
+          return compactJoin([sourceRef, preview]);
+        })
+        .filter(Boolean)
+        .join("\n\n")
+    : undefined;
+  return {
+    body,
+    detail: detailText ? { label: "Memory results", text: detailText, tone: "output" } : undefined,
+  };
+}
+
+function projectMemoryGetTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> | undefined {
+  const output = unwrapToolResult(payload);
+  const sourceRef = stringField(output, "source_ref") ?? firstStringField(asRecord(payload?.input), ["source_ref"]);
+  const content = stringField(output, "content");
+  const body = compactJoin([
+    "Memory get",
+    sourceRef ? truncateText(sourceRef, 80) : undefined,
+    content ? `${formatBytesRead(content.length)} retrieved` : undefined,
+  ]);
+  return {
+    body,
+    detail: content
+      ? { label: "Memory content", text: truncateText(content, 800), tone: "output" }
+      : undefined,
+  };
+}
+
+function formatBytesRead(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
 function summarizeWorkItemRecords(items: unknown[] | undefined): string[] {
   return (items ?? [])
     .map(asRecord)
@@ -673,11 +995,31 @@ function summarizeWorkItemRecords(items: unknown[] | undefined): string[] {
     .filter(Boolean);
 }
 
+function summarizeTaskRecords(tasks: unknown[] | undefined): string[] {
+  return (tasks ?? [])
+    .map(asRecord)
+    .filter((task): task is Record<string, unknown> => Boolean(task))
+    .map((task) => {
+      const command = firstStringField(asRecord(task.command), ["cmd_preview", "cmd"]);
+      const retrieval = firstStringField(asRecord(task.retrieval), ["status", "output"]);
+      return compactJoin([
+        stringField(task, "summary") ?? command ?? stringField(task, "kind"),
+        stringField(task, "status"),
+        stringField(task, "kind"),
+        firstStringField(task, ["task_id", "id"]),
+        retrieval,
+      ]);
+    })
+    .filter(Boolean);
+}
+
 function summarizeWorkItemRecord(record: Record<string, unknown> | undefined): string {
   const id = stringField(record, "id") ?? stringField(record, "work_item_id");
-  const objective = stringField(record, "objective");
-  const lifecycle = stringField(record, "lifecycle") ?? stringField(record, "status");
-  return compactJoin([objective, lifecycle, id]);
+  const objective = firstStringField(record, ["objective", "objective_preview"]);
+  const lifecycle = firstStringField(record, ["lifecycle", "state", "status"]);
+  const planStatus = stringField(record, "plan_status");
+  const readiness = stringField(record, "readiness");
+  return compactJoin([objective, lifecycle, planStatus, readiness, id]);
 }
 
 function applyPatchDetailText(
@@ -830,6 +1172,12 @@ function toolFriendlyLabel(toolName: string, failed: boolean): string {
   if (toolName === "UpdateWorkItem") return failed ? "Work item update failed" : "Updated work item";
   if (toolName === "PickWorkItem") return failed ? "Work item switch failed" : "Picked work item";
   if (toolName === "CompleteWorkItem") return failed ? "Work item completion failed" : "Completed work item";
+  if (isWebSearchTool(toolName)) return failed ? "Web search failed" : "Web search completed";
+  if (isWebFetchTool(toolName)) return failed ? "Web fetch failed" : "Web fetch completed";
+  if (toolName === "TaskOutput") return failed ? "Task output failed" : "Task output";
+  if (toolName === "TaskStatus") return failed ? "Task status failed" : "Task status";
+  if (toolName === "TaskStop") return failed ? "Task stop failed" : "Stopped task";
+  if (toolName === "TaskInput") return failed ? "Task input failed" : "Task input";
   return failed ? "Tool failed" : "Tool finished";
 }
 
@@ -841,10 +1189,12 @@ function formatDuration(milliseconds: number): string {
 function summarizeWorkItemEvent(eventType: string, payload: Record<string, unknown> | undefined): string {
   const action = stringField(payload, "action") ?? eventType.replace(/^work_item_/, "");
   const record = asRecord(payload?.record);
-  const objective = stringField(record, "objective");
+  const objective = firstStringField(record, ["objective", "objective_preview"]) ?? stringField(payload, "objective_preview");
+  const workItemId = firstStringField(payload, ["work_item_id", "current_work_item_id"]);
   const reason = stringField(payload, "reason");
+  const state = firstStringField(payload, ["state", "plan_status", "readiness"]);
   if (eventType === "work_item_picked") {
-    return compactJoin(["Picked work item", objective, reason]);
+    return compactJoin(["Picked work item", objective, reason, state]);
   }
   if (eventType === "work_item_focus_released") {
     return compactJoin(["Released work item focus", objective, reason, stringField(payload, "readiness")]);
@@ -855,7 +1205,63 @@ function summarizeWorkItemEvent(eventType: string, payload: Record<string, unkno
   if (eventType === "work_item_completion_report_candidate_promoted") {
     return compactJoin(["Promoted completion report candidate", objective, stringField(payload, "text_preview")]);
   }
-  return compactJoin([humanizeEventType(`work_item_${action}`), objective]);
+  return compactJoin([humanizeEventType(`work_item_${action}`), objective, state, objective ? undefined : workItemId]);
+}
+
+function projectTaskLifecycleEvent(
+  eventType: string,
+  payload: Record<string, unknown> | undefined,
+): Pick<SessionItemDraft, "kind" | "label" | "body" | "minDisplayLevel" | "detail"> {
+  const status = firstStringField(payload, ["task_status", "status"]);
+  const summary = stringField(payload, "summary");
+  const outputPreview = stringField(payload, "output_summary_preview");
+  const error = stringField(payload, "error");
+  const taskId = stringField(payload, "task_id");
+  const exitStatus = numberField(payload, "exit_status");
+  const outputPath = stringField(payload, "output_path");
+  const label = taskLifecycleLabel(eventType, status);
+  const body = compactJoin([
+    summary || taskId,
+    status && !label.toLowerCase().includes(status.toLowerCase()) ? status : undefined,
+    exitStatus == null ? undefined : `exit ${exitStatus}`,
+    error,
+    outputPreview,
+  ]) || humanizeEventType(eventType);
+  const detailText = compactJoin([
+    taskId ? `task: ${taskId}` : undefined,
+    outputPath ? `output: ${outputPath}` : undefined,
+    outputPreview,
+  ]);
+
+  return {
+    kind: "event",
+    label,
+    body,
+    minDisplayLevel: error || isFailedTaskStatus(status) ? "info" : "verbose",
+    detail: detailText ? { label: "Task details", text: detailText, tone: outputPreview ? "output" : "data" } : undefined,
+  };
+}
+
+function taskLifecycleLabel(eventType: string, status: string | undefined): string {
+  if (eventType === "task_created") return "Task queued";
+  if (eventType === "task_result_received") {
+    if (status === "completed") return "Task completed";
+    if (status === "failed") return "Task failed";
+    if (status === "cancelled") return "Task cancelled";
+    if (status === "interrupted") return "Task interrupted";
+    return "Task result received";
+  }
+  if (status === "running") return "Task running";
+  if (status === "cancelling") return "Task cancelling";
+  if (status === "completed") return "Task completed";
+  if (status === "failed") return "Task failed";
+  if (status === "cancelled") return "Task cancelled";
+  if (status === "interrupted") return "Task interrupted";
+  return "Task updated";
+}
+
+function isFailedTaskStatus(status: string | undefined): boolean {
+  return status === "failed" || status === "cancelled" || status === "interrupted";
 }
 
 function summarizeDebugEvent(eventType: string, payload: Record<string, unknown> | undefined): string {
@@ -892,9 +1298,24 @@ function summarizeSystemRuntimeEvent(eventType: string, payload: Record<string, 
 
 function systemRuntimeLabel(eventType: string): string {
   if (eventType.startsWith("turn_local_checkpoint_")) return "Context checkpoint";
+  if (eventType === "turn_started") return "Turn started";
   if (eventType.startsWith("continuation_")) return "Continuation";
   if (eventType === "closure_decided") return "Closure";
   return humanizeEventType(eventType);
+}
+
+function turnTriggerLabel(messageKind: string): string | undefined {
+  switch (messageKind) {
+    case "OperatorPrompt": return "operator";
+    case "InternalFollowup": return "internal followup";
+    case "SystemTick": return "system tick";
+    case "TimerTick": return "timer";
+    case "CallbackEvent": return "callback";
+    case "WebhookEvent": return "webhook";
+    case "ChannelEvent": return "channel event";
+    case "TaskResultContinuation": return "task result";
+    default: return undefined;
+  }
 }
 
 function messageEnvelopeProjection(
@@ -927,6 +1348,19 @@ function transcriptTextForPayload(
   const entryId = transcriptEntryIdForPayload(payload);
   const entry = entryId ? transcriptEntriesById?.[entryId] : undefined;
   return transcriptEntryText(entry);
+}
+
+function briefTextForPayload(
+  payload: Record<string, unknown> | undefined,
+  briefRecordsById: Record<string, RuntimeBriefRecord> | undefined,
+): string | undefined {
+  const briefId = briefIdForPayload(payload);
+  const text = briefId ? briefRecordsById?.[briefId]?.text : undefined;
+  return text && text.trim() ? text : undefined;
+}
+
+export function briefIdForPayload(payload: Record<string, unknown> | undefined): string | undefined {
+  return stringField(payload, "brief_id") ?? stringField(payload, "id");
 }
 
 export function transcriptEntryIdForPayload(payload: Record<string, unknown> | undefined): string | undefined {
@@ -1007,8 +1441,12 @@ function collectReadableEventFacts(value: Record<string, unknown>, facts: Map<st
     "status",
     "priority",
     "objective",
+    "objective_preview",
     "work_item_id",
+    "current_work_item_id",
     "task_id",
+    "task_status",
+    "output_summary_preview",
     "agent_id",
     "turn_id",
     "run_id",

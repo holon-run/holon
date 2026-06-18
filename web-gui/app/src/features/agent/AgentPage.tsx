@@ -42,6 +42,34 @@ const DEFAULT_VERBOSE_TIMELINE_ITEM_LIMIT = 160;
 const DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT = 220;
 const HISTORY_PAGE_VISIBLE_INCREMENT = 80;
 const TOP_SCROLL_THRESHOLD = 16;
+const COMPOSER_DRAFT_STORAGE_PREFIX = "holon.webGui.composerDraft.v1";
+
+export function storedComposerDraftKey(agentId: string): string {
+  return `${COMPOSER_DRAFT_STORAGE_PREFIX}:${encodeURIComponent(agentId)}`;
+}
+
+export function readStoredComposerDraft(agentId: string): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(storedComposerDraftKey(agentId)) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function writeStoredComposerDraft(agentId: string, prompt: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const key = storedComposerDraftKey(agentId);
+    if (prompt.length > 0) {
+      window.localStorage.setItem(key, prompt);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage failures; the in-memory draft still applies.
+  }
+}
 
 export function AgentPage({
   agent,
@@ -64,7 +92,7 @@ export function AgentPage({
   onInspectActivity,
   selectedActivityId,
 }: AgentPageProps) {
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(() => readStoredComposerDraft(agent.id));
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [changingModel, setChangingModel] = useState<string | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -112,6 +140,10 @@ export function AgentPage({
     setSelectedReasoningEffort(activeAgent.modelReasoningEffort ?? "auto");
   }, [activeAgent.id, displayLevel]);
 
+  useEffect(() => {
+    setPrompt(readStoredComposerDraft(activeAgent.id));
+  }, [activeAgent.id]);
+
   useLayoutEffect(() => {
     const list = messageListRef.current;
     if (!list) return;
@@ -132,6 +164,7 @@ export function AgentPage({
     if (!canSendPrompt) return;
     try {
       await onSendPrompt(trimmedPrompt);
+      writeStoredComposerDraft(activeAgent.id, "");
       setPrompt("");
     } catch {
       // Keep the draft in place; runtime-store exposes the user-facing error.
@@ -147,6 +180,11 @@ export function AgentPage({
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
     await sendDraftPrompt();
+  }
+
+  function handlePromptChange(value: string) {
+    setPrompt(value);
+    writeStoredComposerDraft(activeAgent.id, value);
   }
 
   function handleMessageListScroll() {
@@ -263,7 +301,7 @@ export function AgentPage({
               placeholder={`Send operator input to ${activeAgent.id}...`}
               value={prompt}
               disabled={sendingPrompt}
-              onChange={(event) => setPrompt(event.target.value)}
+              onChange={(event) => handlePromptChange(event.target.value)}
               onKeyDown={handleComposerKeyDown}
             />
             {promptError ? (
@@ -454,7 +492,7 @@ function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean): boolean {
 function collectWorkingActivitiesForCurrentTurn(timeline: AgentTimelineItem[]): AgentTimelineActivity[] {
   let currentTurnStart = -1;
   for (let index = timeline.length - 1; index >= 0; index -= 1) {
-    if (timeline[index]?.kind === "operator") {
+    if (timeline[index]?.kind === "operator" || isTurnStartedItem(timeline[index]!)) {
       currentTurnStart = index;
       break;
     }
@@ -526,19 +564,33 @@ function groupTimelineTurns(timeline: AgentTimelineItem[]): TimelineTurn[] {
   let current: TimelineTurn | undefined;
 
   for (const item of timeline) {
-    if (!current || item.kind === "operator") {
+    const isTurnBoundary = isTurnStartedItem(item);
+    const isOperatorBoundary = item.kind === "operator";
+    if (!current || isOperatorBoundary || isTurnBoundary) {
+      const triggerLabel = isTurnBoundary ? item.body : undefined;
       current = {
-        id: item.kind === "operator" ? `turn:${item.id}` : `activity:${item.id}`,
-        label: item.kind === "operator" ? "Operator turn" : "Runtime activity",
+        id: isOperatorBoundary || isTurnBoundary ? `turn:${item.id}` : `activity:${item.id}`,
+        label: isOperatorBoundary
+          ? "Operator turn"
+          : isTurnBoundary
+            ? triggerLabel || "Turn"
+            : "Runtime activity",
         timestamp: item.timestamp,
-        items: [],
+        items: isTurnBoundary ? [] : [item],
       };
       turns.push(current);
+      continue;
     }
+    if (isTurnStartedItem(item)) continue;
     current.items.push(item);
   }
 
-  return turns;
+  const nonEmpty = turns.filter((turn) => turn.items.length > 0);
+  return nonEmpty.length === turns.length ? turns : nonEmpty;
+}
+
+function isTurnStartedItem(item: AgentTimelineItem): boolean {
+  return item.meta.startsWith("turn_started");
 }
 
 const TimelineTurnGroup = memo(function TimelineTurnGroup({
@@ -559,7 +611,7 @@ const TimelineTurnGroup = memo(function TimelineTurnGroup({
       <div className="timeline-turn-rail" aria-hidden="true" />
       <div className="timeline-turn-body">
         <div className="timeline-turn-header">
-          <span className="sr-only">{turn.label}</span>
+          <span className="timeline-turn-label">{turn.label}</span>
           <time>{formatDisplayTime(turn.timestamp)}</time>
         </div>
         {turn.items.map((item, index) => (
