@@ -24,7 +24,7 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
 #[derive(Debug, Parser)]
 #[command(name = "holon")]
 #[command(about = "A headless, event-driven runtime for long-lived agents")]
-#[command(version)]
+#[command(version = env!("HOLON_VERSION"))]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
