@@ -245,6 +245,56 @@ pub struct ContextEpisodeRepository<'a> {
     db: &'a RuntimeDb,
 }
 
+pub struct RuntimeIndexOutboxRepository<'a> {
+    db: &'a RuntimeDb,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeIndexOperation {
+    Upsert,
+    Delete,
+}
+
+impl RuntimeIndexOperation {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Upsert => "upsert",
+            Self::Delete => "delete",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        match value {
+            "delete" => Self::Delete,
+            _ => Self::Upsert,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeIndexChange {
+    pub agent_id: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub source_ref: String,
+    pub operation: RuntimeIndexOperation,
+    pub source_updated_at: Option<DateTime<Utc>>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeIndexOutboxRow {
+    pub change_seq: i64,
+    pub agent_id: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub source_ref: String,
+    pub operation: RuntimeIndexOperation,
+    pub source_updated_at: Option<DateTime<Utc>>,
+    pub reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageDomainSnapshot {
     pub domain: String,
@@ -306,6 +356,107 @@ impl EvidenceKind {
             Self::DeliverySummary => "delivery_summaries",
             Self::ArtifactMetadata => "artifact_metadata",
         }
+    }
+}
+
+impl RuntimeIndexOutboxRepository<'_> {
+    pub fn append_changes(&self, changes: &[RuntimeIndexChange]) -> Result<()> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        self.db
+            .transaction(|tx| insert_runtime_index_changes_tx(tx, changes))
+    }
+
+    pub fn high_watermark(&self) -> Result<i64> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT COALESCE(MAX(change_seq), 0) FROM runtime_index_outbox",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn high_watermark_for_agent(&self, agent_id: &str) -> Result<i64> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT COALESCE(MAX(change_seq), 0)
+                 FROM runtime_index_outbox
+                 WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn read_after(
+        &self,
+        agent_id: &str,
+        after_change_seq: i64,
+        limit: usize,
+    ) -> Result<Vec<RuntimeIndexOutboxRow>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT change_seq, agent_id, source_kind, source_id, source_ref, operation,
+                    source_updated_at, reason, created_at
+             FROM runtime_index_outbox
+             WHERE agent_id = ?1 AND change_seq > ?2
+             ORDER BY change_seq ASC
+             LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![agent_id, after_change_seq, limit], |row| {
+            let source_updated_at: Option<String> = row.get(6)?;
+            let created_at: String = row.get(8)?;
+            Ok(RuntimeIndexOutboxRow {
+                change_seq: row.get(0)?,
+                agent_id: row.get(1)?,
+                source_kind: row.get(2)?,
+                source_id: row.get(3)?,
+                source_ref: row.get(4)?,
+                operation: RuntimeIndexOperation::parse(&row.get::<_, String>(5)?),
+                source_updated_at: source_updated_at
+                    .as_deref()
+                    .map(DateTime::parse_from_rfc3339)
+                    .transpose()
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            6,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?
+                    .map(|dt| dt.with_timezone(&Utc)),
+                reason: row.get(7)?,
+                created_at: DateTime::parse_from_rfc3339(&created_at)
+                    .map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            8,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?
+                    .with_timezone(&Utc),
+            })
+        })?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
+    pub fn delete_through(&self, agent_id: &str, through_change_seq: i64) -> Result<usize> {
+        self.db.transaction(|tx| {
+            tx.execute(
+                "DELETE FROM runtime_index_outbox
+                 WHERE agent_id = ?1 AND change_seq <= ?2",
+                params![agent_id, through_change_seq],
+            )
+            .map_err(Into::into)
+        })
     }
 }
 
@@ -691,6 +842,18 @@ impl WorkItemRepository<'_> {
             .transaction(|tx| upsert_work_item_tx(tx, record, current_focus))
     }
 
+    pub fn upsert_with_index_changes(
+        &self,
+        record: &WorkItemRecord,
+        current_focus: bool,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            upsert_work_item_tx(tx, record, current_focus)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
+    }
+
     pub fn set_current_focus(&self, agent_id: &str, work_item_id: Option<&str>) -> Result<()> {
         self.db.transaction(|tx| {
             tx.execute(
@@ -850,6 +1013,17 @@ impl WorkspaceEntryRepository<'_> {
     pub fn upsert(&self, record: &WorkspaceEntry) -> Result<()> {
         self.db
             .transaction(|tx| upsert_workspace_entry_tx(tx, record))
+    }
+
+    pub fn upsert_with_index_changes(
+        &self,
+        record: &WorkspaceEntry,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            upsert_workspace_entry_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
     }
 
     pub fn latest_all(&self) -> Result<Vec<WorkspaceEntry>> {
@@ -1179,6 +1353,17 @@ impl ContextEpisodeRepository<'_> {
             .transaction(|tx| upsert_context_episode_tx(tx, record))
     }
 
+    pub fn upsert_with_index_changes(
+        &self,
+        record: &ContextEpisodeRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            upsert_context_episode_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
+    }
+
     pub fn recent(&self, limit: usize) -> Result<Vec<ContextEpisodeRecord>> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -1372,6 +1557,17 @@ impl TaskRepository<'_> {
 
     pub fn upsert(&self, record: &TaskRecord) -> Result<()> {
         self.db.transaction(|tx| upsert_task_tx(tx, record))
+    }
+
+    pub fn upsert_with_index_changes(
+        &self,
+        record: &TaskRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            upsert_task_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
     }
 
     pub fn latest(&self, task_id: &str) -> Result<Option<TaskRecord>> {
@@ -2319,9 +2515,31 @@ impl EvidenceRepository<'_> {
             .transaction(|tx| insert_tool_evidence_tx(tx, record))
     }
 
+    pub fn append_tool_execution_with_index_changes(
+        &self,
+        record: &ToolExecutionRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            insert_tool_evidence_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
+    }
+
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
         self.db
             .transaction(|tx| insert_brief_evidence_tx(tx, brief))
+    }
+
+    pub fn append_brief_with_index_changes(
+        &self,
+        brief: &BriefRecord,
+        changes: &[RuntimeIndexChange],
+    ) -> Result<()> {
+        self.db.transaction(|tx| {
+            insert_brief_evidence_tx(tx, brief)?;
+            insert_runtime_index_changes_tx(tx, changes)
+        })
     }
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
@@ -3184,6 +3402,31 @@ fn upsert_transcript_entry_tx(tx: &Transaction<'_>, entry: &TranscriptEntry) -> 
             payload_json,
         ],
     )?;
+    Ok(())
+}
+
+fn insert_runtime_index_changes_tx(
+    tx: &Transaction<'_>,
+    changes: &[RuntimeIndexChange],
+) -> Result<()> {
+    for change in changes {
+        tx.execute(
+            "INSERT INTO runtime_index_outbox (
+                agent_id, source_kind, source_id, source_ref, operation,
+                source_updated_at, reason, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                change.agent_id,
+                change.source_kind,
+                change.source_id,
+                change.source_ref,
+                change.operation.as_str(),
+                change.source_updated_at.map(timestamp),
+                change.reason,
+                timestamp(Utc::now()),
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -5312,6 +5555,29 @@ CREATE INDEX IF NOT EXISTS idx_queue_entries_agent_status
   ON queue_entries(agent_id, status, updated_at);
 "#,
     },
+    Migration {
+        version: 19,
+        name: "runtime_index_outbox",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS runtime_index_outbox (
+  change_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  source_ref TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  source_updated_at TEXT,
+  reason TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_index_outbox_agent_seq
+  ON runtime_index_outbox(agent_id, change_seq);
+
+CREATE INDEX IF NOT EXISTS idx_runtime_index_outbox_source
+  ON runtime_index_outbox(source_kind, source_id);
+"#,
+    },
 ];
 
 impl RuntimeDb {
@@ -5445,6 +5711,10 @@ impl RuntimeDb {
 
     pub fn context_episodes(&self) -> ContextEpisodeRepository<'_> {
         ContextEpisodeRepository { db: self }
+    }
+
+    pub fn runtime_index_outbox(&self) -> RuntimeIndexOutboxRepository<'_> {
+        RuntimeIndexOutboxRepository { db: self }
     }
 
     pub const fn expected_storage_domains() -> &'static [ExpectedStorageDomain] {

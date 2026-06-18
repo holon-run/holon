@@ -607,7 +607,7 @@ impl RuntimeHandle {
         query: &str,
         limit: usize,
         include_all_workspaces: bool,
-    ) -> Result<Vec<crate::memory::MemorySearchResult>> {
+    ) -> Result<crate::memory::MemorySearchQueryResult> {
         let active_workspace_id = self
             .agent_state()
             .await?
@@ -616,7 +616,7 @@ impl RuntimeHandle {
         let storage = self.inner.storage.clone();
         let query = query.to_string();
         tokio::task::spawn_blocking(move || {
-            crate::memory::search_memory(
+            crate::memory::search_memory_query(
                 &storage,
                 &query,
                 limit,

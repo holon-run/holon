@@ -15,19 +15,19 @@ use tokio::sync::broadcast;
 
 use crate::{
     memory::index::enqueue_memory_index_upsert,
-    runtime_db::RuntimeDb,
+    runtime_db::{RuntimeDb, RuntimeIndexChange, RuntimeIndexOperation},
     tool::helpers::{command_output_source_ref, command_receipt_source_ref},
     types::{
         AgentIdentityRecord, AgentPostureProjection, AgentSchedulingPosture, AgentState,
-        AgentStatus, AuditEvent, BriefRecord, ContextEpisodeRecord, DeliverySummaryRecord,
-        ExternalTriggerRecord, ExternalWaitRecoverability, MessageEnvelope, OperatorDeliveryRecord,
-        OperatorNotificationRecord, OperatorTransportBinding, QueueEntryRecord, QueueEntryStatus,
-        TaskRecord, TaskStatus, TimerRecord, TodoItem, TodoItemState, ToolExecutionRecord,
-        TranscriptEntry, TurnRecord, WaitConditionKind, WaitConditionRecord, WaitConditionStatus,
-        WaitingIntentRecord, WaitingIntentScope, WaitingIntentStatus, WakeSource,
-        WorkItemContinuationFrame, WorkItemContinuationState, WorkItemDelegationRecord,
-        WorkItemDelegationState, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState,
-        WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
+        AgentStatus, AuditEvent, BriefKind, BriefRecord, ContextEpisodeRecord,
+        DeliverySummaryRecord, ExternalTriggerRecord, ExternalWaitRecoverability, MessageEnvelope,
+        OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding,
+        QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskStatus, TimerRecord, TodoItem,
+        TodoItemState, ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionKind,
+        WaitConditionRecord, WaitConditionStatus, WaitingIntentRecord, WaitingIntentScope,
+        WaitingIntentStatus, WakeSource, WorkItemContinuationFrame, WorkItemContinuationState,
+        WorkItemDelegationRecord, WorkItemDelegationState, WorkItemReadiness, WorkItemRecord,
+        WorkItemSchedulingState, WorkItemState, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -656,8 +656,10 @@ impl AppStorage {
 
     pub fn append_brief(&self, brief: &BriefRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.evidence().append_brief(brief)?;
-            return self.enqueue_memory_index_brief_best_effort(brief);
+            let changes = self.index_changes_for_brief(brief)?;
+            return runtime_db
+                .evidence()
+                .append_brief_with_index_changes(brief, &changes);
         }
         self.append_jsonl(&self.briefs_path, brief)?;
         self.enqueue_memory_index_brief_best_effort(brief)
@@ -685,8 +687,8 @@ impl AppStorage {
 
     pub fn append_task(&self, task: &TaskRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.tasks().upsert(task)?;
-            return self.enqueue_memory_index_task_best_effort(task);
+            let changes = self.index_changes_for_task(task)?;
+            return runtime_db.tasks().upsert_with_index_changes(task, &changes);
         }
         self.append_jsonl(&self.tasks_path, task)?;
         self.enqueue_memory_index_task_best_effort(task)
@@ -699,8 +701,12 @@ impl AppStorage {
                 .and_then(|agent| agent.current_work_item_id)
                 .as_deref()
                 == Some(record.id.as_str());
-            runtime_db.work_items().upsert(record, current_focus)?;
-            return self.enqueue_memory_index_work_item_best_effort(record);
+            let changes = self.index_changes_for_work_item(record)?;
+            return runtime_db.work_items().upsert_with_index_changes(
+                record,
+                current_focus,
+                &changes,
+            );
         }
         self.append_jsonl(&self.work_items_path, record)?;
         self.enqueue_memory_index_work_item_best_effort(record)
@@ -740,23 +746,13 @@ impl AppStorage {
 
     pub fn append_tool_execution(&self, record: &ToolExecutionRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.evidence().append_tool_execution(record)?;
-            if matches!(
-                record.tool_name.as_str(),
-                "ExecCommand" | "ExecCommandBatch"
-            ) {
-                self.enqueue_memory_index_tool_execution_best_effort(record)?;
-            }
-            return Ok(());
+            let changes = self.index_changes_for_tool_execution(record)?;
+            return runtime_db
+                .evidence()
+                .append_tool_execution_with_index_changes(record, &changes);
         }
         self.append_jsonl(&self.tools_path, record)?;
-        if matches!(
-            record.tool_name.as_str(),
-            "ExecCommand" | "ExecCommandBatch"
-        ) {
-            self.enqueue_memory_index_tool_execution_best_effort(record)?;
-        }
-        Ok(())
+        self.enqueue_memory_index_tool_execution_best_effort(record)
     }
 
     pub fn append_turn(&self, record: &TurnRecord) -> Result<()> {
@@ -863,8 +859,10 @@ impl AppStorage {
 
     pub fn append_context_episode(&self, record: &ContextEpisodeRecord) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.context_episodes().upsert(record)?;
-            return self.enqueue_memory_index_context_episode_best_effort(record);
+            let changes = self.index_changes_for_context_episode(record)?;
+            return runtime_db
+                .context_episodes()
+                .upsert_with_index_changes(record, &changes);
         }
         self.append_jsonl(&self.context_episodes_path, record)?;
         self.enqueue_memory_index_context_episode_best_effort(record)
@@ -872,8 +870,10 @@ impl AppStorage {
 
     pub fn append_workspace_entry(&self, entry: &WorkspaceEntry) -> Result<()> {
         if let Some(runtime_db) = self.scheduler_control_plane_db()? {
-            runtime_db.workspace_entries().upsert(entry)?;
-            return self.enqueue_memory_index_workspace_entry_best_effort(entry);
+            let changes = self.index_changes_for_workspace_entry(entry)?;
+            return runtime_db
+                .workspace_entries()
+                .upsert_with_index_changes(entry, &changes);
         }
         self.append_jsonl(&self.workspaces_path, entry)?;
         self.enqueue_memory_index_workspace_entry_best_effort(entry)
@@ -918,6 +918,175 @@ impl AppStorage {
         }
         fs::create_dir_all(self.shared_indexes_dir())?;
         fs::write(&dirty_path, b"dirty").with_context(|| "failed to mark memory index dirty")
+    }
+
+    fn runtime_index_upsert(
+        &self,
+        agent_id: impl Into<String>,
+        source_kind: impl Into<String>,
+        source_id: impl Into<String>,
+        source_ref: impl Into<String>,
+        source_updated_at: Option<DateTime<Utc>>,
+        reason: &'static str,
+    ) -> Result<RuntimeIndexChange> {
+        Ok(RuntimeIndexChange {
+            agent_id: agent_id.into(),
+            source_kind: source_kind.into(),
+            source_id: source_id.into(),
+            source_ref: source_ref.into(),
+            operation: RuntimeIndexOperation::Upsert,
+            source_updated_at,
+            reason: reason.into(),
+        })
+    }
+
+    fn index_changes_for_brief(&self, brief: &BriefRecord) -> Result<Vec<RuntimeIndexChange>> {
+        if brief.kind == BriefKind::Ack || brief.text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![self.runtime_index_upsert(
+            brief.agent_id.clone(),
+            "brief",
+            brief.id.clone(),
+            format!("brief:{}", brief.id),
+            Some(brief.created_at),
+            "brief_written",
+        )?])
+    }
+
+    fn index_changes_for_task(&self, task: &TaskRecord) -> Result<Vec<RuntimeIndexChange>> {
+        Ok(vec![self.runtime_index_upsert(
+            task.agent_id.clone(),
+            "task",
+            task.id.clone(),
+            format!("task:{}", task.id),
+            Some(task.updated_at),
+            "task_written",
+        )?])
+    }
+
+    fn index_changes_for_work_item(
+        &self,
+        record: &WorkItemRecord,
+    ) -> Result<Vec<RuntimeIndexChange>> {
+        Ok(vec![self.runtime_index_upsert(
+            record.agent_id.clone(),
+            "work_item",
+            record.id.clone(),
+            format!("work_item:{}", record.id),
+            Some(record.updated_at),
+            "work_item_written",
+        )?])
+    }
+
+    fn index_changes_for_context_episode(
+        &self,
+        record: &ContextEpisodeRecord,
+    ) -> Result<Vec<RuntimeIndexChange>> {
+        Ok(vec![self.runtime_index_upsert(
+            record.agent_id.clone(),
+            "context_episode",
+            record.id.clone(),
+            format!("episode:{}", record.id),
+            Some(record.finalized_at),
+            "context_episode_written",
+        )?])
+    }
+
+    fn index_changes_for_workspace_entry(
+        &self,
+        entry: &WorkspaceEntry,
+    ) -> Result<Vec<RuntimeIndexChange>> {
+        let Some(agent_id) = entry
+            .owner_agent_id
+            .clone()
+            .or_else(|| self.storage_agent_id().ok())
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(vec![self.runtime_index_upsert(
+            agent_id,
+            "workspace_profile",
+            entry.workspace_id.clone(),
+            format!("workspace_profile:{}", entry.workspace_id),
+            Some(entry.updated_at),
+            "workspace_profile_written",
+        )?])
+    }
+
+    fn index_changes_for_tool_execution(
+        &self,
+        record: &ToolExecutionRecord,
+    ) -> Result<Vec<RuntimeIndexChange>> {
+        let mut changes = Vec::new();
+        match record.tool_name.as_str() {
+            "ExecCommand" => {
+                if record.input.get("cmd").and_then(Value::as_str).is_some() {
+                    let source_ref = command_receipt_source_ref(&record.id, None);
+                    changes.push(self.runtime_index_upsert(
+                        record.agent_id.clone(),
+                        "tool_command_receipt",
+                        source_ref.clone(),
+                        source_ref,
+                        record.completed_at.or(Some(record.created_at)),
+                        "tool_command_receipt_written",
+                    )?);
+                    for stream in ["stdout", "stderr", "output"] {
+                        let source_ref = command_output_source_ref(&record.id, None, stream);
+                        changes.push(self.runtime_index_upsert(
+                            record.agent_id.clone(),
+                            "tool_command_output_preview",
+                            source_ref.clone(),
+                            source_ref,
+                            record.completed_at.or(Some(record.created_at)),
+                            "tool_command_output_preview_written",
+                        )?);
+                    }
+                }
+            }
+            "ExecCommandBatch" => {
+                if let Some(items) = record.input.get("items").and_then(Value::as_array) {
+                    for (offset, item) in items.iter().enumerate() {
+                        if item.get("cmd").and_then(Value::as_str).is_some() {
+                            let index = offset + 1;
+                            let source_ref = command_receipt_source_ref(&record.id, Some(index));
+                            changes.push(self.runtime_index_upsert(
+                                record.agent_id.clone(),
+                                "tool_command_receipt",
+                                source_ref.clone(),
+                                source_ref,
+                                record.completed_at.or(Some(record.created_at)),
+                                "tool_command_receipt_written",
+                            )?);
+                            for stream in ["stdout", "stderr", "output"] {
+                                let source_ref =
+                                    command_output_source_ref(&record.id, Some(index), stream);
+                                changes.push(self.runtime_index_upsert(
+                                    record.agent_id.clone(),
+                                    "tool_command_output_preview",
+                                    source_ref.clone(),
+                                    source_ref,
+                                    record.completed_at.or(Some(record.created_at)),
+                                    "tool_command_output_preview_written",
+                                )?);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                let source_ref = command_output_source_ref(&record.id, None, "output");
+                changes.push(self.runtime_index_upsert(
+                    record.agent_id.clone(),
+                    "tool_execution_output_preview",
+                    source_ref.clone(),
+                    source_ref,
+                    record.completed_at.or(Some(record.created_at)),
+                    "tool_execution_output_preview_written",
+                )?);
+            }
+        }
+        Ok(changes)
     }
 
     fn enqueue_memory_index_brief(&self, brief: &BriefRecord) -> Result<()> {
@@ -4240,7 +4409,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_index_enqueue_failure_does_not_fail_tool_evidence_append() {
+    fn runtime_index_outbox_write_does_not_touch_memory_index_db() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
@@ -4275,10 +4444,21 @@ mod tests {
         storage.append_tool_execution(&tool).unwrap();
 
         assert_eq!(storage.read_recent_tool_executions(10).unwrap(), vec![tool]);
-        assert!(storage
-            .shared_indexes_dir()
-            .join("memory.default.dirty")
-            .exists());
+        let runtime_db = storage.runtime_db().unwrap().unwrap();
+        let changes = runtime_db
+            .runtime_index_outbox()
+            .read_after("default", 0, 10)
+            .unwrap();
+        assert!(changes
+            .iter()
+            .any(|change| change.source_kind == "tool_command_receipt"));
+        assert!(
+            !storage
+                .shared_indexes_dir()
+                .join("memory.default.dirty")
+                .exists(),
+            "runtime outbox replaces direct memory index writes on the critical path"
+        );
     }
 
     #[test]
@@ -4373,16 +4553,14 @@ mod tests {
 
         assert_eq!(storage.read_recent_briefs(10).unwrap(), vec![brief]);
         assert_eq!(storage.count_briefs().unwrap(), 1);
-        let index = rusqlite::Connection::open(storage.shared_indexes_dir().join("memory.sqlite3"))
+        let runtime_db = storage.runtime_db().unwrap().unwrap();
+        let changes = runtime_db
+            .runtime_index_outbox()
+            .read_after("default", 0, 10)
             .unwrap();
-        let pending_agent_id: String = index
-            .query_row(
-                "SELECT agent_id FROM memory_index_pending_sources WHERE source_kind = 'brief'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(pending_agent_id, "default");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].agent_id, "default");
+        assert_eq!(changes[0].source_kind, "brief");
     }
 
     #[test]

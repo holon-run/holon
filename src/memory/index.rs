@@ -15,7 +15,7 @@ use crate::{
     agent_template::{agent_memory_operator_path, agent_memory_self_path},
     memory::refs::{RuntimeRef, ToolExecutionRefSelector, ToolOutputSelector},
     object_resolver::RuntimeObjectResolver,
-    runtime_db::{EvidenceKind, RuntimeDb},
+    runtime_db::{EvidenceKind, RuntimeDb, RuntimeIndexOperation, RuntimeIndexOutboxRow},
     storage::AppStorage,
     tool::helpers::{
         command_digest, command_output_source_ref, command_preview, command_receipt_source_ref,
@@ -27,13 +27,16 @@ use crate::{
     },
 };
 
-const INDEX_FILENAME: &str = "memory.sqlite3";
+const INDEX_FILENAME: &str = "memory.v2.sqlite3";
 const DIRTY_FILENAME: &str = "memory.dirty";
 const SEARCH_LIMIT_MAX: usize = 50;
+const MEMORY_INDEX_OUTBOX_CONSUME_LIMIT: usize = 500;
 const GET_CHARS_DEFAULT: usize = 12_000;
 const GET_CHARS_MAX: usize = 50_000;
-const MEMORY_INDEX_DOCUMENT_SCHEMA_VERSION: i64 = 1;
+const MEMORY_INDEX_DOCUMENT_SCHEMA_VERSION: i64 = 2;
 const MEMORY_INDEX_BACKFILL_CURSOR: &str = "full";
+const MEMORY_INDEX_OUTBOX_CURSOR: &str = "runtime_index_outbox";
+const MEMORY_INDEX_SEARCH_TEXT_MAX_CHARS: usize = 12_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,6 +54,24 @@ pub struct MemorySearchResult {
     pub score: f64,
     pub updated_at: DateTime<Utc>,
     pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MemorySearchIndexStatus {
+    pub freshness: String,
+    pub cursor: i64,
+    pub high_watermark: i64,
+    pub lag: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_indexed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MemorySearchQueryResult {
+    pub results: Vec<MemorySearchResult>,
+    pub index_status: MemorySearchIndexStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,15 +155,37 @@ pub fn search_memory(
     active_workspace_id: Option<&str>,
     include_all_workspaces: bool,
 ) -> Result<Vec<MemorySearchResult>> {
+    Ok(search_memory_query(
+        storage,
+        query,
+        limit,
+        active_workspace_id,
+        include_all_workspaces,
+    )?
+    .results)
+}
+
+pub fn search_memory_query(
+    storage: &AppStorage,
+    query: &str,
+    limit: usize,
+    active_workspace_id: Option<&str>,
+    include_all_workspaces: bool,
+) -> Result<MemorySearchQueryResult> {
     let index = ensure_memory_index_current(storage, active_workspace_id)?;
     let agent_id = storage_agent_id(storage);
-    index.search(
+    let results = index.search(
         query,
         limit,
         &agent_id,
         active_workspace_id,
         include_all_workspaces,
-    )
+    )?;
+    let index_status = index.index_status(storage, &agent_id)?;
+    Ok(MemorySearchQueryResult {
+        results,
+        index_status,
+    })
 }
 
 pub fn get_memory(
@@ -190,19 +233,17 @@ fn ensure_memory_index_current(
     storage: &AppStorage,
     active_workspace_id: Option<&str>,
 ) -> Result<MemoryIndex> {
-    let index_file_exists = memory_index_path(storage).exists();
     let mut index = MemoryIndex::open(storage)?;
-    let agent_id = storage_agent_id(storage);
-    if !index_file_exists
-        || memory_index_is_dirty(storage)
-        || !index.has_backfill_checkpoints_for_agent(&agent_id)?
-        || !index.has_current_source_state_for_agent(&agent_id)?
-        || !index.has_any_documents_for_agent(&agent_id)?
-    {
-        index.rebuild(storage, active_workspace_id)?;
-    } else {
-        index.consume_pending_sources(storage)?;
-        repair_known_markdown_sources(storage, &index)?;
+    index.consume_runtime_outbox(storage, MEMORY_INDEX_OUTBOX_CONSUME_LIMIT)?;
+    index.consume_pending_sources(storage, MEMORY_INDEX_OUTBOX_CONSUME_LIMIT)?;
+    repair_known_markdown_sources(storage, &index)?;
+    if memory_index_is_dirty(storage) {
+        let agent_id = storage_agent_id(storage);
+        tracing::debug!(
+            agent_id,
+            active_workspace_id,
+            "memory index remains dirty; search returns bounded stale v2 projection"
+        );
     }
     Ok(index)
 }
@@ -310,7 +351,7 @@ impl MemoryIndex {
 
     fn ensure_schema(&self) -> Result<()> {
         if self.table_exists("memory_documents")?
-            && (!self.table_has_column("memory_documents", "original_body")?
+            && (self.table_has_column("memory_documents", "original_body")?
                 || !self.table_has_column("memory_documents", "document_key")?)
         {
             self.connection.execute_batch(
@@ -331,7 +372,6 @@ impl MemoryIndex {
                 agent_id TEXT NOT NULL,
                 source_path TEXT,
                 title TEXT NOT NULL,
-                original_body TEXT NOT NULL,
                 body TEXT NOT NULL,
                 sanitized_excerpt TEXT NOT NULL,
                 metadata_json TEXT NOT NULL,
@@ -370,6 +410,14 @@ impl MemoryIndex {
                 cursor TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (agent_id, source_kind)
+            );
+            CREATE TABLE IF NOT EXISTS memory_index_cursors (
+                runtime_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                cursor_kind TEXT NOT NULL,
+                last_change_seq INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (runtime_id, agent_id, cursor_kind)
             );
             "#,
         )?;
@@ -519,9 +567,9 @@ impl MemoryIndex {
         Ok(())
     }
 
-    fn consume_pending_sources(&mut self, storage: &AppStorage) -> Result<()> {
+    fn consume_pending_sources(&mut self, storage: &AppStorage, limit: usize) -> Result<()> {
         let agent_id = storage_agent_id(storage);
-        let pending = self.pending_sources_for_agent(&agent_id)?;
+        let pending = self.pending_sources_for_agent_with_limit(&agent_id, limit)?;
         for source in pending {
             let transaction = self.connection.transaction()?;
             let result = if source.operation == "delete" {
@@ -567,14 +615,148 @@ impl MemoryIndex {
         Ok(())
     }
 
+    fn consume_runtime_outbox(&mut self, storage: &AppStorage, limit: usize) -> Result<()> {
+        let Some(runtime_db) = storage.runtime_db()? else {
+            return Ok(());
+        };
+        let agent_id = storage_agent_id(storage);
+        let runtime_id = runtime_index_runtime_id(&runtime_db);
+        let cursor = self.cursor(&runtime_id, &agent_id, MEMORY_INDEX_OUTBOX_CURSOR)?;
+        let rows = runtime_db
+            .runtime_index_outbox()
+            .read_after(&agent_id, cursor, limit)?;
+        let mut last_change_seq = cursor;
+        for row in rows {
+            last_change_seq = last_change_seq.max(row.change_seq);
+            let source = pending_source_from_outbox_row(&row);
+            let transaction = self.connection.transaction()?;
+            let result = if row.operation == RuntimeIndexOperation::Delete {
+                delete_document_tx(&transaction, &source.document_key)
+            } else {
+                match document_for_pending_source(storage, &source)? {
+                    Some(document) => {
+                        let hash = content_hash(&document.body);
+                        let existing_hash = transaction
+                            .query_row(
+                                "SELECT content_hash FROM memory_index_source_state WHERE document_key = ?1",
+                                [&source.document_key],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .optional()?;
+                        if existing_hash.as_deref() != Some(hash.as_str()) {
+                            upsert_document_tx(&transaction, &document)?;
+                        }
+                        upsert_source_state_tx(&transaction, &document, &source.source_id)
+                    }
+                    None => delete_document_tx(&transaction, &source.document_key),
+                }
+            };
+            result?;
+            upsert_cursor_tx(
+                &transaction,
+                &runtime_id,
+                &agent_id,
+                MEMORY_INDEX_OUTBOX_CURSOR,
+                last_change_seq,
+            )?;
+            transaction.commit()?;
+        }
+        Ok(())
+    }
+
+    fn cursor(&self, runtime_id: &str, agent_id: &str, cursor_kind: &str) -> Result<i64> {
+        self.connection
+            .query_row(
+                "SELECT last_change_seq FROM memory_index_cursors
+                 WHERE runtime_id = ?1 AND agent_id = ?2 AND cursor_kind = ?3",
+                params![runtime_id, agent_id, cursor_kind],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|value| value.unwrap_or(0))
+            .map_err(Into::into)
+    }
+
+    fn cursor_updated_at(
+        &self,
+        runtime_id: &str,
+        agent_id: &str,
+        cursor_kind: &str,
+    ) -> Result<Option<DateTime<Utc>>> {
+        let updated_at: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT updated_at FROM memory_index_cursors
+                 WHERE runtime_id = ?1 AND agent_id = ?2 AND cursor_kind = ?3",
+                params![runtime_id, agent_id, cursor_kind],
+                |row| row.get(0),
+            )
+            .optional()?;
+        updated_at
+            .map(|value| DateTime::parse_from_rfc3339(&value).map(|dt| dt.with_timezone(&Utc)))
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    fn index_status(
+        &self,
+        storage: &AppStorage,
+        agent_id: &str,
+    ) -> Result<MemorySearchIndexStatus> {
+        let Some(runtime_db) = storage.runtime_db()? else {
+            return Ok(MemorySearchIndexStatus {
+                freshness: "fresh".into(),
+                cursor: 0,
+                high_watermark: 0,
+                lag: 0,
+                last_indexed_at: None,
+            });
+        };
+        let runtime_id = runtime_index_runtime_id(&runtime_db);
+        let cursor = self.cursor(&runtime_id, agent_id, MEMORY_INDEX_OUTBOX_CURSOR)?;
+        let high_watermark = runtime_db
+            .runtime_index_outbox()
+            .high_watermark_for_agent(agent_id)?;
+        let lag = high_watermark.saturating_sub(cursor);
+        let freshness = if !memory_index_path(storage).exists() {
+            "missing"
+        } else if memory_index_is_dirty(storage) || lag > 0 {
+            "stale"
+        } else {
+            "fresh"
+        };
+        Ok(MemorySearchIndexStatus {
+            freshness: freshness.into(),
+            cursor,
+            high_watermark,
+            lag,
+            last_indexed_at: self.cursor_updated_at(
+                &runtime_id,
+                agent_id,
+                MEMORY_INDEX_OUTBOX_CURSOR,
+            )?,
+        })
+    }
+
+    #[cfg(test)]
     fn pending_sources_for_agent(&self, agent_id: &str) -> Result<Vec<PendingSource>> {
+        self.pending_sources_for_agent_with_limit(agent_id, usize::MAX)
+    }
+
+    fn pending_sources_for_agent_with_limit(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<PendingSource>> {
         let mut statement = self.connection.prepare(
             "SELECT document_key, source_ref, agent_id, source_kind, source_id, operation
              FROM memory_index_pending_sources
              WHERE agent_id = ?1
-             ORDER BY enqueued_at ASC, document_key ASC",
+             ORDER BY enqueued_at ASC, document_key ASC
+             LIMIT ?2",
         )?;
-        let rows = statement.query_map([agent_id], |row| {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = statement.query_map(params![agent_id, limit], |row| {
             Ok(PendingSource {
                 document_key: row.get(0)?,
                 source_ref: row.get(1)?,
@@ -586,15 +768,7 @@ impl MemoryIndex {
         rows.map(|row| row.map_err(Into::into)).collect()
     }
 
-    fn has_any_documents_for_agent(&self, agent_id: &str) -> Result<bool> {
-        let count: i64 = self.connection.query_row(
-            "SELECT COUNT(*) FROM memory_documents WHERE agent_id = ?1",
-            [agent_id],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
-    }
-
+    #[cfg(test)]
     fn has_backfill_checkpoints_for_agent(&self, agent_id: &str) -> Result<bool> {
         for source_kind in all_backfill_source_kinds() {
             let exists = self
@@ -615,6 +789,7 @@ impl MemoryIndex {
         Ok(true)
     }
 
+    #[cfg(test)]
     fn has_current_source_state_for_agent(&self, agent_id: &str) -> Result<bool> {
         let stale: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM memory_index_source_state
@@ -724,7 +899,7 @@ impl MemoryIndex {
             .query_row(
                 r#"
                 SELECT source_ref, source_kind, scope_kind, workspace_id, agent_id, source_path,
-                       title, original_body, metadata_json, updated_at
+                       title, body, metadata_json, updated_at
                 FROM memory_documents
                 WHERE source_ref = ?1 AND agent_id = ?2
                 "#,
@@ -765,9 +940,49 @@ struct PendingSource {
     operation: String,
 }
 
+fn pending_source_from_outbox_row(row: &RuntimeIndexOutboxRow) -> PendingSource {
+    PendingSource {
+        document_key: document_key_for(&row.agent_id, &row.source_ref),
+        source_ref: row.source_ref.clone(),
+        source_kind: row.source_kind.clone(),
+        source_id: row.source_id.clone(),
+        operation: row.operation.as_str().to_string(),
+    }
+}
+
+fn runtime_index_runtime_id(runtime_db: &RuntimeDb) -> String {
+    runtime_db.path().display().to_string()
+}
+
+fn upsert_cursor_tx(
+    connection: &Connection,
+    runtime_id: &str,
+    agent_id: &str,
+    cursor_kind: &str,
+    last_change_seq: i64,
+) -> Result<()> {
+    connection.execute(
+        "INSERT INTO memory_index_cursors (
+            runtime_id, agent_id, cursor_kind, last_change_seq, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(runtime_id, agent_id, cursor_kind) DO UPDATE SET
+            last_change_seq=excluded.last_change_seq,
+            updated_at=excluded.updated_at",
+        params![
+            runtime_id,
+            agent_id,
+            cursor_kind,
+            last_change_seq,
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
 fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Result<()> {
     let metadata_json = serde_json::to_string(&document.metadata)?;
     let hash = content_hash(&document.body);
+    let search_text = indexed_text(&bounded_search_text(&document.body));
     let document_key = document_key(document);
     let source_path = document
         .source_path
@@ -777,8 +992,8 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
         r#"
         INSERT INTO memory_documents (
             document_key, source_ref, source_kind, scope_kind, workspace_id, agent_id, source_path,
-            title, original_body, body, sanitized_excerpt, metadata_json, content_hash, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            title, body, sanitized_excerpt, metadata_json, content_hash, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         ON CONFLICT(document_key) DO UPDATE SET
             source_ref=excluded.source_ref,
             source_kind=excluded.source_kind,
@@ -787,7 +1002,6 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
             agent_id=excluded.agent_id,
             source_path=excluded.source_path,
             title=excluded.title,
-            original_body=excluded.original_body,
             body=excluded.body,
             sanitized_excerpt=excluded.sanitized_excerpt,
             metadata_json=excluded.metadata_json,
@@ -803,8 +1017,7 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
             document.agent_id,
             source_path,
             document.title,
-            document.body,
-            indexed_text(&document.body),
+            search_text,
             document.sanitized_excerpt,
             metadata_json,
             hash,
@@ -820,11 +1033,15 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
         params![
             document_key,
             indexed_text(&document.title),
-            indexed_text(&document.body),
+            indexed_text(&bounded_search_text(&document.body)),
             indexed_text(&document.sanitized_excerpt)
         ],
     )?;
     Ok(())
+}
+
+fn bounded_search_text(value: &str) -> String {
+    truncate_chars(value, MEMORY_INDEX_SEARCH_TEXT_MAX_CHARS).0
 }
 
 fn upsert_source_state_tx(
@@ -919,10 +1136,6 @@ fn collect_documents(
     documents.extend(work_item_documents(storage, runtime_db.as_ref())?);
     documents.extend(task_documents(storage, runtime_db.as_ref())?);
     documents.extend(command_execution_documents(storage, runtime_db.as_ref())?);
-    documents.extend(generic_tool_execution_output_documents(
-        storage,
-        runtime_db.as_ref(),
-    )?);
     Ok(documents)
 }
 
@@ -942,10 +1155,10 @@ fn document_for_pending_source(
         "context_episode" => context_episode_document_by_id(storage, &source.source_id),
         "work_item" => work_item_document_by_id(storage, &source.source_id),
         "task" => task_document_by_id(storage, &source.source_id),
-        "tool_command_receipt" | "tool_command_output" => {
+        "tool_command_receipt" | "tool_command_output" | "tool_command_output_preview" => {
             command_tool_execution_document_by_ref(storage, &source.source_ref)
         }
-        "tool_execution_output" => {
+        "tool_execution_output" | "tool_execution_output_preview" => {
             generic_tool_execution_output_document_by_ref(storage, &source.source_ref)
         }
         _ => Ok(None),
@@ -1824,7 +2037,6 @@ fn command_execution_documents(
             "ExecCommand" => {
                 if let Some(cmd) = record.input.get("cmd").and_then(Value::as_str) {
                     documents.push(command_receipt_document(&record, None, None, cmd));
-                    documents.extend(command_output_documents(&record, None));
                 }
             }
             "ExecCommandBatch" => {
@@ -1838,44 +2050,12 @@ fn command_execution_documents(
                                 Some(item),
                                 cmd,
                             ));
-                            documents.extend(command_output_documents(&record, Some(index)));
                         }
                     }
                 }
             }
             _ => {}
         }
-    }
-    Ok(documents)
-}
-
-fn generic_tool_execution_output_documents(
-    storage: &AppStorage,
-    runtime_db: Option<&RuntimeDb>,
-) -> Result<Vec<MemoryDocument>> {
-    let mut documents = Vec::new();
-    let records = if let Some(runtime_db) = runtime_db {
-        runtime_db
-            .evidence()
-            .recent_payloads(
-                EvidenceKind::ToolExecution,
-                &storage_agent_id(storage),
-                usize::MAX,
-            )?
-            .into_iter()
-            .map(|row| serde_json::from_str::<ToolExecutionRecord>(&row.payload_json))
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    } else {
-        storage.read_recent_tool_executions(usize::MAX)?
-    };
-    for record in records {
-        if matches!(
-            record.tool_name.as_str(),
-            "ExecCommand" | "ExecCommandBatch"
-        ) {
-            continue;
-        }
-        documents.push(generic_tool_execution_output_document_from_record(&record));
     }
     Ok(documents)
 }
@@ -2038,16 +2218,6 @@ fn generic_tool_execution_output_document_from_record(
         }),
         updated_at: record.completed_at.unwrap_or(record.created_at),
     }
-}
-
-fn command_output_documents(
-    record: &ToolExecutionRecord,
-    batch_item_index: Option<usize>,
-) -> Vec<MemoryDocument> {
-    ["stdout", "stderr", "output"]
-        .into_iter()
-        .filter_map(|stream| command_output_document(record, batch_item_index, stream))
-        .collect()
 }
 
 fn command_output_document(
@@ -2883,6 +3053,47 @@ mod tests {
     }
 
     #[test]
+    fn memory_search_consumes_runtime_outbox_without_full_rebuild() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        storage
+            .enable_scheduler_control_plane_db(runtime_db.clone())
+            .unwrap();
+        let brief = brief_with_workspace(
+            "default",
+            BriefKind::Result,
+            "outbox discovery sentinel 1848",
+            "ws-holon",
+        );
+        let brief_ref = format!("brief:{}", brief.id);
+
+        storage.append_brief(&brief).unwrap();
+        assert_eq!(
+            runtime_db
+                .runtime_index_outbox()
+                .read_after("default", 0, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let response =
+            search_memory_query(&storage, "outbox discovery", 10, Some("ws-holon"), false).unwrap();
+        assert!(response
+            .results
+            .iter()
+            .any(|result| result.source_ref == brief_ref));
+        assert_eq!(response.index_status.freshness, "fresh");
+        assert_eq!(response.index_status.lag, 0);
+    }
+
+    #[test]
     fn memory_get_hydrates_transcript_backed_brief_content() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
@@ -3104,7 +3315,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_index_rebuilds_all_existing_memory_sources_before_repair() {
+    fn missing_index_does_not_rebuild_all_existing_memory_sources_during_search() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
@@ -3165,11 +3376,10 @@ mod tests {
         );
 
         let results = search_memory(&storage, "existing", 10, Some("ws-existing"), false).unwrap();
-        assert!(results.iter().any(|result| result.kind == "brief"));
-        assert!(results.iter().any(|result| result.kind == "work_item"));
-        assert!(results
-            .iter()
-            .any(|result| result.kind == "context_episode"));
+        assert!(
+            results.is_empty(),
+            "MemorySearch must not synchronously rebuild all runtime sources"
+        );
     }
 
     #[test]
@@ -3519,7 +3729,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_checkpoint_forces_full_backfill_recovery() {
+    fn missing_checkpoint_does_not_force_full_backfill_recovery() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
@@ -3553,15 +3763,18 @@ mod tests {
 
         let results =
             search_memory(&storage, "checkpoint recovery", 10, Some("ws-holon"), false).unwrap();
-        assert!(results.iter().any(|result| result.kind == "brief"));
-        assert!(MemoryIndex::open(&storage)
+        assert!(
+            results.is_empty(),
+            "MemorySearch must not use missing checkpoints to trigger full rebuild"
+        );
+        assert!(!MemoryIndex::open(&storage)
             .unwrap()
             .has_backfill_checkpoints_for_agent("default")
             .unwrap());
     }
 
     #[test]
-    fn stale_source_state_schema_forces_rebuild() {
+    fn stale_source_state_schema_does_not_force_search_rebuild() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
@@ -3595,7 +3808,7 @@ mod tests {
         )
         .unwrap();
         assert!(results.iter().any(|result| result.kind == "brief"));
-        assert!(MemoryIndex::open(&storage)
+        assert!(!MemoryIndex::open(&storage)
             .unwrap()
             .has_current_source_state_for_agent("default")
             .unwrap());
