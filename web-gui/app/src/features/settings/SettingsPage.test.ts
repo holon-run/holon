@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { buildVisionConfigUpdates, sortProvidersForSettings } from "./SettingsPage";
-import type { RuntimeProviderSummary } from "../../runtime/types";
+import { buildVisionConfigUpdates, sortProvidersForSettings, sortSearchProvidersForSettings } from "./SettingsPage";
+import type { RuntimeProviderSummary, RuntimeWebSearchProviderSummary } from "../../runtime/types";
 
 function provider(id: string, credentialConfigured: boolean): RuntimeProviderSummary {
   return {
@@ -16,6 +16,15 @@ function provider(id: string, credentialConfigured: boolean): RuntimeProviderSum
   };
 }
 
+function searchProvider(id: string, credentialConfigured: boolean): RuntimeWebSearchProviderSummary {
+  return {
+    id,
+    kind: "brave",
+    credentialProfile: `${id}:default`,
+    credentialConfigured,
+  };
+}
+
 describe("sortProvidersForSettings", () => {
   it("places credential-configured providers first without reordering peers", () => {
     const sorted = sortProvidersForSettings([
@@ -23,6 +32,19 @@ describe("sortProvidersForSettings", () => {
       provider("ready-a", true),
       provider("missing-b", false),
       provider("ready-b", true),
+    ]);
+
+    expect(sorted.map((entry) => entry.id)).toEqual(["ready-a", "ready-b", "missing-a", "missing-b"]);
+  });
+});
+
+describe("sortSearchProvidersForSettings", () => {
+  it("places credential-configured search providers first without reordering peers", () => {
+    const sorted = sortSearchProvidersForSettings([
+      searchProvider("missing-a", false),
+      searchProvider("ready-a", true),
+      searchProvider("missing-b", false),
+      searchProvider("ready-b", true),
     ]);
 
     expect(sorted.map((entry) => entry.id)).toEqual(["ready-a", "ready-b", "missing-a", "missing-b"]);

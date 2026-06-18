@@ -125,6 +125,7 @@ pub struct RuntimeWebSearchProviderSummary {
     pub kind: String,
     pub base_url: Option<String>,
     pub credential_profile: Option<String>,
+    pub credential_configured: bool,
 }
 
 impl RuntimeConfigSurface {
@@ -184,6 +185,12 @@ impl RuntimeConfigSurface {
                     kind: provider.kind.as_str().to_string(),
                     base_url: provider.base_url.clone(),
                     credential_profile: provider.credential_profile.clone(),
+                    credential_configured: config
+                        .web_config
+                        .providers
+                        .get(id)
+                        .map(|provider| !provider.api_key.is_empty())
+                        .unwrap_or(false),
                 })
                 .collect(),
         }

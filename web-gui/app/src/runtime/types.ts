@@ -184,6 +184,7 @@ export interface RuntimeWebSearchProviderSummary {
   kind: string;
   baseUrl?: string;
   credentialProfile?: string;
+  credentialConfigured: boolean;
 }
 
 export interface RuntimeConfigUpdateResult {
