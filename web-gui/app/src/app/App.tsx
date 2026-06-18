@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
 
 import { AgentPage } from "../features/agent/AgentPage";
 import { Button } from "../components/ui/Button";
@@ -6,7 +6,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { SegmentedControl, SegmentedControlButton } from "../components/ui/SegmentedControl";
 import { StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
-import { InspectorPanel } from "../features/inspector/InspectorPanel";
+import { RightSidePanel } from "../features/right-panel/RightSidePanel";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { deriveAgentDisplayStatus } from "../runtime/agent-status";
@@ -27,20 +27,24 @@ export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
   const route = useRuntimeStore((state) => state.route);
   const selectedAgentId = useRuntimeStore((state) => state.selectedAgentId);
-  const displayLevel = useRuntimeStore((state) => state.displayLevel);
-  const inspectorOpen = useRuntimeStore((state) => state.inspectorOpen);
-  const inspectorSelection = useRuntimeStore((state) => state.inspectorSelection);
+  const displayLevel = useRuntimeStore((state) =>
+    state.displayLevelsByAgentId[selectedAgentId] ?? "info",
+  );
+  const rightPanelOpen = useRuntimeStore((state) => state.rightPanelOpen);
+  const rightPanelView = useRuntimeStore((state) => state.rightPanelView);
   const navCollapsed = useRuntimeStore((state) => state.navCollapsed);
   const setRoute = useRuntimeStore((state) => state.setRoute);
   const openAgent = useRuntimeStore((state) => state.openAgent);
   const setDisplayLevel = useRuntimeStore((state) => state.setDisplayLevel);
-  const setInspectorOpen = useRuntimeStore((state) => state.setInspectorOpen);
+  const setRightPanelOpen = useRuntimeStore((state) => state.setRightPanelOpen);
   const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
-  const clearInspectorSelection = useRuntimeStore((state) => state.clearInspectorSelection);
-  const toggleInspector = useRuntimeStore((state) => state.toggleInspector);
+  const showAgentOverview = useRuntimeStore((state) => state.showAgentOverview);
+  const showWorkItemDetail = useRuntimeStore((state) => state.showWorkItemDetail);
+  const toggleRightPanel = useRuntimeStore((state) => state.toggleRightPanel);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const setRuntimeConnection = useRuntimeStore((state) => state.setRuntimeConnection);
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
+  const rosterActivityByAgentId = useRuntimeStore((state) => state.rosterActivityByAgentId);
   const activeAgentId = route === "agent" ? selectedAgent?.id ?? selectedAgentId : undefined;
   const selectedAgentSession = useRuntimeStore((state) =>
     activeAgentId ? state.sessionsByAgentId[activeAgentId] : undefined,
@@ -68,6 +72,7 @@ export function App() {
   const setAgentModel = useRuntimeStore((state) => state.setAgentModel);
   const clearAgentModel = useRuntimeStore((state) => state.clearAgentModel);
   const loadOlderAgentEvents = useRuntimeStore((state) => state.loadOlderAgentEvents);
+  const loadAgentWorkItemDetail = useRuntimeStore((state) => state.loadAgentWorkItemDetail);
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
@@ -174,7 +179,7 @@ export function App() {
   return (
     <div
       className="app-shell"
-      data-panel={inspectorOpen ? "open" : "closed"}
+      data-panel={rightPanelOpen ? "open" : "closed"}
       data-nav-collapsed={navCollapsed}
     >
       <aside className="sidebar" aria-label="Holon navigation">
@@ -223,6 +228,7 @@ export function App() {
             bootstrap.agents.map((agent) => {
               const status = deriveAgentDisplayStatus(agent);
               const workSummary = agent.currentWork?.objective;
+              const unreadCount = rosterActivityByAgentId[agent.id]?.unreadCount ?? 0;
 
               return (
                 <button
@@ -232,13 +238,18 @@ export function App() {
                   type="button"
                   onClick={() => navigateAgent(agent.id)}
                 >
-                  <span className={`agent-badge ${agent.badgeTone ?? ""}`}>{agent.badge}</span>
+                  <span className={`agent-badge ${agent.badgeTone ?? ""}`} style={agent.badgeHue != null && !agent.badgeTone ? ({ "--badge-hue": `${agent.badgeHue}` } as CSSProperties) : undefined}>{agent.badge}</span>
                   <span className="agent-row-main">
                     <span className="agent-row-title">
                       <strong>{agent.id}</strong>
-                      <StatusBadge className="agent-row-status" kind="agent" value={status.tone} aria-label={status.title} title={status.title}>
-                        {status.label}
-                      </StatusBadge>
+                      {unreadCount > 0 ? (
+                        <span className="agent-row-unread" aria-label={`${unreadCount} unread updates`} title={`${unreadCount} unread updates`}>
+                          {formatUnreadCount(unreadCount)}
+                        </span>
+                      ) : null}
+                      <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={`${status.label} · ${status.title}`}>
+                        {agentStatusIcon(status.tone)}
+                      </span>
                     </span>
                     {workSummary ? (
                       <span className="agent-row-meta">
@@ -288,9 +299,9 @@ export function App() {
                 type="button"
                 size="icon"
                 variant="ghost"
-                aria-label="Toggle object inspector"
-                title="Toggle object inspector"
-                onClick={toggleInspector}
+                aria-label="Toggle context panel"
+                title="Toggle context panel"
+                onClick={toggleRightPanel}
               >
                 ▭
               </Button>
@@ -329,13 +340,12 @@ export function App() {
             onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, displayLevel)}
             onSendPrompt={(text) => sendOperatorPrompt(activeAgent.id, text, displayLevel)}
             onOpenInspector={() => {
-              clearInspectorSelection();
-              setInspectorOpen(true);
+              showAgentOverview(activeAgent.id);
             }}
             onInspectActivity={(activity) => inspectActivity(activeAgent.id, activity)}
             selectedActivityId={
-              inspectorSelection?.kind === "activity" && inspectorSelection.agentId === activeAgent.id
-                ? inspectorSelection.activity.id
+              rightPanelView?.kind === "activity_inspector" && rightPanelView.agentId === activeAgent.id
+                ? rightPanelView.activity.id
                 : undefined
             }
           />
@@ -374,12 +384,18 @@ export function App() {
       </main>
 
       {selectedAgent ? (
-        <InspectorPanel
+        <RightSidePanel
           agent={selectedAgent}
-          selection={inspectorSelection?.agentId === selectedAgent.id ? inspectorSelection : undefined}
-          open={inspectorOpen}
-          onClearSelection={clearInspectorSelection}
-          onClose={() => setInspectorOpen(false)}
+          workItemDetailsById={selectedAgentSession?.workItemDetailsById ?? {}}
+          view={rightPanelView?.agentId === selectedAgent.id ? rightPanelView : undefined}
+          open={rightPanelOpen}
+          onLoadWorkItemDetail={(workItemId) => loadAgentWorkItemDetail(selectedAgent.id, workItemId)}
+          onOpenWorkItemDetail={(workItem) => {
+            showWorkItemDetail(selectedAgent.id, workItem);
+            loadAgentWorkItemDetail(selectedAgent.id, workItem.id);
+          }}
+          onShowAgentOverview={showAgentOverview}
+          onClose={() => setRightPanelOpen(false)}
         />
       ) : null}
     </div>
@@ -423,6 +439,10 @@ function ConnectionSwitcher({
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | undefined>();
 
+  useEffect(() => {
+    if (connection.mode === "remote") setBaseUrl(connection.baseUrl ?? "");
+  }, [connection.baseUrl, connection.mode]);
+
   async function applyConnection(config: RuntimeConnectionConfig) {
     setSaving(true);
     setFormError(undefined);
@@ -455,7 +475,7 @@ function ConnectionSwitcher({
               setFormError("Remote URL is required.");
               return;
             }
-            void applyConnection({ mode: "remote", baseUrl: trimmedBaseUrl, token });
+            void applyConnection({ mode: "remote", baseUrl: trimmedBaseUrl, token: token.trim() || undefined });
           }}
         >
           <label>
@@ -472,7 +492,7 @@ function ConnectionSwitcher({
             <input
               value={token}
               onChange={(event) => setToken(event.target.value)}
-              placeholder="optional for trusted local networks"
+              placeholder={connection.hasToken ? "saved token retained unless replaced" : "optional for trusted local networks"}
               type="password"
             />
           </label>
@@ -505,6 +525,19 @@ function MissingAgentPage({ agentId, loading }: { agentId: string; loading: bool
       </div>
     </section>
   );
+}
+
+function formatUnreadCount(count: number): string {
+  return count > 99 ? "99+" : String(count);
+}
+
+function agentStatusIcon(tone: string): string {
+  if (tone === "running") return "●";
+  if (tone === "needs-input") return "!";
+  if (tone === "waiting") return "◌";
+  if (tone === "ready") return "✓";
+  if (tone === "stopped") return "×";
+  return "·";
 }
 
 function pageTitle(route: RouteKey): string {

@@ -1,10 +1,19 @@
 import { create } from "zustand";
 
 import { createRuntimeClient, type AgentEventStreamSubscription, type StreamEventEnvelopeDto } from "./client";
+import { cacheClearRemote } from "./idb-cache";
+import {
+  currentRemoteKey,
+  hydrateAllSessions,
+  initSessionCache,
+  SessionCacheWriter,
+} from "./session-cache";
+import type { AgentSessionState as AgentSessionStateBase } from "./runtime-store-helpers";
 import {
   compactAgentTimelineItems,
   mergeAgentTimelineItems,
   reduceAgentSessionTimeline,
+  briefIdForPayload,
   transcriptEntryIdForPayload,
 } from "./session-reducer";
 import type {
@@ -13,20 +22,25 @@ import type {
   AgentTimelineActivity,
   AgentTimelineItem,
   DisplayLevel,
-  InspectorSelection,
+  RightPanelView,
   RouteKey,
   RuntimeBootstrap,
   RuntimeConnectionConfig,
   RuntimeConfigState,
   CredentialProfileStatus,
   CredentialStoreState,
+  RuntimeBriefRecord,
+  RuntimeTaskOutputResult,
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
   RuntimeTranscriptEntry,
+  RuntimeToolExecutionRecord,
+  WorkItemSummary,
   SearchResponse,
 } from "./types";
 
-export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
+export type { AgentLiveStatus, AgentSessionState } from "./runtime-store-helpers";
+import type { AgentLiveStatus, AgentSessionState, WorkItemDetailState } from "./runtime-store-helpers";
 
 export interface BootstrapRefreshOptions {
   background?: boolean;
@@ -80,32 +94,12 @@ function cachedAgentsByIdFromState(state: RuntimeStoreState): Record<string, Age
   return agentsById;
 }
 
-export interface AgentSessionState {
-  loading: boolean;
-  loadingOlder: boolean;
-  liveStatus: AgentLiveStatus;
-  sendingPrompt: boolean;
-  detail: AgentDetail | null;
-  eventsBySeq: Record<number, unknown>;
-  eventSeqs: number[];
-  messagesById: Record<string, RuntimeMessageEnvelope>;
-  missingMessageIds: Record<string, true>;
-  transcriptEntriesById: Record<string, RuntimeTranscriptEntry>;
-  missingTranscriptEntryIds: Record<string, true>;
-  newestSeq?: number;
-  oldestSeq?: number;
-  hasOlder?: boolean;
-  lastStreamActivityAt?: string;
-  reconnectAttempt?: number;
-  error?: string;
-  historyError?: string;
-  promptError?: string;
-  modelError?: string;
-}
-
-interface AgentRosterActivity {
+export interface AgentRosterActivity {
   operatorAt?: string;
   briefAt?: string;
+  unreadCount?: number;
+  lastUnreadSeq?: number;
+  lastReadSeq?: number;
 }
 
 function appendOptimisticOperatorPrompt(detail: AgentDetail | null, agent: AgentSummary | undefined, prompt: string): AgentDetail | null {
@@ -151,8 +145,8 @@ export interface RuntimeStoreState {
   selectedAgentId: string;
   displayLevel: DisplayLevel;
   displayLevelsByAgentId: Record<string, DisplayLevel>;
-  inspectorOpen: boolean;
-  inspectorSelection?: InspectorSelection;
+  rightPanelOpen: boolean;
+  rightPanelView?: RightPanelView;
   navCollapsed: boolean;
 
   bootstrap: RuntimeBootstrap;
@@ -177,10 +171,11 @@ export interface RuntimeStoreState {
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string) => void;
   setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
-  setInspectorOpen: (open: boolean) => void;
+  setRightPanelOpen: (open: boolean) => void;
+  showAgentOverview: (agentId?: string) => void;
+  showWorkItemDetail: (agentId: string, workItem: WorkItemSummary) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
-  clearInspectorSelection: () => void;
-  toggleInspector: () => void;
+  toggleRightPanel: () => void;
   toggleNavCollapsed: () => void;
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
@@ -192,16 +187,26 @@ export interface RuntimeStoreState {
   deleteCredential: (profile: string) => Promise<void>;
   runSearch: (query: string, options?: { agentIds?: string[]; limit?: number }) => Promise<void>;
   refreshAgentDetail: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
+  refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
+  refreshAgentState: (agentId: string | undefined) => Promise<void>;
+  loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
   clearAgentModel: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   startAgentEventStream: (agentId: string | undefined, displayLevel: DisplayLevel) => void;
   stopAgentEventStream: (agentId: string | undefined) => void;
+  startGlobalEventStream: () => void;
+  stopGlobalEventStream: () => void;
+  registerAgentForEvents: (agentId: string) => void;
+  unregisterAgentForEvents: (agentId: string) => void;
 }
 
-const RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1";
+const LEGACY_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1";
+const ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.activeRuntimeConnection.v1";
+const RUNTIME_CONNECTION_PROFILES_STORAGE_KEY = "holon.webGui.runtimeConnectionProfiles.v1";
 const DISPLAY_LEVEL_STORAGE_KEY = "holon.webGui.displayLevelsByAgentId.v1";
+const ROSTER_ACTIVITY_STORAGE_KEY = "holon.webGui.rosterActivityByRemote.v1";
 let runtimeConnectionConfig = readStoredRuntimeConnectionConfig();
 let runtimeClient = createRuntimeClient(runtimeClientOptions(runtimeConnectionConfig));
 const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
@@ -209,44 +214,138 @@ const pendingStreamEvents = new Map<string, StreamEventEnvelopeDto[]>();
 const streamFlushTimers = new Map<string, number>();
 const reconnectTimers = new Map<string, number>();
 const staleTimers = new Map<string, number>();
+let globalEventStream: AgentEventStreamSubscription | undefined;
+let globalStreamReconnectTimer: number | undefined;
+let globalStreamStaleTimer: number | undefined;
+let globalStreamReconnectAttempt = 0;
+const globalStreamSubscribedAgents = new Set<string>();
+const agentLastSeenSeq = new Map<string, number>();
+const backfillInFlight = new Set<string>();
 const messageHydrationInFlight = new Map<string, Set<string>>();
 const transcriptHydrationInFlight = new Map<string, Set<string>>();
+const briefHydrationInFlight = new Map<string, Set<string>>();
+const inspectorDetailInFlight = new Set<string>();
+const workItemRefreshInFlight = new Set<string>();
+const workItemDetailInFlight = new Set<string>();
+const agentStateRefreshInFlight = new Set<string>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
 const STREAM_FLUSH_INTERVAL_MS = 100;
 const STREAM_STALE_TIMEOUT_MS = 45_000;
 const STREAM_RECONNECT_BASE_MS = 1_000;
 const STREAM_RECONNECT_MAX_MS = 15_000;
+const GLOBAL_STREAM_STALE_TIMEOUT_MS = 45_000;
+const GLOBAL_BACKFILL_LIMIT = 100;
+
+// ─── Session cache (IndexedDB persistence) ──────────────────────────
+let sessionCacheWriter: SessionCacheWriter | null = null;
+let sessionCacheInitPromise: Promise<void> | null = null;
 
 function runtimeClientOptions(config: RuntimeConnectionConfig) {
-  return config.mode === "remote" ? { baseUrl: config.baseUrl, token: config.token } : {};
+  return config.mode === "remote" ? { mode: "remote" as const, baseUrl: config.baseUrl, token: config.token } : { mode: "local" as const };
 }
 
-function readStoredRuntimeConnectionConfig(): RuntimeConnectionConfig {
+export function readStoredRuntimeConnectionConfig(): RuntimeConnectionConfig {
   if (typeof window === "undefined") return { mode: "local" };
+  const activeConfig = coerceRuntimeConnectionConfig(readStoredJson(window.sessionStorage, ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY));
+  if (activeConfig) return withStoredRemoteProfileToken(activeConfig);
+
+  const legacyConfig = coerceRuntimeConnectionConfig(readStoredJson(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY));
+  if (legacyConfig?.mode === "remote") {
+    writeStoredRuntimeConnectionConfig(legacyConfig);
+    removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
+    return withStoredRemoteProfileToken(legacyConfig);
+  }
+
+  if (legacyConfig?.mode === "local") {
+    writeActiveRuntimeConnectionConfig(legacyConfig);
+    removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
+  }
+
+  return { mode: "local" };
+}
+
+export function writeStoredRuntimeConnectionConfig(config: RuntimeConnectionConfig): void {
   try {
-    const raw = window.localStorage.getItem(RUNTIME_CONNECTION_STORAGE_KEY);
-    if (!raw) return { mode: "local" };
-    const parsed = JSON.parse(raw) as Partial<RuntimeConnectionConfig>;
-    if (parsed.mode !== "remote") return { mode: "local" };
-    return {
-      mode: "remote",
-      baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
-      token: typeof parsed.token === "string" ? parsed.token : "",
-    };
+    removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
+    writeActiveRuntimeConnectionConfig(config);
+    if (config.mode === "remote") writeStoredRemoteProfile(config);
   } catch {
-    return { mode: "local" };
+    // Ignore storage failures; the in-memory connection still applies.
   }
 }
 
-function writeStoredRuntimeConnectionConfig(config: RuntimeConnectionConfig): void {
-  if (typeof window === "undefined") return;
+function coerceRuntimeConnectionConfig(value: unknown): RuntimeConnectionConfig | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const parsed = value as Partial<RuntimeConnectionConfig>;
+  if (parsed.mode === "local") return { mode: "local" };
+  if (parsed.mode !== "remote") return undefined;
+  const baseUrl = normalizeConnectionBaseUrl(parsed.baseUrl);
+  if (!baseUrl) return undefined;
+  return {
+    mode: "remote",
+    baseUrl,
+    token: typeof parsed.token === "string" && parsed.token.trim() ? parsed.token.trim() : undefined,
+  };
+}
+
+function readStoredJson(storage: Storage, key: string): unknown {
   try {
-    if (config.mode === "local") {
-      window.localStorage.removeItem(RUNTIME_CONNECTION_STORAGE_KEY);
-      return;
+    const raw = storage.getItem(key);
+    return raw ? JSON.parse(raw) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function removeStoredItem(storage: Storage, key: string): void {
+  try {
+    storage.removeItem(key);
+  } catch {
+    // Ignore storage failures; the in-memory connection still applies.
+  }
+}
+
+function writeActiveRuntimeConnectionConfig(config: RuntimeConnectionConfig): void {
+  if (typeof window === "undefined") return;
+  const activeConfig = coerceRuntimeConnectionConfig(config) ?? { mode: "local" };
+  try {
+    window.sessionStorage.setItem(ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY, JSON.stringify(activeConfig));
+  } catch {
+    // Ignore storage failures; the in-memory connection still applies.
+  }
+}
+
+function readStoredRemoteProfiles(): Record<string, RuntimeConnectionConfig> {
+  if (typeof window === "undefined") return {};
+  const parsed = readStoredJson(window.localStorage, RUNTIME_CONNECTION_PROFILES_STORAGE_KEY);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const profiles: Record<string, RuntimeConnectionConfig> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    const profile = coerceRuntimeConnectionConfig(value);
+    const profileBaseUrl = profile?.baseUrl;
+    if (profile?.mode === "remote" && profileBaseUrl && key === remoteProfileKey(profileBaseUrl)) {
+      profiles[key] = profile;
     }
-    window.localStorage.setItem(RUNTIME_CONNECTION_STORAGE_KEY, JSON.stringify(config));
+  }
+  return profiles;
+}
+
+function writeStoredRemoteProfile(config: RuntimeConnectionConfig): void {
+  if (typeof window === "undefined" || config.mode !== "remote") return;
+  const profile = coerceRuntimeConnectionConfig(config);
+  if (profile?.mode !== "remote") return;
+  const profileBaseUrl = profile.baseUrl;
+  if (!profileBaseUrl) return;
+  const profiles = readStoredRemoteProfiles();
+  const key = remoteProfileKey(profileBaseUrl);
+  const existingProfile = profiles[key];
+  profiles[key] = {
+    ...profile,
+    token: profile.token ?? (existingProfile?.mode === "remote" ? existingProfile.token : undefined),
+  };
+  try {
+    window.localStorage.setItem(RUNTIME_CONNECTION_PROFILES_STORAGE_KEY, JSON.stringify(profiles));
   } catch {
     // Ignore storage failures; the in-memory connection still applies.
   }
@@ -254,6 +353,19 @@ function writeStoredRuntimeConnectionConfig(config: RuntimeConnectionConfig): vo
 
 function normalizeConnectionBaseUrl(value: string | undefined): string {
   return value?.trim().replace(/\/+$/, "") ?? "";
+}
+
+function remoteProfileKey(baseUrl: string): string {
+  return normalizeConnectionBaseUrl(baseUrl);
+}
+
+function withStoredRemoteProfileToken(config: RuntimeConnectionConfig): RuntimeConnectionConfig {
+  if (config.mode !== "remote" || config.token) return config;
+  const baseUrl = config.baseUrl;
+  if (!baseUrl) return config;
+  const profile = readStoredRemoteProfiles()[remoteProfileKey(baseUrl)];
+  if (profile?.mode !== "remote" || !profile.token) return config;
+  return { ...config, token: profile.token };
 }
 
 function readStoredDisplayLevels(): Record<string, DisplayLevel> {
@@ -283,6 +395,58 @@ function writeStoredDisplayLevels(displayLevelsByAgentId: Record<string, Display
   }
 }
 
+export function readStoredRosterActivity(remoteKey: string): Record<string, AgentRosterActivity> {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = readStoredJson(window.localStorage, ROSTER_ACTIVITY_STORAGE_KEY);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const byRemote = parsed as Record<string, unknown>;
+    const rawActivity = byRemote[remoteKey];
+    if (!rawActivity || typeof rawActivity !== "object" || Array.isArray(rawActivity)) return {};
+    const activityByAgentId: Record<string, AgentRosterActivity> = {};
+    for (const [agentId, value] of Object.entries(rawActivity)) {
+      if (typeof agentId !== "string" || !agentId || !value || typeof value !== "object" || Array.isArray(value)) continue;
+      const activity = coerceRosterActivity(value);
+      if (activity) activityByAgentId[agentId] = activity;
+    }
+    return activityByAgentId;
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredRosterActivity(remoteKey: string, activityByAgentId: Record<string, AgentRosterActivity>): void {
+  if (typeof window === "undefined") return;
+  try {
+    const parsed = readStoredJson(window.localStorage, ROSTER_ACTIVITY_STORAGE_KEY);
+    const byRemote =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, Record<string, AgentRosterActivity>>)
+        : {};
+    byRemote[remoteKey] = activityByAgentId;
+    window.localStorage.setItem(ROSTER_ACTIVITY_STORAGE_KEY, JSON.stringify(byRemote));
+  } catch {
+    // Ignore storage failures; unread state falls back to memory-only.
+  }
+}
+
+function coerceRosterActivity(value: unknown): AgentRosterActivity | undefined {
+  const parsed = value as Partial<AgentRosterActivity>;
+  const activity: AgentRosterActivity = {};
+  if (typeof parsed.operatorAt === "string") activity.operatorAt = parsed.operatorAt;
+  if (typeof parsed.briefAt === "string") activity.briefAt = parsed.briefAt;
+  if (typeof parsed.unreadCount === "number" && Number.isFinite(parsed.unreadCount) && parsed.unreadCount > 0) {
+    activity.unreadCount = Math.floor(parsed.unreadCount);
+  }
+  if (typeof parsed.lastUnreadSeq === "number" && Number.isFinite(parsed.lastUnreadSeq)) {
+    activity.lastUnreadSeq = Math.floor(parsed.lastUnreadSeq);
+  }
+  if (typeof parsed.lastReadSeq === "number" && Number.isFinite(parsed.lastReadSeq)) {
+    activity.lastReadSeq = Math.floor(parsed.lastReadSeq);
+  }
+  return Object.keys(activity).length ? activity : undefined;
+}
+
 function isDisplayLevel(value: unknown): value is DisplayLevel {
   return value === "info" || value === "verbose" || value === "debug";
 }
@@ -305,6 +469,7 @@ function pendingBootstrap(config: RuntimeConnectionConfig): RuntimeBootstrap {
       mode: config.mode,
       source: "fixture",
       baseUrl: config.mode === "remote" ? config.baseUrl : undefined,
+      hasToken: config.mode === "remote" ? Boolean(config.token?.trim()) : false,
       summary: config.mode === "remote" ? "Connecting to remote runtime…" : "Connecting to local runtime…",
     },
   };
@@ -319,13 +484,49 @@ const emptyRuntimeConfig: RuntimeConfigState = {
   source: "fixture",
 };
 
+/**
+ * Initialize session cache for the current remote and hydrate any cached
+ * sessions into the store. Called on initial load and remote switch.
+ */
+function initSessionCacheForRemote(set: StoreSet): void {
+  if (sessionCacheInitPromise) return;
+  const remoteKey = currentRemoteKey(runtimeConnectionConfig);
+
+  sessionCacheInitPromise = (async () => {
+    const ok = await initSessionCache();
+    if (!ok) {
+      sessionCacheWriter = null;
+      return;
+    }
+
+    // Set up writer for this remote.
+    sessionCacheWriter?.cancel();
+    sessionCacheWriter = new SessionCacheWriter(remoteKey);
+
+    // Hydrate cached sessions into store.
+    const cached = await hydrateAllSessions(remoteKey);
+    if (Object.keys(cached).length === 0) return;
+
+    set((state) => {
+      const sessionsByAgentId = { ...state.sessionsByAgentId };
+      for (const [agentId, partial] of Object.entries(cached)) {
+        sessionsByAgentId[agentId] = {
+          ...emptyAgentSession(),
+          ...partial,
+        };
+      }
+      return { sessionsByAgentId };
+    });
+  })();
+}
+
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   route: "dashboard",
   selectedAgentId: "",
   displayLevel: "info",
   displayLevelsByAgentId: readStoredDisplayLevels(),
-  inspectorOpen: true,
-  inspectorSelection: undefined,
+  rightPanelOpen: true,
+  rightPanelView: undefined,
   navCollapsed: false,
 
   bootstrap: pendingBootstrap(runtimeConnectionConfig),
@@ -337,16 +538,30 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
   runtimeConfigSaving: false,
   search: null,
   searchLoading: false,
-  rosterActivityByAgentId: {},
+  credentialStore: { profiles: [] },
+  credentialStoreLoading: false,
+  credentialStoreError: undefined,
+  rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig)),
   sessionsByAgentId: {},
 
   setRoute: (route) => set({ route }),
   openAgent: (agentId) =>
-    set((state) => ({
-      selectedAgentId: agentId,
-      route: "agent",
-      displayLevel: state.displayLevelsByAgentId[agentId] ?? "info",
-    })),
+    set((state) => {
+      const rosterActivityByAgentId = markAgentRead(
+        state.rosterActivityByAgentId,
+        agentId,
+        state.sessionsByAgentId[agentId]?.newestSeq,
+      );
+      if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
+        writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
+      }
+      return {
+        selectedAgentId: agentId,
+        route: "agent",
+        displayLevel: state.displayLevelsByAgentId[agentId] ?? "info",
+        rosterActivityByAgentId,
+      };
+    }),
   setDisplayLevel: (displayLevel, agentId) =>
     set((state) => {
       const targetAgentId = agentId ?? state.selectedAgentId;
@@ -358,23 +573,42 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       writeStoredDisplayLevels(displayLevelsByAgentId);
       return { displayLevel, displayLevelsByAgentId };
     }),
-  setInspectorOpen: (open) => set({ inspectorOpen: open }),
-  inspectActivity: (agentId, activity) =>
+  setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
+  showAgentOverview: (agentId) =>
+    set((state) => ({
+      rightPanelOpen: true,
+      rightPanelView: { kind: "agent_overview", agentId: agentId ?? state.selectedAgentId },
+    })),
+  showWorkItemDetail: (agentId, workItem) =>
     set({
-      inspectorOpen: true,
-      inspectorSelection: { kind: "activity", agentId, activity },
+      rightPanelOpen: true,
+      rightPanelView: { kind: "work_item_detail", agentId, workItem },
     }),
-  clearInspectorSelection: () => set({ inspectorSelection: undefined }),
-  toggleInspector: () => set((state) => ({ inspectorOpen: !state.inspectorOpen })),
+  inspectActivity: (agentId, activity) => {
+    set({
+      rightPanelOpen: true,
+      rightPanelView: { kind: "activity_inspector", agentId, activity },
+    });
+    hydrateInspectorActivityDetail(get, set, agentId, activity);
+  },
+  toggleRightPanel: () => set((state) => ({ rightPanelOpen: !state.rightPanelOpen })),
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
 
   setRuntimeConnection: async (config) => {
+    const normalizedBaseUrl = config.mode === "remote" ? normalizeConnectionBaseUrl(config.baseUrl) : "";
+    const retainedToken =
+      config.mode === "remote" &&
+      config.token === undefined &&
+      runtimeConnectionConfig.mode === "remote" &&
+      normalizeConnectionBaseUrl(runtimeConnectionConfig.baseUrl) === normalizedBaseUrl
+        ? runtimeConnectionConfig.token
+        : undefined;
     const normalizedConfig: RuntimeConnectionConfig =
       config.mode === "remote"
         ? {
             mode: "remote",
-            baseUrl: normalizeConnectionBaseUrl(config.baseUrl),
-            token: config.token?.trim() || undefined,
+            baseUrl: normalizedBaseUrl,
+            token: config.token?.trim() || retainedToken,
           }
         : { mode: "local" };
     runtimeConnectionConfig = normalizedConfig;
@@ -384,14 +618,34 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     for (const subscription of activeEventStreams.values()) subscription.close();
     activeEventStreams.clear();
     pendingStreamEvents.clear();
+    globalEventStream?.close();
+    globalEventStream = undefined;
+    if (globalStreamReconnectTimer != null) {
+      window.clearTimeout(globalStreamReconnectTimer);
+      globalStreamReconnectTimer = undefined;
+    }
+    if (globalStreamStaleTimer != null) {
+      window.clearTimeout(globalStreamStaleTimer);
+      globalStreamStaleTimer = undefined;
+    }
+    globalStreamSubscribedAgents.clear();
+    agentLastSeenSeq.clear();
+    backfillInFlight.clear();
+    globalStreamReconnectAttempt = 0;
     messageHydrationInFlight.clear();
     transcriptHydrationInFlight.clear();
+    briefHydrationInFlight.clear();
+    inspectorDetailInFlight.clear();
     for (const timer of streamFlushTimers.values()) window.clearTimeout(timer);
     for (const timer of reconnectTimers.values()) window.clearTimeout(timer);
     for (const timer of staleTimers.values()) window.clearTimeout(timer);
     streamFlushTimers.clear();
     reconnectTimers.clear();
     staleTimers.clear();
+    // Flush pending cache writes for the old remote before switching.
+    sessionCacheWriter?.flush();
+    sessionCacheWriter = null;
+    sessionCacheInitPromise = null;
     set({
       bootstrap: pendingBootstrap(normalizedConfig),
       bootstrapLoading: true,
@@ -406,10 +660,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       search: null,
       searchError: undefined,
       sessionsByAgentId: {},
+      rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(normalizedConfig)),
       selectedAgentId: "",
       route: "dashboard",
     });
     await get().refreshBootstrap();
+    // Initialize cache for the new remote (async, non-blocking).
+    initSessionCacheForRemote(set);
   },
 
   refreshBootstrap: async (options = {}) => {
@@ -450,6 +707,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
             bootstrapError: bootstrap.connection.error,
           };
         });
+        syncGlobalEventRoster(get, set);
       } catch (error) {
         set({
           bootstrapLoading: false,
@@ -582,6 +840,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
       scheduleMessageHydration(get, set, agentId, displayLevel);
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
+      scheduleBriefHydration(get, set, agentId, displayLevel);
+      scheduleCacheWrite(get, agentId);
     } catch (error) {
       set((state) => ({
         sessionsByAgentId: {
@@ -595,6 +855,61 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
           },
         },
       }));
+    }
+  },
+
+  refreshAgentWorkItems: async (agentId) => {
+    if (!agentId || workItemRefreshInFlight.has(agentId)) return;
+    workItemRefreshInFlight.add(agentId);
+    try {
+      const workItems = await runtimeClient.getAgentWorkItems(agentId, { limit: 50 });
+      set((state) => mergeAgentWorkItemsIntoState(state, agentId, workItems));
+    } catch (error) {
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...emptyAgentSession(),
+            ...state.sessionsByAgentId[agentId],
+            historyError: error instanceof Error ? error.message : String(error),
+          },
+        },
+      }));
+    } finally {
+      workItemRefreshInFlight.delete(agentId);
+    }
+  },
+
+  refreshAgentState: async (agentId) => {
+    if (!agentId || agentStateRefreshInFlight.has(agentId)) return;
+    agentStateRefreshInFlight.add(agentId);
+    try {
+      const freshAgent = await runtimeClient.getAgentState(agentId);
+      set((state) => mergeAgentStateIntoState(state, agentId, freshAgent));
+    } catch {
+      // Swallow — state refresh is best-effort; the next full detail refresh will recover.
+    } finally {
+      agentStateRefreshInFlight.delete(agentId);
+    }
+  },
+
+  loadAgentWorkItemDetail: async (agentId, workItemId) => {
+    if (!agentId || !workItemId) return;
+    const key = `${agentId}:${workItemId}`;
+    const cached = get().sessionsByAgentId[agentId]?.workItemDetailsById[workItemId];
+    if (cached?.workItem || cached?.loading || workItemDetailInFlight.has(key)) return;
+    workItemDetailInFlight.add(key);
+    setWorkItemDetailState(set, agentId, workItemId, { loading: true, error: undefined });
+    try {
+      const workItem = await runtimeClient.getAgentWorkItem(agentId, workItemId);
+      setWorkItemDetailState(set, agentId, workItemId, { loading: false, workItem });
+    } catch (error) {
+      setWorkItemDetailState(set, agentId, workItemId, {
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      workItemDetailInFlight.delete(key);
     }
   },
 
@@ -626,6 +941,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
       set((state) => mergeEventPageIntoSession(state, agentId, page.events ?? [], page.oldest_seq, page.has_older, displayLevel));
       scheduleMessageHydration(get, set, agentId, displayLevel);
       scheduleTranscriptHydration(get, set, agentId, displayLevel);
+      scheduleBriefHydration(get, set, agentId, displayLevel);
     } catch (error) {
       set((state) => ({
         sessionsByAgentId: {
@@ -650,6 +966,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
 
     set((state) => {
       const rosterActivityByAgentId = touchRosterActivity(state.rosterActivityByAgentId, agentId, "operator", new Date().toISOString());
+      if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
+        writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
+      }
       return {
         bootstrap: sortBootstrapAgents(state.bootstrap, rosterActivityByAgentId),
         rosterActivityByAgentId,
@@ -801,7 +1120,24 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => ({
     if (!agentId) return;
     stopAgentEventStream(agentId, set);
   },
+  startGlobalEventStream: () => {
+    startGlobalEventStream(get, set);
+  },
+  stopGlobalEventStream: () => {
+    stopGlobalEventStream(set);
+  },
+  registerAgentForEvents: (agentId) => {
+    registerAgentForEvents(get, set, agentId);
+  },
+  unregisterAgentForEvents: (agentId) => {
+    unregisterAgentForEvents(agentId);
+  },
 }));
+
+// Initialize session cache on first load.
+if (typeof window !== "undefined") {
+  initSessionCacheForRemote((partial) => useRuntimeStore.setState(partial));
+}
 
 function emptyAgentSession(): AgentSessionState {
   return {
@@ -816,6 +1152,9 @@ function emptyAgentSession(): AgentSessionState {
     missingMessageIds: {},
     transcriptEntriesById: {},
     missingTranscriptEntryIds: {},
+    briefRecordsById: {},
+    missingBriefIds: {},
+    workItemDetailsById: {},
   };
 }
 
@@ -826,6 +1165,191 @@ type StoreSet = (
     | ((state: RuntimeStoreState) => Partial<RuntimeStoreState> | RuntimeStoreState),
   replace?: false,
 ) => void;
+
+/**
+ * Schedule a debounced cache write for the given agent's session.
+ * Best-effort: silently skips if the cache writer isn't initialized.
+ */
+function scheduleCacheWrite(get: () => RuntimeStoreState, agentId: string): void {
+  if (!sessionCacheWriter) return;
+  const session = get().sessionsByAgentId[agentId];
+  if (!session) return;
+  sessionCacheWriter.scheduleWrite(agentId, session);
+}
+
+// ─── Global event stream ────────────────────────────────────────────
+
+function startGlobalEventStream(get: () => RuntimeStoreState, set: StoreSet): void {
+  if (globalEventStream) return;
+
+  const subscription = runtimeClient.streamGlobalEvents({
+    onOpen: () => {
+      globalStreamReconnectAttempt = 0;
+      scheduleGlobalStaleWatchdog(get, set);
+      // Backfill all registered agents on (re)connect.
+      for (const agentId of globalStreamSubscribedAgents) {
+        void backfillAgentEvents(set, agentId);
+      }
+    },
+    onActivity: () => {
+      scheduleGlobalStaleWatchdog(get, set);
+    },
+    onEvent: (event) => {
+      scheduleGlobalStaleWatchdog(get, set);
+      dispatchGlobalStreamEvent(set, event);
+    },
+    onClose: () => scheduleGlobalStreamReconnect(get, set, "global event stream closed"),
+    onError: (error) => scheduleGlobalStreamReconnect(get, set, error.message),
+  });
+  if (!subscription) return;
+  globalEventStream = subscription;
+}
+
+function stopGlobalEventStream(set: StoreSet): void {
+  globalEventStream?.close();
+  globalEventStream = undefined;
+  if (globalStreamReconnectTimer != null) {
+    window.clearTimeout(globalStreamReconnectTimer);
+    globalStreamReconnectTimer = undefined;
+  }
+  if (globalStreamStaleTimer != null) {
+    window.clearTimeout(globalStreamStaleTimer);
+    globalStreamStaleTimer = undefined;
+  }
+  globalStreamReconnectAttempt = 0;
+  // Flush any pending events for all agents.
+  for (const agentId of globalStreamSubscribedAgents) {
+    flushStreamEvents(set, agentId);
+  }
+}
+
+function registerAgentForEvents(get: () => RuntimeStoreState, set: StoreSet, agentId: string): void {
+  const wasSubscribed = globalStreamSubscribedAgents.has(agentId);
+  globalStreamSubscribedAgents.add(agentId);
+  // Initialize seq tracking from existing session state.
+  const session = wasSubscribed ? undefined : get().sessionsByAgentId[agentId];
+  if (session && !agentLastSeenSeq.has(agentId)) {
+    const lastSeq = highestSeq(session.eventSeqs) ?? session.newestSeq;
+    if (lastSeq != null) {
+      agentLastSeenSeq.set(agentId, lastSeq);
+    }
+  }
+  // Start global stream if not running.
+  startGlobalEventStream(get, set);
+  // Initial backfill from the last known seq.
+  if (!wasSubscribed) void backfillAgentEvents(set, agentId);
+}
+
+function unregisterAgentForEvents(agentId: string): void {
+  globalStreamSubscribedAgents.delete(agentId);
+  agentLastSeenSeq.delete(agentId);
+}
+
+function syncGlobalEventRoster(get: () => RuntimeStoreState, set: StoreSet): void {
+  const agentIds = new Set(get().bootstrap.agents.map((agent) => agent.id));
+  for (const agentId of Array.from(globalStreamSubscribedAgents)) {
+    if (!agentIds.has(agentId)) unregisterAgentForEvents(agentId);
+  }
+  for (const agentId of agentIds) {
+    registerAgentForEvents(get, set, agentId);
+  }
+}
+
+function dispatchGlobalStreamEvent(set: StoreSet, event: StreamEventEnvelopeDto): void {
+  const agentId = event.agent_id;
+  if (!agentId || !globalStreamSubscribedAgents.has(agentId)) return;
+
+  const seq = event.event_seq;
+  if (seq != null) {
+    const lastSeq = agentLastSeenSeq.get(agentId);
+    if (lastSeq != null && seq > lastSeq + 1) {
+      // Gap detected — trigger backfill.
+      void backfillAgentEvents(set, agentId);
+    }
+    agentLastSeenSeq.set(agentId, Math.max(seq, lastSeq ?? 0));
+  }
+
+  enqueueStreamEvent(set, agentId, event);
+  scheduleBootstrapRefresh(useRuntimeStore.getState);
+}
+
+async function backfillAgentEvents(set: StoreSet, agentId: string): Promise<void> {
+  if (backfillInFlight.has(agentId)) return;
+  const afterSeq = agentLastSeenSeq.get(agentId);
+  if (afterSeq == null) return; // No seq baseline yet; initial fetch handles this.
+  backfillInFlight.add(agentId);
+  try {
+    let cursor = afterSeq;
+    let hasMore = true;
+    while (hasMore) {
+      const page = await runtimeClient.getAgentEvents(agentId, {
+        afterSeq: cursor,
+        order: "asc",
+        limit: GLOBAL_BACKFILL_LIMIT,
+      });
+      const events = (page.events ?? []).filter((e) => e.event_seq != null);
+      if (!events.length) break;
+      // Convert EventEnvelopeDto to StreamEventEnvelopeDto for the reducer.
+      const streamEvents: StreamEventEnvelopeDto[] = events.map((e) => ({
+        id: e.id,
+        event_seq: e.event_seq,
+        ts: e.ts,
+        agent_id: agentId,
+        type: e.type,
+        payload: e.payload,
+      }));
+      applyStreamEvents(set, agentId, streamEvents);
+      const maxSeq = events.reduce((max, e) => Math.max(max, e.event_seq!), 0);
+      agentLastSeenSeq.set(agentId, Math.max(maxSeq, agentLastSeenSeq.get(agentId) ?? 0));
+      cursor = maxSeq;
+      hasMore = events.length >= GLOBAL_BACKFILL_LIMIT;
+    }
+  } catch {
+    // Silently ignore backfill errors; the stream will retry.
+  } finally {
+    backfillInFlight.delete(agentId);
+  }
+}
+
+function scheduleGlobalStaleWatchdog(get: () => RuntimeStoreState, set: StoreSet): void {
+  if (globalStreamStaleTimer != null) window.clearTimeout(globalStreamStaleTimer);
+  globalStreamStaleTimer = window.setTimeout(() => {
+    if (!globalEventStream) return;
+    for (const agentId of globalStreamSubscribedAgents) {
+      flushStreamEvents(set, agentId);
+    }
+    scheduleGlobalStreamReconnect(get, set, "global event stream idle timeout");
+  }, GLOBAL_STREAM_STALE_TIMEOUT_MS);
+}
+
+function scheduleGlobalStreamReconnect(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  reason: string,
+): void {
+  globalEventStream?.close();
+  globalEventStream = undefined;
+  if (globalStreamStaleTimer != null) {
+    window.clearTimeout(globalStreamStaleTimer);
+    globalStreamStaleTimer = undefined;
+  }
+  if (globalStreamReconnectTimer != null) return;
+
+  globalStreamReconnectAttempt += 1;
+  const delay = reconnectDelayMs(globalStreamReconnectAttempt);
+  for (const agentId of globalStreamSubscribedAgents) {
+    setStreamState(set, agentId, "reconnecting", {
+      reconnectAttempt: globalStreamReconnectAttempt,
+      error: reason,
+    });
+  }
+  globalStreamReconnectTimer = window.setTimeout(() => {
+    globalStreamReconnectTimer = undefined;
+    startGlobalEventStream(get, set);
+  }, delay);
+}
+
+// ─── End global event stream ────────────────────────────────────────
 
 function stopAgentEventStream(agentId: string, set?: StoreSet): void {
   if (set) flushStreamEvents(set, agentId);
@@ -846,6 +1370,116 @@ function stopAgentEventStream(agentId: string, set?: StoreSet): void {
     window.clearTimeout(staleTimer);
     staleTimers.delete(agentId);
   }
+}
+
+function hydrateInspectorActivityDetail(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  activity: AgentTimelineActivity,
+): void {
+  const refs = inspectorDetailRefs(activity);
+  if (!refs.toolExecutionId && !refs.taskId) return;
+
+  const key = `${agentId}:${activity.id}:${refs.toolExecutionId ?? ""}:${refs.taskId ?? ""}`;
+  if (inspectorDetailInFlight.has(key)) return;
+  inspectorDetailInFlight.add(key);
+  setInspectorActivityDetailState(set, agentId, activity.id, { loading: true });
+
+  void Promise.all([
+    refs.toolExecutionId ? runtimeClient.getToolExecution(agentId, refs.toolExecutionId) : Promise.resolve(undefined),
+    refs.taskId ? runtimeClient.getTaskOutput(agentId, refs.taskId) : Promise.resolve(undefined),
+  ])
+    .then(([toolExecution, taskOutput]) => {
+      setInspectorActivityDetailState(set, agentId, activity.id, {
+        loading: false,
+        toolExecution,
+        taskOutput,
+      });
+    })
+    .catch((error) => {
+      setInspectorActivityDetailState(set, agentId, activity.id, {
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })
+    .finally(() => {
+      inspectorDetailInFlight.delete(key);
+      const selection = get().rightPanelView;
+      if (selection?.kind === "activity_inspector" && selection.agentId === agentId && selection.activity.id === activity.id) {
+        set({ rightPanelView: selection });
+      }
+    });
+}
+
+function setInspectorActivityDetailState(
+  set: StoreSet,
+  agentId: string,
+  activityId: string,
+  detailState: {
+    loading?: boolean;
+    error?: string;
+    toolExecution?: RuntimeToolExecutionRecord;
+    taskOutput?: RuntimeTaskOutputResult;
+  },
+): void {
+  set((state) => {
+    const selection = state.rightPanelView;
+    if (selection?.kind !== "activity_inspector" || selection.agentId !== agentId || selection.activity.id !== activityId) return {};
+    return {
+      rightPanelView: {
+        ...selection,
+        detailState: {
+          ...selection.detailState,
+          ...detailState,
+        },
+      },
+    };
+  });
+}
+
+function setWorkItemDetailState(
+  set: StoreSet,
+  agentId: string,
+  workItemId: string,
+  detailState: WorkItemDetailState,
+): void {
+  set((state) => {
+    const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+    const previous = session.workItemDetailsById[workItemId] ?? {};
+    return {
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...session,
+          workItemDetailsById: {
+            ...session.workItemDetailsById,
+            [workItemId]: {
+              ...previous,
+              ...detailState,
+            },
+          },
+        },
+      },
+    };
+  });
+}
+
+function inspectorDetailRefs(activity: AgentTimelineActivity): { toolExecutionId?: string; taskId?: string } {
+  const rawEvent = asRecord(activity.rawEvent);
+  const payload = asRecord(rawEvent?.payload) ?? asRecord(activity.rawEvent);
+  return {
+    toolExecutionId: firstStringField(payload, ["tool_execution_id", "toolExecutionId"]),
+    taskId: firstStringField(payload, ["task_id", "taskId"]),
+  };
+}
+
+function firstStringField(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = stringField(record, key);
+    if (value) return value;
+  }
+  return undefined;
 }
 
 function enqueueStreamEvent(set: StoreSet, agentId: string, event: StreamEventEnvelopeDto): void {
@@ -998,6 +1632,82 @@ function mergeAgentIntoBootstrap(bootstrap: RuntimeBootstrap, updatedAgent: Agen
   };
 }
 
+function mergeAgentWorkItemsIntoState(state: RuntimeStoreState, agentId: string, workItems: WorkItemSummary[]): Partial<RuntimeStoreState> {
+  const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  const detail = session.detail
+    ? {
+        ...session.detail,
+        agent: patchAgentWorkItems(session.detail.agent, workItems),
+      }
+    : session.detail;
+  const agents = state.bootstrap.agents.map((agent) => (agent.id === agentId ? patchAgentWorkItems(agent, workItems) : agent));
+
+  return {
+    bootstrap: sortBootstrapAgents(
+      {
+        ...state.bootstrap,
+        agents,
+        metrics: buildBootstrapMetrics(agents),
+      },
+      state.rosterActivityByAgentId,
+    ),
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...emptyAgentSession(),
+        ...session,
+        detail,
+      },
+    },
+  };
+}
+
+function patchAgentWorkItems(agent: AgentSummary, workItems: WorkItemSummary[]): AgentSummary {
+  const currentWork = workItems.find((item) => item.current);
+  return {
+    ...agent,
+    currentWork,
+    workItems,
+  };
+}
+
+function mergeAgentStateIntoState(state: RuntimeStoreState, agentId: string, freshAgent: AgentSummary): Partial<RuntimeStoreState> {
+  const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  // Preserve cached work items and tasks from existing detail — those are managed by
+  // refreshAgentWorkItems and don't come from the lightweight state endpoint.
+  const cachedDetail = session.detail;
+  const mergedAgent: AgentSummary = cachedDetail
+    ? {
+        ...freshAgent,
+        workItems: cachedDetail.agent.workItems?.length ? cachedDetail.agent.workItems : freshAgent.workItems,
+        currentWork: cachedDetail.agent.currentWork ?? freshAgent.currentWork,
+        tasks: cachedDetail.agent.tasks?.length ? cachedDetail.agent.tasks : freshAgent.tasks,
+        lastBrief: cachedDetail.agent.lastBrief || freshAgent.lastBrief,
+      }
+    : freshAgent;
+  const detail = cachedDetail ? { ...cachedDetail, agent: mergedAgent } : cachedDetail;
+  const agents = state.bootstrap.agents.map((agent) => (agent.id === agentId ? mergedAgent : agent));
+
+  return {
+    bootstrap: sortBootstrapAgents(
+      {
+        ...state.bootstrap,
+        agents,
+        metrics: buildBootstrapMetrics(agents),
+      },
+      state.rosterActivityByAgentId,
+    ),
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...emptyAgentSession(),
+        ...session,
+        detail,
+      },
+    },
+  };
+}
+
 function sortBootstrapAgents(bootstrap: RuntimeBootstrap, rosterActivityByAgentId: Record<string, AgentRosterActivity>): RuntimeBootstrap {
   return {
     ...bootstrap,
@@ -1058,18 +1768,64 @@ function touchRosterActivity(
   };
 }
 
-function touchRosterActivityFromEvent(
+function markAgentRead(
+  current: Record<string, AgentRosterActivity>,
+  agentId: string,
+  newestSeq: number | undefined,
+): Record<string, AgentRosterActivity> {
+  const existing = current[agentId];
+  if (!existing?.unreadCount && (newestSeq == null || existing?.lastReadSeq === newestSeq)) return current;
+  return {
+    ...current,
+    [agentId]: {
+      ...existing,
+      unreadCount: 0,
+      lastReadSeq: Math.max(newestSeq ?? 0, existing?.lastUnreadSeq ?? 0, existing?.lastReadSeq ?? 0),
+    },
+  };
+}
+
+export function touchRosterActivityFromEvent(
+  current: Record<string, AgentRosterActivity>,
+  agentId: string,
+  event: StreamEventEnvelopeDto,
+  selectedAgentId: string,
+): Record<string, AgentRosterActivity> {
+  let next = current;
+  if (event.type === "brief_created") {
+    next = touchRosterActivity(next, agentId, "brief", eventTimestamp(event));
+  }
+  if (event.type === "message_enqueued" && messageOrigin(event.payload) === "operator") {
+    next = touchRosterActivity(next, agentId, "operator", eventTimestamp(event));
+  }
+  if (isUnreadEvent(event) && agentId !== selectedAgentId) {
+    next = incrementUnreadFromEvent(next, agentId, event);
+  }
+  return next;
+}
+
+function isUnreadEvent(event: StreamEventEnvelopeDto): boolean {
+  if (event.type === "brief_created") return true;
+  return event.type === "message_enqueued" && messageOrigin(event.payload) !== "operator";
+}
+
+function incrementUnreadFromEvent(
   current: Record<string, AgentRosterActivity>,
   agentId: string,
   event: StreamEventEnvelopeDto,
 ): Record<string, AgentRosterActivity> {
-  if (event.type === "brief_created") {
-    return touchRosterActivity(current, agentId, "brief", eventTimestamp(event));
-  }
-  if (event.type === "message_enqueued" && messageOrigin(event.payload) === "operator") {
-    return touchRosterActivity(current, agentId, "operator", eventTimestamp(event));
-  }
-  return current;
+  const existing = current[agentId];
+  const seq = event.event_seq;
+  if (seq != null && existing?.lastReadSeq != null && seq <= existing.lastReadSeq) return current;
+  if (seq != null && existing?.lastUnreadSeq != null && seq <= existing.lastUnreadSeq) return current;
+  return {
+    ...current,
+    [agentId]: {
+      ...existing,
+      unreadCount: (existing?.unreadCount ?? 0) + 1,
+      lastUnreadSeq: seq ?? existing?.lastUnreadSeq,
+    },
+  };
 }
 
 function eventTimestamp(event: StreamEventEnvelopeDto): string | undefined {
@@ -1163,6 +1919,10 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     ...current.eventsBySeq,
     ...eventsBySeqFromPage(pageEvents),
   };
+  const briefRecordsById = {
+    ...current.briefRecordsById,
+    ...(detail.briefRecordsById ?? {}),
+  };
   const eventSeqs = Array.from(new Set([...current.eventSeqs, ...eventSeqsFromPage(pageEvents)])).sort((left, right) => left - right);
   const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
   const pageTimeline = reduceAgentSessionTimeline({
@@ -1170,6 +1930,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
     eventDisplayLevel: "debug",
     messagesById: current.messagesById,
     transcriptEntriesById: current.transcriptEntriesById,
+    briefRecordsById,
   });
   const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
   const agent = liveDetailIsNewer && current.detail ? mergeCachedAgentState(detail.agent, current.detail.agent) : detail.agent;
@@ -1199,6 +1960,7 @@ function mergeAgentDetailIntoSession(state: RuntimeStoreState, agentId: string, 
         liveStatus: detail.error ? "error" : current.liveStatus,
         eventsBySeq,
         eventSeqs,
+        briefRecordsById,
         newestSeq: newestSeq || undefined,
         oldestSeq: detail.oldestEventSeq ?? current.oldestSeq ?? eventSeqs[0],
         hasOlder: detail.hasOlderEvents,
@@ -1226,8 +1988,15 @@ async function catchUpAgentEvents(
       append: true,
     }),
   );
+  if ((page.events ?? []).some(isWorkItemCacheInvalidationEvent)) {
+    void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
+  }
+  if ((page.events ?? []).some(isAgentStateCacheInvalidationEvent)) {
+    void useRuntimeStore.getState().refreshAgentState(agentId);
+  }
   scheduleMessageHydration(get, set, agentId, "debug");
   scheduleTranscriptHydration(get, set, agentId, "debug");
+  scheduleBriefHydration(get, set, agentId, "debug");
 }
 
 function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEnvelopeDto[]): void {
@@ -1250,9 +2019,13 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
       };
     }
     const rosterActivityByAgentId = uniqueEvents.reduce(
-      (activityByAgentId, event) => touchRosterActivityFromEvent(activityByAgentId, agentId, event),
+      (activityByAgentId, event) =>
+        touchRosterActivityFromEvent(activityByAgentId, agentId, event, state.route === "agent" ? state.selectedAgentId : ""),
       state.rosterActivityByAgentId,
     );
+    if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
+      writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
+    }
     const eventsBySeq = {
       ...current.eventsBySeq,
       ...eventsBySeqFromPage(uniqueEvents),
@@ -1263,12 +2036,13 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
       eventDisplayLevel: "debug",
       messagesById: current.messagesById,
       transcriptEntriesById: current.transcriptEntriesById,
+      briefRecordsById: current.briefRecordsById,
     });
     const detailEvents = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
     const baseDetail = current.detail ?? createLiveAgentDetail(state.bootstrap.agents.find((agent) => agent.id === agentId));
     const highestIncomingSeq = highestSeq(eventSeqs) ?? 0;
     const runPatch = agentRunPatchFromEvents(uniqueEvents);
-    const briefPatch = agentBriefPatchFromEvents(uniqueEvents);
+    const briefPatch = agentBriefPatchFromEvents(uniqueEvents, current.transcriptEntriesById, current.briefRecordsById);
     const patchedBaseDetail = patchAgentDetail(baseDetail, runPatch, briefPatch);
     const detail = patchedBaseDetail
       ? {
@@ -1303,6 +2077,24 @@ function applyStreamEvents(set: StoreSet, agentId: string, events: StreamEventEn
   });
   scheduleMessageHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
   scheduleTranscriptHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
+  scheduleBriefHydration(useRuntimeStore.getState, set, agentId, useRuntimeStore.getState().displayLevel);
+  scheduleCacheWrite(useRuntimeStore.getState, agentId);
+  if (events.some(isWorkItemCacheInvalidationEvent)) {
+    void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
+  }
+  if (events.some(isAgentStateCacheInvalidationEvent)) {
+    void useRuntimeStore.getState().refreshAgentState(agentId);
+  }
+}
+
+function isWorkItemCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolean {
+  if (event.type !== "work_item_written") return false;
+  const action = stringField(asRecord(event.payload), "action");
+  return action === "created" || action === "completed";
+}
+
+function isAgentStateCacheInvalidationEvent(event: StreamEventEnvelopeDto): boolean {
+  return event.type === "agent_state_changed" || event.type === "state_changed" || event.type === "work_item_written";
 }
 
 function scheduleMessageHydration(
@@ -1399,20 +2191,67 @@ function scheduleTranscriptHydration(
     });
 }
 
+function scheduleBriefHydration(
+  get: () => RuntimeStoreState,
+  set: StoreSet,
+  agentId: string,
+  displayLevel: DisplayLevel,
+): void {
+  const session = get().sessionsByAgentId[agentId];
+  const briefIds = missingBriefIdsForHydration(session);
+  if (!briefIds.length) return;
+
+  let inFlight = briefHydrationInFlight.get(agentId);
+  if (!inFlight) {
+    inFlight = new Set<string>();
+    briefHydrationInFlight.set(agentId, inFlight);
+  }
+  const requestIds = briefIds.filter((briefId) => !inFlight.has(briefId));
+  if (!requestIds.length) return;
+  requestIds.forEach((briefId) => inFlight.add(briefId));
+
+  void runtimeClient
+    .getAgentBriefsById(agentId, requestIds)
+    .then((recordsById) => {
+      set((state) => mergeHydratedBriefRecordsIntoSession(state, agentId, recordsById, requestIds, displayLevel));
+    })
+    .catch((error) => {
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...(state.sessionsByAgentId[agentId] ?? emptyAgentSession()),
+            historyError: error instanceof Error ? error.message : String(error),
+          },
+        },
+      }));
+    })
+    .finally(() => {
+      const current = briefHydrationInFlight.get(agentId);
+      if (!current) return;
+      requestIds.forEach((briefId) => current.delete(briefId));
+      if (!current.size) briefHydrationInFlight.delete(agentId);
+    });
+}
+
 function agentBriefPatchFromEvents(
   events: StreamEventEnvelopeDto[],
   transcriptEntriesById: Record<string, RuntimeTranscriptEntry> = {},
+  briefRecordsById: Record<string, RuntimeBriefRecord> = {},
 ): Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined {
   let patch: Pick<AgentSummary, "lastBrief" | "lastTurnTime"> | undefined;
   for (const event of events) {
     if (event.type !== "brief_created") continue;
     const payload = asRecord(event.payload);
     const entryId = transcriptEntryIdForPayload(payload);
+    const briefId = briefIdForPayload(payload);
     const text = (entryId ? transcriptEntryText(transcriptEntriesById[entryId]) : undefined) ?? stringField(payload, "text");
-    if (!text) continue;
+    const fallbackText = briefId ? briefRecordsById[briefId]?.text : undefined;
+    const resolvedText = text ?? fallbackText;
+    if (!resolvedText) continue;
     const createdAt = stringField(payload, "created_at") ?? event.ts;
     patch = {
-      lastBrief: text,
+      lastBrief: resolvedText,
       lastTurnTime: formatTime(createdAt),
     };
   }
@@ -1456,6 +2295,27 @@ function missingTranscriptEntryIdsForHydration(session: AgentSessionState | unde
   return missing;
 }
 
+function missingBriefIdsForHydration(session: AgentSessionState | undefined): string[] {
+  if (!session) return [];
+  const seen = new Set<string>();
+  const missing: string[] = [];
+  for (const eventSeq of session.eventSeqs) {
+    const event = session.eventsBySeq[eventSeq];
+    if (!isStreamEventEnvelope(event) || event.type !== "brief_created") continue;
+    const payload = asRecord(event.payload);
+    const briefId = briefIdForPayload(payload);
+    if (!briefId || seen.has(briefId) || session.briefRecordsById[briefId] || session.missingBriefIds[briefId]) {
+      continue;
+    }
+    const entryId = transcriptEntryIdForPayload(payload);
+    const hydratedByTranscript = entryId ? transcriptEntryText(session.transcriptEntriesById[entryId]) : undefined;
+    if (hydratedByTranscript || stringField(payload, "text")) continue;
+    seen.add(briefId);
+    missing.push(briefId);
+  }
+  return missing;
+}
+
 function mergeHydratedMessagesIntoSession(
   state: RuntimeStoreState,
   agentId: string,
@@ -1487,6 +2347,7 @@ function mergeHydratedMessagesIntoSession(
     eventDisplayLevel: displayLevel,
     messagesById,
     transcriptEntriesById: current.transcriptEntriesById,
+    briefRecordsById: current.briefRecordsById,
   });
   const detail = current.detail
     ? {
@@ -1539,8 +2400,9 @@ function mergeHydratedTranscriptEntriesIntoSession(
     eventDisplayLevel: displayLevel,
     messagesById: current.messagesById,
     transcriptEntriesById,
+    briefRecordsById: current.briefRecordsById,
   });
-  const briefPatch = agentBriefPatchFromEvents(events, transcriptEntriesById);
+  const briefPatch = agentBriefPatchFromEvents(events, transcriptEntriesById, current.briefRecordsById);
   const detail = current.detail
     ? patchAgentDetail(
         {
@@ -1561,6 +2423,65 @@ function mergeHydratedTranscriptEntriesIntoSession(
         detail,
         transcriptEntriesById,
         missingTranscriptEntryIds: missingById,
+      },
+    },
+  };
+}
+
+function mergeHydratedBriefRecordsIntoSession(
+  state: RuntimeStoreState,
+  agentId: string,
+  recordsById: Record<string, RuntimeBriefRecord>,
+  requestedBriefIds: string[],
+  displayLevel: DisplayLevel,
+): Partial<RuntimeStoreState> {
+  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
+  const briefRecordsById = { ...current.briefRecordsById };
+  let changed = false;
+  for (const [briefId, record] of Object.entries(recordsById)) {
+    if (!briefId || !record?.text) continue;
+    briefRecordsById[briefId] = record;
+    changed = true;
+  }
+
+  const missingById = { ...current.missingBriefIds };
+  for (const briefId of requestedBriefIds) {
+    if (!briefId || recordsById[briefId]) continue;
+    missingById[briefId] = true;
+    changed = true;
+  }
+  if (!changed) return {};
+
+  const events = current.eventSeqs.map((eventSeq) => current.eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
+  const timeline = reduceAgentSessionTimeline({
+    events: { events },
+    eventDisplayLevel: displayLevel,
+    messagesById: current.messagesById,
+    transcriptEntriesById: current.transcriptEntriesById,
+    briefRecordsById,
+  });
+  const briefPatch = agentBriefPatchFromEvents(events, current.transcriptEntriesById, briefRecordsById);
+  const detail = current.detail
+    ? patchAgentDetail(
+        {
+          ...current.detail,
+          timeline,
+          briefRecordsById,
+        },
+        undefined,
+        briefPatch,
+      )
+    : current.detail;
+
+  return {
+    bootstrap: patchBootstrapAgent(state.bootstrap, agentId, undefined, briefPatch),
+    sessionsByAgentId: {
+      ...state.sessionsByAgentId,
+      [agentId]: {
+        ...current,
+        detail,
+        briefRecordsById,
+        missingBriefIds: missingById,
       },
     },
   };
@@ -1645,6 +2566,7 @@ function mergeEventPageIntoSession(
     eventDisplayLevel: displayLevel,
     messagesById: current.messagesById,
     transcriptEntriesById: current.transcriptEntriesById,
+    briefRecordsById: current.briefRecordsById,
   });
   const events = eventSeqs.map((eventSeq) => eventsBySeq[eventSeq]).filter(isStreamEventEnvelope);
   const detail = current.detail

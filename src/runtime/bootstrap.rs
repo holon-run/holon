@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
+use arc_swap::ArcSwap;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use tokio::sync::{Mutex, Notify, RwLock};
 
@@ -34,6 +35,51 @@ use super::{
     scheduler_executor, workspace, AgentRuntimeProjectionCache, InitialWorkspaceBinding,
     RuntimeAgent, RuntimeHandle, RuntimeInner,
 };
+
+/// Snapshot of config-derived runtime fields that can be hot-swapped at runtime.
+/// Stored behind an `ArcSwap` so that config reloads take effect on the next turn
+/// without disturbing an in-progress turn.
+pub(super) struct ConfigSnapshot {
+    pub model_catalog: RuntimeModelCatalog,
+    pub model_availability: Vec<ResolvedModelAvailability>,
+    pub base_context_config: ContextConfig,
+    pub provider_reconfig: Option<ProviderReconfigurator>,
+    pub default_tool_output_tokens: u64,
+    pub max_tool_output_tokens: u64,
+    pub web_config: crate::web::WebConfig,
+}
+
+impl ConfigSnapshot {
+    /// Build a fresh snapshot from a config, preserving the agent's current model override.
+    pub fn from_config(config: &AppConfig) -> Self {
+        let model_catalog = RuntimeModelCatalog::from_config(config);
+        let model_availability = resolved_model_availability(config);
+        let provider_reconfig = Some(ProviderReconfigurator {
+            config: config.clone(),
+        });
+        let base_context_config = ContextConfig {
+            recent_messages: config.context_window_messages,
+            recent_briefs: config.context_window_briefs,
+            compaction_trigger_messages: config.compaction_trigger_messages,
+            compaction_keep_recent_messages: config.compaction_keep_recent_messages,
+            prompt_budget_estimated_tokens: config.prompt_budget_estimated_tokens,
+            compaction_trigger_estimated_tokens: config.compaction_trigger_estimated_tokens,
+            compaction_keep_recent_estimated_tokens: config.compaction_keep_recent_estimated_tokens,
+            recent_episode_candidates: config.recent_episode_candidates,
+            max_relevant_episodes: config.max_relevant_episodes,
+            ..ContextConfig::default()
+        };
+        Self {
+            model_catalog,
+            model_availability,
+            base_context_config,
+            provider_reconfig,
+            default_tool_output_tokens: config.default_tool_output_tokens as u64,
+            max_tool_output_tokens: config.max_tool_output_tokens as u64,
+            web_config: config.web_config.clone(),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct ProviderReconfigurator {
@@ -180,6 +226,15 @@ impl RuntimeHandle {
         host_bridge: Option<RuntimeHostBridge>,
         event_bus: Option<EventBus>,
     ) -> Result<Self> {
+        let config_snapshot = Arc::new(ConfigSnapshot {
+            model_catalog: model_catalog.clone(),
+            model_availability: model_availability.clone(),
+            base_context_config: base_context_config.clone(),
+            provider_reconfig: provider_reconfig.clone(),
+            default_tool_output_tokens,
+            max_tool_output_tokens,
+            web_config: web_config.clone(),
+        });
         let mut provider = provider;
         let PreparedRuntimeStorage {
             storage,
@@ -194,20 +249,26 @@ impl RuntimeHandle {
             storage.enable_event_bus(event_bus)?;
         }
 
-        if let Some(reconfig) = provider_reconfig.as_ref() {
-            let chain = model_catalog.provider_chain_for_turn(
+        if let Some(reconfig) = config_snapshot.provider_reconfig.as_ref() {
+            let chain = config_snapshot.model_catalog.provider_chain_for_turn(
                 state.model_override.as_ref(),
                 state.pending_fallback_model.as_ref(),
             );
             let mut provider_config = reconfig.config.clone();
-            provider_config.runtime_max_output_tokens = model_catalog
-                .resolved_model_policy(&base_context_config, state.model_override.as_ref())
+            provider_config.runtime_max_output_tokens = config_snapshot
+                .model_catalog
+                .resolved_model_policy(
+                    &config_snapshot.base_context_config,
+                    state.model_override.as_ref(),
+                )
                 .runtime_max_output_tokens;
             provider = build_provider_from_model_chain(&provider_config, &chain)?;
         }
-        let resolved_context_config = if provider_reconfig.is_some() {
-            model_catalog
-                .resolved_context_config(&base_context_config, state.model_override.as_ref())
+        let resolved_context_config = if config_snapshot.provider_reconfig.is_some() {
+            config_snapshot.model_catalog.resolved_context_config(
+                &config_snapshot.base_context_config,
+                state.model_override.as_ref(),
+            )
         } else {
             context_config.clone()
         };
@@ -226,14 +287,8 @@ impl RuntimeHandle {
                 storage,
                 runtime_db,
                 provider: RwLock::new(provider),
-                provider_reconfig,
-                model_catalog,
-                model_availability,
-                base_context_config,
+                config_snapshot: ArcSwap::from(config_snapshot),
                 context_config: RwLock::new(resolved_context_config),
-                default_tool_output_tokens,
-                max_tool_output_tokens,
-                web_config,
                 builtin_web_search_probe_cache: Mutex::new(HashMap::new()),
                 view_image_observation_cache: Mutex::new(HashMap::new()),
                 callback_base_url,
@@ -255,11 +310,8 @@ impl RuntimeHandle {
     }
 
     pub(crate) fn model_state_for(&self, state: &AgentState) -> crate::types::AgentModelState {
-        super::agent_model_state_for_catalog(
-            &self.inner.model_catalog,
-            &self.inner.base_context_config,
-            state,
-        )
+        let snap = self.inner.config_snapshot.load();
+        super::agent_model_state_for_catalog(&snap.model_catalog, &snap.base_context_config, state)
     }
 
     pub(crate) async fn current_apply_patch_surface(&self) -> ApplyPatchSurface {
@@ -278,8 +330,8 @@ impl RuntimeHandle {
     }
 
     fn selected_model_ref_for_state(&self, state: &AgentState) -> Option<ModelRef> {
-        self.inner
-            .model_catalog
+        let snap = self.inner.config_snapshot.load();
+        snap.model_catalog
             .provider_chain_for_turn(
                 state.model_override.as_ref(),
                 state.pending_fallback_model.as_ref(),
@@ -289,19 +341,19 @@ impl RuntimeHandle {
     }
 
     pub(crate) async fn reconfigure_provider_for_state(&self, state: &AgentState) -> Result<()> {
-        let Some(reconfig) = self.inner.provider_reconfig.as_ref() else {
+        let snap = self.inner.config_snapshot.load();
+        let Some(reconfig) = snap.provider_reconfig.as_ref() else {
             return Err(anyhow!(
                 "agent model override is unavailable for runtimes without host-managed provider configuration"
             ));
         };
-        let chain = self.inner.model_catalog.provider_chain_for_turn(
+        let chain = snap.model_catalog.provider_chain_for_turn(
             state.model_override.as_ref(),
             state.pending_fallback_model.as_ref(),
         );
-        let resolved_context_config = self.inner.model_catalog.resolved_context_config(
-            &self.inner.base_context_config,
-            state.model_override.as_ref(),
-        );
+        let resolved_context_config = snap
+            .model_catalog
+            .resolved_context_config(&snap.base_context_config, state.model_override.as_ref());
         let mut provider_config = reconfig.config.clone();
         if let (Some(primary), Some(reasoning_effort)) = (
             chain.first(),
@@ -311,13 +363,9 @@ impl RuntimeHandle {
                 provider.reasoning_effort = Some(reasoning_effort.clone());
             }
         }
-        provider_config.runtime_max_output_tokens = self
-            .inner
+        provider_config.runtime_max_output_tokens = snap
             .model_catalog
-            .resolved_model_policy(
-                &self.inner.base_context_config,
-                state.model_override.as_ref(),
-            )
+            .resolved_model_policy(&snap.base_context_config, state.model_override.as_ref())
             .runtime_max_output_tokens;
         let provider = build_provider_from_model_chain(&provider_config, &chain)?;
         *self.inner.provider.write().await = provider;
@@ -326,7 +374,8 @@ impl RuntimeHandle {
     }
 
     pub(crate) async fn reconfigure_provider_for_current_state(&self) -> Result<()> {
-        if self.inner.provider_reconfig.is_none() {
+        let snap = self.inner.config_snapshot.load();
+        if snap.provider_reconfig.is_none() {
             return Ok(());
         }
         let state = {
@@ -334,6 +383,31 @@ impl RuntimeHandle {
             guard.state.clone()
         };
         self.reconfigure_provider_for_state(&state).await
+    }
+
+    /// Hot-reload config-derived runtime fields from a new `AppConfig`.
+    ///
+    /// Builds a fresh `ConfigSnapshot`, swaps it atomically, then rebuilds
+    /// the provider for the agent's current model-override state. The swap
+    /// is atomic via `ArcSwap`, so an in-progress turn that already loaded
+    /// the old snapshot continues unaffected; the next turn picks up the
+    /// new snapshot automatically.
+    pub(crate) async fn reload_config(&self, config: &AppConfig) -> Result<()> {
+        let new_snapshot = Arc::new(ConfigSnapshot::from_config(config));
+        // Atomically swap the snapshot.
+        self.inner.config_snapshot.store(new_snapshot);
+        // Rebuild provider + context_config for current state.
+        // If this runtime has no provider_reconfig (static provider), skip.
+        let snap = self.inner.config_snapshot.load();
+        if snap.provider_reconfig.is_some() {
+            let state = {
+                let guard = self.inner.agent.lock().await;
+                guard.state.clone()
+            };
+            self.reconfigure_provider_for_state(&state).await?;
+        }
+        tracing::info!("hot-reloaded runtime config (provider/catalog/availability)");
+        Ok(())
     }
 
     pub(crate) async fn current_context_config(&self) -> ContextConfig {
@@ -344,8 +418,9 @@ impl RuntimeHandle {
         &self,
     ) -> Result<crate::types::ViewImageVisionSelection> {
         let state = self.agent_state().await?;
-        Ok(self.inner.model_catalog.select_view_image_vision_model(
-            &self.inner.base_context_config,
+        let snap = self.inner.config_snapshot.load();
+        Ok(snap.model_catalog.select_view_image_vision_model(
+            &snap.base_context_config,
             state.model_override.as_ref(),
             state.pending_fallback_model.as_ref(),
         ))
@@ -393,8 +468,8 @@ impl RuntimeHandle {
             .vision_model
             .as_deref()
             .ok_or_else(|| anyhow!("vision selection did not include a model"))?;
-        if !self
-            .inner
+        let vision_snap = self.inner.config_snapshot.load();
+        if !vision_snap
             .model_catalog
             .provider_supports_view_image_observation(provider_name)
         {
@@ -402,7 +477,8 @@ impl RuntimeHandle {
                 "vision model {provider_name}/{model_name} is not supported by ViewImage observation generation yet"
             ));
         }
-        let reconfig = self.inner.provider_reconfig.as_ref().ok_or_else(|| {
+        let snap = self.inner.config_snapshot.load();
+        let reconfig = snap.provider_reconfig.as_ref().ok_or_else(|| {
             anyhow!("ViewImage observation generation requires host-managed provider configuration")
         })?;
         let provider = build_provider_from_model_chain(
@@ -439,7 +515,8 @@ impl RuntimeHandle {
     }
 
     async fn model_config_with_fresh_discovery_cache(&self) -> Option<AppConfig> {
-        let Some(reconfig) = self.inner.provider_reconfig.as_ref() else {
+        let snap = self.inner.config_snapshot.load();
+        let Some(reconfig) = snap.provider_reconfig.as_ref() else {
             return None;
         };
         let mut config = reconfig.config.clone();
@@ -470,14 +547,16 @@ impl RuntimeHandle {
         if let Some(config) = self.model_config_with_fresh_discovery_cache().await {
             return Ok(RuntimeModelCatalog::from_config(&config).available_models());
         }
-        Ok(self.inner.model_catalog.available_models())
+        let snap = self.inner.config_snapshot.load();
+        Ok(snap.model_catalog.available_models())
     }
 
     pub(crate) async fn model_availability(&self) -> Result<Vec<ResolvedModelAvailability>> {
         if let Some(config) = self.model_config_with_fresh_discovery_cache().await {
             return Ok(resolved_model_availability(&config));
         }
-        Ok(self.inner.model_availability.clone())
+        let snap = self.inner.config_snapshot.load();
+        Ok(snap.model_availability.clone())
     }
 
     pub(crate) async fn model_providers(&self) -> Result<Vec<crate::types::ModelProviderEntry>> {
@@ -500,8 +579,8 @@ impl RuntimeHandle {
     }
 
     async fn provider_config_for_projection(&self) -> Option<AppConfig> {
-        self.inner
-            .provider_reconfig
+        let snap = self.inner.config_snapshot.load();
+        snap.provider_reconfig
             .as_ref()
             .map(|reconfig| reconfig.config.clone())
     }

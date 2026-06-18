@@ -101,6 +101,35 @@ describe("reduceAgentSessionTimeline", () => {
     ]);
   });
 
+  it("does not dedupe distinct pending slim operator messages by placeholder body", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "event-1",
+            event_seq: 1,
+            type: "message_enqueued",
+            payload: {
+              message_id: "msg-1",
+              origin: { kind: "operator" },
+            },
+          }),
+          event({
+            id: "event-2",
+            event_seq: 2,
+            type: "message_enqueued",
+            payload: {
+              message_id: "msg-2",
+              origin: { kind: "operator" },
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline.map((item) => item.id)).toEqual(["event-1", "event-2"]);
+  });
+
   it("keeps the raw event on projected timeline items", () => {
     const rawEvent = event({
       id: "event-raw",
@@ -165,6 +194,172 @@ describe("reduceAgentSessionTimeline", () => {
         kind: "tool",
         label: "Tool finished",
         body: "Viewed image · Screenshot.png · 1200×800 · A browser screenshot showing the conversation timeline. · 9.7s",
+      }),
+    );
+  });
+
+  it("projects ListTasks tools as readable active task summaries", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("list-tasks", "ListTasks", {
+            list_tasks_result: {
+              total_active: 1,
+              returned: 1,
+              tasks: [
+                {
+                  task_id: "task_1",
+                  kind: "command_task",
+                  status: "running",
+                  summary: "Run command: npm run dev",
+                },
+              ],
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        body: "1 active task · Run command: npm run dev · running · command_task · task_1",
+        detail: {
+          label: "Tasks",
+          text: "Run command: npm run dev · running · command_task · task_1",
+          tone: "data",
+        },
+      }),
+    );
+  });
+
+  it("projects TaskOutput with task status and output preview", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("task-output", "TaskOutput", {
+            task_output_result: {
+              retrieval_status: "success",
+              task: {
+                task_id: "task_abc123",
+                status: "completed",
+                summary: "Run command: cargo build",
+                exit_status: 0,
+                output_preview: "Compiling holon v0.1.0\nFinished",
+              },
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        body: "Task output · task_abc123 · completed · Run command: cargo build · exit 0",
+      }),
+    );
+    // Duration should be suppressed for read/control tools
+    expect(timeline[0].body).not.toContain("ms");
+    expect(timeline[0].body).not.toContain("success");
+    expect(timeline[0].detail?.tone).toBe("output");
+  });
+
+  it("projects TaskOutput retrieval status without collapsing to success or timeout", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("task-output-timeout", "TaskOutput", {
+            task_output_result: {
+              retrieval_status: "timeout",
+              task: {
+                task_id: "task_waiting",
+                kind: "command_task",
+                status: "running",
+                summary: "Run command: npm run dev",
+                output_preview: "server booting",
+              },
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        body: "Task output · task_waiting · retrieval timeout · running · command_task · Run command: npm run dev",
+      }),
+    );
+    expect(timeline[0].body).not.toBe("timeout");
+  });
+
+  it("projects TaskOutput with truncated flag", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("task-output-trunc", "TaskOutput", {
+            task_output_result: {
+              task: { task_id: "task_xyz", status: "running" },
+              output_preview: "...partial output...",
+              output_truncated: true,
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0].body).toContain("truncated");
+  });
+
+  it("projects TaskStatus with status and kind", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("task-status", "TaskStatus", {
+            task_status_result: {
+              task_id: "task_789",
+              status: "running",
+              kind: "command_task",
+              summary: "Run command: npm test",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        body: "Task status · task_789 · running · command_task · Run command: npm test",
+      }),
+    );
+    expect(timeline[0].body).not.toContain("ms");
+  });
+
+  it("projects TaskStop and TaskInput", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("task-stop", "TaskStop", {
+            task_stop_result: { task_id: "task_stop1", status: "cancelled" },
+          }),
+          toolEvent("task-input", "TaskInput", {
+            task_input_result: { task_id: "task_in1", status: "accepted" },
+            input: "y\n",
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        body: "Stopped task · task_stop1 · cancelled",
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        body: "Task input · task_in1 · y",
       }),
     );
   });
@@ -279,6 +474,60 @@ describe("reduceAgentSessionTimeline", () => {
     );
   });
 
+  it("renders slim work item payloads from preview and top-level fields", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "work-item-updated",
+            event_seq: 15,
+            type: "work_item_updated",
+            payload: {
+              work_item_id: "work_123",
+              objective_preview: "Improve slim event display",
+              plan_status: "ready",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "work-item-updated",
+        kind: "system",
+        label: "Work item",
+        body: "Work Item Updated · Improve slim event display · ready",
+        minDisplayLevel: "verbose",
+      }),
+    );
+  });
+
+  it("renders current work item focus from slim top-level ids", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "focus-released",
+            event_seq: 16,
+            type: "work_item_focus_released",
+            payload: {
+              current_work_item_id: "work_456",
+              reason: "yielded",
+              readiness: "runnable",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        body: "Released work item focus · yielded · runnable",
+      }),
+    );
+  });
+
   it("renders focus release details from top-level work item fields", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
@@ -365,6 +614,90 @@ describe("reduceAgentSessionTimeline", () => {
         kind: "system",
         label: "Work item",
         body: "Promoted completion report candidate · Candidate completion text.",
+      }),
+    );
+  });
+
+  it("projects task lifecycle events with readable status and output previews", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "task-created",
+            event_seq: 30,
+            type: "task_created",
+            payload: {
+              task_id: "task_123",
+              status: "queued",
+              summary: "Run command: npm test",
+            },
+          }),
+          event({
+            id: "task-result",
+            event_seq: 31,
+            type: "task_result_received",
+            payload: {
+              task_id: "task_123",
+              status: "completed",
+              summary: "Run command: npm test",
+              exit_status: 0,
+              output_summary_preview: "42 tests passed",
+              output_path: "/tmp/task.log",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "task-created",
+        kind: "event",
+        label: "Task queued",
+        body: "Run command: npm test",
+        minDisplayLevel: "verbose",
+      }),
+    );
+    expect(timeline[1]).toEqual(
+      expect.objectContaining({
+        id: "task-result",
+        kind: "event",
+        label: "Task completed",
+        body: "Run command: npm test · exit 0 · 42 tests passed",
+        detail: {
+          label: "Task details",
+          text: "task: task_123 · output: /tmp/task.log · 42 tests passed",
+          tone: "output",
+        },
+      }),
+    );
+  });
+
+  it("promotes failed task lifecycle events to info", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "task-failed",
+            event_seq: 32,
+            type: "task_result_received",
+            payload: {
+              task_id: "task_failed",
+              status: "failed",
+              summary: "Run command: cargo test",
+              exit_status: 101,
+              error: "tests failed",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        label: "Task failed",
+        body: "Run command: cargo test · exit 101 · tests failed",
+        minDisplayLevel: "info",
       }),
     );
   });
@@ -456,6 +789,40 @@ describe("reduceAgentSessionTimeline", () => {
         id: "brief",
         label: "Result",
         body: "Implemented the fix and verified it.",
+      }),
+    );
+  });
+
+  it("hydrates slim brief events from brief records when transcript content is unavailable", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          event({
+            id: "brief-event",
+            event_seq: 22,
+            type: "brief_created",
+            payload: {
+              id: "brief_123",
+              kind: "result",
+              content_source: { kind: "inline" },
+            },
+          }),
+        ],
+      },
+      briefRecordsById: {
+        brief_123: {
+          id: "brief_123",
+          text: "Full persisted brief text.",
+          kind: "result",
+        },
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        id: "brief-event",
+        label: "Result",
+        body: "Full persisted brief text.",
       }),
     );
   });
@@ -679,3 +1046,108 @@ function timelineItem(overrides: Partial<AgentTimelineItem> = {}): AgentTimeline
     ...overrides,
   };
 }
+
+describe("turn_started projection", () => {
+  it("projects turn_started events as info-level system items with turn index and trigger", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          {
+            id: "evt-turn-1",
+            event_seq: 1,
+            type: "turn_started",
+            ts: "2026-06-15T10:00:00Z",
+            payload: {
+              turn_index: 42,
+              message_kind: "InternalFollowup",
+              agent_id: "agent-1",
+              message_id: "msg-1",
+              run_id: "run-1",
+            },
+          },
+        ],
+      },
+    });
+
+    expect(timeline).toHaveLength(1);
+    const item = timeline[0]!;
+    expect(item.kind).toBe("system");
+    expect(item.minDisplayLevel).toBe("info");
+    expect(item.body).toContain("Turn #42");
+    expect(item.body).toContain("internal followup");
+    expect(item.meta.startsWith("turn_started")).toBe(true);
+  });
+});
+
+describe("WebSearch tool projection", () => {
+  it("projects WebSearch tool with query and result count on timeline", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("web-search-1", "WebSearch", {
+            duration_ms: 3200,
+            input: {
+              query: "rust async runtime",
+              max_results: 5,
+            },
+            output: {
+              query: "rust async runtime",
+              provider: "brave",
+              mode: "single",
+              results: [
+                { title: "Tokio", url: "https://tokio.rs", snippet: "Async runtime", source: "tokio.rs" },
+                { title: "async-std", url: "https://async.rs", snippet: "Fast runtime", source: "async.rs" },
+              ],
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        label: "Web search completed",
+        body: expect.stringContaining("Web search · rust async runtime · 2 results"),
+      }),
+    );
+    expect(timeline[0].detail?.label).toBe("Search results");
+    expect(timeline[0].detail?.text).toContain("1. Tokio");
+    expect(timeline[0].detail?.text).toContain("https://tokio.rs");
+    expect(timeline[0].detail?.text).toContain("2. async-std");
+  });
+});
+
+describe("WebFetch tool projection", () => {
+  it("projects WebFetch tool with URL and content on timeline", () => {
+    const timeline = reduceAgentSessionTimeline({
+      events: {
+        events: [
+          toolEvent("web-fetch-1", "WebFetch", {
+            duration_ms: 5400,
+            input: { url: "https://example.com/article", max_chars: 10000 },
+            output: {
+              url: "https://example.com/article",
+              final_url: "https://example.com/article",
+              status: 200,
+              content_type: "text/html",
+              bytes_read: 1024,
+              truncated: false,
+              text: "# Example Article\n\nContent here.",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(timeline[0]).toEqual(
+      expect.objectContaining({
+        kind: "tool",
+        label: "Web fetch completed",
+        body: expect.stringContaining("Web fetch · https://example.com/article · 200"),
+      }),
+    );
+    expect(timeline[0].detail?.label).toBe("Fetched content");
+    expect(timeline[0].detail?.text).toContain("# Example Article");
+  });
+});

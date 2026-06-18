@@ -1601,6 +1601,7 @@
                 "effect": {
                   "enum": [
                     "accepted_requires_restart",
+                    "accepted_reloaded",
                     "rejected"
                   ],
                   "type": "string"

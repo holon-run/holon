@@ -42,7 +42,6 @@ type ProviderDraft = Pick<
   "transport" | "baseUrl" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
 >;
 
-const providerTransports = ["openai_codex_responses", "openai_responses", "openai_chat_completions", "anthropic_messages", "gemini_generate_content"];
 const credentialSources = ["env", "credential_profile", "external_cli", "credential_process", "none"];
 const credentialKinds = ["api_key", "bearer_token", "oauth", "session_token", "aws_sdk", "none"];
 
@@ -91,6 +90,10 @@ export function SettingsPage({
   const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
   const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
+  const providersWithModels = useMemo(
+    () => new Set(modelCatalog.options.map((m) => m.provider)),
+    [modelCatalog.options],
+  );
 
   useEffect(() => {
     if (!surface) return;
@@ -186,7 +189,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? "Saved to config.json. Restart the daemon for these runtime defaults to take effect."
+          ? "Saved to config.json. Changes applied via hot-reload."
           : "No runtime config changes were persisted.",
     );
   }
@@ -208,7 +211,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} search setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? "Saved search settings to config.json. Restart the daemon for routing changes to take effect."
+          ? "Saved search settings to config.json. Changes applied via hot-reload."
           : "No search config changes were persisted.",
     );
   }
@@ -223,7 +226,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} vision setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? "Saved Vision default to config.json. Restart the daemon for ViewImage selection to take effect."
+          ? "Saved Vision default to config.json. Changes applied via hot-reload."
           : "No Vision config changes were persisted.",
     );
   }
@@ -251,7 +254,6 @@ export function SettingsPage({
     if (!draft) return;
     setProviderSaveMessage(undefined);
     const result = await onUpdateRuntimeConfig([
-      { key: `providers.${providerId}.transport`, value: draft.transport },
       { key: `providers.${providerId}.base_url`, value: draft.baseUrl.trim() },
       { key: `providers.${providerId}.auth.source`, value: draft.credentialSource },
       { key: `providers.${providerId}.auth.kind`, value: draft.credentialKind },
@@ -265,7 +267,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} provider setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? `Saved ${providerId} provider settings to config.json. Restart the daemon for transport or credential changes to take effect.`
+          ? `Saved ${providerId} provider settings to config.json. Changes applied via hot-reload.`
           : "No provider config changes were persisted.",
     );
   }
@@ -278,7 +280,7 @@ export function SettingsPage({
           <h1>Settings</h1>
           <p>
             Configure common runtime defaults from the Web GUI. Saved model defaults are persisted to config.json
-            and take effect after the daemon is restarted.
+            and take effect immediately via hot-reload.
           </p>
           <div className="settings-quickstart" aria-label="Settings overview">
             <div>
@@ -291,7 +293,7 @@ export function SettingsPage({
               <strong>
                 {configuredProviderCount}/{surface?.providers.length ?? 0} ready
               </strong>
-              <small>Credentials and transports may require daemon restart.</small>
+              <small>Credential changes apply via hot-reload.</small>
             </div>
             <div>
               <span>Web search</span>
@@ -309,43 +311,12 @@ export function SettingsPage({
         </Card>
 
         <div className="settings-grid">
-          <Card className="settings-card">
-            <div className="settings-card-head">
-              <div>
-                <span className="eyebrow">Connection</span>
-                <h2>Runtime API</h2>
-              </div>
-              <StatusChip className={`source-chip ${connection.source === "http" ? "live" : "preview"}`} tone={connection.source === "http" ? "live" : "preview"}>
-                {connection.source === "http" ? "live" : "preview"}
-              </StatusChip>
-            </div>
-            <dl className="settings-list">
-              <div>
-                <dt>Mode</dt>
-                <dd>{connection.mode}</dd>
-              </div>
-              <div>
-                <dt>API base</dt>
-                <dd>{connection.baseUrl ?? "not configured"}</dd>
-              </div>
-              <div>
-                <dt>Status</dt>
-                <dd>{connection.summary}</dd>
-              </div>
-              {connection.error ? (
-                <div>
-                  <dt>Error</dt>
-                  <dd className="settings-error">{connection.error}</dd>
-                </div>
-              ) : null}
-            </dl>
-          </Card>
-
+          {/* ── Model & Vision ── */}
           <Card className="settings-card">
             <div className="settings-card-head">
               <div>
                 <span className="eyebrow">Runtime defaults</span>
-                <h2>Model posture</h2>
+                <h2>Model &amp; Vision</h2>
               </div>
               <Button type="button" variant="secondary" disabled={runtimeConfigLoading} onClick={() => void onRefreshRuntimeConfig()}>
                 {runtimeConfigLoading ? "Refreshing…" : "Refresh"}
@@ -365,44 +336,63 @@ export function SettingsPage({
                   void saveRuntimeConfig();
                 }}
               >
-                <p className="settings-muted">
-                  These defaults are written to config.json. Active agents keep their current runtime state until the daemon is restarted or an agent-level override is changed.
-                </p>
                 <label>
                   <span>Default model</span>
                   <input list="available-models" value={modelDefault} onChange={(event) => setModelDefault(event.target.value)} />
+                  <datalist id="available-models">
+                    {availableModels.map((model) => (
+                      <option key={model.model} value={model.model}>
+                        {model.displayName}
+                      </option>
+                    ))}
+                  </datalist>
                 </label>
-                <label>
-                  <span>Fallback models</span>
-                  <input value={modelFallbacks} onChange={(event) => setModelFallbacks(event.target.value)} placeholder="provider/model, provider/model" />
-                </label>
-                <div className="settings-form-row">
+                <details className="settings-advanced">
+                  <summary>Advanced</summary>
                   <label>
-                    <span>Max output tokens</span>
-                    <input inputMode="numeric" value={runtimeMaxOutputTokens} onChange={(event) => setRuntimeMaxOutputTokens(event.target.value)} />
+                    <span>Vision default model</span>
+                    <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider/model or empty for auto" />
+                    <datalist id="vision-models">
+                      {visionModels.map((model) => (
+                        <option key={model.model} value={model.model}>
+                          {model.displayName}
+                        </option>
+                      ))}
+                    </datalist>
                   </label>
                   <label>
-                    <span>Default tool output tokens</span>
-                    <input inputMode="numeric" value={defaultToolOutputTokens} onChange={(event) => setDefaultToolOutputTokens(event.target.value)} />
+                    <span>Fallback models</span>
+                    <input value={modelFallbacks} onChange={(event) => setModelFallbacks(event.target.value)} placeholder="provider/model, provider/model" />
                   </label>
-                  <label>
-                    <span>Max tool output tokens</span>
-                    <input inputMode="numeric" value={maxToolOutputTokens} onChange={(event) => setMaxToolOutputTokens(event.target.value)} />
+                  <div className="settings-form-row">
+                    <label>
+                      <span>Max output tokens</span>
+                      <input inputMode="numeric" value={runtimeMaxOutputTokens} onChange={(event) => setRuntimeMaxOutputTokens(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>Default tool output tokens</span>
+                      <input inputMode="numeric" value={defaultToolOutputTokens} onChange={(event) => setDefaultToolOutputTokens(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>Max tool output tokens</span>
+                      <input inputMode="numeric" value={maxToolOutputTokens} onChange={(event) => setMaxToolOutputTokens(event.target.value)} />
+                    </label>
+                  </div>
+                  <label className="settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={disableProviderFallback}
+                      onChange={(event) => setDisableProviderFallback(event.target.checked)}
+                    />
+                    <span>Disable provider fallback</span>
                   </label>
-                </div>
-                <label className="settings-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={disableProviderFallback}
-                    onChange={(event) => setDisableProviderFallback(event.target.checked)}
-                  />
-                  <span>Disable provider fallback</span>
-                </label>
+                </details>
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? "Saving…" : "Save runtime defaults"}
+                    {runtimeConfigSaving ? "Saving…" : "Save"}
                   </Button>
                   {saveMessage ? <span>{saveMessage}</span> : null}
+                  {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
                 </div>
                 {rejectedResults.length ? (
                   <div className="settings-error-banner">
@@ -413,13 +403,6 @@ export function SettingsPage({
                     ))}
                   </div>
                 ) : null}
-                <datalist id="available-models">
-                  {availableModels.map((model) => (
-                    <option key={model.model} value={model.model}>
-                      {model.displayName}
-                    </option>
-                  ))}
-                </datalist>
               </form>
             )}
             <dl className="settings-list compact">
@@ -438,64 +421,7 @@ export function SettingsPage({
             </dl>
           </Card>
 
-          <Card className="settings-card">
-            <div className="settings-card-head">
-              <div>
-                <span className="eyebrow">Runtime defaults</span>
-                <h2>Vision / ImageView</h2>
-              </div>
-            </div>
-            {!surface ? (
-              <div className="settings-callout">
-                <strong>Vision config unavailable</strong>
-                <span>Connect to a live runtime and refresh this page to edit ViewImage defaults.</span>
-              </div>
-            ) : (
-              <form
-                className="settings-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void saveVisionConfig();
-                }}
-              >
-                <p className="settings-muted">
-                  ViewImage uses <code>vision.default</code> when set. Leave it empty to let Holon auto-discover a configured model with image input support.
-                </p>
-                <label>
-                  <span>Vision default model</span>
-                  <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider/model or empty for auto" />
-                </label>
-                <dl className="settings-list compact settings-inline-summary">
-                  <div>
-                    <dt>Selection mode</dt>
-                    <dd>{visionDefault ? "explicit vision.default" : "auto-discover image-capable model"}</dd>
-                  </div>
-                  <div>
-                    <dt>Provider credential</dt>
-                    <dd>{visionDefault ? (visionProviderReady ? "ready" : "missing or unknown") : "checked during auto-discovery"}</dd>
-                  </div>
-                  <div>
-                    <dt>Image-capable models</dt>
-                    <dd>{visionModels.length ? visionModels.map((model) => model.model).join(", ") : "none reported by model catalog"}</dd>
-                  </div>
-                </dl>
-                <div className="settings-actions">
-                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? "Saving…" : "Save vision settings"}
-                  </Button>
-                  {visionSaveMessage ? <span>{visionSaveMessage}</span> : null}
-                </div>
-                <datalist id="vision-models">
-                  {visionModels.map((model) => (
-                    <option key={model.model} value={model.model}>
-                      {model.displayName}
-                    </option>
-                  ))}
-                </datalist>
-              </form>
-            )}
-          </Card>
-
+          {/* ── Web search ── */}
           <Card className="settings-card">
             <div className="settings-card-head">
               <div>
@@ -516,134 +442,177 @@ export function SettingsPage({
                   void saveSearchConfig();
                 }}
               >
-                <p className="settings-muted">
-                  Search routing controls whether Holon can call provider-native search and which external search providers are attempted first.
-                </p>
                 <label className="settings-checkbox">
                   <input type="checkbox" checked={searchEnabled} onChange={(event) => setSearchEnabled(event.target.checked)} />
                   <span>Enable WebSearch</span>
                 </label>
-                <label className="settings-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={searchBuiltinProviderEnabled}
-                    onChange={(event) => setSearchBuiltinProviderEnabled(event.target.checked)}
-                  />
-                  <span>Allow provider-native search when available</span>
+                <label>
+                  <span>Default provider</span>
+                  <input list="web-search-providers" value={searchProvider} onChange={(event) => setSearchProvider(event.target.value)} />
+                  <datalist id="web-search-providers">
+                    <option value="auto">auto</option>
+                    <option value="duckduckgo">duckduckgo</option>
+                    {surface.webSearchProviders.map((provider) => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.kind}
+                      </option>
+                    ))}
+                  </datalist>
                 </label>
-                <div className="settings-form-row">
-                  <label>
-                    <span>Default provider</span>
-                    <input list="web-search-providers" value={searchProvider} onChange={(event) => setSearchProvider(event.target.value)} />
+                <details className="settings-advanced">
+                  <summary>Advanced</summary>
+                  <label className="settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={searchBuiltinProviderEnabled}
+                      onChange={(event) => setSearchBuiltinProviderEnabled(event.target.checked)}
+                    />
+                    <span>Allow provider-native search when available</span>
                   </label>
-                  <label>
-                    <span>Mode</span>
-                    <select value={searchMode} onChange={(event) => setSearchMode(event.target.value as "single" | "fallback" | "aggregate")}>
-                      <option value="single">single</option>
-                      <option value="fallback">fallback</option>
-                      <option value="aggregate">aggregate</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Provider order</span>
-                    <input value={searchProviders} onChange={(event) => setSearchProviders(event.target.value)} placeholder="duckduckgo, brave" />
-                  </label>
-                </div>
-                <div className="settings-form-row">
-                  <label>
-                    <span>Max results</span>
-                    <input inputMode="numeric" value={searchMaxResults} onChange={(event) => setSearchMaxResults(event.target.value)} />
-                  </label>
-                  <label>
-                    <span>Max provider attempts</span>
-                    <input inputMode="numeric" value={searchMaxProviderAttempts} onChange={(event) => setSearchMaxProviderAttempts(event.target.value)} />
-                  </label>
-                  <label>
-                    <span>Configured providers</span>
-                    <input readOnly value={surface.webSearchProviders.map((provider) => provider.id).join(", ") || "duckduckgo builtin"} />
-                  </label>
-                </div>
+                  <div className="settings-form-row">
+                    <label>
+                      <span>Mode</span>
+                      <select value={searchMode} onChange={(event) => setSearchMode(event.target.value as "single" | "fallback" | "aggregate")}>
+                        <option value="single">single</option>
+                        <option value="fallback">fallback</option>
+                        <option value="aggregate">aggregate</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Provider order</span>
+                      <input value={searchProviders} onChange={(event) => setSearchProviders(event.target.value)} placeholder="duckduckgo, brave" />
+                    </label>
+                    <label>
+                      <span>Max results</span>
+                      <input inputMode="numeric" value={searchMaxResults} onChange={(event) => setSearchMaxResults(event.target.value)} />
+                    </label>
+                  </div>
+                  <div className="settings-form-row">
+                    <label>
+                      <span>Max provider attempts</span>
+                      <input inputMode="numeric" value={searchMaxProviderAttempts} onChange={(event) => setSearchMaxProviderAttempts(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>Configured providers</span>
+                      <input readOnly value={surface.webSearchProviders.map((provider) => provider.id).join(", ") || "duckduckgo builtin"} />
+                    </label>
+                  </div>
+                </details>
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                    {runtimeConfigSaving ? "Saving…" : "Save search settings"}
+                    {runtimeConfigSaving ? "Saving…" : "Save"}
                   </Button>
                   {searchSaveMessage ? <span>{searchSaveMessage}</span> : null}
                 </div>
-                <dl className="settings-list compact settings-inline-summary">
-                  <div>
-                    <dt>Current route</dt>
-                    <dd>
-                      {searchProvider || "auto"} · {searchMode}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Provider list</dt>
-                    <dd>{searchProviders || "runtime default"}</dd>
-                  </div>
-                </dl>
-                <datalist id="web-search-providers">
-                  <option value="auto">auto</option>
-                  <option value="duckduckgo">duckduckgo</option>
-                  {surface.webSearchProviders.map((provider) => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.kind}
-                    </option>
-                  ))}
-                </datalist>
               </form>
             )}
           </Card>
+        </div>
 
-          <Card className="settings-card">
-            <div className="settings-card-head">
-              <div>
-                <span className="eyebrow">Provider accounts</span>
-                <h2>Model providers</h2>
-              </div>
+        {/* ── Model providers ── */}
+        <Card className="settings-card">
+          <div className="settings-card-head">
+            <div>
+              <span className="eyebrow">Provider accounts</span>
+              <h2>Model providers</h2>
             </div>
-            {!surface ? (
-              <div className="settings-callout">
-                <strong>Provider config unavailable</strong>
-                <span>Connect to a live runtime and refresh this page to edit model provider transports and credentials.</span>
-              </div>
-            ) : (
-              <div className="settings-provider-list">
-                <p className="settings-muted">
-                  Configure one provider account/profile, then choose the transport under it. The same credential profile can be reused across transports.
-                </p>
-                {surface.providers.map((provider) => {
-                  const draft = providerDrafts[provider.id];
-                  if (!draft) return null;
-                  return (
-                    <form
-                      className="settings-provider-editor"
-                      key={provider.id}
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        void saveProviderConfig(provider.id);
-                      }}
-                    >
-                      <header>
-                        <div>
-                          <strong>{provider.id}</strong>
-                          <small>
-                            {provider.transport} · {provider.credentialSource}/{provider.credentialKind}
-                          </small>
+          </div>
+          {!surface ? (
+            <div className="settings-callout">
+              <strong>Provider config unavailable</strong>
+              <span>Connect to a live runtime and refresh this page to edit model provider credentials.</span>
+            </div>
+          ) : (
+            <div className="settings-provider-list">
+              <p className="settings-muted">
+                Configure each provider account. Enter the API key in the primary section; expand Advanced for transport and credential details.
+              </p>
+              {surface.providers.map((provider) => {
+                const draft = providerDrafts[provider.id];
+                if (!draft) return null;
+                return (
+                  <form
+                    className="settings-provider-editor"
+                    key={provider.id}
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveProviderConfig(provider.id);
+                    }}
+                  >
+                    <header>
+                      <div>
+                        <strong>{provider.id}</strong>
+                        <small>
+                          {provider.transport} · {provider.credentialSource}/{provider.credentialKind}
+                        </small>
+                      </div>
+                      <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"}>
+                        {provider.credentialConfigured ? "credential ready" : "credential missing"}
+                      </StatusChip>
+                    </header>
+                    {provider.credentialConfigured && !providersWithModels.has(provider.id) ? (
+                      <p className="settings-provider-hint">
+                        No models in catalog for this provider — it will not appear in the model selector. Add model entries under <strong>Model overrides</strong> or configure model discovery to make its models available.
+                      </p>
+                    ) : null}
+                    {/* Primary: API Key management */}
+                    {draft.credentialSource === "credential_profile" && draft.credentialProfile ? (
+                      <div className="settings-api-key-section">
+                        <div className="settings-api-key-header">
+                          <span>API Key for &quot;{draft.credentialProfile}&quot;</span>
+                          <StatusChip
+                            className={`settings-status ${isCredentialProfileConfigured(draft.credentialProfile) ? "available" : "unavailable"}`}
+                            tone={isCredentialProfileConfigured(draft.credentialProfile) ? "success" : "error"}
+                          >
+                            {isCredentialProfileConfigured(draft.credentialProfile) ? "key set" : "no key"}
+                          </StatusChip>
                         </div>
-                        <StatusChip className={`settings-status ${provider.credentialConfigured ? "available" : "unavailable"}`} tone={provider.credentialConfigured ? "success" : "error"}>
-                          {provider.credentialConfigured ? "credential ready" : "credential missing"}
-                        </StatusChip>
-                      </header>
+                        <div className="settings-form-row">
+                          <label>
+                            <span>API Key{credentialStoreLoading ? " (loading…)" : ""}</span>
+                            <input
+                              type="password"
+                              placeholder="Paste API key for this credential profile"
+                              value={apiKeyDrafts[provider.id] ?? ""}
+                              onChange={(event) => setApiKeyDrafts((prev) => ({ ...prev, [provider.id]: event.target.value }))}
+                            />
+                          </label>
+                        </div>
+                        <div className="settings-actions">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            disabled={!apiKeyDrafts[provider.id]?.trim()}
+                            onClick={() => void saveApiKey(provider.id, draft.credentialProfile!, draft.credentialKind)}
+                          >
+                            Save API Key
+                          </Button>
+                          {isCredentialProfileConfigured(draft.credentialProfile) ? (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              onClick={() => void removeApiKey(provider.id, draft.credentialProfile!)}
+                            >
+                              Remove Key
+                            </Button>
+                          ) : null}
+                          {credentialMessages[provider.id] ? (
+                            <span className="settings-save-message">{credentialMessages[provider.id]}</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="settings-hint">
+                        Credential source is <code>{draft.credentialSource}</code>. Switch to <code>credential_profile</code> in Advanced to manage API keys from the web UI.
+                      </p>
+                    )}
+                    {/* Advanced: full provider config */}
+                    <details className="settings-advanced">
+                      <summary>Advanced</summary>
                       <div className="settings-form-row">
                         <label>
-                          <span>Transport</span>
-                          <select value={draft.transport} onChange={(event) => updateProviderDraft(provider.id, { transport: event.target.value })}>
-                            {providerTransports.map((transport) => (
-                              <option key={transport} value={transport}>
-                                {transport}
-                              </option>
-                            ))}
-                          </select>
+                          <span>Transport <small className="settings-muted">(read-only)</small></span>
+                          <input value={provider.transport} readOnly disabled />
                         </label>
                         <label>
                           <span>Base URL</span>
@@ -651,7 +620,14 @@ export function SettingsPage({
                         </label>
                         <label>
                           <span>Credential source</span>
-                          <select value={draft.credentialSource} onChange={(event) => updateProviderDraft(provider.id, { credentialSource: event.target.value })}>
+                          <select value={draft.credentialSource} onChange={(event) => {
+                            const source = event.target.value;
+                            if (source === "credential_profile" && !draft.credentialProfile?.trim()) {
+                              updateProviderDraft(provider.id, { credentialSource: source, credentialProfile: `${provider.id}:default` });
+                            } else {
+                              updateProviderDraft(provider.id, { credentialSource: source });
+                            }
+                          }}>
                             {credentialSources.map((source) => (
                               <option key={source} value={source}>
                                 {source}
@@ -680,70 +656,28 @@ export function SettingsPage({
                           <input value={draft.credentialProfile ?? ""} onChange={(event) => updateProviderDraft(provider.id, { credentialProfile: event.target.value })} />
                         </label>
                       </div>
+                      {draft.credentialSource === "credential_profile" ? (
+                        <p className="settings-hint">Auto-named <code>{provider.id}:default</code> if left empty. Multiple providers can share one profile; use different names (e.g. <code>{provider.id}:work</code>) for separate keys.</p>
+                      ) : null}
                       <label>
                         <span>External credential provider</span>
                         <input value={draft.credentialExternal ?? ""} onChange={(event) => updateProviderDraft(provider.id, { credentialExternal: event.target.value })} />
                       </label>
-                      {draft.credentialSource === "credential_profile" && draft.credentialProfile ? (
-                        <div className="settings-api-key-section">
-                          <div className="settings-api-key-header">
-                            <span>API Key for &quot;{draft.credentialProfile}&quot;</span>
-                            <StatusChip
-                              className={`settings-status ${isCredentialProfileConfigured(draft.credentialProfile) ? "available" : "unavailable"}`}
-                              tone={isCredentialProfileConfigured(draft.credentialProfile) ? "success" : "error"}
-                            >
-                              {isCredentialProfileConfigured(draft.credentialProfile) ? "key set" : "no key"}
-                            </StatusChip>
-                          </div>
-                          <div className="settings-form-row">
-                            <label>
-                              <span>API Key{credentialStoreLoading ? " (loading…)" : ""}</span>
-                              <input
-                                type="password"
-                                placeholder="Paste API key for this credential profile"
-                                value={apiKeyDrafts[provider.id] ?? ""}
-                                onChange={(event) => setApiKeyDrafts((prev) => ({ ...prev, [provider.id]: event.target.value }))}
-                              />
-                            </label>
-                          </div>
-                          <div className="settings-actions">
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              disabled={!apiKeyDrafts[provider.id]?.trim()}
-                              onClick={() => void saveApiKey(provider.id, draft.credentialProfile!, draft.credentialKind)}
-                            >
-                              Save API Key
-                            </Button>
-                            {isCredentialProfileConfigured(draft.credentialProfile) ? (
-                              <Button
-                                type="button"
-                                variant="secondary"
-                                onClick={() => void removeApiKey(provider.id, draft.credentialProfile!)}
-                              >
-                                Remove Key
-                              </Button>
-                            ) : null}
-                          </div>
-                          {credentialMessages[provider.id] ? (
-                            <span className="settings-save-message">{credentialMessages[provider.id]}</span>
-                          ) : null}
-                        </div>
-                      ) : null}
-                      <div className="settings-actions">
-                        <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
-                          {runtimeConfigSaving ? "Saving…" : `Save ${provider.id}`}
-                        </Button>
-                      </div>
-                    </form>
-                  );
-                })}
-                {providerSaveMessage ? <span className="settings-save-message">{providerSaveMessage}</span> : null}
-              </div>
-            )}
-          </Card>
-        </div>
+                    </details>
+                    <div className="settings-actions">
+                      <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                        {runtimeConfigSaving ? "Saving…" : `Save ${provider.id}`}
+                      </Button>
+                    </div>
+                  </form>
+                );
+              })}
+              {providerSaveMessage ? <span className="settings-save-message">{providerSaveMessage}</span> : null}
+            </div>
+          )}
+        </Card>
 
+        {/* ── Model catalog diagnostics ── */}
         <Card className="settings-card settings-models">
           <div className="settings-card-head">
             <div>

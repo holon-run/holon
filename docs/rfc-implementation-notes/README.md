@@ -15,8 +15,10 @@ would be noisy or misleading if duplicated inside each RFC.
 
 - [control-plane-and-delegation](control-plane-and-delegation.md)
 - [event-and-operator-transport](event-and-operator-transport.md)
+- [event-timeline-projection-audit](event-timeline-projection-audit.md)
 - [memory-and-compaction](memory-and-compaction.md)
 - [policy-and-execution-boundary](policy-and-execution-boundary.md)
+- [projection-query-and-subscription-api](projection-query-and-subscription-api.md)
 - [recent-turns-context-spine](recent-turns-context-spine.md)
 - [runtime-database-storage-migration](runtime-database-storage-migration.md)
 - [runtime-scheduler-contract](runtime-scheduler-contract.md)

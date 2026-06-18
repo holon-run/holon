@@ -6,6 +6,7 @@ export interface RuntimeConnection {
   mode: "local" | "remote";
   summary: string;
   baseUrl?: string;
+  hasToken?: boolean;
   source: "http" | "fixture";
   error?: string;
 }
@@ -22,17 +23,54 @@ export interface WorkItemSummary {
   state: string;
   planStatus?: string;
   current?: boolean;
+  revision?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  blockedBy?: string;
+  recheckAt?: string;
+  resultBriefId?: string;
+  resultSummary?: string;
+  planArtifact?: WorkItemPlanArtifactSummary;
+  todoList?: WorkItemTodoItem[];
+  workRefs?: WorkItemRefSummary[];
+}
+
+export interface WorkItemPlanArtifactSummary {
+  path?: string;
+  relativePath?: string;
+  workspaceAlias?: string;
+  preview?: string;
+  previewComplete?: boolean;
+  updatedAt?: string;
+}
+
+export interface WorkItemTodoItem {
+  text: string;
+  state: string;
+}
+
+export interface WorkItemRefSummary {
+  kind: string;
+  ref: string;
+  title?: string;
+  reason?: string;
+  status?: string;
+  lastSeenAt?: string;
 }
 
 export interface WorkspaceSummary {
   id: string;
   name: string;
   anchor: string;
+  projectionKind?: string;
+  accessMode?: string;
   executionRoot?: string;
   cwd?: string;
   worktree?: {
     branch?: string;
     path?: string;
+    originalBranch?: string;
+    originalCwd?: string;
   };
 }
 
@@ -55,6 +93,7 @@ export interface AgentSummary {
   id: string;
   badge: string;
   badgeTone?: "muted";
+  badgeHue?: number;
   profile: string;
   lifecycle: string;
   focusSummary: string;
@@ -93,6 +132,13 @@ export interface RuntimeModelCatalog {
   source: "http" | "fixture";
   options: RuntimeModelOption[];
   error?: string;
+}
+
+export interface RuntimeBriefRecord {
+  id?: string;
+  created_at?: string;
+  text?: string;
+  kind?: string;
 }
 
 export interface RuntimeProviderSummary {
@@ -141,7 +187,7 @@ export interface RuntimeWebSearchProviderSummary {
 
 export interface RuntimeConfigUpdateResult {
   key: string;
-  effect: "accepted_requires_restart" | "rejected";
+  effect: "accepted_requires_restart" | "accepted_reloaded" | "rejected";
   reason: string;
 }
 
@@ -227,11 +273,74 @@ export interface AgentTimelineActivity {
   debug?: string;
 }
 
-export interface InspectorSelection {
-  kind: "activity";
-  agentId: string;
-  activity: AgentTimelineActivity;
+export interface RuntimeToolExecutionRecord {
+  id?: string;
+  agent_id?: string;
+  tool_call_id?: string;
+  tool_name?: string;
+  status?: string;
+  summary?: string;
+  input?: unknown;
+  output?: unknown;
+  result?: unknown;
+  error?: unknown;
+  duration_ms?: number;
+  created_at?: string;
+  completed_at?: string;
+  [key: string]: unknown;
 }
+
+export interface RuntimeTaskOutputResult {
+  retrieval_status?: string;
+  task?: {
+    task_id?: string;
+    kind?: string;
+    status?: string;
+    summary?: string;
+    output_preview?: string;
+    output_truncated?: boolean;
+    result_summary?: string;
+    exit_status?: number;
+    [key: string]: unknown;
+  };
+  status?: string;
+  stdout?: string;
+  stderr?: string;
+  output?: string;
+  summary?: string;
+  truncated?: boolean;
+  [key: string]: unknown;
+}
+
+export interface InspectorActivityDetailState {
+  loading?: boolean;
+  error?: string;
+  toolExecution?: RuntimeToolExecutionRecord;
+  taskOutput?: RuntimeTaskOutputResult;
+}
+
+export interface WorkItemDetailState {
+  loading?: boolean;
+  error?: string;
+  workItem?: WorkItemSummary;
+}
+
+export type RightPanelView =
+  | {
+      kind: "agent_overview";
+      agentId: string;
+    }
+  | {
+      kind: "work_item_detail";
+      agentId: string;
+      workItem: WorkItemSummary;
+    }
+  | {
+      kind: "activity_inspector";
+      agentId: string;
+      activity: AgentTimelineActivity;
+      detailState?: InspectorActivityDetailState;
+    };
 
 export interface AgentTimelineItem {
   id: string;
@@ -264,6 +373,7 @@ export interface AgentDetail {
   newestEventSeq?: number;
   oldestEventSeq?: number;
   hasOlderEvents?: boolean;
+  briefRecordsById?: Record<string, RuntimeBriefRecord>;
 }
 
 export interface RuntimeBootstrap {

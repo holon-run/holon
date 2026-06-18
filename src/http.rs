@@ -1196,6 +1196,7 @@ pub struct RuntimeConfigUpdateResult {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeConfigUpdateEffect {
     AcceptedRequiresRestart,
+    AcceptedReloaded,
     Rejected,
 }
 
@@ -1284,6 +1285,19 @@ pub async fn runtime_config_update(
 
     if changed {
         save_persisted_config_at(&config.config_file_path, &candidate).map_err(error_response)?;
+        // Hot-reload the runtime so the new config takes effect immediately.
+        // The current turn (if any) completes with the old provider; the next
+        // turn picks up the new config automatically.
+        if let Err(e) = state.host.reload_all_agents_config().await {
+            tracing::warn!(error = %e, "config saved but hot-reload failed; restart needed");
+        }
+        // Mark results as reloaded instead of requiring restart.
+        for result in &mut results {
+            if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+                result.effect = RuntimeConfigUpdateEffect::AcceptedReloaded;
+                result.reason = "applied via hot-reload".into();
+            }
+        }
     }
 
     Ok(Json(RuntimeConfigUpdateResponse {
@@ -1393,6 +1407,10 @@ pub async fn set_credential(
     let kind = CredentialKind::parse(&request.kind).map_err(error_response)?;
     let profile_status = set_credential_profile_at(&path, &profile, kind, request.material)
         .map_err(error_response)?;
+    // Hot-reload so the new credential is available without restart.
+    if let Err(e) = state.host.reload_all_agents_config().await {
+        tracing::warn!(error = %e, "credential saved but hot-reload failed; restart needed");
+    }
     Ok(Json(SetCredentialResponse {
         ok: true,
         profile: profile_status,
@@ -1414,6 +1432,9 @@ pub async fn delete_credential(
     let config = state.host.config();
     let path = credential_store_path(&config.home_dir);
     let profile_status = remove_credential_profile_at(&path, &profile).map_err(error_response)?;
+    if let Err(e) = state.host.reload_all_agents_config().await {
+        tracing::warn!(error = %e, "credential deleted but hot-reload failed; restart needed");
+    }
     Ok(Json(DeleteCredentialResponse {
         ok: true,
         profile: profile_status,
