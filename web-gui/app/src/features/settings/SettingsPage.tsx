@@ -272,6 +272,25 @@ export function SettingsPage({
     );
   }
 
+  async function removeProviderConfig(providerId: string) {
+    const confirmed = window.confirm(
+      `Remove ${providerId} from config.json? This only removes persisted provider config; it does not delete credentials or disable built-in provider defaults.`,
+    );
+    if (!confirmed) return;
+
+    setProviderSaveMessage(undefined);
+    const result = await onUpdateRuntimeConfig([{ key: `providers.${providerId}`, unset: true }]);
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setProviderSaveMessage(
+      rejected.length
+        ? `${rejected.length} provider config removal${rejected.length === 1 ? "" : "s"} rejected.`
+        : result.changed
+          ? `Removed ${providerId} provider config from config.json. Built-in providers may fall back to defaults; credentials were not deleted.`
+          : `No persisted ${providerId} provider config was removed.`,
+    );
+  }
+
   return (
     <section className="page settings-page" aria-label="Settings">
       <div className="page-inner settings-inner">
@@ -667,6 +686,19 @@ export function SettingsPage({
                     <div className="settings-actions">
                       <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
                         {runtimeConfigSaving ? "Saving…" : `Save ${provider.id}`}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={runtimeConfigSaving || runtimeConfigLoading || !provider.configuredInConfig}
+                        title={
+                          provider.configuredInConfig
+                            ? "Remove this provider from config.json"
+                            : "This provider is currently using built-in defaults; no persisted config exists to remove."
+                        }
+                        onClick={() => void removeProviderConfig(provider.id)}
+                      >
+                        Remove Config
                       </Button>
                     </div>
                   </form>

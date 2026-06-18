@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use anyhow::{anyhow, Result};
+use arc_swap::ArcSwap;
 
 use crate::{
     config::AppConfig,
@@ -19,7 +20,7 @@ pub(crate) struct RuntimeRegistry {
 }
 
 struct RuntimeRegistryInner {
-    config: AppConfig,
+    config: ArcSwap<AppConfig>,
     host_storage: AppStorage,
     agent_identities: StdRwLock<HashMap<String, AgentIdentityRecord>>,
 }
@@ -50,15 +51,19 @@ impl RuntimeRegistry {
             .collect();
         Ok(Self {
             inner: Arc::new(RuntimeRegistryInner {
-                config,
+                config: ArcSwap::from_pointee(config),
                 host_storage,
                 agent_identities: StdRwLock::new(agent_identities),
             }),
         })
     }
 
-    pub(crate) fn config(&self) -> &AppConfig {
-        &self.inner.config
+    pub(crate) fn config(&self) -> Arc<AppConfig> {
+        self.inner.config.load_full()
+    }
+
+    pub(crate) fn replace_config(&self, config: AppConfig) {
+        self.inner.config.store(Arc::new(config));
     }
 
     pub(crate) fn agent_identity_record(
@@ -212,12 +217,13 @@ impl RuntimeRegistry {
     }
 
     pub(crate) fn ensure_default_agent_identity(&self) -> Result<AgentIdentityRecord> {
-        self.validate_agent_id(&self.inner.config.default_agent_id)?;
-        if let Some(existing) = self.agent_identity_record(&self.inner.config.default_agent_id)? {
+        let config = self.config();
+        self.validate_agent_id(&config.default_agent_id)?;
+        if let Some(existing) = self.agent_identity_record(&config.default_agent_id)? {
             return Ok(existing);
         }
         let record = AgentIdentityRecord::new(
-            self.inner.config.default_agent_id.clone(),
+            config.default_agent_id.clone(),
             crate::types::AgentKind::Default,
             crate::types::AgentVisibility::Public,
             crate::types::AgentOwnership::SelfOwned,

@@ -409,6 +409,7 @@ interface RuntimeProviderSummaryDto {
   credential_profile?: string;
   credential_external?: string;
   credential_configured?: boolean;
+  configured_in_config?: boolean;
 }
 
 interface RuntimeConfigUpdateResultDto {
@@ -1137,6 +1138,7 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
       credentialProfile: provider.credential_profile,
       credentialExternal: provider.credential_external,
       credentialConfigured: provider.credential_configured ?? false,
+      configuredInConfig: provider.configured_in_config ?? false,
     })),
     webSearch: surface.web_search
       ? {

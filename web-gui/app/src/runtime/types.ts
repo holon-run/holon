@@ -151,6 +151,7 @@ export interface RuntimeProviderSummary {
   credentialProfile?: string;
   credentialExternal?: string;
   credentialConfigured: boolean;
+  configuredInConfig: boolean;
 }
 
 export interface RuntimeConfigSurface {
