@@ -126,11 +126,13 @@ button {
 }
 
 .sidebar {
+  position: relative;
+  z-index: 10;
   display: flex;
   flex-direction: column;
   height: 100vh;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   padding: 10px 8px 12px;
   border-right: 1px solid color-mix(in srgb, var(--line-strong) 72%, transparent);
   background:
@@ -518,6 +520,10 @@ button {
   gap: 8px;
 }
 
+.connection-switcher.is-popover {
+  z-index: 20;
+}
+
 .runtime-dot {
   width: 10px;
   height: 10px;
@@ -546,7 +552,7 @@ button {
   position: absolute;
   bottom: calc(100% + 10px);
   left: 0;
-  z-index: 8;
+  z-index: 21;
   width: min(340px, calc(100vw - 28px));
   margin: 0;
 }
